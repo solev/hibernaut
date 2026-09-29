@@ -1,0 +1,7 @@
+[Unit]
+Description=Deallocate this Azure VM when idle
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/idle-deallocate
+ExecStart=/usr/local/bin/idle-deallocate

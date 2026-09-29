@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Deallocates this Azure VM after IDLE_MINUTES with no logged-in SSH sessions and low load.
+set -euo pipefail
+
+IDLE_MINUTES="${IDLE_MINUTES:-30}"
+MAX_LOAD="${MAX_LOAD:-1.0}"
+STATE_FILE=/run/idle-deallocate/last-active
+
+mkdir -p "$(dirname "$STATE_FILE")"
+now=$(date +%s)
+[[ -f "$STATE_FILE" ]] || echo "$now" > "$STATE_FILE"
+
+ssh_sessions=$(pgrep -cf '^sshd: [^ [@]+(@[^ ]+)?$' || true)
+load=$(cut -d' ' -f1 /proc/loadavg)
+
+if (( ssh_sessions > 0 )) || awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l >= m) }'; then
+  echo "$now" > "$STATE_FILE"
+  exit 0
+fi
+
+idle_seconds=$(( now - $(cat "$STATE_FILE") ))
+(( idle_seconds < IDLE_MINUTES * 60 )) && exit 0
+
+logger -t idle-deallocate "Idle for ${idle_seconds}s (no SSH, load ${load}); deallocating"
+
+imds() { curl -sf -H Metadata:true "http://169.254.169.254/metadata/$1"; }
+token=$(imds "identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+resource_id=$(imds "instance/compute/resourceId?api-version=2021-02-01&format=text")
+
+curl -sf -X POST -H "Authorization: Bearer ${token}" -H "Content-Length: 0" \
+  "https://management.azure.com${resource_id}/deallocate?api-version=2024-07-01"
