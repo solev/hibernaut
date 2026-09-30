@@ -1,9 +1,9 @@
 # M0 Foundations
 
-Status: **in progress** · Spec: §3, §5 (The host), §7, §8 · Spike: S4 (answered)
+Status: **done** · Spec: §3, §5 (The host), §7, §8 · Spike: S4 (answered)
 
-> Everything is built, and `make e2e-slow` is green on the real host. M0 closes when CI's first
-> run on GitHub is green, which needs a push.
+> Everything is built. `make e2e-slow` is green on the real host, and CI's first run on GitHub is
+> green.
 
 **Goal:** a Go repo with the whole test pipeline working, and a host that runs E2B as services
 and never loses a machine when it shuts down.
@@ -81,8 +81,8 @@ End-to-end:
 ## Done when
 
 - [x] `make lint test` and `make e2e-slow` are green.
-- [ ] CI is green on GitHub. (Every job passed in a dry run on the Ubuntu 24.04 VM; the first real
-      run needs a push.)
+- [x] CI is green on GitHub
+      ([first run](https://github.com/solev/hibernaut/actions/runs/36763355551)).
 - [x] README: tmux steps replaced by systemd; nightly shutdown described as the in-VM timer.
 - [x] Spec: S4 marked answered.
 

@@ -23,7 +23,7 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - Setup is scripted: `make up` starts everything, `make down` stops paying.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations) is
-  built and tested; M1 (machines) is next. Progress: [docs/milestones](docs/milestones/README.md).
+  done; M1 (machines) is next. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 

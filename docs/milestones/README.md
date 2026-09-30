@@ -3,12 +3,11 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**Now: [M0 Foundations](m0-foundations.md)**: built and green on the real host; closes when CI's
-first run on GitHub is green. **Next: [M1 Machines](m1-machines.md).**
+**Next: [M1 Machines](m1-machines.md).** [M0 Foundations](m0-foundations.md) is done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
-| M0 | [Foundations](m0-foundations.md) | in progress | `TestEngineContract`, `TestPauseAll`, `TestSurvivesHostRestart` |
+| M0 | [Foundations](m0-foundations.md) | done | `TestEngineContract`, `TestPauseAll`, `TestSurvivesHostRestart` |
 | M1 | [Machines](m1-machines.md) | not started | `TestMachineBasics`, `TestSSHKeepalive` |
 | M2 | [Idle and wake](m2-idle-and-wake.md) | not started | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestWakeOnExec` |
 | M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | not started | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
