@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/HEAD/configuration-schema.json
+package: e2bapi
+output: e2bapi/e2bapi.gen.go
+generate:
+  client: true
+  models: true
+output-options:
+  include-tags:
+    - sandboxes

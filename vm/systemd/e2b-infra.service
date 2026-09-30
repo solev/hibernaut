@@ -1,0 +1,19 @@
+# E2B's backing containers (Postgres, ClickHouse, Redis, telemetry) from its local-dev compose
+# file. Active once the databases accept connections. install-e2b.sh fills in @E2B_DIR@.
+[Unit]
+Description=E2B infrastructure containers
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@E2B_DIR@/packages/local-dev
+ExecStart=/usr/bin/docker compose up --detach
+ExecStart=/usr/local/lib/hibernaut/e2b-infra-ready
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=15min
+TimeoutStopSec=3min
+
+[Install]
+WantedBy=multi-user.target

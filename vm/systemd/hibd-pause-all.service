@@ -1,0 +1,17 @@
+# Pauses every machine before E2B stops. Starting this unit does nothing; stopping it runs
+# pause-all. It's ordered after E2B, so it stops first: on any clean shutdown, and, through
+# Requires=, whenever someone stops or restarts the orchestrator.
+[Unit]
+Description=Pause every Hibernaut machine before E2B stops
+Requires=e2b-orchestrator.service
+After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/hibd pause-all --timeout 4m
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target

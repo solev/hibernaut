@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Deallocates this Azure VM through its managed identity, which may only read and deallocate it.
+# Usage: deallocate-self <reason>
+set -euo pipefail
+
+reason="${1:?usage: deallocate-self <reason>}"
+echo "Deallocating this VM: $reason"
+
+imds() { curl -sf -H Metadata:true "http://169.254.169.254/metadata/$1"; }
+token=$(imds "identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+resource_id=$(imds "instance/compute/resourceId?api-version=2021-02-01&format=text")
+
+curl -sf -X POST -H "Authorization: Bearer $token" -H "Content-Length: 0" \
+  "https://management.azure.com${resource_id}/deallocate?api-version=2024-07-01"

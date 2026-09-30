@@ -294,6 +294,8 @@ E2B does the pausing and waking. `hibd` only decides what counts as busy.
     `hibd` checks with `pgrep` through envd.
 - `hibd` checks running machines every 60 s. While a machine is busy, it pushes the timeout back
   (`POST /sandboxes/{id}/timeout`). Nothing inside a machine calls the host.
+- E2B won't push a machine's end past its start plus the tier's `max_length_hours`, which is 1
+  for the seeded `base_v1` tier. M2 raises it.
 - It polls only machines E2B reports as running. Any call to a paused machine, even a status
   check, would wake it.
 - **Wake:**
@@ -302,14 +304,18 @@ E2B does the pausing and waking. `hibd` only decides what counts as busy.
   - Resume takes ~0.4 s.
 - **The host:**
   - Running machines live in RAM and die with the host.
-  - Paused machines survive: they live in Postgres and in snapshot files on disk. Templates have
-    already survived many deallocations.
+  - Paused machines survive: they live in Postgres and in snapshot files on disk. M0 tested this
+    live across a reboot and a deallocate (S4).
   - Restarting E2B loses running machines too: its routing state (Redis) isn't saved to disk.
-  - So before the host deallocates (idle or nightly) or E2B restarts, `hibd pause-all` pauses every
-    machine. idle-deallocate also waits while any machine is running.
-  - The nightly shutdown moves from Azure's schedule, which can't run anything inside the VM
-    first, to an in-VM timer: pause-all, then deallocate. Azure's schedule moves an hour later and
-    stays only as a backstop. A systemd stop hook runs pause-all on any clean shutdown.
+  - E2B's pause returns before the snapshot is written. The orchestrator finishes writing it in
+    the background, and waits for that only when it stops cleanly.
+  - So before the host deallocates (idle, nightly or `make down`) or E2B is reinstalled,
+    `quiesce` pauses every machine, stops E2B and flushes to disk. If a machine can't be paused,
+    the host stays up. idle-deallocate also waits while any machine is running.
+  - The nightly shutdown is an in-VM timer (20:00 UTC): quiesce, then deallocate. Azure's
+    schedule, which can't run anything inside the VM first, is an hour later and only a backstop.
+  - On any clean shutdown, including Azure's deallocate, the `hibd-pause-all` guard unit stops
+    before E2B and pauses every machine.
   - When `hib` can't reach the host, it starts the Azure VM (cold start is a few minutes).
 
 ### SSH path
@@ -367,7 +373,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 
 | # | Milestone | End-to-end test |
 | --- | --- | --- |
-| M0 | **Foundations.** Go repo, test harness, CI. E2B and `hibd` under systemd, started on boot. E2B's storage moves out of the repo checkout (`~/infra/packages/orchestrator/tmp/`) to `/var/lib/e2b`. Machines are paused before any host shutdown. | A machine paused before the host deallocates resumes afterwards, with its files and processes (S4) |
+| M0 | **Foundations.** Go repo, test harness, CI. E2B under systemd, started on boot. E2B's storage moves out of the repo checkout (`~/infra/packages/orchestrator/tmp/`) to `/var/lib/e2b`. Machines are paused before any host shutdown. | A running machine survives a reboot and the nightly deallocate, with its files and processes (S4) |
 | M1 | **Machines.** `dev` image; `hib init / new / ls / rm / exec`; SSH bridge and `*.hib` | new → ssh → exec → rm. An idle SSH session survives 11 minutes. |
 | M2 | **Idle and wake** | An idle machine pauses; `ssh` wakes it with its tmux session still running. A busy one stays awake. |
 | M3 | **Vault, egress proxy, leak scan** | A secret works on its bound site and arrives as a placeholder anywhere else. Machines can't reach host services (S8). The leak scan finds nothing. |
@@ -384,7 +390,8 @@ cmd/hibd/         host daemon (+ subcommands the CLI calls over SSH)
 internal/         engine (E2B), machines, vault, egress, sshbridge
 e2e/              end-to-end tests (build tag `e2e`), run against the real host by `make e2e`
 images/dev/       Dockerfile + files baked into machines (CA cert, gitconfig, agent configs)
-azure/  vm/       existing host provisioning
+third_party/e2b/  E2B's API spec and envd proto at the pinned commit; clients are generated
+azure/  vm/       host provisioning, systemd units, quiesce and the deallocate timers
 ```
 
 State: SQLite (pure Go). Secrets are encrypted with AES-GCM using a root-only key file (later: Azure
@@ -426,17 +433,19 @@ Key Vault through the VM's managed identity).
 
 **End-to-end details:**
 
-- `make e2e` starts the host if it's asleep, deploys `hibd`, and runs `go test -tags e2e` from the
-  laptop.
+- `make e2e` starts the host if it's asleep, deploys, installs E2B if needed, and runs
+  `go test -tags e2e` from the laptop through an SSH tunnel.
 - It uses the logins you connected with the normal `hib connect` commands. Browser approvals
   (Codex, and GitHub from M7) happen once by hand. Everything after that is automated.
 - GitHub tests use a private fixture repo (`solev/hibernaut-e2e`) and always clean up their
   branches and PRs.
 - AI tests use one-line prompts ("reply with OK"), which cost almost nothing.
-- Slow scenarios (host deallocation, 11-minute idle SSH) are tagged. They run before a milestone
-  closes, not on every run.
+- Slow scenarios (host reboot and deallocation, 11-minute idle SSH) run only with
+  `make e2e-slow`, before a milestone closes.
 
-**Commands:** `make test` (unit + integration), `make test-host` (Linux, sudo), `make e2e`.
+**Commands:** `make test` (unit + integration), `make test-host` (Linux, sudo), `make e2e`,
+`make e2e-slow`. CI runs `make lint test` and checks generated code on every push; `test-host`
+joins CI in M3, with the first host test.
 
 ## 9. Open questions and spikes
 
@@ -445,7 +454,7 @@ Key Vault through the VM's managed identity).
 | S1 | Can `hibd` intercept machine HTTPS without breaking E2B, and tell which machine sent it? | **Hook: answered in code.** E2B appends its redirects, so one rule inserted above them wins (§4.2). **Open:** the slot IP → machine mapping (E2B's API doesn't expose it), and a live test that the hook survives E2B adding and removing machines. Spike before M3. |
 | S2 | Can E2B's proxy carry a long-lived SSH websocket, and wake a paused machine? | **Yes.** It's E2B's documented SSH pattern, and traffic on any port resumes a paused machine. Needs keepalives (~10-min idle cutoff). |
 | S3 | Can E2B fork a machine or turn it into a template? | **Yes, natively** (§5 Images and fork). |
-| S4 | Do paused machines survive a host reboot? | **Yes, in principle.** Postgres and snapshot files persist; Redis doesn't. Live test in M0. |
+| S4 | Do paused machines survive a host reboot? | **Yes, tested live in M0** (`TestSurvivesHostRestart`). A running machine is paused on the way down, by the guard on a reboot or by `quiesce` before the nightly deallocate, and resumes afterwards with its files and processes. E2B's pause returns before the snapshot is written, so E2B must stop cleanly before power-off (§5 Idle and wake). |
 | S5 | Does Claude Code work with a placeholder `CLAUDE_CODE_OAUTH_TOKEN` through the proxy? | **Deferred.** Claude Code comes after v1 ([milestones → Later](milestones/README.md#later-not-v1)). |
 | S6 | Can Codex on a ChatGPT plan work with no real token in the machine? | **Yes, per Codex's source** ([codex-chatgpt-auth](research/codex-chatgpt-auth.md)). Codex reads the JWTs in its login file without checking signatures, and refreshes only near expiry or after a 401. So a placeholder login file plus host-only refresh works (§4.4). `CODEX_ACCESS_TOKEN` is simpler, but only Business/Enterprise workspaces can create one. Live test in M5. |
 | S7 | Which env vars and config does each tool need to trust our CA and run unattended? | **Answered** (§4.2 Trust, §4.4). |

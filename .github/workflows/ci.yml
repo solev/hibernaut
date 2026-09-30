@@ -1,0 +1,55 @@
+# Lint, unit tests and a check that generated code is current. The e2e tests need the Azure VM, so
+# they run from a laptop (make e2e).
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # setup-go sets GOTOOLCHAIN=local, and the pinned buf needs a newer Go than go.mod's minimum.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+      - name: Install ShellCheck
+        run: command -v shellcheck || { sudo apt-get update -q && sudo apt-get install -yq shellcheck; }
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+      - run: make test
+
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+      - run: make generate
+      - name: Generated code is committed and current
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            git diff
+            exit 1
+          fi

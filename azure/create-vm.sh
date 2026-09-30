@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Creates the Hibernaut host on Azure: a VM with nested virtualization (needed for Firecracker),
-# a nightly auto-shutdown, and a managed identity that can only read and deallocate the VM.
-# Then hardens SSH and installs the idle auto-deallocation timer on it.
+# an auto-shutdown backstop, and a managed identity that can only read and deallocate the VM.
+# Then deploys the host pieces to it (azure/deploy.sh).
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
@@ -18,7 +18,7 @@ az vm create -g "$RESOURCE_GROUP" -n "$VM_NAME" -l "$LOCATION" \
   --nsg-rule SSH --public-ip-sku Standard \
   --assign-identity '[system]' -o none
 
-echo "==> Scheduling nightly deallocation at $SHUTDOWN_UTC UTC"
+echo "==> Scheduling the auto-shutdown backstop at $SHUTDOWN_UTC UTC"
 az vm auto-shutdown -g "$RESOURCE_GROUP" -n "$VM_NAME" --time "$SHUTDOWN_UTC" -o none
 
 echo "==> Granting the VM permission to deallocate itself"
@@ -49,11 +49,8 @@ for attempt in $(seq 1 12); do
   sleep 15
 done
 
-ip=$(vm_ip)
-echo "==> Configuring host at $ip"
-wait_for_ssh "$ip"
-sync_to_vm "$ip"
-ssh "$VM_USER@$ip" 'hibernaut/vm/setup-host.sh'
+echo "==> Deploying the host pieces"
+"$PROJECT_ROOT/azure/deploy.sh"
 
 echo
 echo "Done. Next: ./azure/up.sh installs and starts E2B on the VM."

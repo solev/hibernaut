@@ -1,0 +1,10 @@
+# Pauses every machine, stops E2B so their snapshots finish writing, then deallocates this VM. If
+# a machine can't be paused, the VM stays up and Azure's auto-shutdown an hour later is the
+# backstop.
+[Unit]
+Description=Pause every machine and deallocate this VM
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/hibernaut/quiesce
+ExecStart=/usr/local/lib/hibernaut/deallocate-self nightly

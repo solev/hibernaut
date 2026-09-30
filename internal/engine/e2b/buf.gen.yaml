@@ -1,0 +1,13 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/solev/hibernaut/internal/engine/e2b/envdpb
+plugins:
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12"]
+    out: envdpb
+    opt: paths=source_relative
+  - local: ["go", "run", "connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.21.0"]
+    out: envdpb
+    opt: paths=source_relative

@@ -1,24 +1,44 @@
 #!/usr/bin/env bash
-# Installs E2B's open-source infrastructure (github.com/e2b-dev/infra) on this VM, following its
-# DEV-LOCAL.md plus the fixes it needed in practice. Idempotent; start it with start-e2b.sh.
+# Installs E2B's open-source infrastructure (github.com/e2b-dev/infra) on this VM as systemd
+# services, following its DEV-LOCAL.md plus the fixes it needed in practice. Safe to re-run: it
+# pauses every machine before it restarts E2B. With --if-needed it does nothing when this version
+# (the pin and these install files) is already installed.
 set -euo pipefail
 
+here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/lib/e2b.sh"
 E2B_INFRA_DIR="${E2B_INFRA_DIR:-$HOME/infra}"
 # Pinned to the commit Hibernaut was verified against. Set E2B_INFRA_REF=main to follow upstream.
 E2B_INFRA_REF="${E2B_INFRA_REF:-5cfcf3282ddb95e90a8214ce71329641bdfe6cb6}"
 GO_VERSION="${GO_VERSION:-1.26.8}"
 VENV_DIR="${VENV_DIR:-$HOME/hibernaut/.venv}"
+MARKER="$HOME/.hibernaut-installed"
+LOG_DIR="${LOG_DIR:-$HOME/e2b-logs}"
 export DEBIAN_FRONTEND=noninteractive
 export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:/snap/bin"
 
+install_id="$E2B_INFRA_REF $(cat "$here/install-e2b.sh" "$here"/lib/e2b* "$here"/systemd/e2b-*.service \
+  "$here"/e2b/* | sha256sum | cut -c1-16)"
+if [[ "${1:-}" == --if-needed && "$(cat "$MARKER" 2>/dev/null)" == "$install_id" ]]; then
+  echo "E2B is installed ($install_id)"
+  exit 0
+fi
+
 log() { printf '==> %s\n' "$*"; }
+mkdir -p "$LOG_DIR"
+: >"$LOG_DIR/install.log"
+run_logged() {
+  "$@" >>"$LOG_DIR/install.log" 2>&1 || { echo "Failed: $*" >&2; tail -20 "$LOG_DIR/install.log" >&2; return 1; }
+}
 
 [[ -e /dev/kvm ]] || { echo "/dev/kvm is missing: this VM size has no nested virtualization" >&2; exit 1; }
 
 log "Base packages"
+# Wait for unattended-upgrades instead of failing, here and in the vendor scripts below.
+echo 'DPkg::Lock::Timeout "600";' | sudo tee /etc/apt/apt.conf.d/90hibernaut-lock-timeout >/dev/null
 echo "\$nrconf{restart} = 'a';" | sudo tee /etc/needrestart/conf.d/90-auto.conf >/dev/null
 sudo apt-get update -qq
-sudo apt-get install -y -qq git make build-essential tmux jq unzip rsync python3-venv >/dev/null
+sudo apt-get install -y -qq git make build-essential gettext-base jq unzip rsync python3-venv >/dev/null
 
 log "Go $GO_VERSION"
 if ! go version 2>/dev/null | grep -q "go$GO_VERSION "; then
@@ -26,6 +46,7 @@ if ! go version 2>/dev/null | grep -q "go$GO_VERSION "; then
   sudo rm -rf /usr/local/go
   sudo tar -C /usr/local -xzf /tmp/go.tgz
   rm /tmp/go.tgz
+  # shellcheck disable=SC2016 # expanded at login, not now
   echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' | sudo tee /etc/profile.d/go.sh >/dev/null
 fi
 
@@ -65,12 +86,67 @@ if [[ ! -x packages/orchestrator/.busybox/1.36.1/amd64/busybox ]]; then
   find packages/orchestrator/.busybox -type f -exec chmod 755 {} +
 fi
 
-log "envd (the agent that runs inside every sandbox)"
-make -s -C packages/envd build
+if systemctl is-active -q e2b-orchestrator; then
+  log "Pausing every machine, then stopping E2B"
+  sudo "$here/lib/quiesce"
+fi
+
+log "Building envd, and optimized api, orchestrator and client-proxy"
+run_logged make -C packages/envd build
+for pkg in api orchestrator client-proxy; do
+  run_logged make -C "packages/$pkg" build-debug RACE_FLAG= DEBUG_GCFLAGS=
+done
+mkdir -p packages/orchestrator/.data/test-volume
+
+log "Storage in /var/lib/e2b"
+if [[ ! -e /var/lib/e2b ]]; then
+  if sudo test -d packages/orchestrator/tmp; then
+    sudo mv packages/orchestrator/tmp /var/lib/e2b
+  else
+    sudo mkdir -m 700 /var/lib/e2b
+  fi
+fi
+
+log "systemd units"
+for unit in "${E2B_UNITS[@]}"; do
+  sed -e "s|@E2B_DIR@|$E2B_INFRA_DIR|g" -e "s|@E2B_USER@|$USER|g" "$here/systemd/$unit.service" |
+    sudo tee "/etc/systemd/system/$unit.service" >/dev/null
+done
+sudo install -D -m 644 "$here/e2b/e2b-orchestrator.env" /etc/hibernaut/e2b-orchestrator.env
+sudo install -D -m 755 "$here/lib/e2b-infra-ready" /usr/local/lib/hibernaut/e2b-infra-ready
+sudo systemctl daemon-reload
+sudo systemctl enable -q "${E2B_UNITS[@]}"
+
+log "Containers, database migrations and seed data"
+run_logged make -C packages/local-dev clickhouse-config-generated.xml
+sudo systemctl restart e2b-infra
+run_logged make -C packages/db migrate-local
+# ClickHouse accepts connections a little before it can run migrations.
+for attempt in 1 2 3 4 5; do
+  run_logged make -C packages/clickhouse migrate-local && break
+  ((attempt == 5)) && exit 1
+  sleep 10
+done
+run_logged make -C packages/local-dev seed-database
+
+log "Starting E2B"
+sudo systemctl start e2b-api e2b-orchestrator e2b-client-proxy
+[[ ! -f /etc/systemd/system/hibd-pause-all.service ]] || sudo systemctl start hibd-pause-all
+wait_for_e2b 900
+
+log "Base template"
+if base_template_ready; then
+  echo "    already built"
+else
+  # npm_config_yes stops `npx tsx` from waiting for a y/n answer.
+  npm_config_yes=true make -C packages/shared/scripts local-build-base-template >"$LOG_DIR/template.log" 2>&1 || true
+  base_template_ready || { echo "Base template build failed; see $LOG_DIR/template.log" >&2; exit 1; }
+  echo "    built"
+fi
 
 log "Python SDK for the examples ($VENV_DIR)"
 [[ -d "$VENV_DIR" ]] || python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install -q --upgrade e2b
 
-touch "$HOME/.hibernaut-installed"
-log "Installed. Next: hibernaut/vm/start-e2b.sh"
+echo "$install_id" >"$MARKER"
+log "Installed. E2B runs under systemd: systemctl status 'e2b-*'"

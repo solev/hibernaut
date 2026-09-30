@@ -1,0 +1,17 @@
+# E2B's REST API on :3000. install-e2b.sh fills in @E2B_DIR@ and @E2B_USER@.
+[Unit]
+Description=E2B API
+Requires=e2b-infra.service
+After=e2b-infra.service
+
+[Service]
+User=@E2B_USER@
+WorkingDirectory=@E2B_DIR@/packages/api
+EnvironmentFile=@E2B_DIR@/packages/api/.env.local
+Environment=NODE_ID=%H
+ExecStart=@E2B_DIR@/packages/api/bin/api --port 3000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

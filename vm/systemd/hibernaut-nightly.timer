@@ -1,0 +1,9 @@
+[Unit]
+Description=Deallocate this VM every night at 20:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 20:00:00 UTC
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

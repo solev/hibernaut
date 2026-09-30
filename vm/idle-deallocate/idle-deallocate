@@ -1,32 +1,59 @@
 #!/usr/bin/env bash
-# Deallocates this Azure VM after IDLE_MINUTES with no logged-in SSH sessions and low load.
+# Deallocates this Azure VM after IDLE_MINUTES without activity. Activity is a logged-in SSH
+# session, a running machine, or load at or above MAX_LOAD. Pauses every machine and stops E2B
+# first (quiesce).
 set -euo pipefail
 
 IDLE_MINUTES="${IDLE_MINUTES:-30}"
 MAX_LOAD="${MAX_LOAD:-1.0}"
-STATE_FILE=/run/idle-deallocate/last-active
+# Overridable for tests.
+STATE_FILE="${STATE_FILE:-/run/idle-deallocate/last-active}"
+HIBD="${HIBD:-/usr/local/bin/hibd}"
+QUIESCE="${QUIESCE:-/usr/local/lib/hibernaut/quiesce}"
+DEALLOCATE="${DEALLOCATE:-/usr/local/lib/hibernaut/deallocate-self}"
+LOADAVG_FILE="${LOADAVG_FILE:-/proc/loadavg}"
+# Session processes are named "sshd: user@pts/0", "sshd: user@notty", or "sshd: user" for
+# `ssh -N` tunnels ("sshd-session:" from OpenSSH 9.8). The listener and "[priv]" ones don't match.
+default_ssh_session_pattern='^sshd(-session)?: [^ [@]+(@[^ ]+)?$'
+SSH_SESSION_PATTERN="${SSH_SESSION_PATTERN:-$default_ssh_session_pattern}"
 
-mkdir -p "$(dirname "$STATE_FILE")"
 now=$(date +%s)
-[[ -f "$STATE_FILE" ]] || echo "$now" > "$STATE_FILE"
+mkdir -p "$(dirname "$STATE_FILE")"
+[[ -f "$STATE_FILE" ]] || echo "$now" >"$STATE_FILE"
 
-ssh_sessions=$(pgrep -cf '^sshd: [^ [@]+(@[^ ]+)?$' || true)
-load=$(cut -d' ' -f1 /proc/loadavg)
-
-if (( ssh_sessions > 0 )) || awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l >= m) }'; then
-  echo "$now" > "$STATE_FILE"
+active() {
+  echo "$now" >"$STATE_FILE"
   exit 0
+}
+
+if pgrep -f "$SSH_SESSION_PATTERN" >/dev/null; then
+  active
+fi
+
+load=$(cut -d' ' -f1 "$LOADAVG_FILE")
+if awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l >= m) }'; then
+  active
+fi
+
+# A running machine is activity. When E2B can't answer, one might be running, so that counts too;
+# the nightly timer still deallocates.
+if [[ -x "$HIBD" ]]; then
+  if ! running=$("$HIBD" ls --state running -q); then
+    echo "Can't list machines; counting that as activity"
+    active
+  fi
+  if [[ -n "$running" ]]; then
+    active
+  fi
 fi
 
 idle_seconds=$(( now - $(cat "$STATE_FILE") ))
-(( idle_seconds < IDLE_MINUTES * 60 )) && exit 0
+if (( idle_seconds < IDLE_MINUTES * 60 )); then
+  exit 0
+fi
 
-logger -t idle-deallocate "Idle for ${idle_seconds}s (no SSH, load ${load}); deallocating"
-
-imds() { curl -sf -H Metadata:true "http://169.254.169.254/metadata/$1"; }
-token=$(imds "identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" \
-  | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
-resource_id=$(imds "instance/compute/resourceId?api-version=2021-02-01&format=text")
-
-curl -sf -X POST -H "Authorization: Bearer ${token}" -H "Content-Length: 0" \
-  "https://management.azure.com${resource_id}/deallocate?api-version=2024-07-01"
+if ! "$QUIESCE"; then
+  echo "Couldn't pause every machine; not deallocating"
+  exit 1
+fi
+exec "$DEALLOCATE" "idle for ${idle_seconds}s: no SSH session, no running machine, load $load"

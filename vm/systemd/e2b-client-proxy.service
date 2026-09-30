@@ -1,0 +1,18 @@
+# E2B's client proxy on :3002: routes traffic to machines. install-e2b.sh fills in @E2B_DIR@
+# and @E2B_USER@.
+[Unit]
+Description=E2B client proxy
+Requires=e2b-infra.service
+After=e2b-infra.service e2b-api.service e2b-orchestrator.service
+
+[Service]
+User=@E2B_USER@
+WorkingDirectory=@E2B_DIR@/packages/client-proxy
+EnvironmentFile=@E2B_DIR@/packages/client-proxy/.env.local
+Environment=NODE_ID=%H
+ExecStart=@E2B_DIR@/packages/client-proxy/bin/client-proxy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

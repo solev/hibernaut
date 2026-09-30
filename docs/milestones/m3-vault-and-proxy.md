@@ -74,6 +74,7 @@ Integration (laptop and CI; fake TLS servers signed by a test CA):
 
 Host integration (Linux, sudo):
 
+- [ ] CI: a `test-host` job running `make test-host` on a Linux runner with sudo (moved from M0).
 - [ ] A network namespace on `veth-99` stands in for a machine: its port 443 traffic reaches
       `hibd`, `SO_ORIGINAL_DST` returns the real destination, port 80 is untouched.
 - [ ] The hook comes back after the rule is deleted or another rule is inserted above it.

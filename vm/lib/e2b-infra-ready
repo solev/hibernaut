@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Waits until E2B's databases accept connections. e2b-infra.service runs it from the compose
+# directory, bounded by its start timeout.
+set -euo pipefail
+
+ready() {
+  docker compose exec -T postgres pg_isready -q -U postgres &&
+    curl -sf -o /dev/null http://127.0.0.1:8123/ping &&
+    [[ "$(docker compose exec -T redis redis-cli ping 2>/dev/null)" == PONG* ]]
+}
+
+until ready; do
+  sleep 2
+done
