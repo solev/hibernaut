@@ -32,6 +32,7 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 ## Later (not v1)
 
 - Claude Code (API key, or `claude setup-token`) and OpenCode.
+- Codex access tokens (`hib connect codex --access-token`), for ChatGPT Business/Enterprise.
 - GitHub App: access to selected repos only, short-lived tokens.
 - Vault key in Azure Key Vault, through the VM's managed identity.
 - Multi-user: per-machine identity, SSH keys written at create time, SSH host certificates.

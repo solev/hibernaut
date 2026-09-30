@@ -39,8 +39,6 @@ or Copilot token ever enters a machine.
       new refresh token is saved to the vault before anything uses it.
 - [ ] Token endpoint: a `POST auth.openai.com/oauth/token` carrying a placeholder is answered by
       the proxy itself with the same placeholders, once the real token is fresh. Never forwarded.
-- [ ] `hib connect codex --access-token` for Business/Enterprise: a `CODEX_ACCESS_TOKEN`
-      placeholder, swapped like an API key.
 - [ ] `hib status`: Codex login health. A used-up or expired refresh token says
       "run `hib connect codex` again".
 
@@ -89,4 +87,5 @@ End-to-end:
 
 ## Changes
 
-(none yet)
+- 2026-09-30: `hib connect codex --access-token` moved to Later. Our ChatGPT account is Plus, which
+  can't create Codex access tokens, so there's nothing to test it against.

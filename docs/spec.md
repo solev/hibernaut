@@ -223,9 +223,10 @@ come later.
   - The proxy swaps the placeholder access token on `chatgpt.com` for the current real one.
   - If Codex refreshes anyway (after a 401), the proxy answers that request itself with the same
     placeholders, once `hibd` has a fresh real token. It never goes to OpenAI.
-- **Business/Enterprise workspaces** can use a Codex access token instead
+- **Later: Business/Enterprise workspaces** could use a Codex access token instead
   (`hib connect codex --access-token`). It's a static `at-…` token, swapped like an API key through
-  a `CODEX_ACCESS_TOKEN` placeholder. Plus and Pro accounts can't create one.
+  a `CODEX_ACCESS_TOKEN` placeholder. Plus and Pro accounts can't create one. Our account is Plus,
+  so v1 leaves this out: we'd have nothing to test it against (D7).
 - **Unattended:** the image's `~/.codex/config.toml` sets `approval_policy = "never"` and
   `sandbox_mode = "danger-full-access"`. The microVM is the sandbox, and Codex's own (bubblewrap)
   sandbox may not work inside it. Update checks and analytics are off.
