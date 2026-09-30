@@ -20,7 +20,8 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - The Azure VM **deallocates itself** after 30 idle minutes, and every night at 20:00 UTC.
 - Setup is scripted: `./azure/up.sh` starts everything, `./azure/down.sh` stops paying.
 - **Next:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with GitHub and AI
-  tools connected once and no real credentials inside machines.
+  tools connected once and no real credentials inside machines. Progress is tracked in
+  [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 
@@ -94,7 +95,8 @@ examples/
   try.py                   Create → run → pause → resume → kill, with timings
 
 docs/
-  spec.md                  v1 plan: machines, SSH, credential swap, milestones, open spikes
+  spec.md                  v1 plan: machines, SSH, credential swap, testing, open spikes
+  milestones/              M0–M7: tasks, tests and status for each milestone
   research/                Cited research behind the spec (E2B internals, agent/GitHub auth)
 ```
 
