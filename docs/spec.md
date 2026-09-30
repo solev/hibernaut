@@ -445,7 +445,8 @@ Key Vault through the VM's managed identity).
 
 **Commands:** `make test` (unit + integration), `make test-host` (Linux, sudo), `make e2e`,
 `make e2e-slow`. CI runs `make lint test` and checks generated code on every push; `test-host`
-joins CI in M3, with the first host test.
+joins CI in M3, with the first host test. CI is parked for now: GitHub Actions is off for the
+repo (see the README).
 
 ## 9. Open questions and spikes
 

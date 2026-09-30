@@ -96,7 +96,7 @@ e2e/                       End-to-end tests against the real VM (build tag e2e)
 third_party/e2b/           E2B's API spec and envd proto at the pinned commit; clients are
                            generated from them
 Makefile                   build, lint, test, generate, deploy, up, down, e2e, e2e-slow
-.github/workflows/ci.yml   lint, test, and a check that generated code is current
+.github/workflows/ci.yml   CI, parked: lint, test, and a check that generated code is current
 
 azure/                     Runs on your Mac (needs az CLI + ssh)
   common.sh                Shared settings: RG, VM name, size, region, user. Env vars override.
@@ -181,8 +181,12 @@ make e2e-slow            # also reboots and deallocates the VM (~5 minutes more)
 ```
 
 The e2e tests reach E2B through an SSH tunnel and label their sandboxes `hib-test=e2e`. A run
-deletes labeled leftovers of earlier runs before it starts. CI runs `lint`, `test` and the
-`generate` check on every push; e2e needs the VM, so it runs from your Mac.
+deletes labeled leftovers of earlier runs before it starts. e2e needs the VM, so it runs from your
+Mac.
+
+CI (`lint`, `test` and the `generate` check) is parked: GitHub Actions is off for this repo, so
+nothing runs on push. Run `make lint test` before you push. To turn it back on:
+`gh api -X PUT repos/solev/hibernaut/actions/permissions -F enabled=true -f allowed_actions=all`.
 
 ## Costs and auto-off
 

@@ -22,7 +22,7 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 - Tick a box in the same commit as the code that does it.
 - Status goes `not started` → `in progress` → `done`. Update it here and in the milestone file.
 - **Done** means all of:
-  - `make lint test` and CI are green,
+  - `make lint test` and CI are green (while CI is parked, `make lint test` alone),
   - `make e2e` is green on the real host, slow tests included,
   - the README and spec match what was built.
 - Learned something that changes the design? Update the spec in the same commit, and add a line
