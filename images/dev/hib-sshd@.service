@@ -1,0 +1,18 @@
+[Unit]
+Description=Hibernaut SSH session
+# machine-init makes the host key after the machine is created. Until then, connections close.
+ConditionPathExists=/etc/hibernaut/ssh/ssh_host_ed25519_key
+CollectMode=inactive-or-failed
+
+[Service]
+# "-": sshd exits non-zero when a login fails. That's not a unit failure.
+ExecStart=-/usr/sbin/sshd -i -f /etc/hibernaut/sshd_config
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# sshd's privilege separation directory, shared by every session.
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# Programs started in a session (tmux, agents) outlive the connection.
+KillMode=process

@@ -1,0 +1,39 @@
+#!/bin/bash
+# Installs the dev image's packages. Runs as root when the template is built; E2B caches the
+# result until this file changes. Downloads are pinned by SHA-256.
+set -euo pipefail
+# /usr/local is root's until the template's start command hands it to user.
+export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DEBIAN_FRONTEND=noninteractive
+
+NODE_VERSION=24.21.0
+NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+WEBSOCAT_VERSION=1.14.1
+WEBSOCAT_SHA256=66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514
+
+apt-get update
+apt-get install -y --no-install-recommends \
+	build-essential ca-certificates curl gh git jq less nano openssh-client procps \
+	python3 python3-pip python3-venv ripgrep tmux unzip xz-utils
+apt-get clean
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+fetch() { # url sha256 dest
+	curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$3" "$1"
+	echo "$2  $3" | sha256sum -c -
+}
+
+fetch "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.xz" "$NODE_SHA256" "$tmp/node.tar.xz"
+tar -xJf "$tmp/node.tar.xz" -C /usr/local --strip-components=1 --no-same-owner \
+	"node-v$NODE_VERSION-linux-x64/bin" "node-v$NODE_VERSION-linux-x64/include" \
+	"node-v$NODE_VERSION-linux-x64/lib" "node-v$NODE_VERSION-linux-x64/share"
+node --version
+npm --version
+
+install -d -m 755 /usr/lib/hibernaut
+fetch "https://github.com/vi/websocat/releases/download/v$WEBSOCAT_VERSION/websocat.x86_64-unknown-linux-musl" \
+	"$WEBSOCAT_SHA256" "$tmp/websocat"
+install -m 755 "$tmp/websocat" /usr/lib/hibernaut/websocat
+/usr/lib/hibernaut/websocat --version

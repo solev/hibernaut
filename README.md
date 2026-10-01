@@ -143,6 +143,26 @@ make down                # pause every sandbox and stop paying for compute
 
 Everyday use is `make up` → play → `make down` (or just walk away and let it deallocate itself).
 
+### Using machines (`hib`)
+
+`hib` is the laptop CLI for named machines. Build it with `make build`, set it up once, then work
+over plain `ssh`:
+
+```bash
+hib init -host azureuser@20.91.197.185 -azure-group rg-e2b-test -azure-vm e2b-test
+hib image build dev        # build the dev image as an E2B template (first time, ~1m40s)
+hib new app                # create a machine named app
+ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
+hib exec app -- uname -a   # run one command, no interactive shell
+hib ls                     # machines, running and paused
+hib rm app                 # delete it
+```
+
+`hib init` writes `~/.config/hibernaut` and adds an `Include` for hib's `Host *.hib` block at the
+top of `~/.ssh/config`, so `ssh app.hib` just works. Behind that name, `hib bridge` resumes the
+machine if it's paused, starts the Azure VM if it's deallocated, and checks the machine's pinned
+host key. The machine user is `user`, with passwordless sudo.
+
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,
 > including a full reinstall, and `make e2e-slow` reboots and deallocates the VM for real.

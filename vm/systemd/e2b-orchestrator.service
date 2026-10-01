@@ -10,6 +10,11 @@ WorkingDirectory=@E2B_DIR@/packages/orchestrator
 EnvironmentFile=@E2B_DIR@/packages/orchestrator/.env.local
 EnvironmentFile=/etc/hibernaut/e2b-orchestrator.env
 Environment=NODE_ID=%H
+# Machines' TCP leaves through this process (E2B's egress proxy). It runs as root, which waagent's
+# WireServer rule lets through, so deny Azure's platform endpoints here. The nft table drops the
+# machines' other traffic to them; sandbox-firewall.nft explains why.
+IPAddressDeny=168.63.129.16 169.254.169.254
+ExecStartPre=/usr/sbin/nft -f /etc/hibernaut/sandbox-firewall.nft
 ExecStart=@E2B_DIR@/packages/orchestrator/bin/orchestrator
 # On SIGTERM the orchestrator shuts its microVMs down itself: it waits for running ones to exit
 # and for paused ones' snapshots to finish writing. hibd-pause-all.service pauses every machine

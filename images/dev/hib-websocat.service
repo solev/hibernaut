@@ -1,0 +1,37 @@
+[Unit]
+Description=Hibernaut SSH bridge: WebSocket on port 8081 to the SSH socket
+Requires=hib-sshd.socket
+After=hib-sshd.socket
+
+[Service]
+# 0.0.0.0, not 127.0.0.1: envd forwards loopback ports, and E2B's proxy reaches this one
+# directly. The proxy wants the machine's traffic access token, which only hibd has.
+ExecStart=/usr/lib/hibernaut/websocat --binary --exit-on-eof ws-l:0.0.0.0:8081 unix-connect:/run/hibernaut/sshd.sock
+User=hib-ws
+Group=hib-ws
+Restart=always
+RestartSec=1
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

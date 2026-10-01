@@ -1,0 +1,14 @@
+[Unit]
+Description=Hibernaut SSH socket, reached through hib-websocat
+
+[Socket]
+ListenStream=/run/hibernaut/sshd.sock
+Accept=yes
+SocketUser=root
+SocketGroup=hib-ws
+SocketMode=0660
+DirectoryMode=0755
+MaxConnections=32
+
+[Install]
+WantedBy=sockets.target

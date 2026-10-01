@@ -1,7 +1,8 @@
 // Package fake is an in-memory engine.Engine for tests. The enginetest contract suite keeps it
 // honest against real E2B.
 //
-// Timeouts are recorded but never fire: machines pause only when told to.
+// Timeouts are recorded but never fire: machines pause only when told to. Like a real engine's
+// requests, every method fails once its context is done.
 package fake
 
 import (
@@ -10,7 +11,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +35,9 @@ type ExecFunc func(ctx context.Context, m engine.Machine, home string, req engin
 // PauseHook runs at the start of every Pause of a running machine, before the machine is
 // paused. If it returns an error, Pause fails with it and the machine keeps running.
 type PauseHook func(ctx context.Context, id string) error
+
+// DialFunc connects DialWebSocket to port in m, which is running by then.
+type DialFunc func(ctx context.Context, m engine.Machine, port int) (net.Conn, error)
 
 // Option configures an Engine.
 type Option func(*Engine)
@@ -61,16 +67,35 @@ func WithPauseHook(h PauseHook) Option {
 	return func(e *Engine) { e.pauseHook = h }
 }
 
+// WithTemplates makes Create accept only these templates, and those BuildTemplate builds.
+// Without it, Create accepts any.
+func WithTemplates(names ...string) Option {
+	return func(e *Engine) {
+		e.templates = map[string]bool{}
+		for _, n := range names {
+			e.templates[n] = true
+		}
+	}
+}
+
+// WithDialer makes DialWebSocket call f.
+func WithDialer(f DialFunc) Option {
+	return func(e *Engine) { e.dial = f }
+}
+
 // Engine is the fake. The zero value isn't usable; call New.
 type Engine struct {
 	now       func() time.Time
 	exec      ExecFunc
 	pauseHook PauseHook
+	dial      DialFunc
 	homeRoot  string
 
-	mu       sync.Mutex
-	machines map[string]*engine.Machine
-	homes    map[string]string
+	mu        sync.Mutex
+	templates map[string]bool // nil: any
+	machines  map[string]*engine.Machine
+	homes     map[string]string
+	built     []engine.TemplateSpec
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -96,9 +121,18 @@ func (e *Engine) Add(m engine.Machine) {
 	e.machines[m.ID] = &m
 }
 
-func (e *Engine) Create(_ context.Context, opts engine.CreateOptions) (engine.Machine, error) {
+func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
+	if err := ctx.Err(); err != nil {
+		return engine.Machine{}, err
+	}
 	if opts.Template == "" {
 		return engine.Machine{}, errors.New("fake: template is required")
+	}
+	e.mu.Lock()
+	known := e.templates == nil || e.templates[opts.Template]
+	e.mu.Unlock()
+	if !known {
+		return engine.Machine{}, fmt.Errorf("fake: create from %s: %w", opts.Template, engine.ErrNoTemplate)
 	}
 	id := NewID()
 	var home string
@@ -133,7 +167,10 @@ func (e *Engine) Create(_ context.Context, opts engine.CreateOptions) (engine.Ma
 	return clone(m), nil
 }
 
-func (e *Engine) Get(_ context.Context, id string) (engine.Machine, error) {
+func (e *Engine) Get(ctx context.Context, id string) (engine.Machine, error) {
+	if err := ctx.Err(); err != nil {
+		return engine.Machine{}, err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m, err := e.lookup(id)
@@ -143,7 +180,10 @@ func (e *Engine) Get(_ context.Context, id string) (engine.Machine, error) {
 	return clone(m), nil
 }
 
-func (e *Engine) List(_ context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
+func (e *Engine) List(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var out []engine.Machine
@@ -167,6 +207,9 @@ func (e *Engine) List(_ context.Context, opts engine.ListOptions) ([]engine.Mach
 }
 
 func (e *Engine) Pause(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, _, err := e.running(id); err != nil {
 		return err
 	}
@@ -188,13 +231,22 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 	return nil
 }
 
-func (e *Engine) Resume(_ context.Context, id string, timeout time.Duration) (engine.Machine, error) {
+func (e *Engine) Resume(ctx context.Context, id string, timeout time.Duration) (engine.Machine, error) {
+	if err := ctx.Err(); err != nil {
+		return engine.Machine{}, err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m, err := e.lookup(id)
 	if err != nil {
 		return engine.Machine{}, err
 	}
+	e.resume(m, timeout)
+	return clone(m), nil
+}
+
+// resume must be called with e.mu held.
+func (e *Engine) resume(m *engine.Machine, timeout time.Duration) {
 	now := e.now()
 	endAt := now.Add(orDefault(timeout))
 	if m.State == engine.Paused {
@@ -204,10 +256,12 @@ func (e *Engine) Resume(_ context.Context, id string, timeout time.Duration) (en
 	} else if endAt.After(m.EndAt) {
 		m.EndAt = endAt
 	}
-	return clone(m), nil
 }
 
-func (e *Engine) Kill(_ context.Context, id string) error {
+func (e *Engine) Kill(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, err := e.lookup(id); err != nil {
@@ -221,7 +275,10 @@ func (e *Engine) Kill(_ context.Context, id string) error {
 	return nil
 }
 
-func (e *Engine) SetTimeout(_ context.Context, id string, timeout time.Duration) error {
+func (e *Engine) SetTimeout(ctx context.Context, id string, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m, err := e.lookup(id)
@@ -235,7 +292,10 @@ func (e *Engine) SetTimeout(_ context.Context, id string, timeout time.Duration)
 	return nil
 }
 
-func (e *Engine) Metrics(_ context.Context, id string) (engine.Metrics, error) {
+func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error) {
+	if err := ctx.Err(); err != nil {
+		return engine.Metrics{}, err
+	}
 	if _, _, err := e.running(id); err != nil {
 		return engine.Metrics{}, err
 	}
@@ -250,6 +310,9 @@ func (e *Engine) Metrics(_ context.Context, id string) (engine.Metrics, error) {
 }
 
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
+	if err := ctx.Err(); err != nil {
+		return engine.ExecResult{}, err
+	}
 	m, home, err := e.running(id)
 	if err != nil {
 		return engine.ExecResult{}, err
@@ -260,7 +323,58 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 	return e.exec(ctx, m, home, req)
 }
 
+func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	m, err := e.lookup(id)
+	if err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
+	e.resume(m, timeout)
+	c := clone(m)
+	e.mu.Unlock()
+	if e.dial == nil {
+		return nil, errors.New("fake: dial not configured (use WithDialer)")
+	}
+	return e.dial(ctx, c, port)
+}
+
+// BuildTemplate records spec and returns "tmpl-" and its name.
+func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs io.Writer) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if spec.Name == "" || spec.FromImage == "" {
+		return "", errors.New("fake: Name and FromImage are required")
+	}
+	id := "tmpl-" + spec.Name
+	e.mu.Lock()
+	e.built = append(e.built, spec)
+	if e.templates != nil {
+		e.templates[spec.Name] = true
+		e.templates[id] = true
+	}
+	e.mu.Unlock()
+	if logs != nil {
+		fmt.Fprintf(logs, "fake: built %s from %s in %d steps\n", spec.Name, spec.FromImage, len(spec.Steps))
+	}
+	return id, nil
+}
+
+// Built returns the specs BuildTemplate was called with, oldest first.
+func (e *Engine) Built() []engine.TemplateSpec {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.built)
+}
+
 func localExec(ctx context.Context, _ engine.Machine, home string, req engine.ExecRequest) (engine.ExecResult, error) {
+	if req.User != "" {
+		return engine.ExecResult{}, fmt.Errorf("fake: local exec can't run as %q", req.User)
+	}
 	cmd := exec.CommandContext(ctx, req.Cmd, req.Args...)
 	cmd.Dir = home
 	if req.Dir != "" {
@@ -270,14 +384,32 @@ func localExec(ctx context.Context, _ engine.Machine, home string, req engine.Ex
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr capped
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if stdout.over || stderr.over {
+		return engine.ExecResult{}, fmt.Errorf("fake: %s wrote more than %d bytes", req.Cmd, engine.MaxExecOutput)
+	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
 		return engine.ExecResult{}, err
 	}
-	return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
+	return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes()}, nil
+}
+
+// capped buffers up to engine.MaxExecOutput bytes. The buffer isn't embedded: its ReadFrom
+// would get around Write.
+type capped struct {
+	buf  bytes.Buffer
+	over bool
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if c.buf.Len()+len(p) > engine.MaxExecOutput {
+		c.over = true
+		return 0, errors.New("too much output")
+	}
+	return c.buf.Write(p)
 }
 
 // running returns a copy of machine id and its home directory, or ErrNotRunning.

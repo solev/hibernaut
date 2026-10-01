@@ -1,19 +1,24 @@
 package e2b_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/websocket"
 
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b"
@@ -22,8 +27,9 @@ import (
 )
 
 const (
-	apiKey    = "e2b_test_key"
-	envdToken = "envd-token"
+	apiKey       = "e2b_test_key"
+	envdToken    = "envd-token"
+	trafficToken = "traffic-token"
 )
 
 // fakeE2B serves the few E2B API routes the engine uses, from a map of sandboxes.
@@ -34,6 +40,14 @@ type fakeE2B struct {
 	sandboxes map[string]map[string]any // id → detail JSON
 	requests  []*http.Request
 	bodies    map[string]map[string]any // "METHOD path" → last JSON body
+	// statuses are the build status answers, one per poll; the last one repeats.
+	statuses []map[string]any
+	offsets  []string // logsOffset of each status poll
+	// redirectTo, if set, makes serveWebSocket answer with a redirect there instead of
+	// upgrading, standing in for a machine that replaced its listener.
+	redirectTo string
+
+	maxMessage atomic.Int64 // largest WebSocket message the proxy received
 }
 
 func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
@@ -41,7 +55,20 @@ func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
 
 	envdMux := http.NewServeMux()
 	envdMux.Handle(processconnect.NewProcessHandler(&fakeEnvd{t: t}))
-	envdSrv := httptest.NewServer(envdMux)
+	envdMux.HandleFunc("/", f.serveWebSocket)
+	// A machine controls everything its envd and port 8081 answer, so the whole envd server can
+	// stand in for a tampered machine: when redirectTo is set it redirects every request, both
+	// the Process RPCs and the WebSocket dial.
+	envdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		redirect := f.redirectTo
+		f.mu.Unlock()
+		if redirect != "" {
+			http.Redirect(w, r, redirect, http.StatusFound)
+			return
+		}
+		envdMux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(envdSrv.Close)
 
 	apiSrv := httptest.NewServer(http.HandlerFunc(f.serve))
@@ -66,7 +93,7 @@ func (f *fakeE2B) addLocked(id, state string, md map[string]string) {
 		"sandboxID": id, "templateID": "tmpl123", "clientID": "c", "state": state,
 		"startedAt": now, "endAt": now.Add(10 * time.Minute), "metadata": md,
 		"cpuCount": 2, "memoryMB": 512, "diskSizeMB": 1024, "envdVersion": "0.2.0",
-		"envdAccessToken": envdToken,
+		"envdAccessToken": envdToken, "trafficAccessToken": trafficToken,
 	}
 }
 
@@ -89,6 +116,9 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"code": 404, "message": fmt.Sprintf("sandbox %q not found", id)})
 	}
 	switch {
+	case r.Method == "POST" && r.URL.Path == "/v2/sandboxes" && body["templateID"] == "missing":
+		writeJSON(w, 404, map[string]any{"code": 404, "message": "template 'missing' not found"})
+
 	case r.Method == "POST" && r.URL.Path == "/v2/sandboxes":
 		id := "new0000000000000000a"
 		md := map[string]string{}
@@ -155,7 +185,27 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 		if sb["state"] == "paused" {
 			sb["state"], status = "running", 201
 		}
-		writeJSON(w, status, map[string]any{"sandboxID": parts[2], "templateID": "tmpl123", "clientID": "c", "envdVersion": "0.2.0"})
+		writeJSON(w, status, map[string]any{
+			"sandboxID": parts[2], "templateID": "tmpl123", "clientID": "c", "envdVersion": "0.2.0",
+			"envdAccessToken": envdToken, "trafficAccessToken": sb["trafficAccessToken"],
+		})
+
+	case r.Method == "POST" && r.URL.Path == "/v3/templates":
+		writeJSON(w, 202, map[string]any{
+			"templateID": "tpl1", "buildID": "build1", "aliases": []string{}, "names": []string{body["name"].(string)},
+			"public": false, "tags": []string{},
+		})
+
+	case r.Method == "POST" && r.URL.Path == "/v2/templates/tpl1/builds/build1":
+		w.WriteHeader(202)
+
+	case r.Method == "GET" && r.URL.Path == "/templates/tpl1/builds/build1/status":
+		f.offsets = append(f.offsets, r.URL.Query().Get("logsOffset"))
+		st := f.statuses[0]
+		if len(f.statuses) > 1 {
+			f.statuses = f.statuses[1:]
+		}
+		writeJSON(w, 200, st)
 
 	case len(parts) == 3 && parts[0] == "sandboxes" && parts[2] == "metrics":
 		if parts[1] == "nometrics00000000000" {
@@ -171,6 +221,43 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL)
 		w.WriteHeader(500)
+	}
+}
+
+// serveWebSocket is the proxy's WebSocket side for sandbox aaaa…'s port 8081: it checks the
+// routing headers and the traffic token, then echoes every binary message back.
+func (f *fakeE2B) serveWebSocket(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("E2b-Sandbox-Id") != "aaaaaaaaaaaaaaaaaaaa" || r.Header.Get("E2b-Sandbox-Port") != "8081" {
+		http.Error(w, "bad routing headers", http.StatusBadRequest)
+		return
+	}
+	if r.Header.Get("E2b-Traffic-Access-Token") != trafficToken {
+		http.Error(w, "bad traffic access token", http.StatusForbidden)
+		return
+	}
+	c, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer c.CloseNow()
+	c.SetReadLimit(-1)
+	for {
+		typ, msg, err := c.Read(context.Background())
+		if err != nil {
+			return
+		}
+		if typ != websocket.MessageBinary {
+			msg = []byte("not binary")
+		}
+		for {
+			old := f.maxMessage.Load()
+			if int64(len(msg)) <= old || f.maxMessage.CompareAndSwap(old, int64(len(msg))) {
+				break
+			}
+		}
+		if err := c.Write(context.Background(), websocket.MessageBinary, msg); err != nil {
+			return
+		}
 	}
 }
 
@@ -193,7 +280,25 @@ func (f *fakeEnvd) Start(_ context.Context, req *connect.Request[process.StartRe
 		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("bad routing headers: %v", h))
 	}
 	p := req.Msg.GetProcess()
-	line := fmt.Sprintf("%s %s cwd=%s env=%s", p.GetCmd(), strings.Join(p.GetArgs(), " "), p.GetCwd(), p.GetEnvs()["K"])
+	user := "-"
+	if h.Get("Authorization") != "" {
+		u, pass, ok := (&http.Request{Header: h}).BasicAuth()
+		if !ok || pass != "" {
+			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("bad Authorization %q", h.Get("Authorization")))
+		}
+		user = u
+	}
+	if p.GetCmd() == "flood" {
+		chunk := bytes.Repeat([]byte("x"), 1<<20)
+		for range 10 {
+			ev := &process.ProcessEvent{Event: &process.ProcessEvent_Data{Data: &process.ProcessEvent_DataEvent{Output: &process.ProcessEvent_DataEvent_Stdout{Stdout: chunk}}}}
+			if err := stream.Send(&process.StartResponse{Event: ev}); err != nil {
+				return err
+			}
+		}
+		return stream.Send(&process.StartResponse{Event: &process.ProcessEvent{Event: &process.ProcessEvent_End{End: &process.ProcessEvent_EndEvent{Exited: true}}}})
+	}
+	line := fmt.Sprintf("%s %s cwd=%s env=%s user=%s", p.GetCmd(), strings.Join(p.GetArgs(), " "), p.GetCwd(), p.GetEnvs()["K"], user)
 	events := []*process.ProcessEvent{
 		{Event: &process.ProcessEvent_Start{Start: &process.ProcessEvent_StartEvent{Pid: 42}}},
 		{Event: &process.ProcessEvent_Data{Data: &process.ProcessEvent_DataEvent{Output: &process.ProcessEvent_DataEvent_Stdout{Stdout: []byte(line)}}}},
@@ -227,8 +332,16 @@ func TestCreate(t *testing.T) {
 	if body["templateID"] != "base" || body["autoPause"] != true || body["timeout"] != float64(91) {
 		t.Errorf("create body = %v, want templateID base, autoPause true and the timeout rounded up to 91 s", body)
 	}
+	if network, _ := body["network"].(map[string]any); network["allowPublicTraffic"] != false {
+		t.Errorf("create body network = %v, want allowPublicTraffic false", body["network"])
+	}
 	if env, _ := body["envVars"].(map[string]any); env["A"] != "b" {
 		t.Errorf("create body envVars = %v", body["envVars"])
+	}
+
+	if _, err := e.Create(t.Context(), engine.CreateOptions{Template: "missing"}); !errors.Is(err, engine.ErrNoTemplate) ||
+		errors.Is(err, engine.ErrNotFound) {
+		t.Errorf("Create(missing template) = %v, want ErrNoTemplate only", err)
 	}
 }
 
@@ -323,9 +436,227 @@ func TestExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.ExitCode != 7 || string(res.Stdout) != "sh -c x cwd=/tmp env=v" || string(res.Stderr) != "err" {
+	if res.ExitCode != 7 || string(res.Stdout) != "sh -c x cwd=/tmp env=v user=-" || string(res.Stderr) != "err" {
 		t.Errorf("Exec = {exit %d, stdout %q, stderr %q}", res.ExitCode, res.Stdout, res.Stderr)
 	}
+
+	res, err = e.Exec(t.Context(), "aaaaaaaaaaaaaaaaaaaa", engine.ExecRequest{Cmd: "id", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res.Stdout); got != "id  cwd= env= user=root" {
+		t.Errorf("Exec as root reached envd as %q, want Basic auth user root", got)
+	}
+}
+
+func TestExecOutputCap(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	_, err := e.Exec(t.Context(), "aaaaaaaaaaaaaaaaaaaa", engine.ExecRequest{Cmd: "flood"})
+	if err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Errorf("Exec(flood) = %v, want an error about too much output", err)
+	}
+}
+
+func TestDialWebSocket(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "paused", nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	c, err := e.DialWebSocket(ctx, "aaaaaaaaaaaaaaaaaaaa", 8081, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// The dial context is done with once the connection is up.
+	cancel()
+
+	if body := f.bodies["POST /v2/sandboxes/aaaaaaaaaaaaaaaaaaaa/connect"]; body["timeout"] != float64(3600) {
+		t.Errorf("connect body = %v, want the 1h timeout", body)
+	}
+	if st := f.sandboxes["aaaaaaaaaaaaaaaaaaaa"]["state"]; st != "running" {
+		t.Errorf("state after dial = %v, want the paused machine resumed", st)
+	}
+
+	// 100 KiB in one Write must cross as messages websocat accepts.
+	want := make([]byte, 100<<10)
+	rand.Read(want)
+	go func() {
+		if _, err := c.Write(want); err != nil {
+			t.Errorf("Write: %v", err)
+		}
+	}()
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(c, got); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("echoed bytes differ from the bytes written")
+	}
+	if largest := f.maxMessage.Load(); largest == 0 || largest > 32<<10 {
+		t.Errorf("largest message = %d bytes, want at most 32 KiB", largest)
+	}
+}
+
+func TestDialWebSocketErrors(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	f.mu.Lock()
+	f.sandboxes["aaaaaaaaaaaaaaaaaaaa"]["trafficAccessToken"] = "stale"
+	f.mu.Unlock()
+
+	if _, err := e.DialWebSocket(t.Context(), "zzzzzzzzzzzzzzzzzzzz", 8081, time.Hour); !errors.Is(err, engine.ErrNotFound) {
+		t.Errorf("DialWebSocket(unknown) = %v, want ErrNotFound", err)
+	}
+	if _, err := e.DialWebSocket(t.Context(), "aaaaaaaaaaaaaaaaaaaa", 8081, time.Hour); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("DialWebSocket with a wrong traffic token = %v, want a 403 error", err)
+	}
+}
+
+// TestDialWebSocketRejectsRedirect checks that an attacker-controlled machine can't turn a dial
+// into a host-side request of its choosing (SSRF): a redirect from the machine's port must not
+// be followed, and the dial must fail instead.
+func TestDialWebSocketRejectsRedirect(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+
+	var hit atomic.Bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hit.Store(true)
+	}))
+	t.Cleanup(attacker.Close)
+
+	f.mu.Lock()
+	f.redirectTo = attacker.URL
+	f.mu.Unlock()
+
+	if _, err := e.DialWebSocket(t.Context(), "aaaaaaaaaaaaaaaaaaaa", 8081, time.Hour); err == nil {
+		t.Error("DialWebSocket followed a redirect and succeeded, want it refused")
+	}
+	if hit.Load() {
+		t.Error("the dial followed the machine's redirect to another server (SSRF)")
+	}
+}
+
+// TestExecRejectsRedirect is TestDialWebSocketRejectsRedirect for the envd RPC path, reached in
+// production when a machine with a lost host pin is re-pinned (Dial → repin → initMachine →
+// Exec). A redirect the machine's envd returns must not be followed.
+func TestExecRejectsRedirect(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+
+	var hit atomic.Bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hit.Store(true)
+	}))
+	t.Cleanup(attacker.Close)
+
+	f.mu.Lock()
+	f.redirectTo = attacker.URL
+	f.mu.Unlock()
+
+	if _, err := e.Exec(t.Context(), "aaaaaaaaaaaaaaaaaaaa", engine.ExecRequest{Cmd: "id"}); err == nil {
+		t.Error("Exec followed a redirect and succeeded, want it refused")
+	}
+	if hit.Load() {
+		t.Error("the envd RPC followed the machine's redirect to another server (SSRF)")
+	}
+}
+
+func TestBuildTemplate(t *testing.T) {
+	fastPolls(t)
+	f, e := newFakeE2B(t)
+	entry := func(msg string) map[string]any {
+		return map[string]any{"level": "info", "message": msg, "timestamp": time.Now()}
+	}
+	f.statuses = []map[string]any{
+		{"templateID": "tpl1", "buildID": "build1", "status": "waiting", "logs": []string{}, "logEntries": []any{}},
+		{"templateID": "tpl1", "buildID": "build1", "status": "building", "logs": []string{}, "logEntries": []any{entry("one"), entry("two")}},
+		{"templateID": "tpl1", "buildID": "build1", "status": "ready", "logs": []string{}, "logEntries": []any{entry("three")}},
+		{"templateID": "tpl1", "buildID": "build1", "status": "ready", "logs": []string{}, "logEntries": []any{}},
+	}
+	var logs bytes.Buffer
+	id, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{
+		Name:          "hib-dev",
+		FromImage:     "ubuntu:24.04",
+		Steps:         []engine.BuildStep{{Cmd: "apt-get update", User: "root"}, {Cmd: "echo hi"}},
+		StartCmd:      "start",
+		ReadyCmd:      "ready",
+		CPUs:          2,
+		MemoryMB:      2048,
+		MinFreeDiskMB: 10240,
+		Force:         true,
+	}, &logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "tpl1" {
+		t.Errorf("BuildTemplate = %q, want tpl1", id)
+	}
+	if got := logs.String(); got != "one\ntwo\nthree\n" {
+		t.Errorf("logs = %q, want every entry once, in order", got)
+	}
+	if got := strings.Join(f.offsets, ","); got != "0,0,2,3" {
+		t.Errorf("logsOffset of each poll = %s, want 0,0,2,3", got)
+	}
+
+	req := f.bodies["POST /v3/templates"]
+	if req["name"] != "hib-dev" || req["cpuCount"] != float64(2) || req["memoryMB"] != float64(2048) || req["minFreeDiskMb"] != float64(10240) {
+		t.Errorf("v3 request = %v", req)
+	}
+	start := f.bodies["POST /v2/templates/tpl1/builds/build1"]
+	steps, _ := json.Marshal(start["steps"])
+	if string(steps) != `[{"args":["apt-get update","root"],"type":"RUN"},{"args":["echo hi"],"type":"RUN"}]` {
+		t.Errorf("steps = %s", steps)
+	}
+	if start["fromImage"] != "ubuntu:24.04" || start["startCmd"] != "start" || start["readyCmd"] != "ready" || start["force"] != true {
+		t.Errorf("build start = %v", start)
+	}
+}
+
+func TestBuildTemplateFailure(t *testing.T) {
+	fastPolls(t)
+	f, e := newFakeE2B(t)
+	f.statuses = []map[string]any{
+		{"templateID": "tpl1", "buildID": "build1", "status": "error", "logs": []string{}, "logEntries": []any{},
+			"reason": map[string]any{"message": "exit status 1", "step": "2"}},
+	}
+	_, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "failed at step 2: exit status 1") {
+		t.Errorf("BuildTemplate = %v, want the failing step and reason", err)
+	}
+	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev"}, nil); err == nil {
+		t.Error("BuildTemplate with no FromImage succeeded")
+	}
+}
+
+// E2B quotes a failed step's whole command, which can be most of a megabyte of file contents.
+func TestBuildTemplateElidesLongMessages(t *testing.T) {
+	fastPolls(t)
+	f, e := newFakeE2B(t)
+	cmd := "RUN put /x 755 '" + strings.Repeat("QUFB", 5000) + "'; /x"
+	f.statuses = []map[string]any{
+		{"templateID": "tpl1", "buildID": "build1", "status": "error", "logs": []string{},
+			"logEntries": []any{map[string]any{"timestamp": "2026-01-01T00:00:00Z", "level": "info", "message": cmd}}},
+		{"templateID": "tpl1", "buildID": "build1", "status": "error", "logs": []string{}, "logEntries": []any{},
+			"reason": map[string]any{"message": "failed to run command '" + cmd + "': exit status 1", "step": "1"}},
+	}
+	var logs strings.Builder
+	_, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04"}, &logs)
+	if err == nil || len(err.Error()) > 1000 || !strings.Contains(err.Error(), "failed at step 1: failed to run command 'RUN put /x") ||
+		!strings.HasSuffix(err.Error(), "'; /x': exit status 1") || !strings.Contains(err.Error(), "bytes) …") {
+		t.Errorf("BuildTemplate = %v", err)
+	}
+	if line := logs.String(); len(line) > 1000 || !strings.HasPrefix(line, "RUN put /x 755 'QUFB") || !strings.HasSuffix(line, "QUFB'; /x\n") {
+		t.Errorf("logs = %q", line)
+	}
+}
+
+// fastPolls makes BuildTemplate poll without waiting.
+func fastPolls(t *testing.T) {
+	old := e2b.BuildPollInterval
+	e2b.BuildPollInterval = time.Millisecond
+	t.Cleanup(func() { e2b.BuildPollInterval = old })
 }
 
 func TestMetricsPicksLatestSample(t *testing.T) {

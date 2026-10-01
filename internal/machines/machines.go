@@ -1,0 +1,491 @@
+// Package machines is what hibd does with machines: it makes them from images, finds them by
+// name, and connects to their SSH servers. It keeps what the engine doesn't, in a state
+// directory: the lock that keeps names unique, and each machine's pinned SSH host key.
+package machines
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/solev/hibernaut/images"
+	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/hibapi"
+)
+
+// DefaultTimeout is how long a machine runs once nothing is connected to it, before it pauses.
+const DefaultTimeout = time.Hour
+
+const (
+	labelName  = "hib.name"
+	labelImage = "hib.image"
+
+	maxKeysFile    = 64 << 10
+	initTimeout    = 2 * time.Minute
+	cleanupTimeout = time.Minute
+)
+
+var (
+	// ErrNoMachine is returned for a name no machine has.
+	ErrNoMachine = errors.New("no machine")
+	// ErrExists is returned when creating a machine whose name is taken.
+	ErrExists = errors.New("there is already a machine")
+)
+
+var idRE = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
+
+// Config configures a Manager.
+type Config struct {
+	Engine engine.Engine
+	// StateDir is where the lock and pinned host keys are kept. It must exist, belong to the
+	// user hibd runs as, and be writable by no one else. Only Create, Remove and Dial use it.
+	StateDir string
+	// AuthorizedKeys is the authorized_keys file whose keys may log in to new machines: the
+	// host's own. Only keys without options are copied: options restrict a key on the host,
+	// and don't mean the same in a machine.
+	AuthorizedKeys string
+	// Timeout is how long a machine runs once nothing is connected to it. Default
+	// DefaultTimeout.
+	Timeout time.Duration
+}
+
+// Manager manages machines. Its methods may be called concurrently, also from other
+// processes sharing its state directory.
+type Manager struct {
+	e         engine.Engine
+	dir       string
+	keysFile  string
+	timeout   time.Duration
+	keepEvery time.Duration
+}
+
+// New returns a Manager. It doesn't touch the state directory until a method needs it.
+func New(cfg Config) *Manager {
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	return &Manager{
+		e:         cfg.Engine,
+		dir:       cfg.StateDir,
+		keysFile:  cfg.AuthorizedKeys,
+		timeout:   timeout,
+		keepEvery: timeout / 4,
+	}
+}
+
+// Create makes a machine called name from image, lets in the keys from Config.AuthorizedKeys,
+// and pins its host key. A machine that can't be set up is killed again.
+func (m *Manager) Create(ctx context.Context, name, image string) (hibapi.Machine, error) {
+	if err := hibapi.CheckName(name); err != nil {
+		return hibapi.Machine{}, err
+	}
+	if _, err := images.Spec(image); err != nil {
+		return hibapi.Machine{}, err
+	}
+	if err := m.checkState(); err != nil {
+		return hibapi.Machine{}, err
+	}
+	keys, err := m.authorizedKeys()
+	if err != nil {
+		return hibapi.Machine{}, err
+	}
+
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return hibapi.Machine{}, err
+	}
+	defer unlock()
+	switch _, err := m.lookup(ctx, name); {
+	case err == nil:
+		return hibapi.Machine{}, fmt.Errorf("%w called %q", ErrExists, name)
+	case !errors.Is(err, ErrNoMachine):
+		return hibapi.Machine{}, err
+	}
+
+	em, err := m.e.Create(ctx, engine.CreateOptions{
+		Template: images.Template(image),
+		Timeout:  m.timeout,
+		Metadata: map[string]string{labelName: name, labelImage: image},
+	})
+	if errors.Is(err, engine.ErrNoTemplate) {
+		return hibapi.Machine{}, fmt.Errorf("image %q isn't built yet (run: hib image build %s)", image, image)
+	}
+	if err != nil {
+		return hibapi.Machine{}, fmt.Errorf("creating %q: %w", name, err)
+	}
+	if _, err := m.initMachine(ctx, em.ID, keys); err != nil {
+		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		if kerr := m.e.Kill(kctx, em.ID); kerr != nil && !errors.Is(kerr, engine.ErrNotFound) {
+			return hibapi.Machine{}, fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, em.ID, kerr)
+		}
+		return hibapi.Machine{}, fmt.Errorf("setting up %q: %w", name, err)
+	}
+	return toAPI(em), nil
+}
+
+// List returns the machines in state, or all machines if state is "". Machines hibd didn't
+// make have no name.
+func (m *Manager) List(ctx context.Context, state engine.State) ([]hibapi.Machine, error) {
+	var opts engine.ListOptions
+	if state != "" {
+		opts.States = []engine.State{state}
+	}
+	ems, err := m.e.List(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]hibapi.Machine, len(ems))
+	for i, em := range ems {
+		out[i] = toAPI(em)
+	}
+	return out, nil
+}
+
+// Remove kills the machine called name and forgets its host key.
+func (m *Manager) Remove(ctx context.Context, name string) error {
+	if err := m.checkState(); err != nil {
+		return err
+	}
+	em, err := m.lookup(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := m.e.Kill(ctx, em.ID); err != nil && !errors.Is(err, engine.ErrNotFound) {
+		return err
+	}
+	path, err := m.pinPath(em.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// Pause pauses the machine called name. Pausing a paused machine does nothing.
+func (m *Manager) Pause(ctx context.Context, name string) error {
+	em, err := m.lookup(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := m.e.Pause(ctx, em.ID); err != nil && !errors.Is(err, engine.ErrNotRunning) {
+		return err
+	}
+	return nil
+}
+
+// Conn is a connection to a machine's SSH server.
+type Conn struct {
+	net.Conn
+	// HostKey is the key the SSH server must present: the one pinned for the machine.
+	HostKey ssh.PublicKey
+
+	stop func()
+	once sync.Once
+}
+
+// Close closes the connection, and lets the machine pause Config.Timeout later.
+func (c *Conn) Close() error {
+	c.once.Do(c.stop)
+	return c.Conn.Close()
+}
+
+// Dial connects to the SSH server of the machine called name, resuming the machine if it's
+// paused. The machine keeps running while the connection is open, unless something pauses it.
+// ctx bounds only the dial.
+func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
+	if err := m.checkState(); err != nil {
+		return nil, err
+	}
+	em, err := m.lookup(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	key, err := m.readPin(em.ID)
+	if errors.Is(err, fs.ErrNotExist) {
+		// The pin was lost: ask the machine again. Its key file outlives its pin.
+		key, err = m.repin(ctx, em.ID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%q: %w", name, err)
+	}
+	conn, err := m.e.DialWebSocket(ctx, em.ID, images.SSHPort, m.timeout)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to %q: %w", name, err)
+	}
+	kctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	go m.keepalive(kctx, em.ID, done)
+	return &Conn{Conn: conn, HostKey: key, stop: func() { cancel(); <-done }}, nil
+}
+
+func (m *Manager) repin(ctx context.Context, id string) (ssh.PublicKey, error) {
+	keys, err := m.authorizedKeys()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.e.Resume(ctx, id, m.timeout); err != nil {
+		return nil, err
+	}
+	return m.initMachine(ctx, id, keys)
+}
+
+// keepalive keeps machine id running until ctx is done. Unlike Resume, SetTimeout doesn't
+// start a machine that was paused on purpose. Errors are ignored: the next tick tries again.
+func (m *Manager) keepalive(ctx context.Context, id string, done chan<- struct{}) {
+	defer close(done)
+	t := time.NewTicker(m.keepEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		m.e.SetTimeout(ctx, id, m.timeout)
+	}
+}
+
+// lookup finds the machine called name.
+func (m *Manager) lookup(ctx context.Context, name string) (engine.Machine, error) {
+	if err := hibapi.CheckName(name); err != nil {
+		return engine.Machine{}, err
+	}
+	ems, err := m.e.List(ctx, engine.ListOptions{Metadata: map[string]string{labelName: name}})
+	if err != nil {
+		return engine.Machine{}, err
+	}
+	var found []engine.Machine
+	for _, em := range ems {
+		if em.Metadata[labelName] == name {
+			found = append(found, em)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return engine.Machine{}, fmt.Errorf("%w called %q", ErrNoMachine, name)
+	case 1:
+		return found[0], nil
+	}
+	ids := make([]string, len(found))
+	for i, em := range found {
+		ids[i] = em.ID
+	}
+	return engine.Machine{}, fmt.Errorf("%d machines are called %q (%s)", len(found), name, strings.Join(ids, ", "))
+}
+
+// initMachine runs machine-init in running machine id, and pins the host key it prints.
+func (m *Manager) initMachine(ctx context.Context, id string, keys []byte) (ssh.PublicKey, error) {
+	if _, err := m.pinPath(id); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, initTimeout)
+	defer cancel()
+	res, err := m.e.Exec(ctx, id, engine.ExecRequest{
+		Cmd:  images.MachineInit,
+		Args: []string{base64.StdEncoding.EncodeToString(keys)},
+		User: "root",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("machine-init: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("machine-init exited %d: %q", res.ExitCode, tail(res.Stderr, 1024))
+	}
+	key, err := hibapi.ParseHostKey(strings.TrimSuffix(string(res.Stdout), "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("machine-init: %w", err)
+	}
+	if err := m.writePin(id, key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// authorizedKeys returns the keys new machines let in, one per line.
+func (m *Manager) authorizedKeys() ([]byte, error) {
+	if m.keysFile == "" {
+		return nil, errors.New("no authorized_keys file to take machines' keys from")
+	}
+	f, err := os.Open(m.keysFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading the keys that may log in to machines: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxKeysFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxKeysFile {
+		return nil, fmt.Errorf("%s is bigger than %d bytes", m.keysFile, maxKeysFile)
+	}
+	var out []byte
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		key, _, options, _, err := ssh.ParseAuthorizedKey([]byte(line))
+		if err != nil || len(options) > 0 {
+			continue
+		}
+		if _, ok := key.(*ssh.Certificate); ok {
+			continue
+		}
+		k := ssh.MarshalAuthorizedKey(key)
+		if !seen[string(k)] {
+			seen[string(k)] = true
+			out = append(out, k...)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s has no key without options: machines need one to let you in", m.keysFile)
+	}
+	return out, nil
+}
+
+// checkState returns an error unless the state directory and its host-keys directory, which it
+// makes if need be, belong to this user and no one else can write to them.
+func (m *Manager) checkState() error {
+	if m.dir == "" {
+		return errors.New("no state directory configured")
+	}
+	if err := checkDir(m.dir); err != nil {
+		return err
+	}
+	pins := filepath.Join(m.dir, "host-keys")
+	if err := os.Mkdir(pins, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return checkDir(pins)
+}
+
+func checkDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("state directory: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("state directory %s: not a directory", dir)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("state directory %s: can't tell its owner", dir)
+	}
+	if uid := os.Geteuid(); int(st.Uid) != uid {
+		return fmt.Errorf("state directory %s: belongs to uid %d, not %d", dir, st.Uid, uid)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("state directory %s: others can write to it (%v)", dir, fi.Mode().Perm())
+	}
+	return nil
+}
+
+// lock waits for and takes the state directory's lock, which keeps machine names unique.
+func (m *Manager) lock(ctx context.Context) (unlock func(), err error) {
+	f, err := os.OpenFile(filepath.Join(m.dir, "hibd.lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			return nil, fmt.Errorf("locking %s: %w", f.Name(), err)
+		}
+		select {
+		case <-ctx.Done():
+			f.Close()
+			return nil, fmt.Errorf("waiting for another hibd: %w", ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (m *Manager) pinPath(id string) (string, error) {
+	if !idRE.MatchString(id) {
+		return "", fmt.Errorf("unexpected machine ID %q", id)
+	}
+	return filepath.Join(m.dir, "host-keys", id), nil
+}
+
+func (m *Manager) readPin(id string) (ssh.PublicKey, error) {
+	path, err := m.pinPath(id)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := hibapi.ParseHostKey(strings.TrimSuffix(string(data), "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return key, nil
+}
+
+func (m *Manager) writePin(id string, key ssh.PublicKey) error {
+	path, err := m.pinPath(id)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".pin-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(hibapi.FormatHostKey(key) + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+func toAPI(em engine.Machine) hibapi.Machine {
+	name, image := em.Metadata[labelName], em.Metadata[labelImage]
+	if hibapi.CheckName(name) != nil {
+		name = ""
+	}
+	if hibapi.CheckName(image) != nil {
+		image = ""
+	}
+	return hibapi.Machine{
+		Name:      name,
+		ID:        em.ID,
+		Image:     image,
+		State:     string(em.State),
+		StartedAt: em.StartedAt,
+		EndAt:     em.EndAt,
+	}
+}
+
+func tail(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[len(b)-n:]
+	}
+	return b
+}

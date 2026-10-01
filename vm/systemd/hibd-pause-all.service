@@ -1,6 +1,7 @@
-# Pauses every machine before E2B stops. Starting this unit does nothing; stopping it runs
-# pause-all. It's ordered after E2B, so it stops first: on any clean shutdown, and, through
-# Requires=, whenever someone stops or restarts the orchestrator.
+# Pauses every machine before E2B stops. Stopping this unit runs pause-all. It's ordered after
+# E2B, so it stops first: on any clean shutdown, and, through Requires=, whenever someone stops
+# or restarts the orchestrator. Starting it means E2B is back, so it lets hibd start machines
+# again if quiesce stopped E2B without the VM going to sleep.
 [Unit]
 Description=Pause every Hibernaut machine before E2B stops
 Requires=e2b-orchestrator.service
@@ -9,7 +10,7 @@ After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-prox
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/true
+ExecStart=/bin/rm -f /run/hibernaut/quiescing
 ExecStop=/usr/local/bin/hibd pause-all --timeout 4m
 TimeoutStopSec=5min
 

@@ -1,0 +1,24 @@
+#!/bin/bash
+# The dev template's start command, run as root through sudo once E2B's own configuration is
+# done. What it leaves running is running in every machine.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# E2B empties root's and user's passwords. Logins are by key only, and user keeps sudo.
+usermod -p '*' root
+usermod -p '*' user
+# E2B makes these world-writable so user can install there. Give them to user instead.
+for dir in /usr/local /code; do
+	if [ -d "$dir" ]; then
+		chown -R user:user "$dir"
+		chmod -R go-w "$dir"
+	fi
+done
+
+systemctl stop ssh.service ssh.socket rpcbind.service rpcbind.socket 2>/dev/null || true
+systemctl start hib-sshd.socket hib-websocat.service
+
+# The template's units started at boot, before this script. The ready command waits for this
+# file too, so E2B can't take the snapshot until everything above is done.
+install -d -m 755 /run/hibernaut
+touch /run/hibernaut/started

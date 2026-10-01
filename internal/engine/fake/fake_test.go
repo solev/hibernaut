@@ -3,7 +3,9 @@ package fake_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -16,7 +18,7 @@ import (
 
 func TestContract(t *testing.T) {
 	enginetest.Run(t, enginetest.Config{
-		Engine:   fake.New(fake.WithLocalExec(t.TempDir())),
+		Engine:   fake.New(fake.WithLocalExec(t.TempDir()), fake.WithTemplates("base")),
 		Template: "base",
 		Metadata: map[string]string{"hib-test": "unit"},
 		Wait:     time.Second,
@@ -88,5 +90,91 @@ func TestClock(t *testing.T) {
 	}
 	if !m.StartedAt.Equal(now) || !m.EndAt.Equal(now.Add(fake.DefaultTimeout)) {
 		t.Errorf("Create with no timeout = start %v end %v, want %v and %v", m.StartedAt, m.EndAt, now, now.Add(fake.DefaultTimeout))
+	}
+}
+
+func TestDialResumesAndCallsDialer(t *testing.T) {
+	var dialed []string
+	e := fake.New(fake.WithDialer(func(_ context.Context, m engine.Machine, port int) (net.Conn, error) {
+		if m.State != engine.Running {
+			t.Errorf("dialer got %s in state %s, want running", m.ID, m.State)
+		}
+		dialed = append(dialed, fmt.Sprintf("%s:%d", m.ID, port))
+		client, server := net.Pipe()
+		server.Close()
+		return client, nil
+	}))
+	ctx := t.Context()
+	m, err := e.Create(ctx, engine.CreateOptions{Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Pause(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.DialWebSocket(ctx, m.ID, 8081, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	if got, _ := e.Get(ctx, m.ID); got.State != engine.Running {
+		t.Errorf("state after dial = %s, want running", got.State)
+	}
+	if len(dialed) != 1 || dialed[0] != m.ID+":8081" {
+		t.Errorf("dialer calls = %v, want one for port 8081", dialed)
+	}
+
+	if _, err := fake.New().DialWebSocket(ctx, m.ID, 8081, time.Hour); !errors.Is(err, engine.ErrNotFound) {
+		t.Errorf("dial on another engine = %v, want ErrNotFound", err)
+	}
+	noDialer := fake.New()
+	m2, _ := noDialer.Create(ctx, engine.CreateOptions{Template: "base"})
+	if _, err := noDialer.DialWebSocket(ctx, m2.ID, 8081, time.Hour); err == nil {
+		t.Error("dial without a dialer succeeded")
+	}
+}
+
+func TestBuildTemplateRecordsSpecs(t *testing.T) {
+	e := fake.New()
+	var logs strings.Builder
+	spec := engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04", Steps: []engine.BuildStep{{Cmd: "true", User: "root"}}}
+	id, err := e.BuildTemplate(t.Context(), spec, &logs)
+	if err != nil || id != "tmpl-hib-dev" {
+		t.Fatalf("BuildTemplate = %q, %v; want tmpl-hib-dev", id, err)
+	}
+	if built := e.Built(); len(built) != 1 || built[0].Name != "hib-dev" || built[0].Steps[0].User != "root" {
+		t.Errorf("Built = %+v", built)
+	}
+	if !strings.Contains(logs.String(), "hib-dev") {
+		t.Errorf("logs = %q, want a line naming the template", logs.String())
+	}
+	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "x"}, nil); err == nil {
+		t.Error("BuildTemplate without FromImage succeeded")
+	}
+}
+
+func TestWithTemplatesAddsBuiltOnes(t *testing.T) {
+	e := fake.New(fake.WithTemplates("base"))
+	if _, err := e.Create(t.Context(), engine.CreateOptions{Template: "hib-dev"}); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Fatalf("Create before build = %v, want ErrNoTemplate", err)
+	}
+	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, tmpl := range []string{"base", "hib-dev", "tmpl-hib-dev"} {
+		if _, err := e.Create(t.Context(), engine.CreateOptions{Template: tmpl}); err != nil {
+			t.Errorf("Create(%s) = %v", tmpl, err)
+		}
+	}
+}
+
+func TestLocalExecRefusesOtherUsers(t *testing.T) {
+	e := fake.New(fake.WithLocalExec(t.TempDir()))
+	m, err := e.Create(t.Context(), engine.CreateOptions{Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Exec(t.Context(), m.ID, engine.ExecRequest{Cmd: "true", User: "root"}); err == nil {
+		t.Error("local exec as root succeeded, want an error: it can't switch users")
 	}
 }

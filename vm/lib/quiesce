@@ -8,6 +8,13 @@ set -euo pipefail
 HIBD="${HIBD:-/usr/local/bin/hibd}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 SYNC="${SYNC:-sync}"
+# While this exists, hibd starts no machine, so none can start after pause-all. It goes when
+# quiesce fails, when the pause-all guard starts (E2B is back) and when the VM boots (/run).
+QUIESCING="${QUIESCING:-/run/hibernaut/quiescing}"
+
+mkdir -p "$(dirname "$QUIESCING")"
+touch "$QUIESCING"
+trap 'status=$?; ((status == 0)) || rm -f "$QUIESCING"' EXIT
 
 if "$SYSTEMCTL" is-active -q e2b-orchestrator.service; then
   "$HIBD" pause-all --timeout 4m

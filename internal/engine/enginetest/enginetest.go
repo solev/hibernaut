@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -27,6 +28,9 @@ type Config struct {
 	Wait time.Duration
 	// Timeout bounds each subtest. Zero means three minutes.
 	Timeout time.Duration
+	// Users says the engine runs commands as other users: ExecRequest.User "root" runs as root,
+	// and the default user isn't root.
+	Users bool
 }
 
 // Run runs the contract suite. Subtests run in parallel, each with its own machines.
@@ -40,6 +44,7 @@ func Run(t *testing.T, cfg Config) {
 	s := &suite{cfg: cfg, runID: RandomID()}
 
 	t.Run("UnknownMachine", s.unknownMachine)
+	t.Run("UnknownTemplate", s.unknownTemplate)
 	t.Run("Lifecycle", s.lifecycle)
 	t.Run("Exec", s.exec)
 	t.Run("KillPaused", s.killPaused)
@@ -101,11 +106,35 @@ func (s *suite) unknownMachine(t *testing.T) {
 		"SetTimeout": func() error { return e.SetTimeout(ctx, id, time.Minute) },
 		"Metrics":    func() error { _, err := e.Metrics(ctx, id); return err },
 		"Exec":       func() error { _, err := e.Exec(ctx, id, engine.ExecRequest{Cmd: "true"}); return err },
+		"DialWebSocket": func() error {
+			c, err := e.DialWebSocket(ctx, id, 8080, time.Minute)
+			if c != nil {
+				c.Close()
+			}
+			return err
+		},
 	}
 	for _, name := range slices.Sorted(maps.Keys(calls)) {
 		if err := calls[name](); !errors.Is(err, engine.ErrNotFound) {
 			t.Errorf("%s(unknown id) = %v, want ErrNotFound", name, err)
 		}
+	}
+}
+
+func (s *suite) unknownTemplate(t *testing.T) {
+	t.Parallel()
+	ctx := s.ctx(t)
+	md := maps.Clone(s.cfg.Metadata)
+	if md == nil {
+		md = map[string]string{}
+	}
+	maps.Copy(md, s.labels("UnknownTemplate"))
+	m, err := s.cfg.Engine.Create(ctx, engine.CreateOptions{Template: "hib-contract-none-" + RandomID(), Metadata: md})
+	if err == nil {
+		s.cfg.Engine.Kill(ctx, m.ID)
+	}
+	if !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("Create(unknown template) = %v, want ErrNoTemplate", err)
 	}
 }
 
@@ -251,8 +280,23 @@ func (s *suite) exec(t *testing.T) {
 		t.Errorf("Exec with Dir /tmp = %+v, %v; want stdout %q", res, err, "/tmp\n")
 	}
 
+	flood := fmt.Sprintf("head -c %d /dev/zero", engine.MaxExecOutput+1)
+	if res, err := e.Exec(ctx, m.ID, engine.ExecRequest{Cmd: "sh", Args: []string{"-c", flood}}); err == nil {
+		t.Errorf("Exec of more than MaxExecOutput bytes = exit %d with %d bytes, want an error", res.ExitCode, len(res.Stdout))
+	}
+
 	if out := s.mustExec(t, ctx, m.ID, `test "$(pwd)" = "$HOME" && echo home`); out != "home\n" {
 		t.Errorf("default working directory: got %q, want the home directory", out)
+	}
+
+	if s.cfg.Users {
+		res, err := e.Exec(ctx, m.ID, engine.ExecRequest{Cmd: "id", Args: []string{"-un"}, User: "root"})
+		if err != nil || res.ExitCode != 0 || string(res.Stdout) != "root\n" {
+			t.Errorf("Exec as root = %+v, %v; want stdout %q", res, err, "root\n")
+		}
+		if out := s.mustExec(t, ctx, m.ID, "id -un"); out == "root\n" {
+			t.Errorf("default user is root, want an unprivileged user")
+		}
 	}
 
 	deadline := time.Now().Add(s.cfg.Wait)

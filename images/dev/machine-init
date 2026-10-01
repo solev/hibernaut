@@ -1,0 +1,33 @@
+#!/bin/bash
+# Gives this machine its own SSH host key and installs the keys that may log in. hibd runs it as
+# root once the machine exists, with the authorized_keys file base64-encoded in $1, and pins the
+# host public key it prints. Running it again keeps the host key and replaces the keys.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+
+if [ $# -ne 1 ] || [ -z "$1" ]; then
+	echo "usage: machine-init BASE64_AUTHORIZED_KEYS" >&2
+	exit 2
+fi
+
+dir=/etc/hibernaut/ssh
+install -d -m 755 -o root -g root "$dir"
+exec 9<"$dir"
+flock 9
+
+key=$dir/ssh_host_ed25519_key
+if [ ! -s "$key" ] || [ ! -s "$key.pub" ]; then
+	rm -f "$key" "$key.pub"
+	ssh-keygen -q -t ed25519 -N '' -C '' -f "$key"
+fi
+
+tmp=$(mktemp "$dir/.authorized_keys.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+printf '%s' "$1" | base64 -d >"$tmp"
+chmod 644 "$tmp"
+mv -f "$tmp" "$dir/authorized_keys"
+
+install -d -m 755 /run/sshd
+sshd -t -f /etc/hibernaut/sshd_config
+cut -d ' ' -f 1,2 "$key.pub"

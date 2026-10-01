@@ -1,7 +1,8 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/solev/hibernaut/internal/version.Version=$(VERSION)
 STATICCHECK := go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
-SHELL_SCRIPTS := azure/*.sh vm/*.sh $(filter-out %.go,$(wildcard vm/lib/*)) vm/idle-deallocate/idle-deallocate
+SHELL_SCRIPTS := azure/*.sh vm/*.sh $(filter-out %.go,$(wildcard vm/lib/*)) vm/idle-deallocate/idle-deallocate \
+	images/dev/packages images/dev/configure images/dev/start images/dev/ready images/dev/machine-init
 
 .PHONY: build build-linux lint test test-host generate deploy up down e2e e2e-slow
 
@@ -44,8 +45,8 @@ down:
 # Readies the VM (azure/up.sh), then tests it from here through an SSH tunnel. Creates and
 # deletes machines labeled hib-test=e2e.
 e2e: up
-	go test -tags e2e -count=1 -v ./e2e/...
+	go test -tags e2e -count=1 -v -timeout 40m ./e2e/...
 
 # Also reboots the VM, then deallocates and starts it, which adds about 5 minutes.
 e2e-slow: up
-	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 60m ./e2e/...
+	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 90m ./e2e/...

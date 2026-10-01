@@ -1,0 +1,40 @@
+# Hibernaut's sshd. It has no TCP port: hib-sshd.socket starts `sshd -i` for each connection
+# that hib-websocat bridges in from E2B's proxy, so every login has come through hibd. Keys only.
+# Nothing is included from /etc/ssh: E2B's provisioning drops in root and empty-password logins.
+
+HostKey /etc/hibernaut/ssh/ssh_host_ed25519_key
+# Written by machine-init from the host's ~/.ssh/authorized_keys. Root-owned: sessions can't add
+# keys of their own.
+AuthorizedKeysFile /etc/hibernaut/ssh/authorized_keys
+AuthorizedPrincipalsFile none
+
+AllowUsers user
+PermitRootLogin no
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+HostbasedAuthentication no
+GSSAPIAuthentication no
+UsePAM yes
+StrictModes yes
+LoginGraceTime 30
+
+# Local forwards (ssh -L) reach dev servers. Nothing else: no agent, so a machine can't use the
+# laptop's keys.
+AllowAgentForwarding no
+AllowTcpForwarding local
+AllowStreamLocalForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+
+ClientAliveInterval 60
+ClientAliveCountMax 3
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp internal-sftp
+# Logs the fingerprint of the key each login used.
+LogLevel VERBOSE

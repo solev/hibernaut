@@ -3,12 +3,13 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**Next: [M1 Machines](m1-machines.md).** [M0 Foundations](m0-foundations.md) is done.
+**Next: [M2 Idle and wake](m2-idle-and-wake.md).** [M0 Foundations](m0-foundations.md) and
+[M1 Machines](m1-machines.md) are done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
 | M0 | [Foundations](m0-foundations.md) | done | `TestEngineContract`, `TestPauseAll`, `TestSurvivesHostRestart` |
-| M1 | [Machines](m1-machines.md) | not started | `TestMachineBasics`, `TestSSHKeepalive` |
+| M1 | [Machines](m1-machines.md) | done | `TestMachine`, `TestMachineSecurity`, `TestMachineNetwork`, `TestQuiescing`, `TestWakeOnSSH` |
 | M2 | [Idle and wake](m2-idle-and-wake.md) | not started | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestWakeOnExec` |
 | M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | not started | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
 | M4 | [GitHub](m4-github.md) | not started | `TestGitHubFullFlow`, `TestWorkflowPush` |

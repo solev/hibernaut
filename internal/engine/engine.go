@@ -8,6 +8,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"time"
 )
 
@@ -64,6 +66,9 @@ type Metrics struct {
 }
 
 // ExecRequest is a command to run inside a machine.
+//
+// Engines may log requests in full, arguments and environment included: never put a secret in
+// one.
 type ExecRequest struct {
 	// Cmd is resolved through PATH, as a shell would.
 	Cmd  string
@@ -71,9 +76,41 @@ type ExecRequest struct {
 	Env  map[string]string
 	// Dir is the working directory. Empty means the user's home directory.
 	Dir string
-	// Stdin, if set, is written to the command's standard input.
-	Stdin []byte
+	// User runs the command as this user. Empty means the machine's default user.
+	User string
 }
+
+// TemplateSpec describes a template: the disk, and the processes already running, that every
+// machine created from it starts with.
+type TemplateSpec struct {
+	// Name is how CreateOptions.Template refers to the template.
+	Name string
+	// FromImage is the container image the template starts from, e.g. "ubuntu:24.04".
+	FromImage string
+	// Steps run in order, each in a login shell.
+	Steps []BuildStep
+	// StartCmd, if set, runs as the default user after the steps; whatever it leaves running is
+	// running in every machine. ReadyCmd must then exit 0 before the template is snapshotted.
+	StartCmd string
+	ReadyCmd string
+	CPUs     int
+	MemoryMB int
+	// MinFreeDiskMB is the free disk space every machine starts with.
+	MinFreeDiskMB int
+	// Force runs every step again instead of reusing what earlier builds cached.
+	Force bool
+}
+
+// BuildStep is one shell command of a template build.
+type BuildStep struct {
+	Cmd string
+	// User runs Cmd as this user. Empty means the template's default user.
+	User string
+}
+
+// MaxExecOutput bounds what Exec keeps of each of a command's stdout and stderr. A command that
+// writes more fails Exec with an error, and may be left running.
+const MaxExecOutput = 8 << 20
 
 // ExecResult is the outcome of a command that ran to completion. A non-zero exit code is a
 // result, not an error.
@@ -88,7 +125,8 @@ type ExecResult struct {
 // Methods that take a machine ID return an error wrapping ErrNotFound when no such machine
 // exists.
 type Engine interface {
-	// Create starts a new running machine.
+	// Create starts a new running machine. It returns an error wrapping ErrNoTemplate if there's
+	// no such template.
 	Create(ctx context.Context, opts CreateOptions) (Machine, error)
 	Get(ctx context.Context, id string) (Machine, error)
 	List(ctx context.Context, opts ListOptions) ([]Machine, error)
@@ -106,13 +144,22 @@ type Engine interface {
 	// Metrics returns the latest resource sample of a running machine, or ErrNoMetrics if the
 	// engine has none yet.
 	Metrics(ctx context.Context, id string) (Metrics, error)
-	// Exec runs a command in a running machine as its default user and waits for it to exit.
-	// It returns ErrNotRunning for a paused machine, and never wakes it.
+	// Exec runs a command in a running machine and waits for it to exit. It returns
+	// ErrNotRunning for a paused machine, and never wakes it.
 	Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error)
+	// DialWebSocket connects to the WebSocket server listening on port inside the machine and
+	// returns the connection as a byte stream carried in binary messages. It resumes a paused
+	// machine, and makes sure a running one runs for at least timeout more. ctx bounds only the
+	// dial: the connection lasts until it's closed.
+	DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error)
+	// BuildTemplate builds spec, or rebuilds the template of that name, copying build logs to
+	// logs as they arrive. It returns the template's ID once machines can be created from it.
+	BuildTemplate(ctx context.Context, spec TemplateSpec, logs io.Writer) (string, error)
 }
 
 var (
 	ErrNotFound   = errors.New("machine not found")
 	ErrNotRunning = errors.New("machine not running")
 	ErrNoMetrics  = errors.New("no metrics yet")
+	ErrNoTemplate = errors.New("template not found")
 )

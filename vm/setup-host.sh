@@ -16,8 +16,18 @@ systemctl reload ssh
 
 echo "==> $("$hibd" version)"
 install -m 755 "$hibd" /usr/local/bin/hibd
+# hibd runs as the user who ran this script (over ssh, from hib), and as root to pause every
+# machine. Its config holds E2B's API key; its state directory is that user's alone.
+user="${SUDO_USER:-}"
+[[ -n "$user" && "$user" != root ]] || { echo "Run this as the user hibd runs as; it uses sudo" >&2; exit 1; }
+group="$(id -gn "$user")"
 # Keep local changes to the config.
-[[ -f /etc/hibernaut/hibd.env ]] || install -D -m 644 "$here/hibd/hibd.env" /etc/hibernaut/hibd.env
+[[ -f /etc/hibernaut/hibd.env ]] || install -D -m 640 "$here/hibd/hibd.env" /etc/hibernaut/hibd.env
+chown "root:$group" /etc/hibernaut/hibd.env
+chmod 640 /etc/hibernaut/hibd.env
+install -d -m 700 -o "$user" -g "$group" /var/lib/hibernaut
+chown "$user:$group" /var/lib/hibernaut
+chmod 700 /var/lib/hibernaut
 install -D -m 755 "$here/lib/quiesce" "$here/lib/deallocate-self" -t /usr/local/lib/hibernaut/
 
 echo "==> Pause-all guard, nightly deallocate and idle deallocate"

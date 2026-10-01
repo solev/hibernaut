@@ -1,0 +1,28 @@
+#!/bin/bash
+# Configures the dev image once its files are in place: SSH only through hibd's bridge. Runs as
+# root when the template is built.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# hib-websocat runs as this user, which may only connect to the SSH socket.
+if ! id -u hib-ws >/dev/null 2>&1; then
+	useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin hib-ws
+fi
+
+# The stock sshd never runs: E2B's provisioning lets root and empty passwords log in on port 22.
+# rpcbind comes with nfs-common and listens on port 111.
+units=(ssh.service ssh.socket rpcbind.service rpcbind.socket)
+systemctl stop "${units[@]}" 2>/dev/null || true
+systemctl mask "${units[@]}"
+# Every machine would share the image's host keys. machine-init makes each machine its own.
+rm -f /etc/ssh/ssh_host_*
+
+systemctl daemon-reload
+systemctl enable hib-sshd.socket hib-websocat.service
+
+# Check sshd's config now rather than at the first login.
+install -d -m 755 /run/sshd
+key=$(mktemp -d)
+ssh-keygen -q -t ed25519 -N '' -f "$key/k"
+sshd -t -f /etc/hibernaut/sshd_config -h "$key/k"
+rm -rf "$key"

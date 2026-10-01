@@ -111,6 +111,15 @@ func reboot(t *testing.T, ctx context.Context) {
 // nightlyDeallocate runs the nightly unit, which deallocates the VM, then starts the VM without
 // deploying or starting anything else.
 func nightlyDeallocate(t *testing.T, ctx context.Context) {
+	deallocate(t, ctx)
+	if out, err := vm.azure(ctx, "start.sh"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// deallocate runs the nightly unit, which pauses the machines and deallocates the VM, and waits
+// until the VM is asleep. It leaves the VM deallocated.
+func deallocate(t *testing.T, ctx context.Context) {
 	mustSSH(t, ctx, "sudo systemctl start --no-block hibernaut-nightly.service")
 	waitFor(t, ctx, "the VM to deallocate itself", 10*time.Minute, func() bool {
 		if state, err := vm.azure(ctx, "state.sh"); err == nil && state == "VM deallocated" {
@@ -122,7 +131,38 @@ func nightlyDeallocate(t *testing.T, ctx context.Context) {
 		}
 		return false
 	})
-	if out, err := vm.azure(ctx, "start.sh"); err != nil {
-		t.Fatalf("%v\n%s", err, out)
+}
+
+// TestWakeOnSSH is the M1 headline: once the VM has deallocated itself, ssh NAME.hib wakes it
+// through hib's bridge and connects, resuming the machine with its files intact.
+func TestWakeOnSSH(t *testing.T) {
+	if os.Getenv("HIB_E2E_SLOW") == "" {
+		t.Skip("deallocates the VM; run make e2e-slow")
+	}
+	ctx := testContext(t, 25*time.Minute)
+	if vm.engine == nil {
+		if err := vm.openTunnel(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := newHibMachine(t, ctx)
+	sshMachine(t, ctx, name, "echo woke > marker")
+
+	// Deallocate the VM, as the idle timer does, and leave it asleep. The harness tunnel goes
+	// with it; hib's bridge reaches the host over its public IP, so it still works.
+	vm.closeTunnel()
+	deallocate(t, ctx)
+
+	// A plain ssh wakes the host through hib and connects; the machine resumes with its marker.
+	start := time.Now()
+	got := sshMachine(t, ctx, name, "cat marker")
+	t.Logf("ssh woke the VM and connected in %v", time.Since(start).Round(time.Second))
+	if strings.TrimSpace(got) != "woke" {
+		t.Errorf("marker after waking = %q, want %q", got, "woke")
+	}
+
+	// Reopen the tunnel so the machine's cleanup can reach the engine.
+	if err := vm.openTunnel(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

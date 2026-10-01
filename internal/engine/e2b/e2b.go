@@ -1,8 +1,10 @@
 // Package e2b implements engine.Engine on a self-hosted E2B (spec D4).
 //
-// Machine lifecycle calls go to E2B's REST API. Exec goes to envd, the agent inside each
-// machine, through E2B's client-proxy: requests to a local or IP host are routed by the
-// E2b-Sandbox-Id and E2b-Sandbox-Port headers, and envd checks X-Access-Token.
+// Machine lifecycle and template calls go to E2B's REST API. Exec goes to envd, the agent
+// inside each machine, and DialWebSocket to any port, both through E2B's client-proxy:
+// requests to a local or IP host are routed by the E2b-Sandbox-Id and E2b-Sandbox-Port headers.
+// envd checks X-Access-Token. Other ports check e2b-traffic-access-token, because machines are
+// created with public traffic off.
 package e2b
 
 import (
@@ -10,14 +12,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/websocket"
 
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b/e2bapi"
@@ -25,8 +31,16 @@ import (
 	"github.com/solev/hibernaut/internal/engine/e2b/envdpb/process/processconnect"
 )
 
-// envdPort is where envd listens inside every machine.
-const envdPort = 49983
+const (
+	// envdPort is where envd listens inside every machine.
+	envdPort = 49983
+	// wsChunk caps the WebSocket messages a dialed connection writes: websocat, the guest end,
+	// drops messages over 64 KiB by default.
+	wsChunk = 32 << 10
+)
+
+// BuildPollInterval is how often BuildTemplate asks E2B how a build is going.
+var BuildPollInterval = time.Second
 
 // Config says where E2B is.
 type Config struct {
@@ -42,8 +56,11 @@ type Config struct {
 
 // Engine talks to one E2B installation.
 type Engine struct {
-	api  *e2bapi.ClientWithResponses
-	envd processconnect.ProcessClient
+	api        *e2bapi.ClientWithResponses
+	envd       processconnect.ProcessClient
+	hc         *http.Client
+	guestHC    *http.Client
+	sandboxURL string
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -67,7 +84,22 @@ func New(cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{api: api, envd: processconnect.NewProcessClient(hc, cfg.SandboxURL)}, nil
+	// guestHC shares hc's transport but refuses redirects. The far end of these calls — a
+	// machine's envd and its port 8081 — is attacker-controlled, so a redirect it returns must
+	// not become a host-side request to an address of the machine's choosing (SSRF past the
+	// orchestrator's IPAddressDeny), nor leak the call's headers to a redirect target.
+	// ErrUseLastResponse stops the client at the machine's own 3xx response instead of following
+	// it; the caller then fails on the non-success status. The REST API client keeps hc: its far
+	// end is E2B's trusted control plane, not a guest listener.
+	guestHC := *hc
+	guestHC.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Engine{
+		api:        api,
+		envd:       processconnect.NewProcessClient(&guestHC, cfg.SandboxURL),
+		hc:         hc,
+		guestHC:    &guestHC,
+		sandboxURL: cfg.SandboxURL,
+	}, nil
 }
 
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
@@ -75,6 +107,8 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		TemplateID: opts.Template,
 		// A machine whose timeout runs out pauses, memory included, instead of being deleted.
 		AutoPause: ptr(true),
+		// Every port but envd's then needs the machine's traffic access token.
+		Network: &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
 	}
 	if opts.Timeout > 0 {
 		body.Timeout = ptr(seconds(opts.Timeout))
@@ -90,6 +124,9 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 	resp, err := e.api.PostV2SandboxesWithResponse(ctx, body)
 	if err != nil {
 		return engine.Machine{}, fmt.Errorf("create: %w", err)
+	}
+	if resp.StatusCode() == http.StatusNotFound {
+		return engine.Machine{}, fmt.Errorf("create from %s: %w", opts.Template, engine.ErrNoTemplate)
 	}
 	if resp.JSON201 == nil {
 		return engine.Machine{}, apiError("create", opts.Template, resp.StatusCode(), resp.Body)
@@ -184,19 +221,31 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 }
 
 func (e *Engine) Resume(ctx context.Context, id string, timeout time.Duration) (engine.Machine, error) {
+	if _, err := e.connect(ctx, id, timeout); err != nil {
+		return engine.Machine{}, err
+	}
+	return e.Get(ctx, id)
+}
+
+// connect resumes a paused machine, or extends a running one's timeout, and returns E2B's
+// answer. E2B waits out a pause in progress, then resumes.
+func (e *Engine) connect(ctx context.Context, id string, timeout time.Duration) (*e2bapi.Sandbox, error) {
 	var body e2bapi.ConnectSandboxV2
 	if timeout > 0 {
 		body.Timeout = ptr(seconds(timeout))
 	}
 	resp, err := e.api.PostV2SandboxesSandboxIDConnectWithResponse(ctx, id, body)
 	if err != nil {
-		return engine.Machine{}, fmt.Errorf("resume %s: %w", id, err)
+		return nil, fmt.Errorf("resume %s: %w", id, err)
 	}
 	// 200: it was running and its timeout was extended. 201: it was resumed.
-	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusCreated {
-		return engine.Machine{}, apiError("resume", id, resp.StatusCode(), resp.Body)
+	switch {
+	case resp.JSON200 != nil:
+		return resp.JSON200, nil
+	case resp.JSON201 != nil:
+		return resp.JSON201, nil
 	}
-	return e.Get(ctx, id)
+	return nil, apiError("resume", id, resp.StatusCode(), resp.Body)
 }
 
 func (e *Engine) Kill(ctx context.Context, id string) error {
@@ -272,6 +321,12 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 	r.Header().Set("E2b-Sandbox-Id", id)
 	r.Header().Set("E2b-Sandbox-Port", strconv.Itoa(envdPort))
 	r.Header().Set("X-Access-Token", *d.EnvdAccessToken)
+	if req.User != "" {
+		// envd takes the user to run as from the Basic auth username; the password is unused.
+		basic := http.Request{Header: http.Header{}}
+		basic.SetBasicAuth(req.User, "")
+		r.Header().Set("Authorization", basic.Header.Get("Authorization"))
+	}
 
 	stream, err := e.envd.Start(ctx, r)
 	if err != nil {
@@ -286,6 +341,9 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 		case *process.ProcessEvent_Data:
 			res.Stdout = append(res.Stdout, ev.Data.GetStdout()...)
 			res.Stderr = append(res.Stderr, ev.Data.GetStderr()...)
+			if len(res.Stdout) > engine.MaxExecOutput || len(res.Stderr) > engine.MaxExecOutput {
+				return engine.ExecResult{}, fmt.Errorf("exec %s: %s wrote more than %d bytes", id, req.Cmd, engine.MaxExecOutput)
+			}
 		case *process.ProcessEvent_End:
 			res.ExitCode = int(ev.End.GetExitCode())
 			ended = true
@@ -298,6 +356,150 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 		return engine.ExecResult{}, fmt.Errorf("exec %s: stream closed before the command exited", id)
 	}
 	return res, nil
+}
+
+func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
+	sbx, err := e.connect(ctx, id, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	h := http.Header{}
+	h.Set("E2b-Sandbox-Id", id)
+	h.Set("E2b-Sandbox-Port", strconv.Itoa(port))
+	// No token means the machine takes public traffic.
+	if sbx.TrafficAccessToken != nil {
+		h.Set("E2b-Traffic-Access-Token", *sbx.TrafficAccessToken)
+	}
+	c, resp, err := websocket.Dial(ctx, e.sandboxURL, &websocket.DialOptions{HTTPClient: e.guestHC, HTTPHeader: h})
+	if err != nil {
+		if resp != nil {
+			return nil, fmt.Errorf("dial %s port %d: E2B answered %s: %w", id, port, resp.Status, err)
+		}
+		return nil, fmt.Errorf("dial %s port %d: %w", id, port, err)
+	}
+	return chunkedConn{websocket.NetConn(context.Background(), c, websocket.MessageBinary)}, nil
+}
+
+// chunkedConn writes at most wsChunk bytes per WebSocket message.
+type chunkedConn struct{ net.Conn }
+
+func (c chunkedConn) Write(p []byte) (int, error) {
+	n := 0
+	for len(p) > 0 {
+		k := min(len(p), wsChunk)
+		w, err := c.Conn.Write(p[:k])
+		n += w
+		if err != nil {
+			return n, err
+		}
+		p = p[k:]
+	}
+	return n, nil
+}
+
+func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs io.Writer) (string, error) {
+	if spec.Name == "" || spec.FromImage == "" {
+		return "", errors.New("build template: Name and FromImage are required")
+	}
+	if logs == nil {
+		logs = io.Discard
+	}
+	req := e2bapi.TemplateBuildRequestV3{Name: &spec.Name}
+	if spec.CPUs > 0 {
+		req.CpuCount = ptr(int32(spec.CPUs))
+	}
+	if spec.MemoryMB > 0 {
+		req.MemoryMB = ptr(int32(spec.MemoryMB))
+	}
+	if spec.MinFreeDiskMB > 0 {
+		req.MinFreeDiskMb = ptr(int32(spec.MinFreeDiskMB))
+	}
+	resp, err := e.api.PostV3TemplatesWithResponse(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("build template %s: %w", spec.Name, err)
+	}
+	if resp.JSON202 == nil {
+		return "", apiError("build template", spec.Name, resp.StatusCode(), resp.Body)
+	}
+	templateID, buildID := resp.JSON202.TemplateID, resp.JSON202.BuildID
+
+	steps := make([]e2bapi.TemplateStep, len(spec.Steps))
+	for i, s := range spec.Steps {
+		// E2B runs RUN steps as [command, user], the user defaulting to the template's.
+		args := []string{s.Cmd}
+		if s.User != "" {
+			args = append(args, s.User)
+		}
+		steps[i] = e2bapi.TemplateStep{Type: "RUN", Args: &args}
+	}
+	start := e2bapi.TemplateBuildStartV2{FromImage: &spec.FromImage, Steps: &steps, Force: ptr(spec.Force)}
+	if spec.StartCmd != "" {
+		start.StartCmd = &spec.StartCmd
+	}
+	if spec.ReadyCmd != "" {
+		start.ReadyCmd = &spec.ReadyCmd
+	}
+	sresp, err := e.api.PostV2TemplatesTemplateIDBuildsBuildIDWithResponse(ctx, templateID, buildID, start)
+	if err != nil {
+		return "", fmt.Errorf("build template %s: %w", spec.Name, err)
+	}
+	if sresp.StatusCode() != http.StatusAccepted {
+		return "", apiError("build template", spec.Name, sresp.StatusCode(), sresp.Body)
+	}
+
+	var offset int32
+	for {
+		st, err := e.api.GetTemplatesTemplateIDBuildsBuildIDStatusWithResponse(ctx, templateID, buildID,
+			&e2bapi.GetTemplatesTemplateIDBuildsBuildIDStatusParams{LogsOffset: &offset})
+		if err != nil {
+			return "", fmt.Errorf("build template %s: %w", spec.Name, err)
+		}
+		if st.JSON200 == nil {
+			return "", apiError("build template", spec.Name, st.StatusCode(), st.Body)
+		}
+		info := st.JSON200
+		for _, l := range info.LogEntries {
+			fmt.Fprintln(logs, elide(l.Message))
+		}
+		offset += int32(len(info.LogEntries))
+		done := info.Status == e2bapi.TemplateBuildStatusReady || info.Status == e2bapi.TemplateBuildStatusError
+		// A finished build can still have logs past this page.
+		if done && len(info.LogEntries) == 0 {
+			if info.Status == e2bapi.TemplateBuildStatusReady {
+				return templateID, nil
+			}
+			return "", buildError(spec.Name, info.Reason)
+		}
+		if done {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("build template %s: %w", spec.Name, ctx.Err())
+		case <-time.After(BuildPollInterval):
+		}
+	}
+}
+
+func buildError(name string, r *e2bapi.BuildStatusReason) error {
+	if r == nil {
+		return fmt.Errorf("build template %s failed", name)
+	}
+	if r.Step != nil {
+		return fmt.Errorf("build template %s failed at step %s: %s", name, *r.Step, elide(r.Message))
+	}
+	return fmt.Errorf("build template %s failed: %s", name, elide(r.Message))
+}
+
+// elide shortens s to its start and end. E2B quotes a step's whole command in logs and errors,
+// and a step that writes files is mostly their contents.
+func elide(s string) string {
+	const keep = 300
+	if len(s) <= 3*keep {
+		return s
+	}
+	return fmt.Sprintf("%s … (%d bytes) … %s", strings.ToValidUTF8(s[:keep], ""), len(s)-2*keep,
+		strings.ToValidUTF8(s[len(s)-keep:], ""))
 }
 
 // running returns the machine's details if it's running, and ErrNotRunning if it's paused.

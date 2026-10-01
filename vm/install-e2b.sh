@@ -63,12 +63,16 @@ fi
 log "Google Cloud CLI (gsutil, for E2B's public artifact bucket)"
 command -v gsutil >/dev/null || sudo snap install google-cloud-cli --classic >/dev/null
 
-log "Kernel prep: nbd module and 2048 huge pages, persisted across reboots"
+# Firecracker keeps a running machine's memory in 2 MiB huge pages, and E2B holds about 75 of them
+# itself: 3200 (6.25 GiB) runs three 2 GiB dev machines at once. Paused machines need none.
+log "Kernel prep: nbd module and 3200 huge pages, persisted across reboots"
 echo nbd | sudo tee /etc/modules-load.d/nbd.conf >/dev/null
 echo "options nbd nbds_max=64" | sudo tee /etc/modprobe.d/nbd.conf >/dev/null
-echo "vm.nr_hugepages=2048" | sudo tee /etc/sysctl.d/99-hugepages.conf >/dev/null
+echo "vm.nr_hugepages=3200" | sudo tee /etc/sysctl.d/99-hugepages.conf >/dev/null
 sudo modprobe nbd nbds_max=64
-sudo sysctl -q -w vm.nr_hugepages=2048
+sudo sysctl -q -w vm.nr_hugepages=3200
+hugepages=$(cat /proc/sys/vm/nr_hugepages)
+((hugepages >= 3200)) || echo "    only $hugepages huge pages until the next boot: memory is too fragmented now" >&2
 
 log "e2b-dev/infra at $E2B_INFRA_REF"
 [[ -d "$E2B_INFRA_DIR/.git" ]] || git clone -q https://github.com/e2b-dev/infra.git "$E2B_INFRA_DIR"
@@ -113,6 +117,7 @@ for unit in "${E2B_UNITS[@]}"; do
     sudo tee "/etc/systemd/system/$unit.service" >/dev/null
 done
 sudo install -D -m 644 "$here/e2b/e2b-orchestrator.env" /etc/hibernaut/e2b-orchestrator.env
+sudo install -D -m 644 "$here/e2b/sandbox-firewall.nft" /etc/hibernaut/sandbox-firewall.nft
 sudo install -D -m 755 "$here/lib/e2b-infra-ready" /usr/local/lib/hibernaut/e2b-infra-ready
 sudo systemctl daemon-reload
 sudo systemctl enable -q "${E2B_UNITS[@]}"
@@ -128,6 +133,16 @@ for attempt in 1 2 3 4 5; do
   sleep 10
 done
 run_logged make -C packages/local-dev seed-database
+
+log "Bigger machines than the base tier's defaults: 30-day runs and 10 GiB of disk"
+# E2B pauses a sandbox max_length_hours after it starts or resumes, even while hibd renews its
+# timeout for a connected ssh session. disk_mb is the rootfs the template build runs in and the
+# machine then boots with; the base tier's 512 MiB can't even install the dev image's packages,
+# and upstream's post-build free-disk growth is behind a feature flag that's off here.
+read -r hours disk < <(sudo docker compose -f packages/local-dev/docker-compose.yaml exec -T postgres \
+  psql -qAt -F' ' -v ON_ERROR_STOP=1 -U postgres -d postgres \
+  -c "UPDATE tiers SET max_length_hours = 720, disk_mb = 10240 WHERE id = 'base_v1' RETURNING max_length_hours, disk_mb")
+[[ "$hours" == 720 && "$disk" == 10240 ]] || { echo "Couldn't raise the base tier's limits (got hours='$hours' disk='$disk')" >&2; exit 1; }
 
 log "Starting E2B"
 sudo systemctl start e2b-api e2b-orchestrator e2b-client-proxy

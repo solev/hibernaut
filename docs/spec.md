@@ -265,7 +265,7 @@ come later.
 | uses a credential against the real site (e.g. deletes a repo, or spends your AI quota) | **not prevented in v1.** It shows in the audit log. Mitigation: narrower tokens (fine-grained, GitHub App). |
 | triggers a token refresh or exchange | the proxy handles it on the host (§4.2 Token endpoints). New real tokens never reach the machine. |
 | gets hold of a golden image | it only contains placeholders (multi-user will need a per-machine identity check) |
-| connects to the host's own services (E2B API, databases, `hibd`) or Azure's metadata endpoint | blocked by E2B: each machine's firewall drops traffic to private, loopback and link-local addresses, including `169.254.169.254`. Still reachable: E2B's internal service address (`192.0.2.1`) and the host's public IP, where the NSG allows only key-based SSH. `hibd` listens on localhost, apart from the interception port, which accepts only machine interfaces. Live check in M3 (S8). |
+| connects to the host's own services (E2B API, databases, `hibd`) or Azure's metadata endpoint | blocked: E2B's firewall drops traffic to private, loopback and link-local addresses, including `169.254.169.254`. Azure's WireServer (`168.63.129.16`) is a public address E2B doesn't block, so the orchestrator runs with `IPAddressDeny` for it and an nft rule drops it on the sandbox veth. Still reachable: E2B's internal service address (`192.0.2.1`) and the host's public IP, where the NSG allows only key-based SSH. `hibd` listens on localhost, apart from the interception port, which accepts only machine interfaces. Verified in M1 (`TestMachineNetwork`); live egress-proxy check in M3 (S8). |
 
 **Host compromise** exposes the vault. Later mitigation: keep the vault key in Azure Key Vault,
 accessed through the VM's managed identity.
@@ -334,10 +334,11 @@ ssh app.hib ─▶ ProxyCommand: hib bridge app ─▶ ssh host "hibd bridge app
   ingress, and have `hibd` send each machine's `trafficAccessToken`.
 - `hib exec app -- cmd` is `ssh app.hib -- cmd`. Interactive sessions and exec then get the same
   user, environment and wake-up path.
-- The machine user is `user`, with passwordless sudo. Your public key is baked into your images
-  (single user). Later it's written at create time.
-- **Host keys:** in v1 all machines from one image share its host key, which `hib` pins in its own
-  `known_hosts`. Later, SSH host certificates.
+- The machine user is `user`, with passwordless sudo. Your public key is written into the machine
+  at create time (single user).
+- **Host keys:** each machine makes its own SSH host key at create time; `hibd` pins it and `hib`
+  verifies against that pin in its own `known_hosts` (`StrictHostKeyChecking yes`). Later, SSH host
+  certificates.
 
 ### Images and fork
 
@@ -345,12 +346,12 @@ All three are native E2B operations. Hibernaut only wraps them.
 
 | Command | E2B call | Result |
 | --- | --- | --- |
-| `hib image build dev` | template build from `images/dev/Dockerfile` | The base image all machines start from |
+| `hib image build dev` | template build from the `images/dev/` files (`images/images.go`) | The base image all machines start from |
 | `hib image save app rocket` | `POST /sandboxes/{id}/snapshots` `{name: "rocket"}` | An image with memory, so processes keep running; it outlives `app` |
 | `hib fork app --count 3` | `POST /sandboxes/{id}/fork` | `app` pauses for a moment and keeps running; 3 new machines in the same state |
 
 Copies carry everything in the machine. That's fine, because a machine holds only placeholders and
-your public key. They also share the SSH host key (see SSH path).
+your public key. A fork carries the origin's SSH host key until it's re-keyed (see SSH path).
 
 ## 6. Decisions
 

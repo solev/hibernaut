@@ -1,0 +1,7 @@
+#!/bin/bash
+# The dev template's ready command: exits 0 once the start command is done and the SSH bridge
+# takes connections.
+set -euo pipefail
+test -e /run/hibernaut/started
+test -S /run/hibernaut/sshd.sock
+timeout 2 bash -c '</dev/tcp/127.0.0.1/8081'
