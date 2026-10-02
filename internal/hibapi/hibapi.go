@@ -37,9 +37,10 @@ func CheckName(name string) error {
 
 // Machine is a machine as hibd reports it. Name is empty for machines hibd didn't create.
 type Machine struct {
-	Name      string    `json:"name,omitempty"`
-	ID        string    `json:"id"`
-	Image     string    `json:"image,omitempty"`
+	Name  string `json:"name,omitempty"`
+	ID    string `json:"id"`
+	Image string `json:"image,omitempty"`
+	// State is "running" or "paused".
 	State     string    `json:"state"`
 	StartedAt time.Time `json:"startedAt"`
 	// EndAt is when a running machine pauses, unless something keeps it awake.

@@ -231,6 +231,7 @@ func newClient(t *testing.T, h *host) *client {
 		az:         h.az,
 		executable: func() (string, error) { return testHib, nil },
 		wakePoll:   time.Millisecond,
+		now:        time.Now,
 	}
 	c.sshConfig = filepath.Join(env["HOME"], ".ssh", "config")
 	return c
@@ -321,6 +322,100 @@ func TestMachineCommands(t *testing.T) {
 	}
 	if code := c.hib("rm", "web"); code != 1 || !strings.Contains(c.errOut.String(), `hib: no machine called "web"`) {
 		t.Errorf("rm again: exit %d, stderr %q", code, c.errOut)
+	}
+}
+
+func TestNewIdle(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	for _, args := range [][]string{{"new", "web", "--idle", "90m"}, {"new", "-idle", "0", "forever"}} {
+		if code := c.hib(args...); code != 0 {
+			t.Fatalf("hib %q: exit %d: %s", args, code, c.errOut)
+		}
+	}
+	if got, want := remoteCommands(h.takeCalls()), []string{
+		"hibd new web --image dev --idle 1h30m0s --json",
+		"hibd new forever --image dev --idle 0s --json",
+	}; !slices.Equal(got, want) {
+		t.Errorf("remote commands = %q, want %q", got, want)
+	}
+	for name, want := range map[string]string{"web": "1h30m0s", "forever": "0s"} {
+		if m, _ := h.engine.Get(t.Context(), machineID(t, h, name)); m.Metadata["hib.idle"] != want {
+			t.Errorf("%s has idle time %q, want %q", name, m.Metadata["hib.idle"], want)
+		}
+	}
+
+	// hibd decides which idle times are good, so an older hibd can still answer.
+	if code := c.hib("new", "quick", "--idle", "30s"); code != 1 || !strings.Contains(c.errOut.String(), "bad idle time 30s") {
+		t.Errorf("new --idle 30s: exit %d, stderr %q", code, c.errOut)
+	}
+	if code := c.hib("new", "x", "--idle", "soon"); code != 2 {
+		t.Errorf("new --idle soon: exit %d, want 2", code)
+	}
+	if got, want := remoteCommands(h.takeCalls()), []string{"hibd new quick --image dev --idle 30s --json"}; !slices.Equal(got, want) {
+		t.Errorf("remote commands = %q, want %q", got, want)
+	}
+}
+
+func TestLsShowsWhenMachinesPause(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return now }
+	for _, m := range []struct {
+		name  string
+		state engine.State
+		idle  string // "" for a machine made before hibd kept idle times
+		left  time.Duration
+	}{
+		{"tick", engine.Running, "1m0s", 45*time.Second + 600*time.Millisecond},
+		{"soon", engine.Running, "15m0s", 12*time.Minute + 30*time.Second},
+		{"long", engine.Running, "2h0m0s", time.Hour + 5*time.Minute + 59*time.Second},
+		{"late", engine.Running, "15m0s", -time.Second},
+		{"never", engine.Running, "0s", 720 * time.Hour},
+		{"nap", engine.Paused, "15m0s", -time.Hour},
+		{"old", engine.Running, "", 5 * time.Minute},
+	} {
+		md := map[string]string{"hib.name": m.name, "hib.image": "dev"}
+		if m.idle != "" {
+			md["hib.idle"] = m.idle
+		}
+		h.engine.Add(engine.Machine{ID: fake.NewID(), State: m.state, StartedAt: now.Add(-time.Hour), EndAt: now.Add(m.left), Metadata: md})
+	}
+	// A machine hibd didn't make.
+	h.engine.Add(engine.Machine{ID: fake.NewID(), State: engine.Running, StartedAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour)})
+
+	if code := c.hib("ls"); code != 0 {
+		t.Fatalf("ls exit %d: %s", code, c.errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(c.out.String()), "\n")
+	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "IDLE", "PAUSES", "IN", "STARTED", "ID"}; !slices.Equal(got, want) {
+		t.Errorf("ls header = %q, want %q", got, want)
+	}
+	want := map[string][2]string{ // name: IDLE, PAUSES IN
+		"tick":  {"1m", "45s"},
+		"soon":  {"15m", "12m"},
+		"long":  {"2h", "1h05m"},
+		"late":  {"15m", "now"},
+		"never": {"never", "never"},
+		"nap":   {"15m", "-"},
+		"old":   {"15m", "5m"},
+		"-":     {"-", "-"},
+	}
+	for _, line := range lines[1:] {
+		f := strings.Fields(line)
+		w, ok := want[f[0]]
+		if !ok || len(f) != 8 {
+			t.Errorf("unexpected ls line %q", line)
+			continue
+		}
+		if f[3] != w[0] || f[4] != w[1] {
+			t.Errorf("%s: IDLE %q, PAUSES IN %q; want %q, %q", f[0], f[3], f[4], w[0], w[1])
+		}
+		delete(want, f[0])
+	}
+	if len(want) != 0 {
+		t.Errorf("ls is missing %v:\n%s", want, c.out)
 	}
 }
 

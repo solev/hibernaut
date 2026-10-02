@@ -28,8 +28,8 @@ const usage = `usage: hib [-config DIR] <command> [flags]
 
 commands:
   init              set this laptop up (-host USER@HOST; see hib init -h)
-  new NAME          make a machine (-image, default ` + images.Default + `); then: ssh NAME.hib
-  ls                list machines
+  new NAME          make a machine (-image, default ` + images.Default + `; -idle, default 15m); then: ssh NAME.hib
+  ls                list machines, and when each pauses unless it's busy
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
   exec NAME -- CMD  run CMD on a machine, as ssh NAME.hib -- CMD does
@@ -59,6 +59,7 @@ func main() {
 		az:         runAz,
 		executable: os.Executable,
 		wakePoll:   5 * time.Second,
+		now:        time.Now,
 	}
 	os.Exit(a.run(ctx, os.Args[1:]))
 }
@@ -77,6 +78,7 @@ type app struct {
 	az         func(ctx context.Context, args ...string) ([]byte, error)
 	executable func() (string, error)
 	wakePoll   time.Duration
+	now        func() time.Time
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
@@ -137,11 +139,19 @@ func (a *app) run(ctx context.Context, args []string) int {
 func (a *app) newMachine(ctx context.Context, cfg *config, args []string) int {
 	fl := a.flags("new")
 	image := fl.String("image", images.Default, "the image to make the machine from")
-	names, ok := a.parse(fl, args, 1, "new NAME [-image IMAGE]")
+	idle := fl.Duration("idle", 0, "pause the machine once it has been idle this long, e.g. 1h (default 15m; 0 means never)")
+	names, ok := a.parse(fl, args, 1, "new NAME [-image IMAGE] [-idle 15m]")
 	if !ok || !a.checkNames(names[0], *image) {
 		return 2
 	}
-	r, err := a.remote(ctx, cfg, newTimeout, "new", names[0], "--image", *image, "--json")
+	words := []string{"new", names[0], "--image", *image}
+	// hibd has the default and checks the idle time, so only pass one that was asked for.
+	fl.Visit(func(f *flag.Flag) {
+		if f.Name == "idle" {
+			words = append(words, "--idle", idle.String())
+		}
+	})
+	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -163,14 +173,37 @@ func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
 	slices.SortFunc(r.Machines, func(x, y hibapi.Machine) int {
 		return strings.Compare(x.Name+"\x00"+x.ID, y.Name+"\x00"+y.ID)
 	})
+	now := a.now()
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSTARTED\tID")
+	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tIDLE\tPAUSES IN\tSTARTED\tID")
 	for _, m := range r.Machines {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image),
-			m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image),
+			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID))
 	}
 	tw.Flush()
 	return 0
+}
+
+// pausesIn says how long until machine m pauses itself, as of now, unless it's busy: "12m",
+// "1h05m", "45s", "now", or "never". It's "-" for a machine that's paused or that hibd didn't
+// make.
+func pausesIn(m hibapi.Machine, now time.Time) string {
+	switch {
+	case m.State != "running" || m.IdleSeconds == nil:
+		return "-"
+	case *m.IdleSeconds == 0:
+		return "never"
+	}
+	left := m.EndAt.Sub(now)
+	switch {
+	case left <= 0:
+		return "now"
+	case left < time.Minute:
+		return fmt.Sprintf("%ds", int(left/time.Second))
+	case left < time.Hour:
+		return fmt.Sprintf("%dm", int(left/time.Minute))
+	}
+	return fmt.Sprintf("%dh%02dm", int(left/time.Hour), int(left%time.Hour/time.Minute))
 }
 
 // safe makes text from hibd safe to print, and shows empty text as "-".

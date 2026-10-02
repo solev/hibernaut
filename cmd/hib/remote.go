@@ -36,7 +36,8 @@ func (c *config) sshArgs(args ...string) []string {
 	if c.Identity != "" {
 		out = append(out, "-i", c.Identity, "-o", "IdentitiesOnly=yes")
 	}
-	// The host's shell splits the command on spaces. Every arg is a checked name or a flag.
+	// The host's shell splits the command on spaces. Every arg is a checked name, a flag, or a
+	// time.Duration's String, which has only digits, letters, '.' and '-'.
 	return append(append(out, "--", c.Host, "hibd"), args...)
 }
 
