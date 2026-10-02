@@ -128,7 +128,19 @@ func (a *app) init(ctx context.Context, dir string, args []string) int {
 	group := fl.String("azure-group", "", "the host VM's Azure resource group, so hib can start it")
 	vm := fl.String("azure-vm", "", "the host's Azure VM name")
 	sshConfig := fl.String("ssh-config", "", "ssh config to include hib's settings in (default ~/.ssh/config)")
-	if _, ok := a.parse(fl, args, 0, "init -host USER@HOST [-identity FILE] [-azure-group GROUP -azure-vm VM] [-ssh-config FILE]"); !ok {
+	const use = "init -host USER@HOST [-identity FILE] [-azure-group GROUP -azure-vm VM] [-ssh-config FILE]"
+	if _, ok := a.parse(fl, args, 0, use); !ok {
+		return 2
+	}
+	if *host == "" {
+		if saved, err := loadConfig(dir); err == nil {
+			fmt.Fprintf(a.stderr, "hib init: this laptop is already set up for %s\n", saved.Host)
+			fmt.Fprintln(a.stderr, "next: hib new NAME; ssh NAME.hib")
+			fmt.Fprintf(a.stderr, "to set it up again: hib %s\n", use)
+		} else {
+			fmt.Fprintln(a.stderr, "hib init: missing -host USER@HOST")
+			fmt.Fprintf(a.stderr, "usage: hib %s\n", use)
+		}
 		return 2
 	}
 	cfg := &config{Host: *host, dir: dir, prompt: true}

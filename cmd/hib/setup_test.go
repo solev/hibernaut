@@ -173,6 +173,32 @@ func TestInitRejects(t *testing.T) {
 	}
 }
 
+// TestInitWithoutHost checks that init without -host names the missing flag, and on a laptop
+// that's set up says for which host, instead of rejecting an empty host.
+func TestInitWithoutHost(t *testing.T) {
+	h := newHost(t)
+	c := newClient(t, h)
+	if code := c.hib("init"); code != 2 || !strings.Contains(c.errOut.String(), "missing -host USER@HOST") {
+		t.Errorf("init without -host: exit %d, stderr %q; want 2 and the missing flag", code, c.errOut)
+	}
+
+	if code := c.hib("init", "-host", testHost); code != 0 {
+		t.Fatalf("init exit %d: %s", code, c.errOut)
+	}
+	h.takeCalls()
+	code := c.hib("init")
+	if stderr := c.errOut.String(); code != 2 || !strings.Contains(stderr, "already set up for "+testHost) ||
+		!strings.Contains(stderr, "hib new NAME") {
+		t.Errorf("init without -host once set up: exit %d, stderr %q; want 2, the saved host and what's next", code, stderr)
+	}
+	if calls := h.takeCalls(); len(calls) != 0 {
+		t.Errorf("init without -host ran ssh: %q", calls)
+	}
+	if cfg, err := loadConfig(c.dir); err != nil || cfg.Host != testHost {
+		t.Errorf("init without -host changed the settings: %+v, %v", cfg, err)
+	}
+}
+
 func TestInitFailsWhenHibdDoesnt(t *testing.T) {
 	h := newHost(t)
 	h.override = func([]string, io.Writer, io.Writer) (int, bool) { return 127, true }
