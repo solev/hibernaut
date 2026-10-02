@@ -16,6 +16,9 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 | M5 | [AI tools](m5-ai-tools.md) | not started | `TestCodex`, `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | not started | `TestImageAndFork`, `TestImageLeakScan` |
 | M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
+| M8 | [Machine sizes](m8-machine-sizes.md) | not started | `TestSizes` |
+
+M8 came last but needs only M2, so it can be pulled forward any time after M2.
 
 ## How we track
 

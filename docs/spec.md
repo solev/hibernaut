@@ -347,6 +347,23 @@ Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2
   a chain of diffs), and anything under an hour old. It runs after `hib rm` and once a day.
 - `hib ls` shows the room left.
 
+### Sizes
+
+Planned for M8.
+
+- A machine's size is picked at `hib new` (`--size small|medium|large`, default `medium`) and
+  kept for life. E2B fixes CPU and RAM per image build, because a machine's memory snapshot is
+  that size, so each size of an image is its own E2B template (`hib-dev`, `hib-dev-small`, …).
+
+  | Size | vCPU | RAM | At once on today's host |
+  | --- | --- | --- | --- |
+  | `small` | 1 | 1 GiB | 6 |
+  | `medium` (default) | 2 | 2 GiB | 3 |
+  | `large` | 4 | 4 GiB | 1, plus a small or medium one |
+
+- Sizes can mix: they share the huge-page pool (Room on the host). Disk is 10 GiB for every size.
+- Saved images and forks (Images and fork) keep the size of the machine they came from.
+
 ### SSH path
 
 ```
@@ -411,6 +428,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | M5 | **AI tools:** Codex on the ChatGPT plan, GitHub Copilot CLI | `codex` and `copilot` answer a one-line prompt with no login. The leak scan finds nothing. |
 | M6 | **Golden images and fork** | A machine started from a saved image has its repo, dependencies and running app in place; fork ×3 |
 | M7 | **GitHub device flow** (own OAuth App) | Approve once in the browser, then the M4 test passes on the new token |
+| M8 | **Machine sizes** (`hib new --size small`) | A small machine has 1 vCPU and 1 GiB; one made without `--size` still has 2 and 2 GiB |
 
 Repo layout:
 
