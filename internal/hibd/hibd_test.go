@@ -523,6 +523,36 @@ func TestHostFullAfterTheCheck(t *testing.T) {
 	wantUntouched(t, e)
 }
 
+// timingOut is an engine whose machine id pauses on its timeout just after hibd lists it.
+type timingOut struct {
+	*fake.Engine
+	id string
+}
+
+func (e timingOut) List(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
+	ms, err := e.Engine.List(ctx, opts)
+	e.Engine.Pause(ctx, e.id)
+	return ms, err
+}
+
+func TestHostFullAsAMachinePauses(t *testing.T) {
+	e, a, _, errOut := webAndOld(t)
+	web := mustID(t, e, "web")
+	if err := e.SetTimeout(t.Context(), web, 0); err != nil {
+		t.Fatal(err)
+	}
+	a.NewEngine = func() (engine.Engine, error) { return timingOut{e, web}, nil }
+	a.ReadRoom = func() (room.Host, error) { return full, nil }
+
+	code := a.Run(t.Context(), []string{"bridge", "web"})
+	if code != 1 || !strings.Contains(errOut.String(), `no room on the host for "web"`) {
+		t.Errorf("bridge web = exit %d, %q; want the message for a full host", code, errOut)
+	}
+	if m, _ := e.Get(t.Context(), web); m.State != engine.Paused {
+		t.Errorf("web is %s, want it paused", m.State)
+	}
+}
+
 // readings returns a reader that returns hs in turn, and then the last one again and again.
 func readings(hs ...room.Host) func() (room.Host, error) {
 	return func() (room.Host, error) {
@@ -725,6 +755,55 @@ func (b *syncBuffer) String() string {
 	return b.b.String()
 }
 
+// startDaemon runs a's daemon, looking every 10ms, until stop is called or the test ends.
+func startDaemon(t *testing.T, a *App) (logs *syncBuffer, stop func()) {
+	t.Helper()
+	logs = &syncBuffer{}
+	a.Stderr = logs
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan int, 1)
+	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Errorf("daemon exit %d, want 0; log:\n%s", code, logs)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("daemon didn't stop")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return logs, stop
+}
+
+// waitFor waits until ok, and fails the test if that takes more than 5 seconds.
+func waitFor(t *testing.T, logs *syncBuffer, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s; log:\n%s", what, logs)
+		}
+	}
+}
+
+// busyApp returns an App whose engine runs app1, a machine running a coding agent.
+func busyApp(t *testing.T) (*bounded, *App) {
+	t.Helper()
+	e := &bounded{Engine: fake.New(fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+		return engine.ExecResult{}, nil // a coding agent is running
+	}))}
+	now := time.Now()
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: now, EndAt: now.Add(time.Minute),
+		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev", "hib.idle": "10m0s"}})
+	a, _, _ := newApp(t, e)
+	return e, a
+}
+
 func TestDaemon(t *testing.T) {
 	var agentRunning atomic.Bool
 	agentRunning.Store(true)
@@ -760,39 +839,7 @@ func TestDaemon(t *testing.T) {
 		}
 		return getenv(k)
 	}
-	logs := &syncBuffer{}
-	a.Stderr = logs
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan int, 1)
-	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
-	stop := func() {
-		t.Helper()
-		cancel()
-		select {
-		case code := <-done:
-			if code != 0 {
-				t.Errorf("daemon exit %d, want 0; log:\n%s", code, logs)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("daemon didn't stop")
-		}
-	}
-	defer func() {
-		if ctx.Err() == nil {
-			stop()
-		}
-	}()
-
-	waitFor := func(what string, ok func() bool) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for !ok() {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting until %s; log:\n%s", what, logs)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
+	logs, stop := startDaemon(t, a)
 	endAt := func() time.Time {
 		m, err := e.Get(t.Context(), "app1")
 		if err != nil {
@@ -800,13 +847,13 @@ func TestDaemon(t *testing.T) {
 		}
 		return m.EndAt
 	}
-	waitFor("the busy machine runs for its idle time", func() bool { return endAt().After(now.Add(9 * time.Minute)) })
+	waitFor(t, logs, "the busy machine runs for its idle time", func() bool { return endAt().After(now.Add(9 * time.Minute)) })
 
 	// While the host gets ready to sleep, the daemon leaves machines alone.
 	if err := os.WriteFile(a.Getenv("HIBD_QUIESCING"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	waitFor("the daemon notices", func() bool { return strings.Contains(logs.String(), "going to sleep") })
+	waitFor(t, logs, "the daemon notices", func() bool { return strings.Contains(logs.String(), "going to sleep") })
 	n := pgreps.Load()
 	time.Sleep(50 * time.Millisecond)
 	if got := pgreps.Load(); got != n {
@@ -815,9 +862,9 @@ func TestDaemon(t *testing.T) {
 	if err := os.Remove(a.Getenv("HIBD_QUIESCING")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor("the daemon looks again", func() bool { return pgreps.Load() > n })
+	waitFor(t, logs, "the daemon looks again", func() bool { return pgreps.Load() > n })
 	agentRunning.Store(false)
-	waitFor("the daemon sees the machine idle", func() bool { return strings.Contains(logs.String(), "app is idle") })
+	waitFor(t, logs, "the daemon sees the machine idle", func() bool { return strings.Contains(logs.String(), "app is idle") })
 	stop()
 	for _, want := range []string{"app is busy: a coding agent is running", "app is idle"} {
 		if !strings.Contains(logs.String(), want) {
@@ -844,27 +891,8 @@ func TestDaemonCleansUp(t *testing.T) {
 		logf("freed 1.5 GiB in 3 build directories")
 		return nil
 	}
-	logs := &syncBuffer{}
-	a.Stderr = logs
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan int, 1)
-	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
-	defer func() {
-		cancel()
-		<-done
-	}()
-	waitFor := func(what string, ok func() bool) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for !ok() {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting until %s; log:\n%s", what, logs)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-
-	waitFor("the daemon cleans up as it starts", func() bool { return cleanups.Load() == 1 })
+	logs, _ := startDaemon(t, a)
+	waitFor(t, logs, "the daemon cleans up as it starts", func() bool { return cleanups.Load() == 1 })
 	time.Sleep(50 * time.Millisecond)
 	if n := cleanups.Load(); n != 1 {
 		t.Errorf("cleaned up %d times with nothing removed, want once", n)
@@ -873,39 +901,42 @@ func TestDaemonCleansUp(t *testing.T) {
 		if err := e.Kill(t.Context(), id); err != nil {
 			t.Fatal(err)
 		}
-		waitFor("the daemon cleans up after "+id, func() bool { return cleanups.Load() == int32(i+2) })
+		waitFor(t, logs, "the daemon cleans up after "+id, func() bool { return cleanups.Load() == int32(i+2) })
 	}
-	waitFor("the daemon logs it", func() bool { return strings.Contains(logs.String(), "cleanup: freed 1.5 GiB") })
+	waitFor(t, logs, "the daemon logs it", func() bool { return strings.Contains(logs.String(), "cleanup: freed 1.5 GiB") })
 	if n := strings.Count(logs.String(), "cleanup: no database; trying again in 1h"); n != 1 {
 		t.Errorf("logged the same failed cleanup %d times, want once:\n%s", n, logs)
 	}
 }
 
+func TestDaemonKeepsBusyMachinesRunningWhileItCleansUp(t *testing.T) {
+	e, a := busyApp(t)
+	var cleaning atomic.Bool
+	a.Clean = func(ctx context.Context, _ engine.Engine, _ time.Time, _ bool, _ func(string, ...any)) error {
+		cleaning.Store(true)
+		defer cleaning.Store(false)
+		<-ctx.Done()
+		time.Sleep(20 * time.Millisecond)
+		return ctx.Err()
+	}
+	logs, stop := startDaemon(t, a)
+	waitFor(t, logs, "the daemon cleans up", cleaning.Load)
+	n := e.count("SetTimeout")
+	waitFor(t, logs, "the daemon keeps the busy machine running as it cleans up", func() bool { return e.count("SetTimeout") >= n+2 })
+	stop()
+	if cleaning.Load() {
+		t.Error("the daemon stopped before its cleanup did")
+	}
+}
+
 func TestDaemonBoundsCallsToE2B(t *testing.T) {
 	// A stuck call would stop the daemon for good, and busy machines would pause.
-	e := &bounded{Engine: fake.New(fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
-		return engine.ExecResult{}, nil // a coding agent is running
-	}))}
-	now := time.Now()
-	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: now, EndAt: now.Add(time.Minute),
-		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev", "hib.idle": "10m0s"}})
-	a, _, _ := newApp(t, e)
-	logs := &syncBuffer{}
-	a.Stderr = logs
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan int, 1)
-	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
-	// By its third List, the daemon has looked at the machines twice: to keep the busy one
-	// running, and to see if one was removed.
-	deadline := time.Now().Add(5 * time.Second)
-	for e.count("SetTimeout") == 0 || e.count("List") < 3 {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for the daemon to look at the machines; log:\n%s", logs)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-	<-done
+	e, a := busyApp(t)
+	logs, stop := startDaemon(t, a)
+	waitFor(t, logs, "the daemon keeps the busy machine running and looks for removed ones", func() bool {
+		return e.count("SetTimeout") > 0 && e.count("List all") > 0
+	})
+	stop()
 	if got := e.unboundedCalls(); len(got) > 0 {
 		t.Errorf("the daemon called %v without a deadline", got)
 	}
@@ -944,7 +975,11 @@ func (b *bounded) unboundedCalls() []string {
 }
 
 func (b *bounded) List(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
-	b.record(ctx, "List")
+	call := "List all"
+	if len(opts.States) > 0 {
+		call = "List running"
+	}
+	b.record(ctx, call)
 	return b.Engine.List(ctx, opts)
 }
 

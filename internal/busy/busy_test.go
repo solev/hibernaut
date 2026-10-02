@@ -401,6 +401,47 @@ func TestAgentProblemLoggedOnce(t *testing.T) {
 	}
 }
 
+// hanging is an engine whose Exec in machine id hangs until release is closed.
+type hanging struct {
+	engine.Engine
+	id      string
+	release chan struct{}
+}
+
+func (h hanging) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
+	if id == h.id {
+		select {
+		case <-h.release:
+		case <-ctx.Done():
+			return engine.ExecResult{}, ctx.Err()
+		}
+	}
+	return h.Engine.Exec(ctx, id, req)
+}
+
+func TestHungMachineHoldsUpNoOther(t *testing.T) {
+	v := newWorld(t)
+	hung := v.machine("hung", "1m0s", time.Minute)
+	web := v.machine("web", "1m0s", time.Minute)
+	v.procs[web] = codex
+	release := make(chan struct{})
+	w := v.watcher(hanging{Engine: v.e, id: hung, release: release})
+	v.later(30 * time.Second)
+	done := make(chan error, 1)
+	go func() { done <- w.Tick(t.Context()) }()
+	want := v.Now().Add(time.Minute)
+	for deadline := time.Now().Add(5 * time.Second); !v.endAt(web).Equal(want); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Error("web wasn't kept running while the look at hung was stuck")
+			break
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // guard fails the test on any call about a machine that was paused when last listed.
 type guard struct {
 	engine.Engine

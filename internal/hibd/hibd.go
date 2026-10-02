@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -419,8 +420,8 @@ func (a *App) clean(ctx context.Context, e engine.Engine, now time.Time, dryRun 
 	return h.Clean(ctx, now, dryRun, logf)
 }
 
-// sweepTimeout bounds a sweeper's look, cleanup included, which runs between the busy watcher's
-// looks: a stuck one mustn't let busy machines pause.
+// sweepTimeout bounds a sweeper's look, cleanup included: a stuck one mustn't stop cleanups for
+// good.
 const sweepTimeout = 30 * time.Second
 
 // sweeper cleans up when the daemon starts, when it sees a machine was removed, and hourly, which
@@ -502,6 +503,8 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	t := time.NewTicker(*every)
 	defer t.Stop()
+	sweeping := make(chan struct{}, 1)
+	var wg sync.WaitGroup
 	problem := "" // what kept the last look from happening, as logged
 	for {
 		now := ""
@@ -511,10 +514,17 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		case err != nil:
 			now = err.Error()
 		default:
+			select {
+			case sweeping <- struct{}{}:
+				wg.Go(func() {
+					s.look(ctx, time.Now())
+					<-sweeping
+				})
+			default:
+			}
 			if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
 				now = err.Error()
 			}
-			s.look(ctx, time.Now())
 		}
 		if now != problem {
 			if now == "" {
@@ -526,6 +536,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		}
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			logger.Printf("stopping")
 			return 0
 		case <-t.C:

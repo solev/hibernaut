@@ -129,9 +129,7 @@ func Garbage(l Listing, now time.Time) (Plan, error) {
 	order := slices.SortedFunc(maps.Keys(slots), func(a, b slot) int {
 		return cmp.Or(cmp.Compare(a.env, b.env), cmp.Compare(a.tag, b.tag))
 	})
-	// latest keeps the build put in a slot last, and the one finished last, in case a later E2B
-	// goes by that.
-	latest := func(ps []placed, why string) {
+	keepLatest := func(ps []placed, why string) {
 		var at, fin time.Time
 		for _, p := range ps {
 			at, fin = later(at, p.at), later(fin, p.finished)
@@ -154,23 +152,23 @@ func Garbage(l Listing, now time.Time) (Plan, error) {
 		if e.Machine != "" {
 			why = "the current snapshot of machine " + e.Machine
 		}
-		latest(slots[s], why)
+		keepLatest(slots[s], why)
 	}
 	// A machine needs the image build it started from until its first pause is done: only then
-	// do its snapshot's headers name it. So keep every image build that was current since the
-	// first of those machines started, or in the last MinAge, in case hibd just started one.
-	since := now.Add(-MinAge)
+	// do its snapshot's headers name it. E2B picks the build when it checks the image, and stamps
+	// the start once the machine runs, so keep every image build that was current from MinAge
+	// before the first of those machines started. E2B may not list one hibd is starting yet.
+	since := now
 	for _, m := range l.Machines {
 		if (!m.Paused || !snapshotted[m.ID]) && m.Started.Before(since) {
 			since = m.Started
 		}
 	}
-	// E2B starts machines only from images that aren't removed, so none of those machines started
-	// from an image removed well before since. It checks the image before it starts a machine,
-	// and stamps the start once the machine runs, so allow MinAge in between.
+	since = since.Add(-MinAge)
+	// E2B starts machines only from images that aren't removed.
 	for _, s := range order {
 		e := envs[s.env]
-		if e.Machine != "" || !e.Deleted.IsZero() && e.Deleted.Before(since.Add(-MinAge)) {
+		if e.Machine != "" || !e.Deleted.IsZero() && e.Deleted.Before(since) {
 			continue
 		}
 		var before []placed // what was in the slot before since
@@ -181,7 +179,7 @@ func Garbage(l Listing, now time.Time) (Plan, error) {
 				keep(p.build, "a machine may have started from it")
 			}
 		}
-		latest(before, "a machine may have started from it")
+		keepLatest(before, "a machine may have started from it")
 	}
 	for _, id := range l.Cached {
 		keep(id, "E2B's layer cache points to it")

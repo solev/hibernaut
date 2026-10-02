@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
@@ -36,7 +37,8 @@ var (
 	idRE    = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
 )
 
-// Config configures a Watcher.
+// Config configures a Watcher. A Watcher looks at its machines at the same time, so it calls
+// CPU, Now and Logf concurrently.
 type Config struct {
 	Engine engine.Engine
 	// CPU returns how much CPU time machine id has used since it last started or resumed. On
@@ -65,8 +67,8 @@ type Watcher struct {
 type seen struct {
 	name     string
 	last     reading
-	verdict  string            // "busy" or "idle", as last logged
-	problems map[string]string // what went wrong last, by what was being done
+	logged   string
+	problems map[string]string
 }
 
 // reading is a reading of a machine's CPU counter.
@@ -125,14 +127,21 @@ func (w *Watcher) Tick(ctx context.Context) error {
 		return fmt.Errorf("listing machines: %w", err)
 	}
 	running := map[string]bool{}
+	var wg sync.WaitGroup
 	for _, m := range ms {
 		idle, ok := machines.Idle(m)
-		if !ok || idle == 0 || m.State != engine.Running {
+		if !ok || idle == 0 || m.State != engine.Running || running[m.ID] {
 			continue
 		}
 		running[m.ID] = true
-		w.look(ctx, m, idle)
+		s := w.seen[m.ID]
+		if s == nil {
+			s = &seen{name: machines.Name(m), problems: map[string]string{}}
+			w.seen[m.ID] = s
+		}
+		wg.Go(func() { w.look(ctx, m, s, idle) })
 	}
+	wg.Wait()
 	for id := range w.seen {
 		if !running[id] {
 			delete(w.seen, id)
@@ -141,12 +150,7 @@ func (w *Watcher) Tick(ctx context.Context) error {
 	return nil
 }
 
-func (w *Watcher) look(ctx context.Context, m engine.Machine, idle time.Duration) {
-	s := w.seen[m.ID]
-	if s == nil {
-		s = &seen{name: machines.Name(m), problems: map[string]string{}}
-		w.seen[m.ID] = s
-	}
+func (w *Watcher) look(ctx context.Context, m engine.Machine, s *seen, idle time.Duration) {
 	why := ""
 	if share, ok := w.cpuShare(m, s); ok && share >= CPUBusy {
 		why = fmt.Sprintf("using %.0f%% of a CPU", share*100)
@@ -154,19 +158,19 @@ func (w *Watcher) look(ctx context.Context, m engine.Machine, idle time.Duration
 		why = "a coding agent is running"
 	}
 	switch {
-	case why != "" && s.verdict != "busy":
-		s.verdict = "busy"
+	case why != "" && s.logged != "busy":
+		s.logged = "busy"
 		w.logf("%s is busy: %s", s.name, why)
-	case why == "" && s.verdict != "idle":
-		s.verdict = "idle"
+	case why == "" && s.logged != "idle":
+		s.logged = "idle"
 		w.logf("%s is idle", s.name)
 	}
-	if why == "" || !m.EndAt.Before(w.now().Add(idle)) {
+	if why == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	err := w.e.SetTimeout(ctx, m.ID, idle)
+	err := machines.Renew(ctx, w.e, m, idle, w.now())
 	if errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrNotFound) {
 		err = nil // It paused or went away since it was listed: leave it be.
 	}

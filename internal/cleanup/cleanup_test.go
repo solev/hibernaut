@@ -292,6 +292,24 @@ func TestKeepsImageBuildsMachinesMayHaveStartedFrom(t *testing.T) {
 	}
 }
 
+func TestKeepsTheImageBuildAMachineStartedFromAsANewOneFinished(t *testing.T) {
+	// E2B picked img-1 for web, then img-2 finished before E2B stamped web's start.
+	wantGarbage(t, cleanup.Listing{
+		Envs: []cleanup.Env{{ID: "img"}},
+		Builds: []cleanup.Build{
+			ready("img-0", "img", ago(20*time.Hour)),
+			ready("img-1", "img", ago(10*time.Hour)),
+			ready("img-2", "img", ago(3*time.Hour+10*time.Second)),
+		},
+		Dirs: []cleanup.Dir{
+			dir("img-0", ago(20*time.Hour), "img-0"),
+			dir("img-1", ago(10*time.Hour), "img-1"),
+			dir("img-2", ago(3*time.Hour), "img-2"),
+		},
+		Machines: []cleanup.Machine{{ID: "web", Started: ago(3 * time.Hour)}},
+	}, "img-0")
+}
+
 func TestKeepsAnImageBuildAMachineStartedFromThisHour(t *testing.T) {
 	// img was rebuilt 30 minutes ago. hibd may have started a machine from the build before it
 	// just before that, and may not list that machine yet.

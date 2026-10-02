@@ -10,7 +10,8 @@ Busy machines never pause. A full host says so plainly, and snapshots don't pile
 **Idle and wake**
 
 - [x] Create machines with `autoPause: true`, memory snapshots and auto-resume off (see Changes).
-- [x] Idle timeout 15 minutes by default; `hib new --idle 30m`, where `0` means never pause.
+- [x] Idle timeout 15 minutes by default, or what `hib new --idle 30m` says, where `0` means
+      never pause.
 - [x] Run commands in machines through envd (`Engine.Exec`). M3 uses it too. (Done in M0.)
 - [x] Lift E2B's 1-hour cap. (Done in M1: `install-e2b.sh` raises the seeded tier's
       `max_length_hours` from 1 to 720, and a resume restarts that clock, because E2B gives a
@@ -18,10 +19,11 @@ Busy machines never pause. A full host says so plainly, and snapshots don't pile
 - [x] `hibd` runs as a daemon under systemd, after E2B (M0 has only the pause-all guard).
 - [x] Busy detector, any of:
   - [x] an SSH session through the bridge (the bridge renews the timeout while it's open),
-  - [x] CPU above a small threshold (10% of a CPU, from the machine's cgroup; see Changes),
-  - [x] an agent process alive (`pgrep` through envd; `codex`, `copilot`, `claude`;
-        `HIBD_AGENTS`).
-- [x] Poll loop: every 15 s, only machines E2B reports as running. Busy → push the timeout back.
+  - [x] CPU above a small threshold (10% of a CPU, from the machine's cgroup, as Changes says),
+  - [x] an agent process alive (`codex`, `copilot` or `claude`, or the programs `HIBD_AGENTS`
+        names, found with `pgrep` through envd).
+- [x] Poll loop: every 15 s, only machines E2B reports as running. A busy machine gets its timeout
+      pushed back.
 - [x] `hib` resumes explicitly before its own commands (the bridge resumes for `ssh` and
       `hib exec`).
 - [x] `hib ls` shows running / paused, time left until pause, and the room left on the host.
@@ -31,19 +33,20 @@ Busy machines never pause. A full host says so plainly, and snapshots don't pile
 - [x] Before `hibd` starts or resumes a machine (`hib new`, `ssh name.hib`, `hib exec`), it checks
       there's room:
   - [x] memory: free huge pages (`HugePages_Free` minus `HugePages_Rsvd` in `/proc/meminfo`)
-        cover the machine's RAM;
+        cover the machine's RAM.
   - [x] disk: free space on `/var/lib/e2b` covers pausing every running machine and this one
         (their RAM, plus a margin for what they wrote to disk), because a pause that can't be
         written still stops the machine.
-- [x] No room → a clear error that names the running machines and says what to do:
+- [x] No room: a clear error that names the running machines and says what to do:
       `hib pause NAME` frees memory, `hib rm` frees disk. It replaces E2B's
       `500 Failed to place sandbox … please retry`. Two starts can race the check, so when E2B
       refuses anyway, `hibd` checks again and gives the same message.
-- [x] Snapshot cleanup. E2B never deletes snapshot files, not even a removed machine's. `hibd`
-      deletes the build directories in `/var/lib/e2b/local-template-storage` that nothing can
-      resume from any more. It keeps every machine's and image's current build, the older builds
-      their headers point into (a snapshot is a chain of diffs), and anything under an hour old,
-      which may still be being written. It runs after `hib rm` and hourly.
+- [x] Snapshot cleanup (see Changes). E2B never deletes snapshot files, not even a removed
+      machine's. `hibd` deletes the build directories in `/var/lib/e2b/local-template-storage`
+      that nothing can resume from any more. It keeps every machine's and image's current build,
+      the older builds their headers point into (a snapshot is a chain of diffs), and anything
+      changed in the last hour, which may still be being written, unless only removed images and
+      machines use it. It runs after `hib rm` and hourly.
 - [x] Find out whether E2B bounds its cache in `/var/lib/e2b/build` (5.7 GB now). If it doesn't,
       clean it up too. (It does: it deletes files after 25 hours, evicts at 85% disk, and empties
       the cache when the orchestrator starts.)
@@ -52,12 +55,15 @@ Busy machines never pause. A full host says so plainly, and snapshots don't pile
 
 Unit (fake clock, no sleeping):
 
-- [x] Busy → timeout pushed back. Idle → left alone.
+- [x] A busy machine gets its timeout pushed back. An idle one is left alone.
 - [x] Each busy signal alone keeps a machine awake.
 - [x] Room: from a `/proc/meminfo` reading and the free disk, a machine fits or doesn't, and the
       refusal names the running machines.
-- [x] Cleanup, from a listing of builds and their headers: keeps every current build, everything
-      its headers point into, and anything under an hour old; deletes the rest.
+- [x] Cleanup, from a listing of builds and their headers, keeps every current build, everything
+      its headers point into, and anything changed in the last hour, unless only removed images
+      and machines use it. It deletes the rest.
+- [x] Cleanup keeps the image build a running machine started from, even when a newer one
+      finished between E2B's image check and the machine's start.
 
 Integration:
 
@@ -65,34 +71,40 @@ Integration:
       it's called).
 - [x] With the fake host full, `new` and the bridge's resume are refused with the room message and
       create nothing.
+- [x] With the fake host full, a machine that pauses just as the bridge connects to it stays
+      paused, and the bridge gives the room message.
 - [x] The daemon cleans up when it starts and when a machine is removed, and logs a cleanup that
       failed.
 - [x] The daemon never calls E2B without a deadline.
-- [x] Cleanup on a host directory skips the cache files E2B hasn't finished writing.
+- [x] A machine whose calls hang doesn't hold up the busy watcher's look at the others, and
+      neither does a slow cleanup.
+- [x] Cleanup on a host directory deletes what nothing uses, leaves what changes while it runs,
+      and skips the cache files E2B hasn't finished writing. It deletes nothing on a dry run, or
+      if a cache file names no build.
 
 End-to-end:
 
-- [x] `TestIdlePauseWake`: `--idle 1m`; start a tmux session running a counter; disconnect; wait
-      until E2B reports paused; `ssh` in → same tmux session and PID, counter moving again. Logs the
-      resume time.
-- [x] `TestBusyStaysAwake`: `--idle 1m`; three machines, each kept busy one way (open SSH session,
-      CPU loop, a process named `codex`); all still running after 3 minutes.
+- [x] `TestIdlePauseWake`: with `--idle 1m`, start a tmux session running a counter, disconnect,
+      and wait until E2B reports the machine paused. After `ssh` in, the tmux session and PID are
+      the same, and the counter is moving again. Logs the resume time.
+- [x] `TestBusyStaysAwake`: three machines with `--idle 1m`, each kept busy one way (open SSH
+      session, CPU loop, a process named `codex`), are all still running after 3 minutes.
 - [x] `TestWakeOnExec`: `hib exec` on a paused machine works on the first try.
 - [x] A busy machine stays running past E2B's default 1-hour cap (slow).
 - [x] `TestHostFull`: pause one machine, then start machines until no more fit. One more
-      `hib new`, and `ssh` to the paused machine, are both refused within a second with the room
-      message, and the running machines are untouched. Once one of them is paused, the `ssh`
-      works.
-- [x] `TestSnapshotCleanup`: `hib new` → pause → resume → pause → `hib rm`. Its build directories
+      `hib new`, and `ssh` to the paused machine, are both refused with the room message, taking
+      at most a second longer than `hib ls`, and the running machines are untouched. Once one of
+      them is paused, the `ssh` works.
+- [x] `TestSnapshotCleanup`: `hib new`, pause, resume, pause, then `hib rm`. Its build directories
       are gone from the host, and other machines and the image still start and resume.
-- [x] `TestPauseCycles` (slow): one machine paused and resumed 20 times; logs the disk it uses and
-      its resume time per cycle. E2B never compacts a machine's chain of snapshot diffs, so if
-      either keeps growing, plan compaction.
+- [x] `TestPauseCycles` (slow): one machine paused and resumed 20 times. It logs the disk the
+      machine uses and its resume time per cycle. E2B never compacts a machine's chain of
+      snapshot diffs, so if either keeps growing, plan compaction.
 
 ## Done when
 
-- [x] `make lint test`, `make e2e` and `make e2e-slow` are green (CI is parked; `make lint test`
-      alone for now).
+- [x] `make lint test`, `make e2e` and `make e2e-slow` are green. CI is parked, so for now
+      `make lint test` stands in for it.
 - [x] README explains idle and wake, how many machines fit at once, and what happens when the
       host is full.
 
@@ -104,7 +116,7 @@ End-to-end:
   Memory is a hard limit that fails safely but with a confusing error, and CPU is shared. Disk
   fills up: E2B never deletes snapshot files, and a pause that runs out of disk still stops the
   machine. Details are in spec §5 (Room on the host). When a start or resume fails for any
-  reason, `hibd` checks the room again rather than match E2B's error; a machine that resumed but
+  reason, `hibd` checks the room again rather than match E2B's error. A machine that resumed but
   couldn't be reached isn't reported as a full host.
 - **No auto-resume.** The task's `autoResume: {policy: any}` isn't E2B's API (it's
   `{enabled}`), and auto-resume stays off: traffic to a paused machine doesn't wake it, so only
@@ -119,23 +131,26 @@ End-to-end:
   host up as well.
 - **Snapshot cleanup** reads E2B's database, the machines and the build headers, as spec §5
   says. Beyond the task:
-  - a removed machine's builds go at once, not after an hour;
-  - a build can be in more than one image or machine, under tags: E2B's
+  - A removed machine's builds go at once, not after an hour as first planned.
+  - A build can be in more than one image or machine, under tags: E2B's
     `env_build_assignments` says which, and when it put the build there. For each image tag,
     cleanup keeps the build E2B put there last, which is what E2B starts machines from, and
-    the one finished last;
-  - it deletes nothing while E2B is writing a build (one in progress for under 6 hours), or if
+    the one finished last.
+  - It deletes nothing while E2B is writing a build (one in progress for under 6 hours), or if
     it can't read a header it needs. Image builds time out after an hour, and E2B never
     finishes a build it stopped writing (say it crashed mid-pause), so waiting for every one
-    would stop cleanup for good;
-  - a removed image's builds go once no running machine may have started from them: the image
-    was removed over an hour before the first of those machines started (E2B checks an image
-    before it starts a machine, and stamps the start once the machine runs);
-  - it keeps the image builds a running machine may have started from, and the builds E2B's
-    layer cache points to. It skips the cache files E2B hasn't finished writing, which a crash
-    can leave half-written;
-  - it reads headers of versions 1 to 3 only. Later ones are compressed, which E2B's local
-    setup doesn't turn on; if a build it keeps has one, it deletes nothing rather than guess.
+    would stop cleanup for good.
+  - It keeps every build that was an image's current one at any time from an hour before the
+    first running machine started, or from an hour ago if none is running. A machine counts as
+    running until its first pause is done: only then do its snapshot's headers name the build
+    it started from. E2B picks the build when it checks the image, and stamps the start once
+    the machine runs, so a newer build can finish in between. A removed image's builds go once
+    the image was removed before that time, because E2B starts machines only from images that
+    aren't removed.
+  - It keeps the builds E2B's layer cache points to. It skips the cache files E2B hasn't
+    finished writing, which a crash can leave half-written.
+  - It reads headers of versions 1 to 3 only. Later ones are compressed, which E2B's local
+    setup doesn't turn on. If a build it keeps has one, it deletes nothing rather than guess.
   - "After `hib rm`" is the daemon noticing a machine gone, so a machine removed some other way
     counts too. It also runs when the daemon starts, and `hibd cleanup [-n]` runs it by hand.
   - It runs hourly, not daily: the daemon misses a machine created and removed between two of
@@ -151,3 +166,13 @@ End-to-end:
   back into an image or machine in between, cleanup could delete it. E2B's pauses, image builds
   and snapshots only ever put in new builds. Only its tags API puts in an existing one (the
   current build under another tag), and `hib` doesn't call it. M6 notes this.
+- **Fixes after the review of M2** (made after `818333d`):
+  - Cleanup kept image builds from the first running machine's start, not from an hour before
+    it. If a newer image build finished between E2B's image check and the machine's start,
+    cleanup could delete the build the machine started from.
+  - The bridge pushes a running machine's timeout back before it connects. Before, the machine
+    could pause between `hibd` looking it up and E2B's connect, which then resumed it without
+    the room check.
+  - The busy watcher looks at all running machines at once, and cleanup runs beside it, one at
+    a time. Before, a machine whose calls hung until their deadline, or a slow cleanup, held up
+    every other machine's look, and a busy machine with a short idle time could pause.

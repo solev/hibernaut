@@ -265,20 +265,26 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Waking a paused machine needs room for it. A running one already has its room.
+	idle, _ := Idle(em)
+	// Connecting resumes a paused machine, which needs room. Renewing a running machine first
+	// stops its timeout pausing it before the connection, which would then resume it unchecked.
 	paused := em.State == engine.Paused
+	if !paused {
+		err := Renew(ctx, m.e, em, timeoutFor(idle), m.now())
+		if errors.Is(err, engine.ErrNotRunning) {
+			paused = true
+		} else if err != nil {
+			return nil, fmt.Errorf("%q: %w", name, err)
+		}
+	}
 	if paused {
 		if err := m.checkRoom(ctx, name, em.MemoryMB); err != nil {
 			return nil, err
 		}
 	}
 	fail := func(err error) (*Conn, error) {
-		if paused {
-			err = m.refused(ctx, name, em.MemoryMB, err)
-		}
-		return nil, err
+		return nil, m.refused(ctx, name, em.MemoryMB, err)
 	}
-	idle, _ := Idle(em)
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
 		// The pin was lost: ask the machine again. Its key file outlives its pin.
@@ -406,10 +412,19 @@ func (m *Manager) extend(ctx context.Context, id string, idle time.Duration) {
 	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
 	defer cancel()
 	em, err := m.e.Get(ctx, id)
-	if err != nil || em.State != engine.Running || !em.EndAt.Before(m.now().Add(idle)) {
+	if err != nil || em.State != engine.Running {
 		return
 	}
-	m.e.SetTimeout(ctx, id, idle)
+	Renew(ctx, m.e, em, idle, m.now())
+}
+
+// Renew makes running machine em run for at least timeout from now. It never shortens the
+// machine's timeout or resumes it: it returns engine.ErrNotRunning if em has paused since.
+func Renew(ctx context.Context, e engine.Engine, em engine.Machine, timeout time.Duration, now time.Time) error {
+	if !em.EndAt.Before(now.Add(timeout)) {
+		return nil
+	}
+	return e.SetTimeout(ctx, em.ID, timeout)
 }
 
 // lookup finds the machine called name.
