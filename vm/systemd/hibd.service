@@ -1,0 +1,18 @@
+# Keeps busy machines running: hibd daemon looks at every running machine every 15 s and moves
+# its pause time back while it's busy. Stopping it never touches machines; idle ones just pause
+# on time. It waits out E2B being down, so it doesn't require E2B, only starts after it.
+[Unit]
+Description=Hibernaut daemon: keeps busy machines running
+After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service
+
+[Service]
+ExecStart=/usr/local/bin/hibd daemon
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

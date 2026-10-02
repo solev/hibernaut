@@ -70,6 +70,7 @@ Azure VM  e2b-test  (Ubuntu 24.04, D4s_v5, nested virtualization → /dev/kvm)
   │
   ├── Hibernaut host pieces
   │     hibd                   pause-all, ls (through E2B's API)
+  │     hibd daemon            unit hibd: keeps busy machines running; idle ones pause
   │     hibd-pause-all         guard unit: pauses every sandbox whenever E2B stops
   │     idle / nightly timers  quiesce (pause all, stop E2B), then deallocate
   │
