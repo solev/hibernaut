@@ -294,8 +294,9 @@ E2B does the pausing and waking. `hibd` only decides what counts as busy.
     `hibd` checks with `pgrep` through envd.
 - `hibd` checks running machines every 60 s. While a machine is busy, it pushes the timeout back
   (`POST /sandboxes/{id}/timeout`). Nothing inside a machine calls the host.
-- E2B won't push a machine's end past its start plus the tier's `max_length_hours`, which is 1
-  for the seeded `base_v1` tier. M2 raises it.
+- E2B won't push a machine's end past its start plus the tier's `max_length_hours`. The seeded
+  `base_v1` tier has 1; `install-e2b.sh` raises it to 720 (30 days), and a resume starts the
+  clock again.
 - It polls only machines E2B reports as running. Any call to a paused machine, even a status
   check, would wake it.
 - **Wake:**
@@ -317,6 +318,34 @@ E2B does the pausing and waking. `hibd` only decides what counts as busy.
   - On any clean shutdown, including Azure's deallocate, the `hibd-pause-all` guard unit stops
     before E2B and pauses every machine.
   - When `hib` can't reach the host, it starts the Azure VM (cold start is a few minutes).
+
+### Room on the host
+
+One host runs every machine, so `hibd` checks there's room before it starts or resumes one.
+Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2 vCPU, 2 GiB).
+
+- **Memory is the hard limit.** Firecracker takes a running machine's RAM from the host's
+  huge-page pool (3200 × 2 MiB = 6.25 GiB, set in `install-e2b.sh`): about three `dev` machines
+  at once. Paused machines need none. On its own, E2B refuses a start or resume that doesn't fit
+  at once and safely, but says only `500 Failed to place sandbox … please retry`.
+- **CPU is shared, not reserved.** Each machine's 2 vCPUs share the host's 4. Busy machines slow
+  each other down; nothing fails.
+- **Disk:** a machine's own disk is capped at 10 GiB (the tier's `disk_mb`), but every pause
+  writes a new snapshot layer (120–370 MB seen). E2B never deletes these, not even a removed
+  machine's: it only marks the row deleted. A pause that can't be written still stops the
+  machine, losing what was running in it.
+- **Before a start or resume, `hibd` checks:**
+  - free huge pages (`HugePages_Free` − `HugePages_Rsvd`) cover the machine's RAM;
+  - free disk covers pausing every running machine and this one (their RAM, plus a margin for
+    what they wrote to disk).
+- **No room** → a clear error that names the running machines and says what to do:
+  `hib pause NAME` frees memory, `hib rm` frees disk. Two starts can race the check, so when E2B
+  refuses anyway, `hibd` checks again and gives the same message.
+- **Snapshot cleanup:** `hibd` deletes the build directories in
+  `/var/lib/e2b/local-template-storage` that nothing can resume from any more. It keeps every
+  machine's and image's current build, the older builds their headers point into (a snapshot is
+  a chain of diffs), and anything under an hour old. It runs after `hib rm` and once a day.
+- `hib ls` shows the room left.
 
 ### SSH path
 
@@ -376,7 +405,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | --- | --- | --- |
 | M0 | **Foundations.** Go repo, test harness, CI. E2B under systemd, started on boot. E2B's storage moves out of the repo checkout (`~/infra/packages/orchestrator/tmp/`) to `/var/lib/e2b`. Machines are paused before any host shutdown. | A running machine survives a reboot and the nightly deallocate, with its files and processes (S4) |
 | M1 | **Machines.** `dev` image; `hib init / new / ls / rm / exec`; SSH bridge and `*.hib` | new → ssh → exec → rm. An idle SSH session survives 11 minutes. |
-| M2 | **Idle and wake** | An idle machine pauses; `ssh` wakes it with its tmux session still running. A busy one stays awake. |
+| M2 | **Idle and wake**, and room on the host (a clear error when it's full, snapshot cleanup) | An idle machine pauses; `ssh` wakes it with its tmux session still running. A busy one stays awake. A full host refuses one more machine with a clear message. |
 | M3 | **Vault, egress proxy, leak scan** | A secret works on its bound site and arrives as a placeholder anywhere else. Machines can't reach host services (S8). The leak scan finds nothing. |
 | M4 | **GitHub** via `--from-gh` | Fresh machine: clone a private repo → commit → push a branch → open a PR → close it and delete the branch |
 | M5 | **AI tools:** Codex on the ChatGPT plan, GitHub Copilot CLI | `codex` and `copilot` answer a one-line prompt with no login. The leak scan finds nothing. |
