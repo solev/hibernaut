@@ -158,3 +158,27 @@ func TestParseHostKey(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatIdle(t *testing.T) {
+	sec := func(n int64) *int64 { return &n }
+	for _, tc := range []struct {
+		in   *int64
+		want string
+	}{
+		{nil, "-"},
+		{sec(0), "never"},
+		{sec(45), "45s"},
+		{sec(60), "1m"},
+		{sec(90), "1m30s"},
+		{sec(15 * 60), "15m"},
+		{sec(3600), "1h"},
+		{sec(5400), "1h30m"},
+		{sec(3601), "1h0m1s"},
+		{sec(720 * 3600), "720h"},
+		{sec(-5), "-"},
+	} {
+		if got := hibapi.FormatIdle(tc.in); got != tc.want {
+			t.Errorf("FormatIdle(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,13 +95,19 @@ func TestLs(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	e.Add(engine.Machine{ID: "run1", Template: "base", State: engine.Running, StartedAt: now, EndAt: now.Add(time.Hour)})
 	e.Add(engine.Machine{ID: "zzz1", Template: "base", State: engine.Paused, StartedAt: now.Add(-time.Hour)})
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: now.Add(-2 * time.Hour), EndAt: now,
+		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev", "hib.idle": "1h30m0s"}})
+	e.Add(engine.Machine{ID: "old1", State: engine.Paused, StartedAt: now.Add(-3 * time.Hour), EndAt: now,
+		Metadata: map[string]string{"hib.name": "old", "hib.image": "dev"}})
+	e.Add(engine.Machine{ID: "inf1", State: engine.Running, StartedAt: now.Add(-4 * time.Hour), EndAt: now,
+		Metadata: map[string]string{"hib.name": "forever", "hib.image": "dev", "hib.idle": "0s"}})
 
 	a, out, _ := newApp(t, e)
 	if code := a.Run(t.Context(), []string{"ls", "-state", "running", "-q"}); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if out.String() != "run1\n" {
-		t.Errorf("ls -state running -q = %q, want %q", out.String(), "run1\n")
+	if want := "run1\napp1\ninf1\n"; out.String() != want {
+		t.Errorf("ls -state running -q = %q, want %q", out.String(), want)
 	}
 
 	out.Reset()
@@ -108,9 +115,20 @@ func TestLs(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "NAME") || !strings.HasPrefix(lines[1], "-     run1") ||
-		!strings.Contains(lines[1], "2026-09-30T13:00:00Z") || !strings.Contains(lines[2], "zzz1") {
+	if len(lines) != 6 || !strings.HasPrefix(lines[0], "NAME") || !strings.Contains(lines[0], " IDLE ") ||
+		!strings.HasPrefix(lines[1], "-        run1") || !strings.Contains(lines[1], "2026-09-30T13:00:00Z") ||
+		!strings.Contains(lines[2], "zzz1") {
 		t.Errorf("ls =\n%s", out.String())
+	}
+	idle := map[string]string{}
+	for _, l := range lines[1:] {
+		f := strings.Fields(l)
+		idle[f[1]] = f[4]
+	}
+	for id, want := range map[string]string{"run1": "-", "app1": "1h30m", "old1": "15m", "inf1": "never"} {
+		if idle[id] != want {
+			t.Errorf("IDLE of %s = %q, want %q; ls =\n%s", id, idle[id], want, out)
+		}
 	}
 
 	if code := a.Run(t.Context(), []string{"ls", "-state", "sleeping"}); code != 2 {
@@ -257,6 +275,41 @@ func TestMachineCommands(t *testing.T) {
 	errOut.Reset()
 	if code := a.Run(t.Context(), []string{"rm", "nope"}); code != 1 || !strings.Contains(errOut.String(), `no machine called "nope"`) {
 		t.Errorf("rm nope = %d, stderr %q", code, errOut)
+	}
+}
+
+func TestNewIdle(t *testing.T) {
+	e := newEngine(newKey(t))
+	a, out, errOut := newApp(t, e)
+	for _, tc := range []struct {
+		args []string
+		want int64
+	}{
+		{[]string{"new", "app", "-json"}, 15 * 60},
+		{[]string{"new", "web", "-idle", "90m", "-json"}, 90 * 60},
+		{[]string{"new", "forever", "-idle", "0", "-json"}, 0},
+		{[]string{"new", "quick", "-idle", "1m", "-json"}, 60},
+	} {
+		code, r, err := runJSON(t, a, out, tc.args...)
+		if code != 0 || err != nil || r.Machine == nil || r.Machine.IdleSeconds == nil || *r.Machine.IdleSeconds != tc.want {
+			t.Errorf("%q = %d, %+v, %v, want idle %ds; stderr %s", tc.args, code, r.Machine, err, tc.want, errOut)
+		}
+	}
+	m, err := e.Get(t.Context(), mustID(t, e, "web"))
+	if err != nil || m.EndAt.Sub(m.StartedAt) != 90*time.Minute {
+		t.Errorf("web = %+v, %v; want it to pause after 90m", m, err)
+	}
+	for _, idle := range []string{"30s", "-5m", "1000h"} {
+		code, _, err := runJSON(t, a, out, "new", "bad", "-idle", idle, "-json")
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "idle") {
+			t.Errorf("new -idle %s = %d, %v; want an error about the idle time", idle, code, err)
+		}
+	}
+	if code := a.Run(t.Context(), []string{"new", "bad", "-idle", "soon"}); code != 2 {
+		t.Errorf("new -idle soon = %d, want 2", code)
+	}
+	if ms, _ := e.List(t.Context(), engine.ListOptions{}); len(ms) != 4 {
+		t.Errorf("%d machines, want the 4 good ones", len(ms))
 	}
 }
 
@@ -480,5 +533,143 @@ func TestQuiescing(t *testing.T) {
 	}
 	if code, _, err := runJSON(t, a, out, "new", "web", "-json"); code != 0 || err != nil {
 		t.Errorf("new after quiescing: exit %d, %v", code, err)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func TestDaemon(t *testing.T) {
+	var agentRunning atomic.Bool
+	agentRunning.Store(true)
+	var pgreps atomic.Int32
+	e := fake.New(fake.WithExec(func(_ context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
+		if req.Cmd != "pgrep" || !strings.Contains(strings.Join(req.Args, " "), "aider") {
+			return engine.ExecResult{ExitCode: 2}, nil
+		}
+		pgreps.Add(1)
+		if agentRunning.Load() {
+			return engine.ExecResult{}, nil
+		}
+		return engine.ExecResult{ExitCode: 1}, nil
+	}))
+	now := time.Now()
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: now, EndAt: now.Add(time.Minute),
+		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev", "hib.idle": "10m0s"}})
+	a, _, _ := newApp(t, e)
+	cgroups := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cgroups, "sbx-app1-run1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cgroups, "sbx-app1-run1", "cpu.stat"), []byte("usage_usec 100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	getenv := a.Getenv
+	a.Getenv = func(k string) string {
+		switch k {
+		case "HIBD_AGENTS":
+			return "aider  codex"
+		case "HIBD_CGROUPS":
+			return cgroups
+		}
+		return getenv(k)
+	}
+	logs := &syncBuffer{}
+	a.Stderr = logs
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan int, 1)
+	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
+	stop := func() {
+		t.Helper()
+		cancel()
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Errorf("daemon exit %d, want 0; log:\n%s", code, logs)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("daemon didn't stop")
+		}
+	}
+	defer func() {
+		if ctx.Err() == nil {
+			stop()
+		}
+	}()
+
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting until %s; log:\n%s", what, logs)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	endAt := func() time.Time {
+		m, err := e.Get(t.Context(), "app1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.EndAt
+	}
+	waitFor("the busy machine runs for its idle time", func() bool { return endAt().After(now.Add(9 * time.Minute)) })
+
+	// While the host gets ready to sleep, the daemon leaves machines alone.
+	if err := os.WriteFile(a.Getenv("HIBD_QUIESCING"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("the daemon notices", func() bool { return strings.Contains(logs.String(), "going to sleep") })
+	n := pgreps.Load()
+	time.Sleep(50 * time.Millisecond)
+	if got := pgreps.Load(); got != n {
+		t.Errorf("looked for agents %d times while the host was going to sleep, want none", got-n)
+	}
+	if err := os.Remove(a.Getenv("HIBD_QUIESCING")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("the daemon looks again", func() bool { return pgreps.Load() > n })
+	agentRunning.Store(false)
+	waitFor("the daemon sees the machine idle", func() bool { return strings.Contains(logs.String(), "app is idle") })
+	stop()
+	for _, want := range []string{"app is busy: a coding agent is running", "app is idle"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log doesn't say %q:\n%s", want, logs)
+		}
+	}
+}
+
+func TestDaemonFlags(t *testing.T) {
+	a, _, _ := newApp(t, fake.New())
+	for _, args := range [][]string{{"daemon", "x"}, {"daemon", "-every", "0s"}, {"daemon", "-every", "soon"}} {
+		if code := a.Run(t.Context(), args); code != 2 {
+			t.Errorf("%q = exit %d, want 2", args, code)
+		}
+	}
+	getenv := a.Getenv
+	a.Getenv = func(k string) string {
+		if k == "HIBD_AGENTS" {
+			return "codex x|y"
+		}
+		return getenv(k)
+	}
+	if code := a.Run(t.Context(), []string{"daemon"}); code != 1 {
+		t.Errorf("daemon with a bad agent name = exit %d, want 1", code)
 	}
 }

@@ -49,6 +49,29 @@ type Machine struct {
 	IdleSeconds *int64 `json:"idleSeconds,omitempty"`
 }
 
+// FormatIdle formats an idle time in seconds, as in Machine.IdleSeconds, for people: "15m",
+// "1h30m", "never" for 0, or "-" if it's unknown.
+func FormatIdle(seconds *int64) string {
+	switch {
+	case seconds == nil || *seconds < 0:
+		return "-"
+	case *seconds == 0:
+		return "never"
+	}
+	h, m, s := *seconds/3600, *seconds%3600/60, *seconds%60
+	out := ""
+	if h > 0 {
+		out += fmt.Sprintf("%dh", h)
+	}
+	if m > 0 || h > 0 && s > 0 {
+		out += fmt.Sprintf("%dm", m)
+	}
+	if s > 0 {
+		out += fmt.Sprintf("%ds", s)
+	}
+	return out
+}
+
 // Response is what a hibd command prints with --json: one object, then the command exits. A
 // failed command prints only Error, and exits 1.
 type Response struct {

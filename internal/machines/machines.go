@@ -86,10 +86,18 @@ func New(cfg Config) *Manager {
 	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now}
 }
 
+// Name returns the name of machine em, or "" if hibd didn't make it.
+func Name(em engine.Machine) string {
+	if name := em.Metadata[labelName]; hibapi.CheckName(name) == nil {
+		return name
+	}
+	return ""
+}
+
 // Idle returns how long machine em keeps running once it's idle before it pauses, 0 for never,
 // and whether hibd made it. Machines made before hibd kept idle times get DefaultIdle.
 func Idle(em engine.Machine) (idle time.Duration, ok bool) {
-	if hibapi.CheckName(em.Metadata[labelName]) != nil {
+	if Name(em) == "" {
 		return 0, false
 	}
 	idle, err := time.ParseDuration(em.Metadata[labelIdle])
@@ -516,10 +524,7 @@ func (m *Manager) writePin(id string, key ssh.PublicKey) error {
 }
 
 func toAPI(em engine.Machine) hibapi.Machine {
-	name, image := em.Metadata[labelName], em.Metadata[labelImage]
-	if hibapi.CheckName(name) != nil {
-		name = ""
-	}
+	name, image := Name(em), em.Metadata[labelImage]
 	if hibapi.CheckName(image) != nil {
 		image = ""
 	}

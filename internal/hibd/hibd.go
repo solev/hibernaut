@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/images"
+	"github.com/solev/hibernaut/internal/busy"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -35,7 +36,7 @@ const defaultConfig = "/etc/hibernaut/hibd.env"
 const usage = `usage: hibd <command> [flags]
 
 commands:
-  new NAME          make a machine (-image, default ` + images.Default + `)
+  new NAME          make a machine (-image, default ` + images.Default + `; -idle, default 15m)
   ls                list machines (-state running|paused, -q for IDs only)
   rm NAME           delete a machine for good
   pause NAME        pause a machine
@@ -43,6 +44,7 @@ commands:
   image build NAME  build an image (-force rebuilds every step)
   ready             wait until E2B answers (-timeout)
   pause-all         pause every running machine; wait until none is running
+  daemon            keep busy machines running (-every); systemd runs it as root
   version           print the version
 
 new, ls, rm, pause, image build and version print JSON with -json.
@@ -55,14 +57,22 @@ Environment variables of the same names override the file:
   E2B_HEALTH_URLS       what ready waits for, space-separated
   HIBD_STATE_DIR        default /var/lib/hibernaut
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
-  HIBD_QUIESCING        new, bridge and image build refuse while it exists; default
-                        /run/hibernaut/quiescing, which quiesce makes before pausing everything
+  HIBD_QUIESCING        new, bridge and image build refuse while it exists, and daemon leaves
+                        machines alone; default /run/hibernaut/quiescing, which quiesce makes
+                        before pausing everything
+  HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
+                        default codex copilot claude
+  HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
 `
 
 const (
 	createTimeout = 5 * time.Minute
 	dialTimeout   = 3 * time.Minute
 	buildTimeout  = time.Hour
+
+	// minIdle is the shortest idle time a machine may have, other than 0 (never pause). The
+	// daemon looks at machines every 15 s, and needs a few looks to see that one is busy.
+	minIdle = time.Minute
 )
 
 // App runs hibd commands.
@@ -99,6 +109,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.ready(ctx, args)
 	case "pause-all":
 		return a.pauseAll(ctx, args)
+	case "daemon":
+		return a.daemon(ctx, args)
 	case "version", "-v", "--version":
 		return a.version(args)
 	case "help", "-h", "--help":
@@ -112,10 +124,15 @@ func (a *App) Run(ctx context.Context, args []string) int {
 func (a *App) new(ctx context.Context, args []string) int {
 	fl := a.flags("new")
 	image := fl.String("image", images.Default, "the image to make the machine from")
+	idle := fl.Duration("idle", machines.DefaultIdle, "pause the machine once it has been idle this long; 0 means never")
 	asJSON := fl.Bool("json", false, "print JSON")
 	names, ok := a.parse(fl, args, 1, "new NAME")
 	if !ok {
 		return 2
+	}
+	if *idle != 0 && (*idle < minIdle || *idle > machines.MaxRun) {
+		return a.fail(*asJSON, "new", fmt.Errorf("bad idle time %v: want 0 (never pause), or %s to %s",
+			*idle, shortDuration(minIdle), shortDuration(machines.MaxRun)))
 	}
 	if err := a.awake(); err != nil {
 		return a.fail(*asJSON, "new", err)
@@ -126,7 +143,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(ctx, createTimeout)
 	defer cancel()
-	mach, err := m.Create(ctx, names[0], *image, machines.DefaultIdle)
+	mach, err := m.Create(ctx, names[0], *image, *idle)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
@@ -169,13 +186,19 @@ func (a *App) ls(ctx context.Context, args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(a.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tSTARTED\tENDS")
+	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tIDLE\tSTARTED\tENDS")
 	for _, m := range ms {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image),
-			m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image),
+			hibapi.FormatIdle(m.IdleSeconds), m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
 	}
 	tw.Flush()
 	return 0
+}
+
+// shortDuration formats d as "1m" or "720h" rather than "1m0s" or "720h0m0s".
+func shortDuration(d time.Duration) string {
+	sec := int64(d / time.Second)
+	return hibapi.FormatIdle(&sec)
 }
 
 func orDash(s string) string {
@@ -355,6 +378,63 @@ func (a *App) pauseAll(ctx context.Context, args []string) int {
 	return 0
 }
 
+// daemon keeps busy machines running until ctx is done.
+func (a *App) daemon(ctx context.Context, args []string) int {
+	fl := a.flags("daemon")
+	every := fl.Duration("every", 15*time.Second, "how often to look at the machines")
+	if _, ok := a.parse(fl, args, 0, "daemon [-every 15s]"); !ok {
+		return 2
+	}
+	if *every <= 0 {
+		fmt.Fprintf(a.Stderr, "hibd daemon: -every must be positive, not %v\n", *every)
+		return 2
+	}
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		return a.fail(false, "daemon", err)
+	}
+	e, err := a.engine()
+	if err != nil {
+		return a.fail(false, "daemon", err)
+	}
+	logger := log.New(a.Stderr, "", 0)
+	w, err := busy.New(busy.Config{Engine: e, CPU: busy.CgroupCPU(cfg.cgroups), Agents: cfg.agents, Logf: logger.Printf})
+	if err != nil {
+		return a.fail(false, "daemon", err)
+	}
+	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
+	t := time.NewTicker(*every)
+	defer t.Stop()
+	problem := "" // what kept the last look from happening, as logged
+	for {
+		now := ""
+		switch err := a.awake(); {
+		case errors.Is(err, errQuiescing):
+			now = "the host is going to sleep: leaving machines alone"
+		case err != nil:
+			now = err.Error()
+		default:
+			if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
+				now = err.Error()
+			}
+		}
+		if now != problem {
+			if now == "" {
+				logger.Printf("looking at machines again")
+			} else {
+				logger.Printf("%s", now)
+			}
+			problem = now
+		}
+		select {
+		case <-ctx.Done():
+			logger.Printf("stopping")
+			return 0
+		case <-t.C:
+		}
+	}
+}
+
 func (a *App) version(args []string) int {
 	fl := a.flags("version")
 	asJSON := fl.Bool("json", false, "print JSON")
@@ -468,6 +548,8 @@ type config struct {
 	stateDir       string
 	authorizedKeys string
 	quiescing      string
+	agents         []string
+	cgroups        string
 }
 
 // loadConfig reads the env file, then lets environment variables override it.
@@ -510,6 +592,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		stateDir:       get("HIBD_STATE_DIR", "/var/lib/hibernaut"),
 		authorizedKeys: get("HIBD_AUTHORIZED_KEYS", keys),
 		quiescing:      get("HIBD_QUIESCING", "/run/hibernaut/quiescing"),
+		agents:         strings.Fields(get("HIBD_AGENTS", "")),
+		cgroups:        get("HIBD_CGROUPS", "/sys/fs/cgroup/e2b"),
 	}
 	if cfg.e2b.APIKey == "" {
 		return config{}, fmt.Errorf("E2B_API_KEY is not set (in the environment or %s)", path)
