@@ -15,6 +15,9 @@ Status: **done** · Spec: §2, §3, §5 (Names and state, SSH path)
 - [x] The `dev` image: Ubuntu 24.04, user `user` with passwordless sudo, sshd, websocat on port
       8081 → sshd, git, gh, tmux, Node LTS, Python 3, build tools. Defined in `images/images.go`
       from the embedded `images/dev/` files, not a Dockerfile (see Changes).
+- [x] Full-screen programs (`clear`, `nano`, `tmux`) work from Ghostty, kitty, WezTerm, Alacritty
+      and the like: the image has their terminfo entries, and a login shell falls back to
+      `xterm-256color` for a TERM it doesn't know (see Changes).
 - [x] Each machine gets its own SSH host key, made at create time and pinned by `hibd`, not one
       baked into the image (see Changes).
 - [x] The laptop's SSH public key is written into the machine at create time (single user).
@@ -48,6 +51,8 @@ Unit:
 - [x] The ssh-config writer: idempotent, leaves the rest of the file alone, and an `Include` at
       the top so hib's settings win.
 - [x] JSON round-trip; a version mismatch gives a clear error.
+- [x] The login shell's TERM fallback: a known TERM is kept, an unknown one becomes
+      `xterm-256color`, and an unset one stays unset.
 
 Integration:
 
@@ -65,6 +70,9 @@ End-to-end:
       equals the host pin, a second machine gets a different key, and a swapped host pin is caught.
 - [x] `TestMachineNetwork`: GitHub is reachable; Azure's WireServer (168.63.129.16, :80 and
       :32526) is not (see Changes, the firewall).
+- [x] `TestMachineTerminal`: `tput clear` works over `ssh -tt` with TERM `xterm-ghostty`,
+      `xterm-kitty`, `wezterm` and `alacritty`, and logging in with a TERM the machine doesn't
+      know falls back to `xterm-256color`.
 - [x] `TestQuiescing`: while the host is draining, `hib new` is refused with an explanation and
       leaves nothing behind, and `hib ls` still works.
 - [x] `TestWakeOnSSH` (slow): after the VM deallocates itself, `ssh name.hib` wakes it through
@@ -118,6 +126,13 @@ End-to-end:
 - **termsafe.** `hib` runs engine and machine output through `internal/termsafe`, which escapes
   control sequences, so a machine can't drive the laptop's terminal (clipboard writes, screen
   clears) through command output.
+- **Terminfo for the laptop's terminal.** ssh passes the laptop's TERM on, and stock Ubuntu 24.04
+  has no terminfo entry for Ghostty's `xterm-ghostty` (ncurses ships it only from 6.5-20241228),
+  kitty, WezTerm or Alacritty, so `clear`, `nano` and `tmux` failed in them. The image now
+  installs `ncurses-term` and `kitty-terminfo`, and compiles Ghostty's entry into `/etc/terminfo`
+  from `images/dev/ghostty.terminfo` (from Ghostty 1.2.3, MIT; it compiles to exactly the entry
+  Ghostty ships). For any TERM still unknown, `/etc/profile.d/hib-term.sh` falls back to
+  `xterm-256color`. Machines made before this keep the old image; recreate them to get it.
 - **Makefile timeouts.** `make e2e` runs with `-timeout 40m` (the default 10 m is too short for a
   cold image build plus the machine tests) and `make e2e-slow` with `-timeout 90m`.
 

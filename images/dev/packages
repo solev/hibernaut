@@ -12,9 +12,11 @@ WEBSOCAT_VERSION=1.14.1
 WEBSOCAT_SHA256=66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514
 
 apt-get update
+# ncurses-term and kitty-terminfo have the terminfo entries of terminals people ssh in from, such
+# as WezTerm, Alacritty, iTerm2 and kitty. configure adds Ghostty's.
 apt-get install -y --no-install-recommends \
-	build-essential ca-certificates curl gh git jq less nano openssh-client procps \
-	python3 python3-pip python3-venv ripgrep tmux unzip xz-utils
+	build-essential ca-certificates curl gh git jq kitty-terminfo less nano ncurses-term \
+	openssh-client procps python3 python3-pip python3-venv ripgrep tmux unzip xz-utils
 apt-get clean
 
 tmp=$(mktemp -d)

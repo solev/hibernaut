@@ -182,6 +182,34 @@ func TestMachineNetwork(t *testing.T) {
 	}
 }
 
+// TestMachineTerminal checks that full-screen programs work from the laptop's terminal. ssh
+// passes the laptop's TERM on, and Ghostty, kitty, WezTerm and Alacritty each set a TERM a stock
+// Ubuntu has no terminfo for, so clear, nano and tmux failed in them. For a terminal the machine
+// still doesn't know, the login shell falls back to xterm-256color.
+func TestMachineTerminal(t *testing.T) {
+	ctx := testContext(t, 15*time.Minute)
+	name := newHibMachine(t, ctx)
+
+	// -tt gives the command a terminal, and SetEnv TERM replaces the TERM ssh sends with it.
+	// tput clear fails with "unknown terminal" when the machine has no terminfo for TERM.
+	for _, term := range []string{"xterm-ghostty", "xterm-kitty", "wezterm", "alacritty", "xterm-256color"} {
+		out, stderr, err := sshResult(ctx, []string{"-tt", "-o", "SetEnv=TERM=" + term}, name,
+			`tput clear >/dev/null && printf 'term=%s\n' "$TERM"`)
+		if err != nil || !strings.Contains(out, "term="+term) {
+			t.Errorf("tput clear with TERM=%s: %v\n%s\n%s", term, err, out, stderr)
+		}
+	}
+
+	// ssh NAME.hib logs in with a terminal. The terminal echoes the typed commands too, so the
+	// checks look for what only their output has.
+	cmd := sshMachineCmd(ctx, []string{"-tt", "-o", "SetEnv=TERM=hib-no-such-terminal"}, name, "")
+	cmd.Stdin = strings.NewReader("printf 'term=%s\\n' \"$TERM\"; tput clear >/dev/null && echo cleared''ok\nexit\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "term=xterm-256color") || !strings.Contains(string(out), "clearedok") {
+		t.Errorf("logging in with an unknown TERM: %v\n%s", err, out)
+	}
+}
+
 // sshResult runs ssh NAME.hib command with extra options and returns its output, its stderr and
 // the run error, so a test can assert on a failed connection.
 func sshResult(ctx context.Context, extra []string, name, command string) (stdout, stderr string, err error) {

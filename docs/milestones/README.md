@@ -9,7 +9,7 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
 | M0 | [Foundations](m0-foundations.md) | done | `TestEngineContract`, `TestPauseAll`, `TestSurvivesHostRestart` |
-| M1 | [Machines](m1-machines.md) | done | `TestMachine`, `TestMachineSecurity`, `TestMachineNetwork`, `TestQuiescing`, `TestWakeOnSSH` |
+| M1 | [Machines](m1-machines.md) | done | `TestMachine`, `TestMachineSecurity`, `TestMachineNetwork`, `TestMachineTerminal`, `TestQuiescing`, `TestWakeOnSSH` |
 | M2 | [Idle and wake](m2-idle-and-wake.md) | not started | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestWakeOnExec` |
 | M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | not started | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
 | M4 | [GitHub](m4-github.md) | not started | `TestGitHubFullFlow`, `TestWorkflowPush` |

@@ -71,6 +71,8 @@ var catalog = map[string]image{
 					{"hib-sshd.socket", "/etc/systemd/system/hib-sshd.socket", 0o644},
 					{"hib-sshd@.service", "/etc/systemd/system/hib-sshd@.service", 0o644},
 					{"hib-websocat.service", "/etc/systemd/system/hib-websocat.service", 0o644},
+					{"ghostty.terminfo", lib + "/ghostty.terminfo", 0o644},
+					{"hib-term.sh", "/etc/profile.d/hib-term.sh", 0o644},
 					{"configure", lib + "/configure", 0o755},
 					{"start", lib + "/start", 0o755},
 					{"ready", lib + "/ready", 0o755},

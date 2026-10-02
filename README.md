@@ -155,6 +155,7 @@ hib new app                # create a machine named app
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
 hib exec app -- uname -a   # run one command, no interactive shell
 hib ls                     # machines, running and paused
+hib pause app              # pause it now; ssh app.hib resumes it
 hib rm app                 # delete it
 ```
 
@@ -162,6 +163,13 @@ hib rm app                 # delete it
 top of `~/.ssh/config`, so `ssh app.hib` just works. Behind that name, `hib bridge` resumes the
 machine if it's paused, starts the Azure VM if it's deallocated, and checks the machine's pinned
 host key. The machine user is `user`, with passwordless sudo.
+
+Machines pause themselves. Within an hour of the last `ssh` or `hib exec` disconnecting, a machine
+pauses with its memory and files, even if a program in it is still busy (M2 keeps busy machines
+awake). `ssh app.hib` resumes it in about a second, where it left off. After 30 minutes with no
+machine running and no one connected, the VM deallocates itself, and every night at 20:00 UTC it
+pauses every machine and deallocates regardless (see [Costs and auto-off](#costs-and-auto-off)).
+`make down` does that now.
 
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,

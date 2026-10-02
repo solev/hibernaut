@@ -1,6 +1,6 @@
 #!/bin/bash
-# Configures the dev image once its files are in place: SSH only through hibd's bridge. Runs as
-# root when the template is built.
+# Configures the dev image once its files are in place: SSH only through hibd's bridge, and
+# Ghostty's terminfo entry. Runs as root when the template is built.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -26,3 +26,7 @@ key=$(mktemp -d)
 ssh-keygen -q -t ed25519 -N '' -f "$key/k"
 sshd -t -f /etc/hibernaut/sshd_config -h "$key/k"
 rm -rf "$key"
+
+# Ubuntu 24.04's ncurses predates Ghostty's entry. /etc/terminfo holds the machine's own entries
+# and is searched before /usr/share/terminfo.
+tic -x -o /etc/terminfo /usr/lib/hibernaut/ghostty.terminfo
