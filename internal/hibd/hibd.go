@@ -126,7 +126,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(ctx, createTimeout)
 	defer cancel()
-	mach, err := m.Create(ctx, names[0], *image)
+	mach, err := m.Create(ctx, names[0], *image, machines.DefaultIdle)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}

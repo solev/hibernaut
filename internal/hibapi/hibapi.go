@@ -42,7 +42,11 @@ type Machine struct {
 	Image     string    `json:"image,omitempty"`
 	State     string    `json:"state"`
 	StartedAt time.Time `json:"startedAt"`
-	EndAt     time.Time `json:"endAt"`
+	// EndAt is when a running machine pauses, unless something keeps it awake.
+	EndAt time.Time `json:"endAt"`
+	// IdleSeconds is how long the machine runs once it's idle before it pauses; 0 means never.
+	// It's nil for machines hibd didn't make.
+	IdleSeconds *int64 `json:"idleSeconds,omitempty"`
 }
 
 // Response is what a hibd command prints with --json: one object, then the command exits. A

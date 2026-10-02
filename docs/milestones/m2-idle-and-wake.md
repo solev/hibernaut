@@ -1,6 +1,6 @@
 # M2 Idle and wake
 
-Status: **not started** · Spec: §5 (Idle and wake, Room on the host)
+Status: **in progress** · Spec: §5 (Idle and wake, Room on the host)
 
 **Goal:** idle machines pause themselves. Touching one wakes it with its processes still running.
 Busy machines never pause. A full host says so plainly, and snapshots don't pile up on its disk.

@@ -26,12 +26,19 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
-// DefaultTimeout is how long a machine runs once nothing is connected to it, before it pauses.
-const DefaultTimeout = time.Hour
+const (
+	// DefaultIdle is how long a machine keeps running once it's idle, before it pauses, when
+	// it isn't given another idle time.
+	DefaultIdle = 15 * time.Minute
+	// MaxRun is the longest E2B runs a machine before pausing it, however often it's renewed
+	// (install-e2b.sh sets it). Machines that never pause when idle run for it at a time.
+	MaxRun = 720 * time.Hour
+)
 
 const (
 	labelName  = "hib.name"
 	labelImage = "hib.image"
+	labelIdle  = "hib.idle"
 
 	maxKeysFile    = 64 << 10
 	initTimeout    = 2 * time.Minute
@@ -57,44 +64,61 @@ type Config struct {
 	// host's own. Only keys without options are copied: options restrict a key on the host,
 	// and don't mean the same in a machine.
 	AuthorizedKeys string
-	// Timeout is how long a machine runs once nothing is connected to it. Default
-	// DefaultTimeout.
-	Timeout time.Duration
+	// Now tells the time. Default time.Now.
+	Now func() time.Time
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
 // processes sharing its state directory.
 type Manager struct {
-	e         engine.Engine
-	dir       string
-	keysFile  string
-	timeout   time.Duration
-	keepEvery time.Duration
+	e        engine.Engine
+	dir      string
+	keysFile string
+	now      func() time.Time
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
 func New(cfg Config) *Manager {
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = DefaultTimeout
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
 	}
-	return &Manager{
-		e:         cfg.Engine,
-		dir:       cfg.StateDir,
-		keysFile:  cfg.AuthorizedKeys,
-		timeout:   timeout,
-		keepEvery: timeout / 4,
+	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now}
+}
+
+// Idle returns how long machine em keeps running once it's idle before it pauses, 0 for never,
+// and whether hibd made it. Machines made before hibd kept idle times get DefaultIdle.
+func Idle(em engine.Machine) (idle time.Duration, ok bool) {
+	if hibapi.CheckName(em.Metadata[labelName]) != nil {
+		return 0, false
 	}
+	idle, err := time.ParseDuration(em.Metadata[labelIdle])
+	if err != nil || idle < 0 || idle > MaxRun {
+		return DefaultIdle, true
+	}
+	return idle, true
+}
+
+// timeoutFor returns the engine timeout that pauses a machine idle from now.
+func timeoutFor(idle time.Duration) time.Duration {
+	if idle == 0 {
+		return MaxRun
+	}
+	return idle
 }
 
 // Create makes a machine called name from image, lets in the keys from Config.AuthorizedKeys,
-// and pins its host key. A machine that can't be set up is killed again.
-func (m *Manager) Create(ctx context.Context, name, image string) (hibapi.Machine, error) {
+// and pins its host key. The machine pauses once it has been idle for idle; 0 means never. A
+// machine that can't be set up is killed again.
+func (m *Manager) Create(ctx context.Context, name, image string, idle time.Duration) (hibapi.Machine, error) {
 	if err := hibapi.CheckName(name); err != nil {
 		return hibapi.Machine{}, err
 	}
 	if _, err := images.Spec(image); err != nil {
 		return hibapi.Machine{}, err
+	}
+	if idle < 0 || idle > MaxRun {
+		return hibapi.Machine{}, fmt.Errorf("bad idle time %v: want 0 (never pause) up to %v", idle, MaxRun)
 	}
 	if err := m.checkState(); err != nil {
 		return hibapi.Machine{}, err
@@ -118,8 +142,8 @@ func (m *Manager) Create(ctx context.Context, name, image string) (hibapi.Machin
 
 	em, err := m.e.Create(ctx, engine.CreateOptions{
 		Template: images.Template(image),
-		Timeout:  m.timeout,
-		Metadata: map[string]string{labelName: name, labelImage: image},
+		Timeout:  timeoutFor(idle),
+		Metadata: map[string]string{labelName: name, labelImage: image, labelIdle: idle.String()},
 	})
 	if errors.Is(err, engine.ErrNoTemplate) {
 		return hibapi.Machine{}, fmt.Errorf("image %q isn't built yet (run: hib image build %s)", image, image)
@@ -200,7 +224,8 @@ type Conn struct {
 	once sync.Once
 }
 
-// Close closes the connection, and lets the machine pause Config.Timeout later.
+// Close closes the connection. Unless something keeps the machine running, it pauses once it
+// has been idle for its idle time from now.
 func (c *Conn) Close() error {
 	c.once.Do(c.stop)
 	return c.Conn.Close()
@@ -217,40 +242,49 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	idle, _ := Idle(em)
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
 		// The pin was lost: ask the machine again. Its key file outlives its pin.
-		key, err = m.repin(ctx, em.ID)
+		key, err = m.repin(ctx, em.ID, idle)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%q: %w", name, err)
 	}
-	conn, err := m.e.DialWebSocket(ctx, em.ID, images.SSHPort, m.timeout)
+	conn, err := m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %q: %w", name, err)
 	}
-	kctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	bg := context.WithoutCancel(ctx)
+	kctx, cancel := context.WithCancel(bg)
 	done := make(chan struct{})
-	go m.keepalive(kctx, em.ID, done)
-	return &Conn{Conn: conn, HostKey: key, stop: func() { cancel(); <-done }}, nil
+	go m.keepalive(kctx, em.ID, idle, done)
+	return &Conn{Conn: conn, HostKey: key, stop: func() {
+		cancel()
+		<-done
+		m.extend(bg, em.ID, idle)
+	}}, nil
 }
 
-func (m *Manager) repin(ctx context.Context, id string) (ssh.PublicKey, error) {
+func (m *Manager) repin(ctx context.Context, id string, idle time.Duration) (ssh.PublicKey, error) {
 	keys, err := m.authorizedKeys()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := m.e.Resume(ctx, id, m.timeout); err != nil {
+	if _, err := m.e.Resume(ctx, id, timeoutFor(idle)); err != nil {
 		return nil, err
 	}
 	return m.initMachine(ctx, id, keys)
 }
 
-// keepalive keeps machine id running until ctx is done. Unlike Resume, SetTimeout doesn't
-// start a machine that was paused on purpose. Errors are ignored: the next tick tries again.
-func (m *Manager) keepalive(ctx context.Context, id string, done chan<- struct{}) {
+// keepalive keeps machine id running until ctx is done.
+func (m *Manager) keepalive(ctx context.Context, id string, idle time.Duration, done chan<- struct{}) {
 	defer close(done)
-	t := time.NewTicker(m.keepEvery)
+	if idle == 0 {
+		<-ctx.Done() // It runs for MaxRun at a time anyway.
+		return
+	}
+	t := time.NewTicker(idle / 4)
 	defer t.Stop()
 	for {
 		select {
@@ -258,8 +292,24 @@ func (m *Manager) keepalive(ctx context.Context, id string, done chan<- struct{}
 			return
 		case <-t.C:
 		}
-		m.e.SetTimeout(ctx, id, m.timeout)
+		m.extend(ctx, id, idle)
 	}
+}
+
+// extend makes machine id run for at least idle from now, if it's running. It never shortens
+// the machine's timeout and, unlike Resume, never starts a machine that was paused on purpose.
+// Errors are ignored: callers try again later, or leave the machine to its timeout.
+func (m *Manager) extend(ctx context.Context, id string, idle time.Duration) {
+	if idle == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	defer cancel()
+	em, err := m.e.Get(ctx, id)
+	if err != nil || em.State != engine.Running || !em.EndAt.Before(m.now().Add(idle)) {
+		return
+	}
+	m.e.SetTimeout(ctx, id, idle)
 }
 
 // lookup finds the machine called name.
@@ -473,13 +523,19 @@ func toAPI(em engine.Machine) hibapi.Machine {
 	if hibapi.CheckName(image) != nil {
 		image = ""
 	}
+	var idleSeconds *int64
+	if idle, ok := Idle(em); ok {
+		s := int64((idle + time.Second - 1) / time.Second) // Round up: only never is 0.
+		idleSeconds = &s
+	}
 	return hibapi.Machine{
-		Name:      name,
-		ID:        em.ID,
-		Image:     image,
-		State:     string(em.State),
-		StartedAt: em.StartedAt,
-		EndAt:     em.EndAt,
+		Name:        name,
+		ID:          em.ID,
+		Image:       image,
+		State:       string(em.State),
+		StartedAt:   em.StartedAt,
+		EndAt:       em.EndAt,
+		IdleSeconds: idleSeconds,
 	}
 }
 

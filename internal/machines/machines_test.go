@@ -89,7 +89,13 @@ type env struct {
 	dialed chan net.Conn
 }
 
-func newEnv(t *testing.T, timeout time.Duration, opts ...fake.Option) *env {
+func newEnv(t *testing.T, opts ...fake.Option) *env {
+	t.Helper()
+	return newEnvAt(t, time.Now, opts...)
+}
+
+// newEnvAt is newEnv with the engine and the Manager on clock now.
+func newEnvAt(t *testing.T, now func() time.Time, opts ...fake.Option) *env {
 	t.Helper()
 	g := &guest{hostKeys: map[string]ssh.PublicKey{}, keys: map[string]string{}, runs: map[string]int{}}
 	dir := t.TempDir()
@@ -110,19 +116,34 @@ func newEnv(t *testing.T, timeout time.Duration, opts ...fake.Option) *env {
 			dialed <- b
 			return a, nil
 		}),
+		fake.WithClock(now),
 	}, opts...)
 	e := fake.New(opts...)
-	m := machines.New(machines.Config{Engine: e, StateDir: dir, AuthorizedKeys: keys, Timeout: timeout})
+	m := machines.New(machines.Config{Engine: e, StateDir: dir, AuthorizedKeys: keys, Now: now})
 	return &env{m: m, e: e, g: g, dir: dir, keys: keys, myKey: myKey, dialed: dialed}
 }
 
 func (v *env) create(t *testing.T, name string) hibapi.Machine {
 	t.Helper()
-	m, err := v.m.Create(t.Context(), name, "dev")
+	return v.createIdle(t, name, machines.DefaultIdle)
+}
+
+func (v *env) createIdle(t *testing.T, name string, idle time.Duration) hibapi.Machine {
+	t.Helper()
+	m, err := v.m.Create(t.Context(), name, "dev", idle)
 	if err != nil {
-		t.Fatalf("Create(%q): %v", name, err)
+		t.Fatalf("Create(%q, idle %v): %v", name, idle, err)
 	}
 	return m
+}
+
+func (v *env) get(t *testing.T, id string) engine.Machine {
+	t.Helper()
+	em, err := v.e.Get(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return em
 }
 
 func (v *env) pin(t *testing.T, id string) string {
@@ -144,21 +165,21 @@ func (v *env) machines(t *testing.T) []engine.Machine {
 }
 
 func TestCreate(t *testing.T) {
-	v := newEnv(t, 90*time.Minute)
-	m := v.create(t, "app")
+	v := newEnv(t)
+	m := v.createIdle(t, "app", 90*time.Minute)
 	if m.Name != "app" || m.Image != "dev" || m.State != "running" || m.ID == "" {
 		t.Errorf("Create = %+v", m)
 	}
-
-	em, err := v.e.Get(t.Context(), m.ID)
-	if err != nil {
-		t.Fatal(err)
+	if m.IdleSeconds == nil || *m.IdleSeconds != 90*60 {
+		t.Errorf("IdleSeconds = %v, want 5400", m.IdleSeconds)
 	}
-	if em.Template != "hib-dev" || em.Metadata["hib.name"] != "app" || em.Metadata["hib.image"] != "dev" {
+
+	em := v.get(t, m.ID)
+	if em.Template != "hib-dev" || em.Metadata["hib.name"] != "app" || em.Metadata["hib.image"] != "dev" || em.Metadata["hib.idle"] != "1h30m0s" {
 		t.Errorf("engine machine = %+v, want template hib-dev and hib.* metadata", em)
 	}
 	if got := em.EndAt.Sub(em.StartedAt); got != 90*time.Minute {
-		t.Errorf("timeout = %v, want the configured 90m", got)
+		t.Errorf("timeout = %v, want the idle time, 90m", got)
 	}
 	if got := v.g.keys[m.ID]; got != v.myKey {
 		t.Errorf("machine-init got keys %q, want %q", got, v.myKey)
@@ -178,10 +199,55 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreateNeverPauses(t *testing.T) {
+	v := newEnv(t)
+	m := v.createIdle(t, "app", 0)
+	if m.IdleSeconds == nil || *m.IdleSeconds != 0 {
+		t.Errorf("IdleSeconds = %v, want 0 (never)", m.IdleSeconds)
+	}
+	em := v.get(t, m.ID)
+	if em.Metadata["hib.idle"] != "0s" {
+		t.Errorf("hib.idle = %q, want 0s", em.Metadata["hib.idle"])
+	}
+	if got := em.EndAt.Sub(em.StartedAt); got != machines.MaxRun {
+		t.Errorf("timeout = %v, want the longest E2B allows, %v", got, machines.MaxRun)
+	}
+}
+
+func TestIdle(t *testing.T) {
+	named := func(idle string) engine.Machine {
+		md := map[string]string{"hib.name": "app"}
+		if idle != "" {
+			md["hib.idle"] = idle
+		}
+		return engine.Machine{ID: "x", Metadata: md}
+	}
+	for _, tc := range []struct {
+		name string
+		m    engine.Machine
+		idle time.Duration
+		ok   bool
+	}{
+		{"set", named("5m0s"), 5 * time.Minute, true},
+		{"never", named("0s"), 0, true},
+		{"made before M2", named(""), machines.DefaultIdle, true},
+		{"garbage", named("soon"), machines.DefaultIdle, true},
+		{"negative", named("-5m"), machines.DefaultIdle, true},
+		{"too long", named("1000h"), machines.DefaultIdle, true},
+		{"not hibd's", engine.Machine{ID: "x", Metadata: map[string]string{"hib.idle": "5m0s"}}, 0, false},
+		{"bad name", engine.Machine{ID: "x", Metadata: map[string]string{"hib.name": "A B"}}, 0, false},
+	} {
+		idle, ok := machines.Idle(tc.m)
+		if idle != tc.idle || ok != tc.ok {
+			t.Errorf("%s: Idle = %v, %v; want %v, %v", tc.name, idle, ok, tc.idle, tc.ok)
+		}
+	}
+}
+
 func TestCreateNameTaken(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	v.create(t, "app")
-	_, err := v.m.Create(t.Context(), "app", "dev")
+	_, err := v.m.Create(t.Context(), "app", "dev", machines.DefaultIdle)
 	if !errors.Is(err, machines.ErrExists) {
 		t.Errorf("second Create = %v, want ErrExists", err)
 	}
@@ -192,7 +258,7 @@ func TestCreateNameTaken(t *testing.T) {
 }
 
 func TestCreateRaceKeepsNamesUnique(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	v.g.delay = 20 * time.Millisecond
 	var wg sync.WaitGroup
 	errs := make([]error, 8)
@@ -200,7 +266,7 @@ func TestCreateRaceKeepsNamesUnique(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = v.m.Create(t.Context(), "app", "dev")
+			_, errs[i] = v.m.Create(t.Context(), "app", "dev", machines.DefaultIdle)
 		}()
 	}
 	wg.Wait()
@@ -219,7 +285,7 @@ func TestCreateRaceKeepsNamesUnique(t *testing.T) {
 }
 
 func TestCreateRejects(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	for _, tc := range []struct{ name, image, want string }{
 		{"App", "dev", "bad name"},
 		{"../x", "dev", "bad name"},
@@ -227,9 +293,14 @@ func TestCreateRejects(t *testing.T) {
 		{"app", "nope", `no image "nope"`},
 		{"app", "", `no image ""`},
 	} {
-		_, err := v.m.Create(t.Context(), tc.name, tc.image)
+		_, err := v.m.Create(t.Context(), tc.name, tc.image, machines.DefaultIdle)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("Create(%q, %q) = %v, want an error containing %q", tc.name, tc.image, err, tc.want)
+		}
+	}
+	for _, idle := range []time.Duration{-time.Minute, machines.MaxRun + time.Second} {
+		if _, err := v.m.Create(t.Context(), "app", "dev", idle); err == nil || !strings.Contains(err.Error(), "idle") {
+			t.Errorf("Create(idle %v) = %v, want an error about the idle time", idle, err)
 		}
 	}
 	if n := len(v.machines(t)); n != 0 {
@@ -238,8 +309,8 @@ func TestCreateRejects(t *testing.T) {
 }
 
 func TestCreateImageNotBuilt(t *testing.T) {
-	v := newEnv(t, 0, fake.WithTemplates())
-	_, err := v.m.Create(t.Context(), "app", "dev")
+	v := newEnv(t, fake.WithTemplates())
+	_, err := v.m.Create(t.Context(), "app", "dev", machines.DefaultIdle)
 	if err == nil || !strings.Contains(err.Error(), "hib image build dev") {
 		t.Errorf("Create = %v, want a hint to build the image", err)
 	}
@@ -257,9 +328,9 @@ func TestCreateKillsMachineThatFailsSetup(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			v := newEnv(t, 0)
+			v := newEnv(t)
 			v.g.result = result
-			_, err := v.m.Create(t.Context(), "app", "dev")
+			_, err := v.m.Create(t.Context(), "app", "dev", machines.DefaultIdle)
 			if err == nil {
 				t.Fatal("Create = nil, want an error")
 			}
@@ -279,13 +350,13 @@ func TestCreateKillsMachineThatFailsSetup(t *testing.T) {
 }
 
 func TestCreateCancelledStillKills(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	v.g.result = func() (engine.ExecResult, error) {
 		cancel()
 		return engine.ExecResult{}, context.Canceled
 	}
-	if _, err := v.m.Create(ctx, "app", "dev"); err == nil {
+	if _, err := v.m.Create(ctx, "app", "dev", machines.DefaultIdle); err == nil {
 		t.Fatal("Create = nil, want an error")
 	}
 	if n := len(v.machines(t)); n != 0 {
@@ -294,7 +365,7 @@ func TestCreateCancelledStillKills(t *testing.T) {
 }
 
 func TestAuthorizedKeysFiltered(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	ed := ssh.MarshalAuthorizedKey(newKey())
 	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -349,14 +420,14 @@ func TestAuthorizedKeysUnusable(t *testing.T) {
 		"too big":      ptr(string(ssh.MarshalAuthorizedKey(newKey())) + strings.Repeat("#", 64<<10)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			v := newEnv(t, 0)
+			v := newEnv(t)
 			os.Remove(v.keys)
 			if content != nil {
 				if err := os.WriteFile(v.keys, []byte(*content), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if _, err := v.m.Create(t.Context(), "app", "dev"); err == nil {
+			if _, err := v.m.Create(t.Context(), "app", "dev", machines.DefaultIdle); err == nil {
 				t.Error("Create = nil, want an error")
 			}
 			if n := len(v.machines(t)); n != 0 {
@@ -367,9 +438,9 @@ func TestAuthorizedKeysUnusable(t *testing.T) {
 }
 
 func TestAuthorizedKeysNotConfigured(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	m := machines.New(machines.Config{Engine: v.e, StateDir: v.dir})
-	if _, err := m.Create(t.Context(), "app", "dev"); err == nil || !strings.Contains(err.Error(), "no authorized_keys file") {
+	if _, err := m.Create(t.Context(), "app", "dev", machines.DefaultIdle); err == nil || !strings.Contains(err.Error(), "no authorized_keys file") {
 		t.Errorf("Create = %v, want an error saying there's no authorized_keys file", err)
 	}
 	if n := len(v.machines(t)); n != 0 {
@@ -419,10 +490,10 @@ func TestStateDirChecked(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			v := newEnv(t, 0)
+			v := newEnv(t)
 			dir := setup(t, v.dir)
 			m := machines.New(machines.Config{Engine: v.e, StateDir: dir, AuthorizedKeys: v.keys})
-			if _, err := m.Create(t.Context(), "app", "dev"); err == nil || !strings.Contains(err.Error(), "state directory") {
+			if _, err := m.Create(t.Context(), "app", "dev", machines.DefaultIdle); err == nil || !strings.Contains(err.Error(), "state directory") {
 				t.Errorf("Create = %v, want a state directory error", err)
 			}
 			if _, err := m.Dial(t.Context(), "app"); err == nil {
@@ -436,7 +507,7 @@ func TestStateDirChecked(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	app := v.create(t, "app")
 	v.e.Add(engine.Machine{ID: "unnamed1", State: engine.Paused, Template: "base"})
 	v.e.Add(engine.Machine{ID: "weird1", State: engine.Running, Metadata: map[string]string{"hib.name": "\x1b[31mevil", "hib.image": "a b"}})
@@ -466,7 +537,7 @@ func TestList(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	app := v.create(t, "app")
 	keep := v.create(t, "keep")
 	if err := v.m.Remove(t.Context(), "app"); err != nil {
@@ -486,7 +557,7 @@ func TestRemove(t *testing.T) {
 }
 
 func TestPause(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	app := v.create(t, "app")
 	for range 2 {
 		if err := v.m.Pause(t.Context(), "app"); err != nil {
@@ -502,7 +573,7 @@ func TestPause(t *testing.T) {
 }
 
 func TestLookupAmbiguous(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	for _, id := range []string{"aaa", "bbb"} {
 		v.e.Add(engine.Machine{ID: id, State: engine.Running, Metadata: map[string]string{"hib.name": "app"}})
 	}
@@ -523,7 +594,7 @@ func TestLookupAmbiguous(t *testing.T) {
 }
 
 func TestDial(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	app := v.create(t, "app")
 	if err := v.m.Pause(t.Context(), "app"); err != nil {
 		t.Fatal(err)
@@ -559,7 +630,7 @@ func TestDial(t *testing.T) {
 }
 
 func TestDialRepinsLostPin(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	app := v.create(t, "app")
 	want := v.pin(t, app.ID)
 	if err := os.Remove(filepath.Join(v.dir, "host-keys", app.ID)); err != nil {
@@ -590,7 +661,7 @@ func TestDialRepinsLostPin(t *testing.T) {
 }
 
 func TestDialRefusesCorruptPin(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	app := v.create(t, "app")
 	if err := os.WriteFile(filepath.Join(v.dir, "host-keys", app.ID), []byte("ssh-ed25519 AAAA\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -604,7 +675,7 @@ func TestDialRefusesCorruptPin(t *testing.T) {
 }
 
 func TestDialRejectsOddIDs(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	v.e.Add(engine.Machine{ID: "../../x", State: engine.Running, Metadata: map[string]string{"hib.name": "app"}})
 	if _, err := v.m.Dial(t.Context(), "app"); err == nil || !strings.Contains(err.Error(), "unexpected machine ID") {
 		t.Errorf("Dial = %v, want an unexpected machine ID error", err)
@@ -615,7 +686,7 @@ func TestDialRejectsOddIDs(t *testing.T) {
 }
 
 func TestDialUnknown(t *testing.T) {
-	v := newEnv(t, 0)
+	v := newEnv(t)
 	if _, err := v.m.Dial(t.Context(), "nope"); !errors.Is(err, machines.ErrNoMachine) {
 		t.Errorf("Dial = %v, want ErrNoMachine", err)
 	}
@@ -645,8 +716,8 @@ func (c *clock) Add(d time.Duration) {
 func TestKeepalive(t *testing.T) {
 	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	const timeout = 200 * time.Millisecond // so it ticks every 50ms
-	v := newEnv(t, timeout, fake.WithClock(clk.Now))
-	app := v.create(t, "app")
+	v := newEnvAt(t, clk.Now)
+	app := v.createIdle(t, "app", timeout)
 	c, err := v.m.Dial(t.Context(), "app")
 	if err != nil {
 		t.Fatal(err)
@@ -686,13 +757,16 @@ func TestKeepalive(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close hangs")
 	}
+	if em, _ := v.e.Get(t.Context(), app.ID); em.State != engine.Paused {
+		t.Errorf("state after Close = %s, want it left paused", em.State)
+	}
 }
 
 func TestKeepaliveStopsOnClose(t *testing.T) {
 	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	const timeout = 200 * time.Millisecond
-	v := newEnv(t, timeout, fake.WithClock(clk.Now))
-	app := v.create(t, "app")
+	v := newEnvAt(t, clk.Now)
+	app := v.createIdle(t, "app", timeout)
 	c, err := v.m.Dial(t.Context(), "app")
 	if err != nil {
 		t.Fatal(err)
@@ -703,5 +777,102 @@ func TestKeepaliveStopsOnClose(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if after, _ := v.e.Get(t.Context(), app.ID); !after.EndAt.Equal(before.EndAt) {
 		t.Errorf("EndAt moved from %v to %v after Close", before.EndAt, after.EndAt)
+	}
+}
+
+func TestCloseStartsIdleClock(t *testing.T) {
+	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+	v := newEnvAt(t, clk.Now)
+	app := v.createIdle(t, "app", time.Hour) // the keepalive won't tick during the test
+	c, err := v.m.Dial(t.Context(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	c.Close()
+	if got, want := v.get(t, app.ID).EndAt, clk.Now().Add(time.Hour); !got.Equal(want) {
+		t.Errorf("EndAt after Close = %v, want an hour after the disconnect, %v", got, want)
+	}
+
+	// Close never shortens a timeout.
+	far := clk.Now().Add(5 * time.Hour)
+	if err := v.e.SetTimeout(t.Context(), app.ID, 5*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	c, err = v.m.Dial(t.Context(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	if got := v.get(t, app.ID).EndAt; !got.Equal(far) {
+		t.Errorf("EndAt after Close = %v, want it left at %v", got, far)
+	}
+}
+
+func TestDialResumesForIdleTime(t *testing.T) {
+	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+	v := newEnvAt(t, clk.Now)
+	app := v.createIdle(t, "app", 20*time.Minute)
+	if err := v.m.Pause(t.Context(), "app"); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(time.Hour)
+	c, err := v.m.Dial(t.Context(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	em := v.get(t, app.ID)
+	if want := clk.Now().Add(20 * time.Minute); em.State != engine.Running || !em.EndAt.Equal(want) {
+		t.Errorf("after Dial: %s until %v, want running until %v", em.State, em.EndAt, want)
+	}
+}
+
+func TestDialNeverPausing(t *testing.T) {
+	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+	v := newEnvAt(t, clk.Now)
+	app := v.createIdle(t, "app", 0)
+	if err := v.m.Pause(t.Context(), "app"); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(time.Hour)
+	c, err := v.m.Dial(t.Context(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := clk.Now().Add(machines.MaxRun)
+	if em := v.get(t, app.ID); em.State != engine.Running || !em.EndAt.Equal(want) {
+		t.Errorf("after Dial: %s until %v, want running until %v", em.State, em.EndAt, want)
+	}
+	clk.Add(time.Minute)
+	c.Close()
+	if em := v.get(t, app.ID); !em.EndAt.Equal(want) {
+		t.Errorf("EndAt after Close = %v, want it left at %v", em.EndAt, want)
+	}
+}
+
+func TestListIdle(t *testing.T) {
+	v := newEnv(t)
+	v.createIdle(t, "app", 0)
+	v.e.Add(engine.Machine{ID: "old1", State: engine.Paused, Metadata: map[string]string{"hib.name": "old"}})
+	v.e.Add(engine.Machine{ID: "other1", State: engine.Paused})
+	ms, err := v.m.List(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, m := range ms {
+		got[m.ID] = "nil"
+		if m.IdleSeconds != nil {
+			got[m.ID] = fmt.Sprint(*m.IdleSeconds)
+		}
+	}
+	for id, want := range map[string]string{"old1": "900", "other1": "nil"} {
+		if got[id] != want {
+			t.Errorf("IdleSeconds of %s = %s, want %s", id, got[id], want)
+		}
+	}
+	if n := len(got); n != 3 {
+		t.Errorf("%d machines, want 3", n)
 	}
 }

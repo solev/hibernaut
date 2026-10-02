@@ -106,7 +106,11 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 	body := e2bapi.NewSandboxV2{
 		TemplateID: opts.Template,
 		// A machine whose timeout runs out pauses, memory included, instead of being deleted.
-		AutoPause: ptr(true),
+		AutoPause:       ptr(true),
+		AutoPauseMemory: ptr(true),
+		// Traffic to a paused machine doesn't wake it: hibd resumes machines itself, so that
+		// only its users can.
+		AutoResume: &e2bapi.SandboxAutoResumeConfig{Enabled: false},
 		// Every port but envd's then needs the machine's traffic access token.
 		Network: &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
 	}

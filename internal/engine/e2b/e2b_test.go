@@ -332,6 +332,12 @@ func TestCreate(t *testing.T) {
 	if body["templateID"] != "base" || body["autoPause"] != true || body["timeout"] != float64(91) {
 		t.Errorf("create body = %v, want templateID base, autoPause true and the timeout rounded up to 91 s", body)
 	}
+	if body["autoPauseMemory"] != true {
+		t.Errorf("create body autoPauseMemory = %v, want true: a paused machine keeps its processes", body["autoPauseMemory"])
+	}
+	if resume, _ := body["autoResume"].(map[string]any); resume["enabled"] != false {
+		t.Errorf("create body autoResume = %v, want enabled false: only hibd wakes machines", body["autoResume"])
+	}
 	if network, _ := body["network"].(map[string]any); network["allowPublicTraffic"] != false {
 		t.Errorf("create body network = %v, want allowPublicTraffic false", body["network"])
 	}
