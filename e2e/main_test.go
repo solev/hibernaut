@@ -167,13 +167,13 @@ func ensureImage(t *testing.T) {
 	t.Logf("dev image ready (built in %v)", imageBuilt.Round(time.Second))
 }
 
-// newHibMachine creates a machine through the CLI and removes it when the test ends. The name
-// is e2e-prefixed so deleteLeftovers finds it after a crash.
-func newHibMachine(t *testing.T, ctx context.Context) string {
+// newHibMachine creates a machine through the CLI, with hib new's flags, and removes it when the
+// test ends. The name is e2e-prefixed so deleteLeftovers finds it after a crash.
+func newHibMachine(t *testing.T, ctx context.Context, flags ...string) string {
 	t.Helper()
 	ensureImage(t)
 	name := fmt.Sprintf("e2e-%08x", rand.Uint32())
-	hib(t, ctx, "new", name)
+	hib(t, ctx, append([]string{"new", name}, flags...)...)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()

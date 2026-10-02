@@ -48,6 +48,7 @@ down:
 e2e: up
 	go test -tags e2e -count=1 -v -timeout 40m ./e2e/...
 
-# Also reboots the VM, then deallocates and starts it, which adds about 5 minutes.
+# Also reboots the VM, then deallocates and starts it, which adds about 5 minutes, and keeps a
+# busy machine running past an hour, which adds about 65.
 e2e-slow: up
-	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 90m ./e2e/...
+	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 150m ./e2e/...
