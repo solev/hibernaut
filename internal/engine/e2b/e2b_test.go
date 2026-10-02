@@ -325,7 +325,8 @@ func TestCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.ID != "new0000000000000000a" || m.State != engine.Running || m.Metadata["hib"] != "1" || m.Template != "tmpl123" {
+	if m.ID != "new0000000000000000a" || m.State != engine.Running || m.Metadata["hib"] != "1" || m.Template != "tmpl123" ||
+		m.MemoryMB != 512 {
 		t.Errorf("Create = %+v", m)
 	}
 	body := f.bodies["POST /v2/sandboxes"]
@@ -363,8 +364,9 @@ func TestListFollowsPagesAndEncodesFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 2 || ms[0].ID != "aaaaaaaaaaaaaaaaaaaa" || ms[1].ID != "bbbbbbbbbbbbbbbbbbbb" || ms[1].State != engine.Paused {
-		t.Errorf("List = %+v, want a and b once each", ms)
+	if len(ms) != 2 || ms[0].ID != "aaaaaaaaaaaaaaaaaaaa" || ms[1].ID != "bbbbbbbbbbbbbbbbbbbb" || ms[1].State != engine.Paused ||
+		ms[0].MemoryMB != 512 {
+		t.Errorf("List = %+v, want a and b once each, with their memory", ms)
 	}
 
 	first := f.requests[0].URL.Query()

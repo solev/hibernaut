@@ -149,6 +149,7 @@ func (e *Engine) Get(ctx context.Context, id string) (engine.Machine, error) {
 		State:     engine.State(d.State),
 		StartedAt: d.StartedAt,
 		EndAt:     d.EndAt,
+		MemoryMB:  int(d.MemoryMB),
 		Metadata:  metadata(d.Metadata),
 	}, nil
 }
@@ -198,6 +199,7 @@ func (e *Engine) List(ctx context.Context, opts engine.ListOptions) ([]engine.Ma
 				State:     engine.State(s.State),
 				StartedAt: s.StartedAt,
 				EndAt:     s.EndAt,
+				MemoryMB:  int(s.MemoryMB),
 				Metadata:  metadata(s.Metadata),
 			}
 			// A machine can move between the running and paused pages while we read them.

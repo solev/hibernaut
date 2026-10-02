@@ -181,7 +181,24 @@ func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
 			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID))
 	}
 	tw.Flush()
+	if r.Room != nil {
+		fmt.Fprintf(a.stdout, "\n%s\n", roomLine(*r.Room))
+	}
 	return 0
+}
+
+// roomLine says how many more machines fit on the host, and how much memory and disk is free.
+func roomLine(r hibapi.Room) string {
+	free := fmt.Sprintf("%s of %s memory free, %s disk free.", hibapi.FormatMB(r.MemoryFreeMB), hibapi.FormatMB(r.MemoryMB),
+		hibapi.FormatMB(r.DiskFreeMB))
+	image := safe(r.Image)
+	switch {
+	case r.Fits <= 0:
+		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", image, free)
+	case r.Fits == 1:
+		return fmt.Sprintf("Room for 1 more %s machine: %s", image, free)
+	}
+	return fmt.Sprintf("Room for %d more %s machines: %s", r.Fits, image, free)
 }
 
 // pausesIn says how long until machine m pauses itself, as of now, unless it's busy: "12m",

@@ -73,6 +73,20 @@ func FormatIdle(seconds *int64) string {
 	return out
 }
 
+// FormatMB formats mb MiB for people, rounding down: "106 MiB", "1.9 GiB", "79 GiB".
+func FormatMB(mb int64) string {
+	mb = max(mb, 0)
+	switch {
+	case mb < 1024:
+		return fmt.Sprintf("%d MiB", mb)
+	case mb < 10*1024:
+		if tenths := mb * 10 / 1024; tenths%10 != 0 {
+			return fmt.Sprintf("%d.%d GiB", tenths/10, tenths%10)
+		}
+	}
+	return fmt.Sprintf("%d GiB", mb/1024)
+}
+
 // Response is what a hibd command prints with --json: one object, then the command exits. A
 // failed command prints only Error, and exits 1.
 type Response struct {
@@ -80,10 +94,24 @@ type Response struct {
 	Error    string    `json:"error,omitempty"`
 	Machine  *Machine  `json:"machine,omitempty"`
 	Machines []Machine `json:"machines,omitempty"`
+	// Room is the room on the host, from ls. It's nil if hibd couldn't read it.
+	Room *Room `json:"room,omitempty"`
 	// Template is the ID of the template an image was built into.
 	Template string `json:"template,omitempty"`
 	// Version is hibd's release.
 	Version string `json:"version,omitempty"`
+}
+
+// Room is the room on the host for more running machines.
+type Room struct {
+	// Fits is how many more machines of Image fit next to the running machines.
+	Fits  int    `json:"fits"`
+	Image string `json:"image"`
+	// MemoryFreeMB is the RAM free for more running machines, of the MemoryMB they all share.
+	MemoryFreeMB int64 `json:"memoryFreeMB"`
+	MemoryMB     int64 `json:"memoryMB"`
+	// DiskFreeMB is the free disk for the snapshots of paused machines.
+	DiskFreeMB int64 `json:"diskFreeMB"`
 }
 
 // ErrVersion is returned for a response or header of another protocol version.

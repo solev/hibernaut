@@ -26,6 +26,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/hibd"
+	"github.com/solev/hibernaut/internal/room"
 )
 
 const (
@@ -56,6 +57,8 @@ type host struct {
 	booting int
 	// states are the VM's power states az reports, one per call; the last one repeats.
 	states []string
+	// readRoom reads the host's free memory and disk.
+	readRoom func() (room.Host, error)
 }
 
 func newHost(t *testing.T) *host {
@@ -73,6 +76,9 @@ func newHost(t *testing.T) *host {
 		far:        make(chan net.Conn, 4),
 		sshVersion: "OpenSSH_10.3p1, LibreSSL 3.3.6",
 		states:     []string{"VM running"},
+		readRoom: func() (room.Host, error) {
+			return room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 3125, DiskFree: 80 << 30}, nil
+		},
 		env: map[string]string{
 			"HIBD_CONFIG":          filepath.Join(state, "none.env"),
 			"E2B_API_KEY":          "test",
@@ -172,6 +178,7 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 		Stderr:    stderr,
 		Getenv:    func(k string) string { return h.env[k] },
 		NewEngine: func() (engine.Engine, error) { return h.engine, nil },
+		ReadRoom:  h.readRoom,
 	}
 	return app.Run(ctx, words[1:]), nil
 }
@@ -258,6 +265,12 @@ func (c *client) hib(args ...string) int {
 	return c.run(c.t.Context(), append([]string{"-config", c.dir}, args...))
 }
 
+// tableLines returns the lines of the table hib ls printed, without the room line under it.
+func tableLines(out string) []string {
+	table, _, _ := strings.Cut(out, "\n\n")
+	return strings.Split(strings.TrimSpace(table), "\n")
+}
+
 // remoteCommands returns the hibd command lines in calls.
 func remoteCommands(calls [][]string) []string {
 	var cmds []string
@@ -304,7 +317,7 @@ func TestMachineCommands(t *testing.T) {
 	if code := c.hib("ls"); code != 0 {
 		t.Fatalf("ls exit %d: %s", code, c.errOut)
 	}
-	lines := strings.Split(strings.TrimSpace(c.out.String()), "\n")
+	lines := tableLines(c.out.String())
 	if len(lines) != 3 || !strings.HasPrefix(lines[0], "NAME") || !strings.HasPrefix(lines[1], "app ") ||
 		!strings.Contains(lines[1], " running ") || !strings.Contains(lines[1], " dev ") || !strings.HasPrefix(lines[2], "web ") {
 		t.Errorf("ls =\n%s", c.out)
@@ -388,7 +401,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	if code := c.hib("ls"); code != 0 {
 		t.Fatalf("ls exit %d: %s", code, c.errOut)
 	}
-	lines := strings.Split(strings.TrimSpace(c.out.String()), "\n")
+	lines := tableLines(c.out.String())
 	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "IDLE", "PAUSES", "IN", "STARTED", "ID"}; !slices.Equal(got, want) {
 		t.Errorf("ls header = %q, want %q", got, want)
 	}
@@ -416,6 +429,41 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("ls is missing %v:\n%s", want, c.out)
+	}
+}
+
+func TestLsShowsRoomOnTheHost(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	if code := c.hib("new", "web"); code != 0 {
+		t.Fatalf("new web: exit %d: %s", code, c.errOut)
+	}
+	// reading has 3200 huge pages of 2 MiB, and 79 GiB of disk free.
+	reading := func(freePages int64) func() (room.Host, error) {
+		return func() (room.Host, error) {
+			return room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: freePages, DiskFree: 79 << 30}, nil
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		readRoom func() (room.Host, error)
+		want     string
+	}{
+		{"room", reading(2101), "Room for 2 more dev machines: 4.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
+		{"one", reading(1077), "Room for 1 more dev machine: 2.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
+		{"full", reading(53), "No room for another dev machine: 106 MiB of 6.2 GiB memory free, 79 GiB disk free. " +
+			"hib pause NAME frees memory, hib rm NAME frees disk."},
+		// ls still lists the machines.
+		{"unreadable", func() (room.Host, error) { return room.Host{}, errors.New("no /proc/meminfo") }, ""},
+	} {
+		h.readRoom = tc.readRoom
+		if code := c.hib("ls"); code != 0 {
+			t.Fatalf("%s: ls exit %d: %s", tc.name, code, c.errOut)
+		}
+		table, line, _ := strings.Cut(c.out.String(), "\n\n")
+		if !strings.Contains(table, "web") || strings.TrimSpace(line) != tc.want {
+			t.Errorf("%s: ls =\n%s\nwant the machines, then %q", tc.name, c.out, tc.want)
+		}
 	}
 }
 

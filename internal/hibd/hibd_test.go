@@ -26,6 +26,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/version"
 )
 
@@ -52,8 +53,15 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 		Stderr:    &errOut,
 		Getenv:    func(k string) string { return env[k] },
 		NewEngine: func() (engine.Engine, error) { return e, nil },
+		ReadRoom:  func() (room.Host, error) { return roomy, nil },
 	}, &out, &errOut
 }
+
+// roomy is a host with room for three dev machines, and full one with room for none.
+var (
+	roomy = room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 3125, DiskFree: 80 << 30}
+	full  = room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 53, DiskFree: 80 << 30}
+)
 
 func newKey(t *testing.T) ssh.PublicKey {
 	t.Helper()
@@ -403,6 +411,164 @@ func TestBridgeUnknownMachine(t *testing.T) {
 	}
 	if out.Len() != 0 || !strings.Contains(errOut.String(), `no machine called "nope"`) {
 		t.Errorf("stdout %q, stderr %q; want nothing on stdout and the reason on stderr", out, errOut)
+	}
+}
+
+// webAndOld returns an app whose host runs web, and has old paused.
+func webAndOld(t *testing.T) (*fake.Engine, *App, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	e := newEngine(newKey(t), fake.WithDialer(func(context.Context, engine.Machine, int) (net.Conn, error) {
+		c, _ := net.Pipe()
+		return c, nil
+	}))
+	a, out, errOut := newApp(t, e)
+	for _, name := range []string{"web", "old"} {
+		if code := a.Run(t.Context(), []string{"new", name}); code != 0 {
+			t.Fatalf("new %s: %s", name, errOut)
+		}
+	}
+	if err := e.Pause(t.Context(), mustID(t, e, "old")); err != nil {
+		t.Fatal(err)
+	}
+	return e, a, out, errOut
+}
+
+// wantNoRoom checks that a command failed with the message for a full host.
+func wantNoRoom(t *testing.T, what string, code int, msg, name string) {
+	t.Helper()
+	if code != 1 || !strings.Contains(msg, `no room on the host for "`+name+`"`) || !strings.Contains(msg, "Running now: web.") ||
+		!strings.Contains(msg, "hib pause NAME") {
+		t.Errorf("%s = exit %d, %q; want the message for a full host", what, code, msg)
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// wantUntouched checks that web still runs and old is still paused, and that there's no other
+// machine.
+func wantUntouched(t *testing.T, e *fake.Engine) {
+	t.Helper()
+	ms, err := e.List(t.Context(), engine.ListOptions{})
+	if err != nil || len(ms) != 2 {
+		t.Fatalf("machines = %+v, %v; want only web and old", ms, err)
+	}
+	for name, want := range map[string]engine.State{"web": engine.Running, "old": engine.Paused} {
+		if m, _ := e.Get(t.Context(), mustID(t, e, name)); m.State != want {
+			t.Errorf("%s is %s, want %s", name, m.State, want)
+		}
+	}
+}
+
+func TestHostFull(t *testing.T) {
+	e, a, out, errOut := webAndOld(t)
+	a.ReadRoom = func() (room.Host, error) { return full, nil }
+
+	code, _, err := runJSON(t, a, out, "new", "app", "-json")
+	wantNoRoom(t, "new app", code, errText(err), "app")
+	errOut.Reset()
+	code = a.Run(t.Context(), []string{"bridge", "old"})
+	wantNoRoom(t, "bridge old", code, errOut.String(), "old")
+	wantUntouched(t, e)
+
+	// A running machine needs no more room.
+	errOut.Reset()
+	if code := a.Run(t.Context(), []string{"bridge", "web"}); code != 0 {
+		t.Errorf("bridge web = exit %d, %s; want it to connect", code, errOut)
+	}
+}
+
+// refusing is an engine that refuses to start or resume machines, as E2B does when its host's
+// memory runs out.
+type refusing struct{ *fake.Engine }
+
+const placeErr = "E2B returned 500: Failed to place sandbox, please retry"
+
+func (refusing) Create(context.Context, engine.CreateOptions) (engine.Machine, error) {
+	return engine.Machine{}, errors.New("create hib-dev: " + placeErr)
+}
+
+func (refusing) DialWebSocket(context.Context, string, int, time.Duration) (net.Conn, error) {
+	return nil, errors.New("dial: resume: " + placeErr)
+}
+
+func TestHostFullAfterTheCheck(t *testing.T) {
+	// Another start can take the room between hibd's check and E2B's start. hibd then checks
+	// again.
+	e, a, out, errOut := webAndOld(t)
+	a.NewEngine = func() (engine.Engine, error) { return refusing{e}, nil }
+
+	a.ReadRoom = readings(roomy, full)
+	code, _, err := runJSON(t, a, out, "new", "app", "-json")
+	wantNoRoom(t, "new app", code, errText(err), "app")
+	a.ReadRoom = readings(roomy, full)
+	errOut.Reset()
+	code = a.Run(t.Context(), []string{"bridge", "old"})
+	wantNoRoom(t, "bridge old", code, errOut.String(), "old")
+
+	// If there's room after all, E2B refused for some other reason.
+	a.ReadRoom = readings(roomy)
+	if code, _, err := runJSON(t, a, out, "new", "app", "-json"); code != 1 || err == nil || !strings.Contains(err.Error(), placeErr) {
+		t.Errorf("new app with room = %d, %v; want E2B's error", code, err)
+	}
+	wantUntouched(t, e)
+}
+
+// readings returns a reader that returns hs in turn, and then the last one again and again.
+func readings(hs ...room.Host) func() (room.Host, error) {
+	return func() (room.Host, error) {
+		h := hs[0]
+		if len(hs) > 1 {
+			hs = hs[1:]
+		}
+		return h, nil
+	}
+}
+
+// unreachable is an engine whose machines resume, but don't answer on their SSH port.
+type unreachable struct{ *fake.Engine }
+
+func (u unreachable) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
+	c, err := u.Engine.DialWebSocket(ctx, id, port, timeout)
+	if err != nil {
+		return nil, err
+	}
+	c.Close()
+	return nil, errors.New("dial: connection refused")
+}
+
+func TestResumedButUnreachable(t *testing.T) {
+	// Once old resumes, it holds its own memory, so the host can look full. That isn't why
+	// hibd couldn't connect.
+	e, a, _, errOut := webAndOld(t)
+	a.NewEngine = func() (engine.Engine, error) { return unreachable{e}, nil }
+	a.ReadRoom = readings(roomy, full)
+
+	code := a.Run(t.Context(), []string{"bridge", "old"})
+	if msg := errOut.String(); code != 1 || !strings.Contains(msg, "connection refused") || strings.Contains(msg, "no room") {
+		t.Errorf("bridge old = exit %d, %q; want why it couldn't connect", code, msg)
+	}
+}
+
+func TestHostUnreadable(t *testing.T) {
+	e, a, out, errOut := webAndOld(t)
+	a.ReadRoom = func() (room.Host, error) { return room.Host{}, errors.New("no /proc/meminfo") }
+
+	if code, _, err := runJSON(t, a, out, "new", "app", "-json"); code != 1 || err == nil || !strings.Contains(err.Error(), "no /proc/meminfo") {
+		t.Errorf("new app = %d, %v; want the reading's error", code, err)
+	}
+	errOut.Reset()
+	if code := a.Run(t.Context(), []string{"bridge", "old"}); code != 1 || !strings.Contains(errOut.String(), "no /proc/meminfo") {
+		t.Errorf("bridge old = %d, %s; want the reading's error", code, errOut)
+	}
+	wantUntouched(t, e)
+	errOut.Reset()
+	if code := a.Run(t.Context(), []string{"bridge", "web"}); code != 0 {
+		t.Errorf("bridge web = exit %d, %s; want it to connect", code, errOut)
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/pauseall"
+	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/version"
 )
@@ -82,6 +83,8 @@ type App struct {
 	Getenv         func(string) string
 	// NewEngine returns the engine to use. If it's nil, App uses E2B, as configured.
 	NewEngine func() (engine.Engine, error)
+	// ReadRoom reads the room on the host. If it's nil, App reads this host's.
+	ReadRoom func() (room.Host, error)
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -178,7 +181,12 @@ func (a *App) ls(ctx context.Context, args []string) int {
 	}
 	switch {
 	case *asJSON:
-		return a.reply(hibapi.Response{Machines: ms})
+		r := hibapi.Response{Machines: ms}
+		// Without a reading, ls still lists the machines.
+		if rm, err := m.Room(ctx, images.Default); err == nil {
+			r.Room = &rm
+		}
+		return a.reply(r)
 	case *quiet:
 		for _, m := range ms {
 			fmt.Fprintln(a.Stdout, m.ID)
@@ -528,7 +536,7 @@ func (a *App) manager() (*machines.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys}), nil
+	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys, ReadRoom: a.ReadRoom}), nil
 }
 
 func (a *App) engine() (engine.Engine, error) {

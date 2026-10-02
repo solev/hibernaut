@@ -25,6 +25,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
+	"github.com/solev/hibernaut/internal/room"
 )
 
 // guest plays machine-init in fake machines: each machine gets a host key on its first run,
@@ -79,6 +80,11 @@ func newKey() ssh.PublicKey {
 	return key
 }
 
+// roomy reads a host with room for three dev machines.
+func roomy() (room.Host, error) {
+	return room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 3125, DiskFree: 80 << 30}, nil
+}
+
 type env struct {
 	m      *machines.Manager
 	e      *fake.Engine
@@ -119,7 +125,7 @@ func newEnvAt(t *testing.T, now func() time.Time, opts ...fake.Option) *env {
 		fake.WithClock(now),
 	}, opts...)
 	e := fake.New(opts...)
-	m := machines.New(machines.Config{Engine: e, StateDir: dir, AuthorizedKeys: keys, Now: now})
+	m := machines.New(machines.Config{Engine: e, StateDir: dir, AuthorizedKeys: keys, Now: now, ReadRoom: roomy})
 	return &env{m: m, e: e, g: g, dir: dir, keys: keys, myKey: myKey, dialed: dialed}
 }
 

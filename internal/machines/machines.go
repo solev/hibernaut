@@ -4,6 +4,7 @@
 package machines
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +26,7 @@ import (
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/room"
 )
 
 const (
@@ -66,6 +69,9 @@ type Config struct {
 	AuthorizedKeys string
 	// Now tells the time. Default time.Now.
 	Now func() time.Time
+	// ReadRoom reads the room on the host, which Create and Dial check before they start or
+	// resume a machine. Default room.Read.
+	ReadRoom func() (room.Host, error)
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -75,6 +81,7 @@ type Manager struct {
 	dir      string
 	keysFile string
 	now      func() time.Time
+	readRoom func() (room.Host, error)
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -83,7 +90,11 @@ func New(cfg Config) *Manager {
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now}
+	readRoom := cfg.ReadRoom
+	if readRoom == nil {
+		readRoom = room.Read
+	}
+	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom}
 }
 
 // Name returns the name of machine em, or "" if hibd didn't make it.
@@ -122,7 +133,8 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	if err := hibapi.CheckName(name); err != nil {
 		return hibapi.Machine{}, err
 	}
-	if _, err := images.Spec(image); err != nil {
+	spec, err := images.Spec(image)
+	if err != nil {
 		return hibapi.Machine{}, err
 	}
 	if idle < 0 || idle > MaxRun {
@@ -147,6 +159,9 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	case !errors.Is(err, ErrNoMachine):
 		return hibapi.Machine{}, err
 	}
+	if err := m.checkRoom(ctx, name, spec.MemoryMB); err != nil {
+		return hibapi.Machine{}, err
+	}
 
 	em, err := m.e.Create(ctx, engine.CreateOptions{
 		Template: images.Template(image),
@@ -157,7 +172,7 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 		return hibapi.Machine{}, fmt.Errorf("image %q isn't built yet (run: hib image build %s)", image, image)
 	}
 	if err != nil {
-		return hibapi.Machine{}, fmt.Errorf("creating %q: %w", name, err)
+		return hibapi.Machine{}, m.refused(ctx, name, spec.MemoryMB, fmt.Errorf("creating %q: %w", name, err))
 	}
 	if _, err := m.initMachine(ctx, em.ID, keys); err != nil {
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
@@ -250,6 +265,19 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Waking a paused machine needs room for it. A running one already has its room.
+	paused := em.State == engine.Paused
+	if paused {
+		if err := m.checkRoom(ctx, name, em.MemoryMB); err != nil {
+			return nil, err
+		}
+	}
+	fail := func(err error) (*Conn, error) {
+		if paused {
+			err = m.refused(ctx, name, em.MemoryMB, err)
+		}
+		return nil, err
+	}
 	idle, _ := Idle(em)
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -257,11 +285,11 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		key, err = m.repin(ctx, em.ID, idle)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%q: %w", name, err)
+		return fail(fmt.Errorf("%q: %w", name, err))
 	}
 	conn, err := m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %q: %w", name, err)
+		return fail(fmt.Errorf("connecting to %q: %w", name, err))
 	}
 	bg := context.WithoutCancel(ctx)
 	kctx, cancel := context.WithCancel(bg)
@@ -272,6 +300,70 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		<-done
 		m.extend(bg, em.ID, idle)
 	}}, nil
+}
+
+// checkRoom returns an error unless machine name, with memoryMB of RAM, fits on the host next to
+// the running machines, or runs already. It wraps room.ErrFull if the host is full.
+func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int) error {
+	ems, h, err := m.roomNow(ctx)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(ems, func(em engine.Machine) bool { return Name(em) == name }) {
+		return nil
+	}
+	return h.Check(name, memoryMB, roomMachines(ems))
+}
+
+// Room returns the room on the host for more machines of image.
+func (m *Manager) Room(ctx context.Context, image string) (hibapi.Room, error) {
+	spec, err := images.Spec(image)
+	if err != nil {
+		return hibapi.Room{}, err
+	}
+	ems, h, err := m.roomNow(ctx)
+	if err != nil {
+		return hibapi.Room{}, err
+	}
+	free, total := h.MemoryMB()
+	return hibapi.Room{
+		Fits:         h.Fits(spec.MemoryMB, roomMachines(ems)),
+		Image:        image,
+		MemoryFreeMB: free,
+		MemoryMB:     total,
+		DiskFreeMB:   h.DiskFree >> 20,
+	}, nil
+}
+
+// roomNow returns the running machines and a reading of the room on the host.
+func (m *Manager) roomNow(ctx context.Context) ([]engine.Machine, room.Host, error) {
+	ems, err := m.e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
+	if err != nil {
+		return nil, room.Host{}, fmt.Errorf("checking the room on the host: %w", err)
+	}
+	h, err := m.readRoom()
+	if err != nil {
+		return nil, room.Host{}, fmt.Errorf("checking the room on the host: %w", err)
+	}
+	return ems, h, nil
+}
+
+func roomMachines(ems []engine.Machine) []room.Machine {
+	ms := make([]room.Machine, len(ems))
+	for i, em := range ems {
+		ms[i] = room.Machine{Name: cmp.Or(Name(em), em.ID), MemoryMB: em.MemoryMB}
+	}
+	return ms
+}
+
+// refused returns why the engine didn't start or resume machine name: the room message if the
+// host turns out to be full after all, or else err. Another start can take the room between
+// checkRoom and the engine's start.
+func (m *Manager) refused(ctx context.Context, name string, memoryMB int, err error) error {
+	if rerr := m.checkRoom(ctx, name, memoryMB); errors.Is(rerr, room.ErrFull) {
+		return rerr
+	}
+	return err
 }
 
 func (m *Manager) repin(ctx context.Context, id string, idle time.Duration) (ssh.PublicKey, error) {

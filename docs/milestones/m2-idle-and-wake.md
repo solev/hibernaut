@@ -22,18 +22,18 @@ Busy machines never pause. A full host says so plainly, and snapshots don't pile
   - [ ] an agent process alive (`pgrep` through envd; configurable list: `codex`, `copilot`, …).
 - [ ] Poll loop: every 60 s, only machines E2B reports as running. Busy → push the timeout back.
 - [ ] `hib` resumes explicitly before its own commands.
-- [ ] `hib ls` shows running / paused, time left until pause, and the room left on the host.
+- [x] `hib ls` shows running / paused, time left until pause, and the room left on the host.
 
 **Room on the host** (see Changes)
 
-- [ ] Before `hibd` starts or resumes a machine (`hib new`, `ssh name.hib`, `hib exec`), it checks
+- [x] Before `hibd` starts or resumes a machine (`hib new`, `ssh name.hib`, `hib exec`), it checks
       there's room:
-  - [ ] memory: free huge pages (`HugePages_Free` minus `HugePages_Rsvd` in `/proc/meminfo`)
+  - [x] memory: free huge pages (`HugePages_Free` minus `HugePages_Rsvd` in `/proc/meminfo`)
         cover the machine's RAM;
-  - [ ] disk: free space on `/var/lib/e2b` covers pausing every running machine and this one
+  - [x] disk: free space on `/var/lib/e2b` covers pausing every running machine and this one
         (their RAM, plus a margin for what they wrote to disk), because a pause that can't be
         written still stops the machine.
-- [ ] No room → a clear error that names the running machines and says what to do:
+- [x] No room → a clear error that names the running machines and says what to do:
       `hib pause NAME` frees memory, `hib rm` frees disk. It replaces E2B's
       `500 Failed to place sandbox … please retry`. Two starts can race the check, so when E2B
       refuses anyway, `hibd` checks again and gives the same message.
@@ -51,7 +51,7 @@ Unit (fake clock, no sleeping):
 
 - [ ] Busy → timeout pushed back. Idle → left alone.
 - [ ] Each busy signal alone keeps a machine awake.
-- [ ] Room: from a `/proc/meminfo` reading and the free disk, a machine fits or doesn't, and the
+- [x] Room: from a `/proc/meminfo` reading and the free disk, a machine fits or doesn't, and the
       refusal names the running machines.
 - [ ] Cleanup, from a listing of builds and their headers: keeps every current build, everything
       its headers point into, and anything under an hour old; deletes the rest.
@@ -60,7 +60,7 @@ Integration:
 
 - [ ] Poll loop against the fake engine never touches a paused machine (the fake fails the test if
       it's called).
-- [ ] With the fake host full, `new` and the bridge's resume are refused with the room message and
+- [x] With the fake host full, `new` and the bridge's resume are refused with the room message and
       create nothing.
 
 End-to-end:

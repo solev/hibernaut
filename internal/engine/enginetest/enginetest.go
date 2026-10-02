@@ -145,8 +145,8 @@ func (s *suite) lifecycle(t *testing.T) {
 	labels := s.labels("lifecycle")
 
 	m := s.create(t, ctx, "lifecycle", 10*time.Minute)
-	if m.ID == "" || m.State != engine.Running || m.Template == "" {
-		t.Fatalf("Create = %+v, want an ID, a template and state running", m)
+	if m.ID == "" || m.State != engine.Running || m.Template == "" || m.MemoryMB <= 0 {
+		t.Fatalf("Create = %+v, want an ID, a template, its memory and state running", m)
 	}
 	if !hasAll(m.Metadata, labels) {
 		t.Errorf("Create metadata = %v, want it to contain %v", m.Metadata, labels)
@@ -156,8 +156,8 @@ func (s *suite) lifecycle(t *testing.T) {
 	}
 
 	got := s.get(t, ctx, m.ID)
-	if got.ID != m.ID || got.State != engine.Running || !hasAll(got.Metadata, labels) {
-		t.Errorf("Get = %+v, want running %s with %v", got, m.ID, labels)
+	if got.ID != m.ID || got.State != engine.Running || !hasAll(got.Metadata, labels) || got.MemoryMB != m.MemoryMB {
+		t.Errorf("Get = %+v, want running %s with %v and %d MiB", got, m.ID, labels, m.MemoryMB)
 	}
 	s.wantListed(t, ctx, labels, []engine.State{engine.Running}, m.ID)
 	s.wantListed(t, ctx, labels, []engine.State{engine.Paused})
@@ -204,8 +204,8 @@ func (s *suite) lifecycle(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	paused := s.get(t, ctx, m.ID)
-	if paused.State != engine.Paused || !hasAll(paused.Metadata, labels) {
-		t.Errorf("Get after Pause = %+v, want paused with %v", paused, labels)
+	if paused.State != engine.Paused || !hasAll(paused.Metadata, labels) || paused.MemoryMB != m.MemoryMB {
+		t.Errorf("Get after Pause = %+v, want paused with %v and %d MiB", paused, labels, m.MemoryMB)
 	}
 	s.wantListed(t, ctx, labels, []engine.State{engine.Paused}, m.ID)
 	s.wantListed(t, ctx, labels, []engine.State{engine.Running})
@@ -376,6 +376,9 @@ func (s *suite) wantListed(t *testing.T, ctx context.Context, labels map[string]
 		got = append(got, m.ID)
 		if len(states) > 0 && !slices.Contains(states, m.State) {
 			t.Errorf("List(%v) returned %s in state %s", states, m.ID, m.State)
+		}
+		if m.MemoryMB <= 0 {
+			t.Errorf("List(%v) returned %s with %d MiB of memory", states, m.ID, m.MemoryMB)
 		}
 	}
 	slices.Sort(got)

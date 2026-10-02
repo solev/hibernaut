@@ -31,7 +31,9 @@ type Machine struct {
 	State     State
 	StartedAt time.Time
 	// EndAt is when a running machine pauses itself unless its timeout is extended.
-	EndAt    time.Time
+	EndAt time.Time
+	// MemoryMB is the machine's RAM in MiB, which it holds while it runs.
+	MemoryMB int
 	Metadata map[string]string
 }
 

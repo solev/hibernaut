@@ -28,6 +28,9 @@ import (
 // DefaultTimeout applies when CreateOptions.Timeout or a Resume timeout is zero, as in E2B.
 const DefaultTimeout = 300 * time.Second
 
+// DefaultMemoryMB is the RAM of the machines Create makes: E2B's default.
+const DefaultMemoryMB = 512
+
 // ExecFunc runs a command for Exec. It's called only for running machines. home is the
 // machine's home directory, or "" without WithLocalExec.
 type ExecFunc func(ctx context.Context, m engine.Machine, home string, req engine.ExecRequest) (engine.ExecResult, error)
@@ -156,6 +159,7 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		State:     engine.Running,
 		StartedAt: now,
 		EndAt:     now.Add(orDefault(opts.Timeout)),
+		MemoryMB:  DefaultMemoryMB,
 		Metadata:  maps.Clone(opts.Metadata),
 	}
 	e.mu.Lock()
