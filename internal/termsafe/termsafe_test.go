@@ -2,7 +2,6 @@ package termsafe
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 )
 
@@ -53,7 +52,7 @@ func TestWriterNeverPassesEscape(t *testing.T) {
 		w.Write([]byte{b})
 	}
 	w.Flush()
-	if strings.ContainsAny(out.String(), "\x1b\x07\u009b") || bytes.Contains(out.Bytes(), []byte{0x9b}) {
-		t.Errorf("wrote %q", out.String())
+	if want := `\x1b\x9b\u009b\x07`; out.String() != want {
+		t.Errorf("wrote %q, want %q", out.String(), want)
 	}
 }

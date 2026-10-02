@@ -176,6 +176,11 @@ func TestGivesUpWhenContextEnds(t *testing.T) {
 		res <- result{p, err}
 	}()
 	<-stuckStarted
+	for deadline := time.Now().Add(5 * time.Second); states(t, e)["quick"] != engine.Paused; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("quick wasn't paused while stuck was pausing")
+		}
+	}
 	cancel() // the time limit
 	r := <-res
 

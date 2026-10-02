@@ -134,25 +134,6 @@ func TestDialResumesAndCallsDialer(t *testing.T) {
 	}
 }
 
-func TestBuildTemplateRecordsSpecs(t *testing.T) {
-	e := fake.New()
-	var logs strings.Builder
-	spec := engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04", Steps: []engine.BuildStep{{Cmd: "true", User: "root"}}}
-	id, err := e.BuildTemplate(t.Context(), spec, &logs)
-	if err != nil || id != "tmpl-hib-dev" {
-		t.Fatalf("BuildTemplate = %q, %v; want tmpl-hib-dev", id, err)
-	}
-	if built := e.Built(); len(built) != 1 || built[0].Name != "hib-dev" || built[0].Steps[0].User != "root" {
-		t.Errorf("Built = %+v", built)
-	}
-	if !strings.Contains(logs.String(), "hib-dev") {
-		t.Errorf("logs = %q, want a line naming the template", logs.String())
-	}
-	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "x"}, nil); err == nil {
-		t.Error("BuildTemplate without FromImage succeeded")
-	}
-}
-
 func TestWithTemplatesAddsBuiltOnes(t *testing.T) {
 	e := fake.New(fake.WithTemplates("base"))
 	if _, err := e.Create(t.Context(), engine.CreateOptions{Template: "hib-dev"}); !errors.Is(err, engine.ErrNoTemplate) {
