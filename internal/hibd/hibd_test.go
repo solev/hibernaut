@@ -873,6 +873,52 @@ func TestDaemon(t *testing.T) {
 	}
 }
 
+func TestCleanup(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		e := fake.New()
+		a, out, _ := newApp(t, e)
+		var dryRuns []bool
+		before := time.Now()
+		a.Clean = func(_ context.Context, ce engine.Engine, now time.Time, n bool, logf func(string, ...any)) error {
+			if ce != e || now.Before(before) || now.After(time.Now()) {
+				t.Errorf("cleaned up with engine %v at %v, want the app's engine, now", ce, now)
+			}
+			dryRuns = append(dryRuns, n)
+			logf("would free %s", "1.5 GiB")
+			return nil
+		}
+		args := []string{"cleanup"}
+		if dryRun {
+			args = append(args, "-n")
+		}
+		if code := a.Run(t.Context(), args); code != 0 {
+			t.Errorf("%q: exit %d, want 0", args, code)
+		}
+		if want := []bool{dryRun}; !slices.Equal(dryRuns, want) {
+			t.Errorf("%q: cleaned up with dry runs %v, want %v", args, dryRuns, want)
+		}
+		if got := out.String(); got != "would free 1.5 GiB\n" {
+			t.Errorf("%q: stdout = %q, want cleanup's log", args, got)
+		}
+	}
+}
+
+func TestCleanupFails(t *testing.T) {
+	a, _, errOut := newApp(t, fake.New())
+	a.Clean = func(context.Context, engine.Engine, time.Time, bool, func(string, ...any)) error {
+		return errors.New("no database")
+	}
+	if code := a.Run(t.Context(), []string{"cleanup"}); code != 1 {
+		t.Errorf("exit %d, want 1", code)
+	}
+	if got := errOut.String(); got != "hibd cleanup: no database\n" {
+		t.Errorf("stderr = %q", got)
+	}
+	if code := a.Run(t.Context(), []string{"cleanup", "now"}); code != 2 {
+		t.Errorf("with an argument: exit %d, want 2", code)
+	}
+}
+
 func TestDaemonCleansUp(t *testing.T) {
 	e := fake.New()
 	for _, id := range []string{"app1", "web1"} {

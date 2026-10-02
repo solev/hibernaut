@@ -75,6 +75,8 @@ Integration:
       paused, and the bridge gives the room message.
 - [x] The daemon cleans up when it starts and when a machine is removed, and logs a cleanup that
       failed.
+- [x] `hibd cleanup` cleans up and prints its log, `-n` makes it a dry run, and a failed cleanup
+      exits 1.
 - [x] The daemon never calls E2B without a deadline.
 - [x] A machine whose calls hang doesn't hold up the busy watcher's look at the others, and
       neither does a slow cleanup.
