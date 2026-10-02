@@ -278,31 +278,38 @@ accessed through the VM's managed identity.
   (`hib.name`) so the mapping can be rebuilt. E2B metadata stays in the control plane (the machine
   can't see it) and can be filtered with `GET /v2/sandboxes?metadata=…`.
 - States: running → paused (idle) → deleted. The host itself can also be asleep.
-- Every machine is created with `autoPause: true`, memory pauses (never filesystem-only, which
-  can't auto-resume) and `autoResume: {policy: any}`.
+- Every machine is created with `autoPause: true`, memory snapshots (never filesystem-only) and
+  auto-resume off (`autoResume: {enabled: false}`), so traffic to a paused machine doesn't wake
+  it. `hibd` resumes machines itself: only its users can wake one, and only once it has checked
+  there's room (Room on the host).
 
 ### Idle and wake
 
-E2B does the pausing and waking. `hibd` only decides what counts as busy.
+E2B does the pausing. `hibd` decides what counts as busy, and does the waking.
 
-- **Pause:** every machine has a 15-minute E2B timeout (configurable; `0` = never pause). When it
-  runs out, E2B pauses the machine instead of killing it.
+- **Pause:** every machine has an idle time, its E2B timeout: 15 minutes, or what
+  `hib new --idle` says (1m to 720h; `0` = never pause). When it runs out, E2B pauses the
+  machine instead of killing it.
 - **Busy** means any of:
-  - an SSH session through the bridge (`hib exec` runs over SSH too),
-  - CPU use above a small threshold (`GET /sandboxes/{id}/metrics`),
-  - an agent process alive (`codex`, `copilot`), even when it's idle waiting on an LLM.
-    `hibd` checks with `pgrep` through envd.
-- `hibd` checks running machines every 60 s. While a machine is busy, it pushes the timeout back
-  (`POST /sandboxes/{id}/timeout`). Nothing inside a machine calls the host.
+  - an SSH session through the bridge (`hib exec` runs over SSH too): the bridge renews the
+    timeout while it's open, and closing it starts the idle clock;
+  - at least 10% of a CPU used since the last look, read from the machine's cgroup on the host
+    (E2B's metrics API returns every sample since the machine started, so it only grows);
+  - a coding agent running (`codex`, `copilot`, `claude`; `HIBD_AGENTS`), even when it's idle
+    waiting on an LLM. `hibd` checks with `pgrep` through envd.
+- `hibd daemon`, a systemd service, looks at running machines every 15 s. While a machine is
+  busy, it pushes the timeout back (`POST /sandboxes/{id}/timeout`), never shortening it.
+  Nothing inside a machine calls the host.
 - E2B won't push a machine's end past its start plus the tier's `max_length_hours`. The seeded
   `base_v1` tier has 1; `install-e2b.sh` raises it to 720 (30 days), and a resume starts the
   clock again.
-- It polls only machines E2B reports as running. Any call to a paused machine, even a status
-  check, would wake it.
+- It looks only at machines E2B reports as running: a paused machine can't be busy, and `hibd`
+  never wakes one to check.
 - **Wake:**
-  - Traffic to a paused machine through E2B's proxy resumes it, and SSH goes through that proxy.
-  - `hib` commands resume explicitly with `POST /v2/sandboxes/{id}/connect`.
-  - Resume takes ~0.4 s.
+  - SSH to a paused machine (`ssh NAME.hib`, `hib exec`) wakes it: the bridge in `hibd` resumes
+    it (`POST /v2/sandboxes/{id}/connect`) before connecting through E2B's proxy.
+  - Other traffic doesn't: E2B's proxy answers `502 The sandbox was not found`.
+  - Waking a machine over SSH takes ~0.6 s.
 - **The host:**
   - Running machines live in RAM and die with the host.
   - Paused machines survive: they live in Postgres and in snapshot files on disk. M0 tested this
@@ -342,10 +349,38 @@ Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2
   `hib pause NAME` frees memory, `hib rm` frees disk. Two starts can race the check, so when E2B
   refuses anyway, `hibd` checks again and gives the same message.
 - **Snapshot cleanup:** `hibd` deletes the build directories in
-  `/var/lib/e2b/local-template-storage` that nothing can resume from any more. It keeps every
-  machine's and image's current build, the older builds their headers point into (a snapshot is
-  a chain of diffs), and anything under an hour old. It runs after `hib rm` and once a day.
+  `/var/lib/e2b/local-template-storage` that nothing can resume or start from any more. It
+  reads E2B's database (through `docker exec psql`), the machines and each directory's headers,
+  and keeps:
+  - every machine's current snapshot, and every image's current build under each tag: the one
+    E2B put there last (`env_build_assignments`; a build can be in more than one image or
+    machine), and the one finished last;
+  - the older builds their headers point into (a snapshot is a chain of diffs);
+  - the image builds a running machine may have started from;
+  - the builds E2B's layer cache points to;
+  - anything changed in the last hour, unless only removed images and machines use it.
+
+  It deletes nothing while E2B is writing a build (for up to 6 hours: E2B never finishes a
+  build it stopped writing), or if it can't read a header it needs. It runs when `hibd` starts,
+  when a machine is removed, and hourly, which catches a machine removed between two looks;
+  `hibd cleanup -n` says what it would delete and why it keeps the rest.
+- E2B bounds its own cache in `/var/lib/e2b/build`: it deletes files after 25 hours, evicts at
+  85% disk, and empties it when the orchestrator starts.
 - `hib ls` shows the room left.
+
+### Snapshot compaction
+
+Planned for M9.
+
+- Every pause writes a diff against the machine's last snapshot, and E2B never merges them. The
+  latest snapshot needs many of the diffs before it, so cleanup can't free those: after 20
+  pauses of an idle `dev` machine, it needed 13 of them (3.6 GiB), one more with every pause
+  (M2's `TestPauseCycles`). Resume time didn't grow (0.7–1.5 s).
+- First, E2B's own options, which its local setup leaves off (LaunchDarkly flags at their
+  defaults): `memfile-diff-dedup` (4 KiB dedup of each diff, and a budget that copies parent
+  pages into the new one, so old diffs stop being needed), `guest-pause-reclaim` (fstrim,
+  drop_caches and compact_memory before a pause) and `collapse-envd-heap`.
+- If the chain still grows, `hibd` merges it into one build, and cleanup deletes the old diffs.
 
 ### Sizes
 
@@ -429,6 +464,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | M6 | **Golden images and fork** | A machine started from a saved image has its repo, dependencies and running app in place; fork ×3 |
 | M7 | **GitHub device flow** (own OAuth App) | Approve once in the browser, then the M4 test passes on the new token |
 | M8 | **Machine sizes** (`hib new --size small`) | A small machine has 1 vCPU and 1 GiB; one made without `--size` still has 2 and 2 GiB |
+| M9 | **Snapshot compaction** | An idle machine paused 20 times needs no more disk than a bound, and resumes as fast as after one pause |
 
 Repo layout:
 

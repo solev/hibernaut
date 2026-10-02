@@ -14,6 +14,10 @@ clone a running machine N times.
       may have changed since the image was saved), and the idle policy.
 - [ ] Images recorded in the store and in E2B metadata, like machines.
 
+From M2: `hibd`'s snapshot cleanup assumes E2B only puts new builds into images and machines,
+which E2B's snapshots do. If images use E2B's tags API, which copies an existing build, make
+tagging and cleanup take turns (see M2's Changes).
+
 ## Tests
 
 Unit:
