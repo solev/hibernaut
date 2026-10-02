@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +56,9 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 		Getenv:    func(k string) string { return env[k] },
 		NewEngine: func() (engine.Engine, error) { return e, nil },
 		ReadRoom:  func() (room.Host, error) { return roomy, nil },
+		Clean: func(context.Context, engine.Engine, time.Time, bool, func(string, ...any)) error {
+			return nil
+		},
 	}, &out, &errOut
 }
 
@@ -819,6 +824,138 @@ func TestDaemon(t *testing.T) {
 			t.Errorf("log doesn't say %q:\n%s", want, logs)
 		}
 	}
+}
+
+func TestDaemonCleansUp(t *testing.T) {
+	e := fake.New()
+	for _, id := range []string{"app1", "web1"} {
+		e.Add(engine.Machine{ID: id, State: engine.Paused, StartedAt: time.Now(),
+			Metadata: map[string]string{"hib.name": strings.TrimSuffix(id, "1"), "hib.image": "dev"}})
+	}
+	a, _, _ := newApp(t, e)
+	var cleanups atomic.Int32
+	a.Clean = func(_ context.Context, _ engine.Engine, _ time.Time, dryRun bool, logf func(string, ...any)) error {
+		if dryRun {
+			t.Error("the daemon only said what it would delete")
+		}
+		if cleanups.Add(1) <= 2 {
+			return errors.New("no database")
+		}
+		logf("freed 1.5 GiB in 3 build directories")
+		return nil
+	}
+	logs := &syncBuffer{}
+	a.Stderr = logs
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan int, 1)
+	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting until %s; log:\n%s", what, logs)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	waitFor("the daemon cleans up as it starts", func() bool { return cleanups.Load() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := cleanups.Load(); n != 1 {
+		t.Errorf("cleaned up %d times with nothing removed, want once", n)
+	}
+	for i, id := range []string{"app1", "web1"} {
+		if err := e.Kill(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+		waitFor("the daemon cleans up after "+id, func() bool { return cleanups.Load() == int32(i+2) })
+	}
+	waitFor("the daemon logs it", func() bool { return strings.Contains(logs.String(), "cleanup: freed 1.5 GiB") })
+	if n := strings.Count(logs.String(), "cleanup: no database; trying again in 1h"); n != 1 {
+		t.Errorf("logged the same failed cleanup %d times, want once:\n%s", n, logs)
+	}
+}
+
+func TestDaemonBoundsCallsToE2B(t *testing.T) {
+	// A stuck call would stop the daemon for good, and busy machines would pause.
+	e := &bounded{Engine: fake.New(fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+		return engine.ExecResult{}, nil // a coding agent is running
+	}))}
+	now := time.Now()
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: now, EndAt: now.Add(time.Minute),
+		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev", "hib.idle": "10m0s"}})
+	a, _, _ := newApp(t, e)
+	logs := &syncBuffer{}
+	a.Stderr = logs
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan int, 1)
+	go func() { done <- a.Run(ctx, []string{"daemon", "-every", "10ms"}) }()
+	// By its third List, the daemon has looked at the machines twice: to keep the busy one
+	// running, and to see if one was removed.
+	deadline := time.Now().Add(5 * time.Second)
+	for e.count("SetTimeout") == 0 || e.count("List") < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the daemon to look at the machines; log:\n%s", logs)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if got := e.unboundedCalls(); len(got) > 0 {
+		t.Errorf("the daemon called %v without a deadline", got)
+	}
+}
+
+// bounded records the calls the daemon makes, and which have no deadline.
+type bounded struct {
+	*fake.Engine
+	mu        sync.Mutex
+	calls     map[string]int
+	unbounded map[string]bool
+}
+
+func (b *bounded) record(ctx context.Context, call string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.calls == nil {
+		b.calls, b.unbounded = map[string]int{}, map[string]bool{}
+	}
+	b.calls[call]++
+	if _, ok := ctx.Deadline(); !ok {
+		b.unbounded[call] = true
+	}
+}
+
+func (b *bounded) count(call string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls[call]
+}
+
+func (b *bounded) unboundedCalls() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Sorted(maps.Keys(b.unbounded))
+}
+
+func (b *bounded) List(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
+	b.record(ctx, "List")
+	return b.Engine.List(ctx, opts)
+}
+
+func (b *bounded) SetTimeout(ctx context.Context, id string, timeout time.Duration) error {
+	b.record(ctx, "SetTimeout")
+	return b.Engine.SetTimeout(ctx, id, timeout)
+}
+
+func (b *bounded) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
+	b.record(ctx, "Exec")
+	return b.Engine.Exec(ctx, id, req)
 }
 
 func TestDaemonFlags(t *testing.T) {

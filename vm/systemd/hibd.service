@@ -1,8 +1,10 @@
 # Keeps busy machines running: hibd daemon looks at every running machine every 15 s and moves
 # its pause time back while it's busy. Stopping it never touches machines; idle ones just pause
 # on time. It waits out E2B being down, so it doesn't require E2B, only starts after it.
+# It also deletes the build directories nothing needs any more (hibd cleanup), reading E2B's
+# database through Docker.
 [Unit]
-Description=Hibernaut daemon: keeps busy machines running
+Description=Hibernaut daemon: keeps busy machines running and cleans up their snapshots
 After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service
 
 [Service]
@@ -13,6 +15,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+ReadWritePaths=/var/lib/e2b/local-template-storage
 
 [Install]
 WantedBy=multi-user.target

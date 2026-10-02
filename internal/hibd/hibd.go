@@ -22,6 +22,7 @@ import (
 
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/busy"
+	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -45,7 +46,10 @@ commands:
   image build NAME  build an image (-force rebuilds every step)
   ready             wait until E2B answers (-timeout)
   pause-all         pause every running machine; wait until none is running
-  daemon            keep busy machines running (-every); systemd runs it as root
+  cleanup           delete the build directories nothing needs any more, as root (-n only
+                    says which, and why it keeps the others)
+  daemon            keep busy machines running (-every), and clean up when a machine is
+                    removed and hourly; systemd runs it as root
   version           print the version
 
 new, ls, rm, pause, image build and version print JSON with -json.
@@ -85,6 +89,9 @@ type App struct {
 	NewEngine func() (engine.Engine, error)
 	// ReadRoom reads the room on the host. If it's nil, App reads this host's.
 	ReadRoom func() (room.Host, error)
+	// Clean deletes the build directories nothing needs any more, like cleanup.Host.Clean. If
+	// it's nil, App cleans up this host's.
+	Clean func(ctx context.Context, e engine.Engine, now time.Time, dryRun bool, logf func(format string, args ...any)) error
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -112,6 +119,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.ready(ctx, args)
 	case "pause-all":
 		return a.pauseAll(ctx, args)
+	case "cleanup":
+		return a.cleanup(ctx, args)
 	case "daemon":
 		return a.daemon(ctx, args)
 	case "version", "-v", "--version":
@@ -386,7 +395,85 @@ func (a *App) pauseAll(ctx context.Context, args []string) int {
 	return 0
 }
 
-// daemon keeps busy machines running until ctx is done.
+func (a *App) cleanup(ctx context.Context, args []string) int {
+	fl := a.flags("cleanup")
+	dryRun := fl.Bool("n", false, "only say what would be deleted, and why the rest is kept")
+	if _, ok := a.parse(fl, args, 0, "cleanup [-n]"); !ok {
+		return 2
+	}
+	e, err := a.engine()
+	if err != nil {
+		return a.fail(false, "cleanup", err)
+	}
+	if err := a.clean(ctx, e, time.Now(), *dryRun, log.New(a.Stdout, "", 0).Printf); err != nil {
+		return a.fail(false, "cleanup", err)
+	}
+	return 0
+}
+
+func (a *App) clean(ctx context.Context, e engine.Engine, now time.Time, dryRun bool, logf func(format string, args ...any)) error {
+	if a.Clean != nil {
+		return a.Clean(ctx, e, now, dryRun, logf)
+	}
+	h := cleanup.Host{Storage: cleanup.StorageDir, Cache: cleanup.CacheDir, Query: cleanup.Postgres, Engine: e}
+	return h.Clean(ctx, now, dryRun, logf)
+}
+
+// sweepTimeout bounds a sweeper's look, cleanup included, which runs between the busy watcher's
+// looks: a stuck one mustn't let busy machines pause.
+const sweepTimeout = 30 * time.Second
+
+// sweeper cleans up when the daemon starts, when it sees a machine was removed, and hourly, which
+// catches a machine removed between two looks.
+type sweeper struct {
+	engine  engine.Engine
+	clean   func(ctx context.Context, now time.Time) error
+	logf    func(format string, args ...any)
+	seen    map[string]bool // the machines at the last look
+	next    time.Time       // when to clean up next, unless a machine is removed first
+	problem string          // the last cleanup's error, as logged
+}
+
+func (s *sweeper) look(ctx context.Context, now time.Time) {
+	lctx, cancel := context.WithTimeout(ctx, sweepTimeout)
+	defer cancel()
+	machines, err := s.engine.List(lctx, engine.ListOptions{})
+	if err != nil {
+		return // the busy watcher reports it
+	}
+	seen := map[string]bool{}
+	for _, m := range machines {
+		seen[m.ID] = true
+	}
+	for id := range s.seen {
+		if !seen[id] {
+			s.next = now
+		}
+	}
+	s.seen = seen
+	if now.Before(s.next) {
+		return
+	}
+	err = s.clean(lctx, now)
+	retry := time.Hour
+	if errors.Is(err, cleanup.ErrBusy) {
+		retry = time.Minute
+	}
+	s.next = now.Add(retry)
+	if ctx.Err() != nil {
+		return
+	}
+	problem := ""
+	if err != nil {
+		problem = fmt.Sprintf("%v; trying again in %s", err, shortDuration(retry))
+	}
+	if problem != "" && problem != s.problem {
+		s.logf("%s", problem)
+	}
+	s.problem = problem
+}
+
+// daemon keeps busy machines running, and cleans up, until ctx is done.
 func (a *App) daemon(ctx context.Context, args []string) int {
 	fl := a.flags("daemon")
 	every := fl.Duration("every", 15*time.Second, "how often to look at the machines")
@@ -410,6 +497,8 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(false, "daemon", err)
 	}
+	s := &sweeper{engine: e, logf: func(format string, args ...any) { logger.Printf("cleanup: "+format, args...) }}
+	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	t := time.NewTicker(*every)
 	defer t.Stop()
@@ -425,6 +514,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 			if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
 				now = err.Error()
 			}
+			s.look(ctx, time.Now())
 		}
 		if now != problem {
 			if now == "" {

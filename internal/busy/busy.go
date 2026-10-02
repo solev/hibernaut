@@ -24,7 +24,8 @@ const (
 	// busy.
 	CPUBusy = 0.10
 
-	execTimeout = 10 * time.Second
+	// callTimeout bounds each call to E2B: a stuck one mustn't stop the watcher for good.
+	callTimeout = 10 * time.Second
 )
 
 // DefaultAgents are the coding agents that keep a machine busy while they run.
@@ -117,7 +118,9 @@ func New(cfg Config) (*Watcher, error) {
 // timeout or touches a paused machine. It logs problems with a machine once, and returns an
 // error only if it can't list the machines.
 func (w *Watcher) Tick(ctx context.Context) error {
-	ms, err := w.e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
+	lctx, cancel := context.WithTimeout(ctx, callTimeout)
+	ms, err := w.e.List(lctx, engine.ListOptions{States: []engine.State{engine.Running}})
+	cancel()
 	if err != nil {
 		return fmt.Errorf("listing machines: %w", err)
 	}
@@ -161,6 +164,8 @@ func (w *Watcher) look(ctx context.Context, m engine.Machine, idle time.Duration
 	if why == "" || !m.EndAt.Before(w.now().Add(idle)) {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
 	err := w.e.SetTimeout(ctx, m.ID, idle)
 	if errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrNotFound) {
 		err = nil // It paused or went away since it was listed: leave it be.
@@ -187,7 +192,7 @@ func (w *Watcher) cpuShare(m engine.Machine, s *seen) (float64, bool) {
 
 // agentRunning returns whether a coding agent is running in machine m.
 func (w *Watcher) agentRunning(ctx context.Context, m engine.Machine, s *seen) bool {
-	ctx, cancel := context.WithTimeout(ctx, execTimeout)
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	res, err := w.e.Exec(ctx, m.ID, engine.ExecRequest{Cmd: "pgrep", Args: w.pgrep, User: "root"})
 	if errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrNotFound) {
