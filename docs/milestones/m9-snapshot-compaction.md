@@ -26,7 +26,7 @@ diffs that E2B never merges, so cleanup (M2) can't free them.
     pause.
   - `collapse-envd-heap`: envd packs its own memory into fewer huge pages before a pause.
 - [ ] If the latest snapshot still needs more with every pause, merge the chain. Find out whether
-      E2B can write a full snapshot (say once the chain passes a length); if not, design how
+      E2B can write a full snapshot (say once the chain passes a length). If not, design how
       `hibd` writes one build holding every block the latest headers name, and swaps it in.
       Cleanup (M2) then deletes the old diffs.
 - [ ] README and spec: the disk a machine needs, and how it stays bounded.

@@ -23,7 +23,7 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - Setup is scripted: `make up` starts everything, `make down` stops paying.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines) and M2 (idle and wake) are done; M3 (vault and egress proxy) is next. Progress:
+  M1 (machines) and M2 (idle and wake) are done. M3 (vault and egress proxy) is next. Progress:
   [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
@@ -167,23 +167,23 @@ top of `~/.ssh/config`, so `ssh app.hib` just works. Behind that name, `hib brid
 machine if it's paused, starts the Azure VM if it's deallocated, and checks the machine's pinned
 host key. The machine user is `user`, with passwordless sudo.
 
-**Idle machines pause themselves; busy ones don't.** A machine is busy while you're connected
+**Idle machines pause themselves. Busy ones don't.** A machine is busy while you're connected
 (`ssh` or `hib exec`), while it uses at least 10% of a CPU, or while a coding agent (`codex`,
 `copilot`, `claude`) runs in it, even one waiting on an LLM. Once it has been idle for its idle
 time, 15 minutes unless `-idle` says otherwise, it pauses with its memory and files. `hib ls`
 shows when each machine pauses. `ssh app.hib` or `hib exec` wakes it in under a second, where it
-left off; nothing else wakes it. After 30 minutes with no machine running and no one connected,
+left off. Nothing else wakes it. After 30 minutes with no machine running and no one connected,
 the VM deallocates itself, and every night at 20:00 UTC it pauses every machine and deallocates
 regardless (see [Costs and auto-off](#costs-and-auto-off)). `make down` does that now.
 
 **About three machines run at once.** Each `dev` machine takes 2 GiB of the VM's memory pool
-while it runs; paused ones take only disk. `hib ls` ends with how many more fit. When the VM is
+while it runs. Paused ones take only disk. `hib ls` ends with how many more fit. When the VM is
 full, `hib new` and waking a paused machine fail at once with a message naming the running
 machines: `hib pause NAME` frees memory, `hib rm NAME` frees disk. CPU is shared, so busy
 machines slow each other down but nothing fails.
 
 E2B keeps every snapshot it writes, even a removed machine's. `hibd` deletes the ones nothing
-needs any more when a machine is removed, and hourly; `./azure/ssh.sh sudo hibd cleanup -n`
+needs any more when a machine is removed, and hourly. `./azure/ssh.sh sudo hibd cleanup -n`
 says what it would delete, and why it keeps the rest. A machine's own snapshots still grow as it
 pauses (3.6 GiB after 20 pauses of an idle one): each is a diff on the one before, and E2B never
 merges them. Compaction is planned ([M9](docs/milestones/m9-snapshot-compaction.md)).

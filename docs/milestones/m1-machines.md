@@ -130,9 +130,9 @@ End-to-end:
   has no terminfo entry for Ghostty's `xterm-ghostty` (ncurses ships it only from 6.5-20241228),
   kitty, WezTerm or Alacritty, so `clear`, `nano` and `tmux` failed in them. The image now
   installs `ncurses-term` and `kitty-terminfo`, and compiles Ghostty's entry into `/etc/terminfo`
-  from `images/dev/ghostty.terminfo` (from Ghostty 1.2.3, MIT; it compiles to exactly the entry
-  Ghostty ships). For any TERM still unknown, `/etc/profile.d/hib-term.sh` falls back to
-  `xterm-256color`. Machines made before this keep the old image; recreate them to get it.
+  from `images/dev/ghostty.terminfo`, copied from Ghostty 1.2.3 (MIT). It compiles to exactly
+  the entry Ghostty ships. For any TERM still unknown, `/etc/profile.d/hib-term.sh` falls back to
+  `xterm-256color`. Machines made before this keep the old image. Recreate them to get it.
 - **Makefile timeouts.** `make e2e` runs with `-timeout 40m` (the default 10 m is too short for a
   cold image build plus the machine tests) and `make e2e-slow` with `-timeout 90m`.
 

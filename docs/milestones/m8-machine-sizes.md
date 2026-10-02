@@ -14,7 +14,7 @@ It can come any time after M2: it builds on M2's room check, and nothing else de
       build, because a machine's memory snapshot is that size, so each size of an image is its
       own E2B template: `hib-dev` stays medium, next to `hib-dev-small` and `hib-dev-large`.
 - [ ] `hib image build dev` builds every size. They share the build steps, so the extra sizes
-      should come mostly from E2B's step cache; check, and log each size's build time.
+      should come mostly from E2B's step cache. Check that, and log each size's build time.
 - [ ] `hib new app --size small`. The size goes into E2B metadata (`hib.size`).
 - [ ] `hib ls` shows each machine's size.
 - [ ] The room check (M2) uses each machine's own RAM, and the "no room" message says which
@@ -28,19 +28,20 @@ It can come any time after M2: it builds on M2's room check, and nothing else de
 
 Unit:
 
-- [ ] Size names → CPUs and RAM, and the template name for each; an unknown size is an error
-      that lists the sizes.
+- [ ] Each size name maps to its CPUs, RAM and template name. An unknown size is an error that
+      lists the sizes.
 - [ ] The room check with mixed sizes: what still fits.
 
 Integration:
 
 - [ ] `hibd new --size small` against the fake engine starts `hib-dev-small` and records
-      `hib.size`; with no `--size`, a machine is medium.
+      `hib.size`. With no `--size`, a machine is medium.
 
 End-to-end:
 
-- [ ] `TestSizes`: `hib new --size small` → `nproc` is 1 and `MemTotal` is about 1 GiB, and
-      `hib ls` says `small`; a machine made without `--size` still has 2 vCPUs and 2 GiB.
+- [ ] `TestSizes`: in a machine made with `hib new --size small`, `nproc` is 1 and `MemTotal` is
+      about 1 GiB, and `hib ls` says `small`. A machine made without `--size` still has 2 vCPUs
+      and 2 GiB.
 
 ## Done when
 
