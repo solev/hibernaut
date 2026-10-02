@@ -81,6 +81,8 @@ Integration:
 - [x] Cleanup on a host directory deletes what nothing uses, leaves what changes while it runs,
       and skips the cache files E2B hasn't finished writing. It deletes nothing on a dry run, or
       if a cache file names no build.
+- [x] Cleanup reads E2B's database with `psql` in E2B's one Postgres container, and if `psql`
+      fails, the error says why.
 
 End-to-end:
 
