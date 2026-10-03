@@ -64,12 +64,21 @@ Machine names come from the engine's `hib.name` metadata. The proxy caches names
 on a miss at most once every five seconds. If the name lookup fails, the audit keeps the sandbox ID.
 On stop, the proxy stops hook repairs, removes the rule, closes open connections and closes the
 audit log. Rule removal has a ten-second timeout. The unit allows thirty seconds to stop.
-The proxy strips client `Accept-Encoding` before forwarding, so the upstream transport can request
-gzip and scrub plain text after decompression. The proxy talks HTTP/2 to sites that offer it.
-It uses HTTP/1.1 for WebSocket upgrades. If audit writing fails, the proxy returns 502 without
-forwarding.
-Non-TLS connections pass through when they have no SNI. WebSocket frames after an upgrade pass
-through unscrubbed.
+Only `Authorization` is swapped, including decoded Basic auth. Other headers, the URL, and bodies
+stay untouched. Request bodies stream without buffering, regardless of type or length.
+Every intercepted response is scrubbed against all vault values in headers, trailers, and bodies,
+including binary bodies. Matches cover raw, JSON-escaped, URL query-escaped, and base64 forms.
+Base64 uses the leak scanner's shared alignment-invariant core and also covers final partial groups
+and padding. Embedded values can retain at most eight boundary bits. A value at the end, such as a
+Basic password, can retain at most four leading bits. Patterns shorter than eight base64 characters
+are skipped. Line-wrapped base64 is not matched. Response `Content-Length` is removed because
+rotation can change replacement length.
+The proxy strips client `Accept-Encoding` before forwarding, so the transport can request and decode
+gzip. Any non-identity response encoding left after transport decoding fails closed with 502.
+The proxy talks HTTP/2 to sites that offer it. It uses HTTP/1.1 for WebSocket upgrades. If audit
+writing fails, the proxy returns 502 without forwarding.
+Non-TLS connections pass through when they have no SNI. WebSocket upgrade requests swap
+`Authorization`. Frames after an upgrade pass through without swapping or scrubbing.
 The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested host.
 
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
@@ -117,9 +126,10 @@ adjacent physically can be missed. The canary checks the common case.
 - [x] Unbound sites: bytes pass straight through, nothing decrypted.
 - [x] Bound sites: terminate TLS with a per-host certificate from our CA; connect to the real site
       and verify its real certificate; HTTP/1.1 and HTTP/2.
-- [x] Swap in headers, decoded Basic auth, the URL query and text bodies up to 1 MB. Everything
-      else streams through unbuffered. WebSocket upgrades work.
-- [x] Scrub responses: a real value is turned back into its placeholder.
+- [x] Swap only in `Authorization`, including decoded Basic auth. Other request fields stay
+      untouched. All request bodies stream unbuffered. WebSocket upgrades work.
+- [x] Scrub all vault values in bound-site response headers, trailers, and streaming bodies,
+      including raw, escaped, and base64 forms. Uninspectable body encodings fail closed.
 - [x] Audit log (time, machine, site, method, path, secret name) and `hib log`.
 
 **Leak scan**
@@ -134,19 +144,22 @@ adjacent physically can be missed. The canary checks the common case.
 Unit and fuzz:
 
 - [x] Placeholder shapes (`gho_`, `github_pat_`, `sk-`, JWTs, …).
-- [x] Swap in every location; a real value never goes to an unbound site (fuzzed); responses
-      scrubbed.
+- [x] Swap only in `Authorization`. Site bindings and untouched request content are fuzzed.
+      Streaming responses are scrubbed in raw, escaped, and base64 forms.
 - [x] Vault round-trip; the vault file never contains a plaintext value.
 - [x] `/etc/environment` block: idempotent, leaves the rest of the file alone.
 
 Integration (laptop and CI; fake TLS servers signed by a test CA):
 
-- [x] Real `curl`, `git`, `gh` and Node clients through the proxy get the swapped value upstream.
+- [x] Real `curl`, `git`, `gh` and Node clients send swapped `Authorization` upstream.
 - [x] Unbound site: identical bytes, and the client sees the site's own certificate.
 - [x] Streaming: SSE and a large body start arriving before the upstream finishes.
 - [x] WebSocket through the proxy.
 - [x] An upstream with an invalid certificate is refused.
 - [x] The audit log never contains a real value.
+- [x] Large request bodies reach upstream before the client finishes, with and without a known
+      length. HTTP/1.1 and HTTP/2 headers, trailers, binary bodies, gzip, and reflected Basic auth
+      are scrubbed. Changed lengths preserve framing. Unsupported encodings return 502.
 
 Host integration (Linux, sudo):
 
@@ -161,11 +174,13 @@ End-to-end:
 - [ ] `TestSecretSwap`: the laptop's `gh auth token` is added as a secret bound to
       `api.github.com`. In a machine, `curl` to `api.github.com/user` with the placeholder
       returns your login; the same header sent to `postman-echo.com/headers` comes back as the
-      placeholder.
+      placeholder. A separate synthetic secret bound to postman-echo.com tests Bearer and Basic
+      response scrubbing.
 - [ ] `TestNoHostAccess` (S8): from a machine, the E2B API, Postgres, Redis, `hibd` and
       `169.254.169.254` can't be reached; the host's public IP answers only on SSH; `192.0.2.1`
       exposes only E2B's expected endpoint.
-- [ ] `TestAuditLog`: `hib log` shows the swap with machine, site and secret name.
+- [ ] `TestAuditLog`: `hib log` shows Bearer and Basic swaps with machine, site, and secret name.
+      Placeholders in other headers and bodies create no audit entry.
 - [ ] `TestLeakScan`: after the tests above, zero real values found; the canary is found.
 
 ## Done when
@@ -195,3 +210,10 @@ End-to-end:
   but valid SSH identification got a reply from the host and a machine. These failures remain
   outside the proxy wiring. A manual check with a valid control probed 1,462 host and Azure targets.
   Only the expected host SSH and E2B service answered. End-to-end and completion boxes stay open.
+- 2026-10-03: Narrowed request swaps to Authorization to prevent gist and git blob credential
+  extraction. Stored content now keeps the placeholder. Responses scrub all vault values in
+  headers, trailers, binary bodies, escaped forms, and aligned base64. Unsupported encodings fail
+  closed. The leak scanner and response scrubber share the base64 core without changing scan
+  behaviour.
+- 2026-10-03: Recorded the WebSocket limit. Authorization on upgrade requests is swapped.
+  Frames after the upgrade are neither swapped nor scrubbed.

@@ -293,9 +293,23 @@ func (s *Server) reverseProxy(sni string, sw *swap.Swapper, transport *http.Tran
 			if sw == nil {
 				return nil
 			}
+			for _, encoding := range resp.Header.Values("Content-Encoding") {
+				for token := range strings.SplitSeq(encoding, ",") {
+					token = strings.TrimSpace(token)
+					if token != "" && !strings.EqualFold(token, "identity") {
+						return errors.New("upstream response has an uninspectable content encoding")
+					}
+				}
+			}
 			sw.ScrubHeader(resp.Header)
-			if swap.Text(resp.Header.Get("Content-Type")) && resp.Body != nil {
-				resp.Body = sw.ScrubBody(resp.Body)
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				return nil
+			}
+			if resp.Body != nil {
+				resp.Body = &trailerScrubBody{
+					ReadCloser: sw.ScrubBody(resp.Body),
+					scrub:      func() { sw.ScrubHeader(resp.Trailer) },
+				}
 				resp.ContentLength = -1
 				resp.Header.Del("Content-Length")
 			}
@@ -306,6 +320,26 @@ func (s *Server) reverseProxy(sni string, sw *swap.Swapper, transport *http.Tran
 			http.Error(w, genericUpstreamError, http.StatusBadGateway)
 		},
 	}
+}
+
+type trailerScrubBody struct {
+	io.ReadCloser
+	scrub func()
+	once  sync.Once
+}
+
+func (b *trailerScrubBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.once.Do(b.scrub)
+	}
+	return n, err
+}
+
+func (b *trailerScrubBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.scrub)
+	return err
 }
 
 func isUpgrade(r *http.Request) bool {

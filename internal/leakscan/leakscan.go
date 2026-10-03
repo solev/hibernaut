@@ -20,6 +20,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/solev/hibernaut/internal/secretencoding"
 )
 
 // Secret is a real value to search for. The value is never reported in hits.
@@ -108,17 +110,8 @@ func Needles(secrets []Secret) ([]Needle, error) {
 
 func base64Needles(add func(secret, encoding string, pattern []byte), secret, name string, enc *base64.Encoding, value []byte) {
 	for align := range 3 {
-		add(secret, name, base64Aligned(enc, value, align))
+		add(secret, name, secretencoding.Base64Core(enc, value, align))
 	}
-}
-
-func base64Aligned(enc *base64.Encoding, value []byte, prefix int) []byte {
-	data := append(bytes.Repeat([]byte{0}, prefix), value...)
-	data = append(data, 0, 0)
-	text := enc.EncodeToString(data)
-	start := (prefix*8 + 5) / 6
-	end := (prefix*8 + len(value)*8) / 6
-	return []byte(text[start:end])
 }
 
 func utf16LE(s string) []byte {

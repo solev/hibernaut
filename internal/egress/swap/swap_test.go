@@ -110,7 +110,7 @@ func TestBound(t *testing.T) {
 	}
 }
 
-func TestRequestSwapsHeadersAndBasicAuth(t *testing.T) {
+func TestRequestSwapsOnlyAuthorizationAndBasicAuth(t *testing.T) {
 	secrets := testSecrets()
 	sw := newSwapper(t, secrets)
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + secrets[0].Placeholder))
@@ -131,7 +131,7 @@ func TestRequestSwapsHeadersAndBasicAuth(t *testing.T) {
 	if !slices.Equal(got, wantNames) {
 		t.Errorf("Request swapped %q, want %q", got, wantNames)
 	}
-	if values := req.Header.Values("X-Token"); !slices.Equal(values, []string{"before " + secrets[0].Value, secrets[1].Placeholder}) {
+	if values := req.Header.Values("X-Token"); !slices.Equal(values, []string{"before " + secrets[0].Placeholder, secrets[1].Placeholder}) {
 		t.Errorf("X-Token = %q", values)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(req.Header.Get("Authorization"), "basic "))
@@ -146,7 +146,27 @@ func TestRequestSwapsHeadersAndBasicAuth(t *testing.T) {
 	}
 }
 
-func TestRequestSwapsQueryPerComponent(t *testing.T) {
+func TestRequestKeepsMalformedBasicAuthorization(t *testing.T) {
+	secrets := testSecrets()
+	sw := newSwapper(t, secrets)
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic "+secrets[0].Placeholder)
+	names, err := sw.Request(req, "api.github.com")
+	if err != nil || len(names) != 0 || req.Header.Get("Authorization") != "Basic "+secrets[0].Placeholder {
+		t.Fatalf("malformed Basic = %q, names %v, %v", req.Header.Get("Authorization"), names, err)
+	}
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("user:"+secrets[0].Placeholder)))
+	names, err = sw.Request(req, "api.github.com")
+	if err != nil || !slices.Equal(names, []string{"GH_TOKEN"}) ||
+		req.Header.Get("Authorization") != "Basic "+base64.StdEncoding.EncodeToString([]byte("user:"+secrets[0].Value)) {
+		t.Fatalf("valid Basic = %q, names %v, %v", req.Header.Get("Authorization"), names, err)
+	}
+}
+
+func TestRequestKeepsQueryPerComponent(t *testing.T) {
 	secrets := testSecrets()
 	sw := newSwapper(t, secrets)
 	escapedUpper := strings.ReplaceAll(url.QueryEscape(secrets[0].Placeholder), "%3A", "%3a")
@@ -159,20 +179,16 @@ func TestRequestSwapsQueryPerComponent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Authorization", "Bearer "+secrets[0].Placeholder)
 
 	got, err := sw.Request(req, "api.github.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got, []string{"GH_TOKEN"}) {
+	if !slices.Equal(got, []string{"GH_TOKEN"}) || req.Header.Get("Authorization") != "Bearer "+secrets[0].Value {
 		t.Errorf("Request swapped %q", got)
 	}
-	wantValue := url.QueryEscape(secrets[0].Value)
-	want := "keep=%2f&" +
-		wantValue + "=raw&" +
-		"escaped=" + wantValue + "&" +
-		"lower=" + wantValue + "&" +
-		"other=" + secrets[1].Placeholder
+	want := raw
 	if req.URL.RawQuery != want {
 		t.Errorf("RawQuery = %q, want %q", req.URL.RawQuery, want)
 	}
@@ -185,18 +201,22 @@ func TestRequestDoesNotSwapPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sw.Request(req, "api.github.com"); err != nil {
-		t.Fatal(err)
+	req.Header.Set("Authorization", "token "+secrets[0].Placeholder)
+	if names, err := sw.Request(req, "api.github.com"); err != nil || !slices.Equal(names, []string{"GH_TOKEN"}) {
+		t.Fatalf("Request = %v, %v", names, err)
+	}
+	if req.Header.Get("Authorization") != "token "+secrets[0].Value {
+		t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
 	}
 	if !strings.Contains(req.URL.Path, secrets[0].Placeholder) {
 		t.Errorf("path was swapped to %q", req.URL.Path)
 	}
-	if strings.Contains(req.URL.RawQuery, secrets[0].Placeholder) {
-		t.Errorf("query was not swapped: %q", req.URL.RawQuery)
+	if req.URL.RawQuery != "q="+secrets[0].Placeholder {
+		t.Errorf("query changed: %q", req.URL.RawQuery)
 	}
 }
 
-func TestRequestSwapsBodies(t *testing.T) {
+func TestRequestKeepsBodies(t *testing.T) {
 	secrets := testSecrets()
 	for _, tc := range []struct {
 		name        string
@@ -208,31 +228,31 @@ func TestRequestSwapsBodies(t *testing.T) {
 			name:        "json",
 			contentType: "application/json",
 			in:          `{"token":"` + secrets[0].Placeholder + `"}`,
-			want:        `{"token":"gho_real_\"tok\\en&#%+"}`,
+			want:        `{"token":"` + secrets[0].Placeholder + `"}`,
 		},
 		{
 			name:        "json suffix",
 			contentType: "application/vnd.api+json; charset=utf-8",
 			in:          `{"token":"` + secrets[0].Placeholder + `"}`,
-			want:        `{"token":"gho_real_\"tok\\en&#%+"}`,
+			want:        `{"token":"` + secrets[0].Placeholder + `"}`,
 		},
 		{
 			name:        "form",
 			contentType: "application/x-www-form-urlencoded",
 			in:          "token=" + secrets[0].Placeholder + "&keep=%2f",
-			want:        "token=" + url.QueryEscape(secrets[0].Value) + "&keep=%2f",
+			want:        "token=" + secrets[0].Placeholder + "&keep=%2f",
 		},
 		{
 			name:        "text",
 			contentType: "text/plain",
 			in:          "token=" + secrets[0].Placeholder,
-			want:        "token=" + secrets[0].Value,
+			want:        "token=" + secrets[0].Placeholder,
 		},
 		{
 			name:        "chunked",
 			contentType: "text/plain",
 			in:          "chunk " + secrets[0].Placeholder,
-			want:        "chunk " + secrets[0].Value,
+			want:        "chunk " + secrets[0].Placeholder,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -242,17 +262,17 @@ func TestRequestSwapsBodies(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.Header.Set("Content-Type", tc.contentType)
+			req.Header.Set("Authorization", "Bearer "+secrets[0].Placeholder)
 			if tc.name == "chunked" {
 				req.ContentLength = -1
 			} else {
 				req.ContentLength = int64(len(tc.in))
-				req.Header.Set("Content-Length", "999")
 			}
 			got, err := sw.Request(req, "api.github.com")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(got, []string{"GH_TOKEN"}) {
+			if !slices.Equal(got, []string{"GH_TOKEN"}) || req.Header.Get("Authorization") != "Bearer "+secrets[0].Value {
 				t.Errorf("Request swapped %q", got)
 			}
 			body, err := io.ReadAll(req.Body)
@@ -262,22 +282,12 @@ func TestRequestSwapsBodies(t *testing.T) {
 			if string(body) != tc.want {
 				t.Errorf("body = %q, want %q", body, tc.want)
 			}
-			if req.ContentLength != int64(len(tc.want)) {
-				t.Errorf("ContentLength = %d, want %d", req.ContentLength, len(tc.want))
+			wantLength := int64(len(tc.in))
+			if tc.name == "chunked" {
+				wantLength = -1
 			}
-			if got := req.Header.Get("Content-Length"); got != "" {
-				t.Errorf("Content-Length header = %q", got)
-			}
-			again, err := req.GetBody()
-			if err != nil {
-				t.Fatal(err)
-			}
-			body, err = io.ReadAll(again)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(body) != tc.want {
-				t.Errorf("GetBody body = %q, want %q", body, tc.want)
+			if req.ContentLength != wantLength {
+				t.Errorf("ContentLength = %d, want %d", req.ContentLength, wantLength)
 			}
 			if strings.HasPrefix(tc.contentType, "application/json") || strings.Contains(tc.contentType, "+json") {
 				var js map[string]string
@@ -298,9 +308,13 @@ func TestRequestLeavesLargeAndUnsupportedBodiesStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Authorization", "token "+secrets[0].Placeholder)
 	req.ContentLength = int64(len(large))
-	if got, err := sw.Request(req, "api.github.com"); err != nil || len(got) != 0 {
+	if got, err := sw.Request(req, "api.github.com"); err != nil || !slices.Equal(got, []string{"GH_TOKEN"}) {
 		t.Fatalf("Request large = %q, %v", got, err)
+	}
+	if req.Header.Get("Authorization") != "token "+secrets[0].Value {
+		t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
 	}
 	if req.ContentLength != int64(len(large)) {
 		t.Errorf("ContentLength = %d, want %d", req.ContentLength, len(large))
@@ -326,29 +340,35 @@ func TestRequestLeavesLargeAndUnsupportedBodiesStreaming(t *testing.T) {
 	if got, err := sw.Request(req, "api.github.com"); err != nil || len(got) != 0 {
 		t.Fatalf("Request unsupported = %q, %v", got, err)
 	}
-	if unread.read {
-		t.Error("unsupported body was read")
+	if _, err := io.ReadAll(req.Body); err == nil {
+		t.Error("transport did not receive the unsupported body's error")
 	}
 }
 
-type failReader struct{ read bool }
+type failReader struct{}
 
-func (r *failReader) Read([]byte) (int, error) {
-	r.read = true
+func (*failReader) Read([]byte) (int, error) {
 	return 0, errors.New("should not read")
 }
 
 func (r *failReader) Close() error { return nil }
 
-func TestRequestBodyReadError(t *testing.T) {
+func TestRequestDefersBodyReadErrorsToTransport(t *testing.T) {
 	sw := newSwapper(t, testSecrets())
 	req, err := http.NewRequest(http.MethodPost, "https://api.github.com/upload", &failReader{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "text/plain")
-	if _, err := sw.Request(req, "api.github.com"); err == nil {
-		t.Fatal("Request returned nil error for body read error")
+	req.Header.Set("Authorization", "token "+testSecrets()[0].Placeholder)
+	if names, err := sw.Request(req, "api.github.com"); err != nil || !slices.Equal(names, []string{"GH_TOKEN"}) {
+		t.Fatalf("Request = %v, %v", names, err)
+	}
+	if got := req.Header.Get("Authorization"); got != "token "+testSecrets()[0].Value {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if _, err := io.ReadAll(req.Body); err == nil {
+		t.Fatal("transport did not receive the body read error")
 	}
 }
 
@@ -513,33 +533,16 @@ func (r *sizedReadCloser) Read(p []byte) (int, error) {
 
 func (r *sizedReadCloser) Close() error { return nil }
 
-func TestText(t *testing.T) {
-	for _, ct := range []string{
-		"application/json",
-		"application/vnd.api+json",
-		"application/x-www-form-urlencoded",
-		"text/event-stream",
-		"application/xml",
-		"application/javascript",
-	} {
-		if !swap.Text(ct) {
-			t.Errorf("Text(%q) = false", ct)
-		}
-	}
-	for _, ct := range []string{"application/octet-stream", "application/gzip", ""} {
-		if swap.Text(ct) {
-			t.Errorf("Text(%q) = true", ct)
-		}
-	}
-}
-
 func FuzzRequest(f *testing.F) {
 	secrets := []swap.Secret{
 		{Name: "A", Placeholder: "hib_place_Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Value: "real-A-token", Sites: []string{"a.example.com"}},
 		{Name: "B", Placeholder: "hib_place_Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Value: "real-B-token", Sites: []string{"b.example.com"}},
 	}
-	for _, seed := range []string{"", "plain", secrets[0].Placeholder, url.QueryEscape(secrets[0].Placeholder)} {
-		f.Add("a.example.com", seed, seed, seed, "text/plain")
+	for _, host := range []string{"a.example.com", "b.example.com", "unbound.example.com"} {
+		for _, seed := range []string{"", "plain", secrets[0].Placeholder, secrets[1].Placeholder,
+			secrets[0].Placeholder + " " + secrets[1].Placeholder, url.QueryEscape(secrets[0].Placeholder)} {
+			f.Add(host, seed, seed, seed, "text/plain")
+		}
 	}
 	f.Fuzz(func(t *testing.T, host, query, header, body, contentType string) {
 		if host != "a.example.com" && host != "b.example.com" {
@@ -552,135 +555,55 @@ func FuzzRequest(f *testing.F) {
 		}
 		req.Header.Set("X-Test", header)
 		req.Header.Set("Content-Type", contentType)
-		before := requestText(req)
-		if _, err := sw.Request(req, host); err != nil {
-			t.Skip()
+		req.Header.Set("Authorization", "Bearer "+header)
+		wantAuth := "Bearer " + header
+		var wantNames []string
+		siteSecrets := map[string]int{"a.example.com": 0, "b.example.com": 1}
+		if index, bound := siteSecrets[host]; bound {
+			s := secrets[index]
+			wantAuth = strings.ReplaceAll(wantAuth, s.Placeholder, s.Value)
+			if strings.Contains(header, s.Placeholder) {
+				wantNames = []string{s.Name}
+			}
 		}
-		after := requestText(req)
-		for _, s := range secrets {
-			bound := secretBound(t, s, host)
-			if !bound && strings.Count(after, s.Value) > strings.Count(before, s.Value) {
-				t.Fatalf("unbound value for %s appeared", s.Name)
-			}
-			if bound {
-				if strings.Contains(req.Header.Get("X-Test"), s.Placeholder) {
-					t.Fatalf("bound header placeholder for %s remains", s.Name)
-				}
-				if strings.Contains(req.URL.RawQuery, s.Placeholder) {
-					t.Fatalf("bound query placeholder for %s remains", s.Name)
-				}
-				if strings.HasPrefix(contentType, "text/") && len(body) <= 1<<20 {
-					bodyAfter, _ := io.ReadAll(req.Body)
-					req.Body = io.NopCloser(bytes.NewReader(bodyAfter))
-					if strings.Contains(string(bodyAfter), s.Placeholder) {
-						t.Fatalf("bound body placeholder for %s remains", s.Name)
-					}
-				}
-				for _, other := range secrets {
-					if other.Name != s.Name && strings.Contains(after, other.Value) && !strings.Contains(before, other.Value) {
-						t.Fatalf("other value for %s appeared", other.Name)
-					}
-				}
-			}
+		names, err := sw.Request(req, host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(req.Body)
+		if err != nil || string(data) != body || req.Header.Get("X-Test") != header ||
+			req.Header.Get("Authorization") != wantAuth || req.URL.RawQuery != "x="+url.QueryEscape(query) ||
+			!slices.Equal(names, wantNames) {
+			t.Fatalf("request = auth %q, header %q, query %q, body %q, names %v, error %v",
+				req.Header.Get("Authorization"), req.Header.Get("X-Test"), req.URL.RawQuery, data, names, err)
 		}
 	})
 }
 
-func secretBound(t testHelper, s swap.Secret, host string) bool {
-	t.Helper()
-	return newSwapper(t, []swap.Secret{s}).Bound(host)
-}
-
-func requestText(req *http.Request) string {
-	var b strings.Builder
-	b.WriteString(req.URL.RawQuery)
-	for _, values := range req.Header {
-		for _, value := range values {
-			b.WriteString(value)
-		}
-	}
-	if req.Body != nil {
-		data, _ := io.ReadAll(req.Body)
-		b.Write(data)
-		req.Body = io.NopCloser(bytes.NewReader(data))
-	}
-	return b.String()
-}
-
 func FuzzScrub(f *testing.F) {
-	secrets := append(testSecrets(),
-		swap.Secret{Name: "BOUNDARY", Placeholder: "boundary-placeholder", Value: "gho_" + strings.Repeat("Z", 31) + "g", Sites: []string{"api.github.com"}},
-		swap.Secret{Name: "PREFIX_SHORT", Placeholder: "short-placeholder", Value: "token-prefix", Sites: []string{"api.github.com"}},
-		swap.Secret{Name: "PREFIX_LONG", Placeholder: "long-placeholder", Value: "token-prefix-long", Sites: []string{"api.github.com"}},
-	)
 	f.Add("plain", []byte{1})
-	f.Add("before "+secrets[0].Value+" after", []byte{1, 2, 3})
-	f.Add(url.QueryEscape(secrets[0].Value), []byte{4, 1})
-	f.Add(`{"token":"`+secrets[3].Value+`"}`, []byte{byte(len(`{"token":"` + secrets[3].Value))})
-	f.Add(`{"token":"token-prefix-long"}`, []byte{byte(len(`{"token":"token-prefix`))})
+	f.Add("base64", []byte{1, 2, 3})
+	f.Add("url", []byte{4, 1})
 	f.Fuzz(func(t *testing.T, in string, sizes []byte) {
-		sw := newSwapper(t, secrets)
-		want := referenceScrub(in, secrets)
-		got, err := io.ReadAll(sw.ScrubBody(newSizedReadCloser(in, sizes)))
+		value := `token-REAL-"<>-secret`
+		placeholder := `token-FAKE-"<>-secret`
+		sw := newSwapper(t, []swap.Secret{{Name: "token", Value: value, Placeholder: placeholder, Sites: []string{"example.com"}}})
+		prefix := strings.Repeat("x", len(in)%3)
+		enc := []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding}[len(in)%4]
+		forms := func(token string) string {
+			quoted, _ := json.Marshal(token)
+			return token + "\n" + string(quoted) + "\n" + jsonContentNoHTML(token) + "\n" +
+				url.QueryEscape(token) + "\n" + enc.EncodeToString([]byte(prefix+token)) + "\n"
+		}
+		want := forms(placeholder)
+		got, err := io.ReadAll(sw.ScrubBody(newSizedReadCloser(forms(value), sizes)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if string(got) != want {
 			t.Fatalf("chunked scrub = %q, want %q", got, want)
 		}
-		for _, s := range secrets {
-			if strings.Contains(string(got), s.Value) {
-				t.Fatalf("output contains value for %s", s.Name)
-			}
-		}
 	})
-}
-
-func referenceScrub(in string, secrets []swap.Secret) string {
-	type pat struct{ from, to string }
-	first := map[string]string{}
-	ordered := slices.Clone(secrets)
-	slices.SortFunc(ordered, func(a, b swap.Secret) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-	for _, s := range ordered {
-		if _, ok := first[s.Value]; !ok {
-			first[s.Value] = s.Placeholder
-		}
-	}
-	var pats []pat
-	seen := map[string]bool{}
-	for _, s := range secrets {
-		quoted, _ := json.Marshal(s.Value)
-		for _, form := range []string{
-			s.Value,
-			jsonContentNoHTML(s.Value),
-			strings.Trim(string(quoted), `"`),
-			url.QueryEscape(s.Value),
-		} {
-			if !seen[form] {
-				pats = append(pats, pat{from: form, to: first[s.Value]})
-				seen[form] = true
-			}
-		}
-	}
-	var out strings.Builder
-	for i := 0; i < len(in); {
-		var match pat
-		for _, p := range pats {
-			if len(p.from) > len(match.from) && strings.HasPrefix(in[i:], p.from) {
-				match = p
-			}
-		}
-		if match.from != "" {
-			out.WriteString(match.to)
-			i += len(match.from)
-			continue
-		}
-		out.WriteByte(in[i])
-		i++
-	}
-	return out.String()
 }
 
 func jsonContentNoHTML(s string) string {

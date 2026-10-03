@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -115,12 +116,12 @@ func TestBoundHTTP11SwapsAuditsAndScrubs(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer "+realValue {
 			t.Errorf("Authorization = %q", got)
 		}
-		if got := r.URL.Query().Get("token"); got != realValue {
+		if got := r.URL.Query().Get("token"); got != placeholder {
 			t.Errorf("query token = %q", got)
 		}
 		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), realValue) {
-			t.Errorf("body was not swapped: %q", body)
+		if string(body) != `{"token":"`+placeholder+`"}` {
+			t.Errorf("body changed: %q", body)
 		}
 		if r.Header.Get("Accept-Encoding") != "gzip" {
 			t.Errorf("Accept-Encoding = %q, want Go transport gzip", r.Header.Get("Accept-Encoding"))
@@ -436,6 +437,7 @@ func TestWebSocketThroughProxy(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+realValue {
 			t.Errorf("upgrade Authorization = %q", r.Header.Get("Authorization"))
 		}
+		w.Header().Set("X-Echo-Authorization", r.Header.Get("Authorization"))
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			t.Errorf("accept websocket: %v", err)
@@ -447,7 +449,10 @@ func TestWebSocketThroughProxy(t *testing.T) {
 			t.Errorf("read websocket: %v", err)
 			return
 		}
-		_ = conn.Write(r.Context(), websocket.MessageText, data)
+		if string(data) != placeholder {
+			t.Errorf("upstream WebSocket frame = %q", data)
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, []byte(realValue+"|"+string(data)))
 	}))
 	defer fx.close()
 	ctx := context.Background()
@@ -459,6 +464,9 @@ func TestWebSocketThroughProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.Header.Get("X-Echo-Authorization") != "Bearer "+placeholder {
+		t.Fatalf("upgrade response header = %q", resp.Header.Get("X-Echo-Authorization"))
+	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	if err := conn.Write(ctx, websocket.MessageText, []byte(placeholder)); err != nil {
 		t.Fatal(err)
@@ -467,7 +475,7 @@ func TestWebSocketThroughProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != placeholder {
+	if string(data) != realValue+"|"+placeholder {
 		t.Fatalf("websocket frame = %q", data)
 	}
 }
@@ -541,9 +549,15 @@ func TestAuditLogNeverContainsRealValue(t *testing.T) {
 	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }), func(s *Server) { s.Audit = log.Write })
 	defer fx.close()
 	req, _ := http.NewRequest(http.MethodGet, fx.url("/audit?q="+placeholder), nil)
-	_, err = fx.client(false).Do(req)
+	req.Header.Set("Authorization", "Bearer "+placeholder)
+	resp, err := fx.client(false).Do(req)
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("response = %d %q, %v", resp.StatusCode, body, err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -551,6 +565,14 @@ func TestAuditLogNeverContainsRealValue(t *testing.T) {
 	}
 	if strings.Contains(string(data), realValue) || strings.Contains(string(data), placeholder) {
 		t.Fatalf("audit log contains a secret value: %q", data)
+	}
+	var entry audit.Entry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Machine != "machine" || entry.MachineID != "sbx" || entry.Site != "localhost" ||
+		entry.Method != "GET" || entry.Path != "/audit" || len(entry.Secrets) != 1 || entry.Secrets[0] != "github" {
+		t.Fatalf("audit entry = %+v", entry)
 	}
 }
 
@@ -624,22 +646,25 @@ func TestRemovedSecretStopsSwappingOnOpenConnection(t *testing.T) {
 	}
 }
 
-func TestIdentifyCalledOnceAndOnlyOnSwap(t *testing.T) {
+func TestAuditEntriesIncludeMachineIdentityOnlyForSwaps(t *testing.T) {
 	t.Parallel()
-	var calls atomic.Int32
+	entries := make(chan audit.Entry, 3)
 	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }), func(s *Server) {
 		s.Identify = func(net.Conn) (string, string, error) {
-			calls.Add(1)
-			return "machine", "sbx", nil
+			return "identified-machine", "identified-sbx", nil
 		}
+		s.Audit = func(e audit.Entry) error { entries <- e; return nil }
 	})
 	defer fx.close()
 	client := fx.client(false)
-	if _, err := client.Get(fx.url("/no-swap")); err != nil {
+	resp, err := client.Get(fx.url("/no-swap"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("identify called without swap")
+	data, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || string(data) != "ok" {
+		t.Fatalf("no-swap response = %q, %v", data, err)
 	}
 	for i := 0; i < 2; i++ {
 		req, _ := http.NewRequest(http.MethodGet, fx.url(fmt.Sprintf("/swap-%d", i)), nil)
@@ -651,8 +676,22 @@ func TestIdentifyCalledOnceAndOnlyOnSwap(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("identify calls = %d, want 1", calls.Load())
+	for i := range 2 {
+		select {
+		case e := <-entries:
+			if e.Machine != "identified-machine" || e.MachineID != "identified-sbx" ||
+				e.Site != "localhost" || e.Path != fmt.Sprintf("/swap-%d", i) || e.Method != "GET" ||
+				len(e.Secrets) != 1 || e.Secrets[0] != "github" {
+				t.Fatalf("audit = %+v", e)
+			}
+		default:
+			t.Fatal("swap has no identified audit entry")
+		}
+	}
+	select {
+	case e := <-entries:
+		t.Fatalf("unexpected audit entry: %+v", e)
+	default:
 	}
 }
 
@@ -762,14 +801,14 @@ func TestRealNodeClient(t *testing.T) {
 	got := make(chan string, 1)
 	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		got <- r.URL.Query().Get("token") + "\n" + string(body)
+		got <- r.Header.Get("Authorization") + "\n" + r.URL.Query().Get("token") + "\n" + string(body)
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer fx.close()
 	script := `
 const res = await fetch(process.env.URL + '?token=' + encodeURIComponent(process.env.PLACEHOLDER), {
   method: 'POST',
-  headers: {'Content-Type': 'application/json'},
+  headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + process.env.PLACEHOLDER},
   body: JSON.stringify({token: process.env.PLACEHOLDER}),
 });
 if (!res.ok) throw new Error('status ' + res.status);
@@ -780,8 +819,8 @@ if (!res.ok) throw new Error('status ' + res.status);
 		t.Fatalf("node failed: %v: %s", err, out)
 	}
 	seen := <-got
-	if !strings.Contains(seen, realValue) || strings.Contains(seen, placeholder) {
-		t.Fatalf("node did not swap query/body: %q", seen)
+	if seen != "Bearer "+realValue+"\n"+placeholder+"\n"+`{"token":"`+placeholder+`"}` {
+		t.Fatalf("node Authorization or content = %q", seen)
 	}
 }
 
@@ -844,6 +883,11 @@ func newFixtureWithSiteHost(t *testing.T, siteHost string, h http.Handler) *fixt
 
 func newFixtureConfigured(t *testing.T, siteHost string, h http.Handler, configure func(*Server)) *fixture {
 	t.Helper()
+	return newFixtureProtocols(t, siteHost, h, configure, true)
+}
+
+func newFixtureProtocols(t *testing.T, siteHost string, h http.Handler, configure func(*Server), upstreamHTTP2 bool) *fixture {
+	t.Helper()
 	hibCA := newTestCA(t, "hibernaut test CA")
 	siteCA := newTestCA(t, "site test CA")
 	up := httptest.NewUnstartedServer(h)
@@ -851,8 +895,12 @@ func newFixtureConfigured(t *testing.T, siteHost string, h http.Handler, configu
 	if err != nil {
 		t.Fatal(err)
 	}
-	up.TLS = &tls.Config{Certificates: []tls.Certificate{*cert}, NextProtos: []string{"h2", "http/1.1"}, MinVersion: tls.VersionTLS12}
-	up.EnableHTTP2 = true
+	protos := []string{"http/1.1"}
+	if upstreamHTTP2 {
+		protos = []string{"h2", "http/1.1"}
+	}
+	up.TLS = &tls.Config{Certificates: []tls.Certificate{*cert}, NextProtos: protos, MinVersion: tls.VersionTLS12}
+	up.EnableHTTP2 = upstreamHTTP2
 	up.StartTLS()
 	proxy, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

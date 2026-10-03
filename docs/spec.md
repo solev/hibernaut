@@ -103,8 +103,9 @@ be sent to, and a **placeholder**.
   with placeholders in it. `hibd` writes both on create, on resume, and whenever secrets change.
   SSH sessions, `hib exec` and tmux all see them. (Not E2B's `envVars`: those reach only processes
   E2B starts, not SSH logins, and can't be changed after create.)
-- **Swap:** the egress proxy replaces the placeholder with the real value only for requests to that
-  secret's bound sites. Sent anywhere else, the placeholder is a meaningless string.
+- **Swap:** the egress proxy replaces placeholders only in the `Authorization` request header,
+  and only for that secret's bound sites. Basic auth is decoded before swapping and re-encoded.
+  Other headers, URLs, and bodies keep the placeholder. Sent elsewhere, it is meaningless.
 - **Health:** `hib status` tests each secret against its site (for GitHub, `GET /user`) and shows
   whether it still works.
 
@@ -142,17 +143,37 @@ git clone https://github.com/solev/private-repo
   - **Bound site:** the proxy terminates TLS with a certificate from the Hibernaut CA, which machines
     trust. It swaps the placeholder, then re-encrypts to the real site and verifies that site's real
     certificate.
-- **Swap locations:** headers (including decoded Basic auth), the URL query, and small text bodies
-  (JSON or form data up to 1 MB). All other traffic streams through unmodified (git packs, SSE).
-  Non-TLS connections pass through when no SNI is found. The proxy strips client
-  `Accept-Encoding`, lets its upstream transport request gzip, and scrubs the decompressed body.
-  WebSocket frames after an upgrade are not scrubbed.
-- **Defense in depth:** if a response contains a real value, it's scrubbed back to the placeholder.
-  If the audit log write fails, the request fails closed before forwarding.
+- **Swap locations:** only the `Authorization` request header, for any scheme. For Basic, the
+  proxy decodes the username and password, swaps placeholders, and re-encodes them. Other headers,
+  the URL path and query, and all bodies stream through untouched. Bodies are never buffered.
+  This prevents a request from storing the real value in a gist, git blob, issue, or comment.
+  Non-TLS connections pass through when no SNI is found.
+- **Defense in depth:** every intercepted response is scrubbed against all real values in the
+  vault. Headers, trailers, and the whole body are scrubbed, including binary bodies, without
+  buffering the whole response. Matches cover raw values,
+  JSON escapes with and without HTML escaping, URL query escapes, and standard and URL-safe
+  base64, padded and unpadded, at all three byte alignments. Each encoded match becomes the
+  placeholder's encoded form.
+  - Base64 matches need at least eight invariant characters. Shorter base64 forms are not scrubbed,
+    so tiny patterns do not corrupt unrelated content. Mixed boundary characters can retain at
+    most eight bits of an embedded value. End-of-data patterns include the final partial group
+    and padding. A reflected Basic
+    password can retain at most four leading bits, not its final bytes. These limits concern
+    base64 only. Raw and escaped matches replace the whole value.
+  - Replacements may change length after rotation. The proxy removes response `Content-Length`
+    so HTTP/1.1 and HTTP/2 framing stay valid.
+  - The proxy strips client `Accept-Encoding` and lets its upstream transport request and decode
+    gzip. Any non-identity `Content-Encoding` left after transport decoding fails closed with 502.
+    This includes gzip on Range requests and encodings such as br, zstd, and deflate.
+  - If the audit log write fails, the request fails closed before forwarding.
+- **WebSocket:** the upgrade request's `Authorization` is swapped and its response headers are
+  scrubbed. After the upgrade, frames are neither swapped nor scrubbed.
 - **Token endpoints:** some tools trade their login for fresh tokens: Codex refreshes, and Copilot
   may exchange (S9). The proxy handles these few endpoints itself, so a new real token never
   reaches a machine. It either answers the request with placeholders, or keeps the new real token
   on the host and passes the machine a placeholder for it (§4.4).
+  Authorization-only swapping does not handle refresh-token bodies. The token endpoint handler
+  in M5 handles Codex's refresh-token body on the host.
 - **Audit log:** every swap is logged as time, machine, site, method, path and secret name. View it
   with `hib log`.
 - **Trust inside the image:**
@@ -269,10 +290,18 @@ come later.
 | --- | --- |
 | reads env vars or files | it gets placeholders only |
 | sends them to its own server | the placeholder isn't swapped, so it's useless |
+| makes a bound site store or echo a value | only Authorization is swapped. See the limits below. |
+| gets credentials echoed in WebSocket frames | frames are not scrubbed after upgrade (§4.2) |
 | uses a credential against the real site (e.g. deletes a repo, or spends your AI quota) | **not prevented in v1.** It shows in the audit log. Mitigation: narrower tokens (fine-grained, GitHub App). |
 | triggers a token refresh or exchange | the proxy handles it on the host (§4.2 Token endpoints). New real tokens never reach the machine. |
 | gets hold of a golden image | it only contains placeholders (multi-user will need a per-machine identity check) |
 | connects to the host's own services (E2B API, databases, `hibd`) or Azure's metadata endpoint | blocked: E2B's firewall drops traffic to private, loopback and link-local addresses, including `169.254.169.254`. Azure's WireServer (`168.63.129.16`) is a public address E2B doesn't block, so the orchestrator runs with `IPAddressDeny` for it and an nft rule drops it on the sandbox veth. Still reachable: E2B's internal service address (`192.0.2.1`) and the host's public IP, where the NSG allows only key-based SSH. `hibd` listens on localhost, apart from the interception port, which accepts only machine interfaces. Verified in M1 (`TestMachineNetwork`); live egress-proxy check in M3 (S8). |
+
+**Bound sites:** stored content keeps the placeholder because only `Authorization` is swapped.
+Responses from bound sites are scrubbed in raw, escaped, and base64 forms (§4.2). A bound site
+that stores or shows request headers can still leak the value through another site, another
+encoding, or WebSocket frames. Bind secrets only to the services that use them, not arbitrary
+echo or storage services.
 
 **Host compromise** exposes the vault. Later mitigation: keep the vault key in Azure Key Vault,
 accessed through the VM's managed identity.

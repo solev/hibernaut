@@ -9,15 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
-)
 
-const maxBody = 1 << 20
+	"github.com/solev/hibernaut/internal/secretencoding"
+)
 
 // Secret is one host-held secret and the sites where its real value may be sent.
 type Secret struct {
@@ -44,8 +43,9 @@ type siteMatcher struct {
 }
 
 type pattern struct {
-	from []byte
-	to   []byte
+	from     []byte
+	to       []byte
+	terminal bool
 }
 
 // New validates secrets and precomputes request and response matchers.
@@ -152,7 +152,8 @@ func (sw *Swapper) bound(host string) []compiledSecret {
 	return out
 }
 
-// Request swaps placeholders for secrets bound to host in r. It returns the swapped secret names.
+// Request swaps Authorization placeholders for secrets bound to host.
+// Bodies and all other request fields remain untouched. It returns the swapped secret names.
 func (sw *Swapper) Request(r *http.Request, host string) ([]string, error) {
 	bound := sw.bound(host)
 	if len(bound) == 0 {
@@ -160,198 +161,38 @@ func (sw *Swapper) Request(r *http.Request, host string) ([]string, error) {
 	}
 	swapped := map[string]bool{}
 	for key, values := range r.Header {
-		for i, value := range values {
-			next := value
-			if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "Proxy-Authorization") {
-				next = swapBasic(next, bound, swapped)
-			}
-			next = replacePlaceholders(next, bound, valueKindRaw, swapped)
-			values[i] = next
+		if !strings.EqualFold(key, "Authorization") {
+			continue
 		}
-	}
-	r.URL.RawQuery = swapQuery(r.URL.RawQuery, bound, swapped)
-	if err := sw.swapBody(r, bound, swapped); err != nil {
-		return nil, err
+		for i, value := range values {
+			values[i] = swapAuthorization(value, bound, swapped)
+		}
 	}
 	return sortedNames(swapped), nil
 }
 
-type valueKind int
-
-const (
-	valueKindRaw valueKind = iota
-	valueKindJSON
-)
-
-func swapBasic(value string, secrets []compiledSecret, swapped map[string]bool) string {
+func swapAuthorization(value string, secrets []compiledSecret, swapped map[string]bool) string {
 	scheme, token, ok := strings.Cut(value, " ")
 	if !ok || !strings.EqualFold(scheme, "Basic") {
-		return value
+		return replacePlaceholders(value, secrets, swapped)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(token)
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(token))
 	if err != nil {
 		return value
 	}
-	next := replacePlaceholders(string(decoded), secrets, valueKindRaw, swapped)
+	next := replacePlaceholders(string(decoded), secrets, swapped)
 	return scheme + " " + base64.StdEncoding.EncodeToString([]byte(next))
 }
 
-func replacePlaceholders(in string, secrets []compiledSecret, kind valueKind, swapped map[string]bool) string {
+func replacePlaceholders(in string, secrets []compiledSecret, swapped map[string]bool) string {
 	out := in
 	for _, s := range secrets {
-		replacement := s.Value
-		if kind == valueKindJSON {
-			replacement = s.jsonValue
-		}
 		if strings.Contains(out, s.Placeholder) {
-			out = strings.ReplaceAll(out, s.Placeholder, replacement)
+			out = strings.ReplaceAll(out, s.Placeholder, s.Value)
 			swapped[s.Name] = true
 		}
 	}
 	return out
-}
-
-func swapQuery(raw string, secrets []compiledSecret, swapped map[string]bool) string {
-	if raw == "" {
-		return raw
-	}
-	parts := strings.Split(raw, "&")
-	for i, part := range parts {
-		key, value, hasValue := strings.Cut(part, "=")
-		key = swapQueryPart(key, secrets, swapped)
-		if hasValue {
-			value = swapQueryPart(value, secrets, swapped)
-			parts[i] = key + "=" + value
-		} else {
-			parts[i] = key
-		}
-	}
-	return strings.Join(parts, "&")
-}
-
-func swapQueryPart(part string, secrets []compiledSecret, swapped map[string]bool) string {
-	raw := part
-	changed := false
-	for _, s := range secrets {
-		if strings.Contains(raw, s.Placeholder) {
-			raw = strings.ReplaceAll(raw, s.Placeholder, url.QueryEscape(s.Value))
-			swapped[s.Name] = true
-			changed = true
-		}
-	}
-	if changed {
-		return raw
-	}
-	decoded, err := url.QueryUnescape(part)
-	if err != nil {
-		return part
-	}
-	next := decoded
-	for _, s := range secrets {
-		if strings.Contains(next, s.Placeholder) {
-			next = strings.ReplaceAll(next, s.Placeholder, s.Value)
-			swapped[s.Name] = true
-			changed = true
-		}
-	}
-	if changed {
-		return url.QueryEscape(next)
-	}
-	return part
-}
-
-func (sw *Swapper) swapBody(r *http.Request, secrets []compiledSecret, swapped map[string]bool) error {
-	if r.Body == nil || r.Body == http.NoBody || !requestBodyText(r.Header.Get("Content-Type")) || encoded(r.Header.Get("Content-Encoding")) {
-		return nil
-	}
-	body := r.Body
-	data, err := io.ReadAll(io.LimitReader(body, maxBody+1))
-	if err != nil {
-		return err
-	}
-	if len(data) > maxBody {
-		r.Body = readCloser{
-			Reader: io.MultiReader(bytes.NewReader(data), body),
-			close:  body.Close,
-		}
-		r.GetBody = nil
-		return nil
-	}
-	if err := body.Close(); err != nil {
-		return err
-	}
-	kind := bodyKind(r.Header.Get("Content-Type"))
-	next := string(data)
-	switch kind {
-	case "json":
-		next = replacePlaceholders(next, secrets, valueKindJSON, swapped)
-	case "form":
-		next = swapQuery(next, secrets, swapped)
-	default:
-		next = replacePlaceholders(next, secrets, valueKindRaw, swapped)
-	}
-	buf := []byte(next)
-	r.Body = io.NopCloser(bytes.NewReader(buf))
-	r.ContentLength = int64(len(buf))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(buf)), nil
-	}
-	r.Header.Del("Content-Length")
-	return nil
-}
-
-type readCloser struct {
-	io.Reader
-	close func() error
-}
-
-func (r readCloser) Close() error { return r.close() }
-
-func encoded(contentEncoding string) bool {
-	contentEncoding = strings.TrimSpace(contentEncoding)
-	return contentEncoding != "" && !strings.EqualFold(contentEncoding, "identity")
-}
-
-func requestBodyText(contentType string) bool {
-	switch bodyKind(contentType) {
-	case "json", "form", "text":
-		return true
-	default:
-		return false
-	}
-}
-
-func bodyKind(contentType string) string {
-	mt, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		mt = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	}
-	switch {
-	case mt == "application/json" || strings.HasSuffix(mt, "+json"):
-		return "json"
-	case mt == "application/x-www-form-urlencoded":
-		return "form"
-	case strings.HasPrefix(mt, "text/"):
-		return "text"
-	default:
-		return ""
-	}
-}
-
-// Text reports whether a response media type should be scrubbed as text.
-func Text(contentType string) bool {
-	mt, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		mt = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	}
-	return mt == "application/json" ||
-		strings.HasSuffix(mt, "+json") ||
-		mt == "application/x-www-form-urlencoded" ||
-		strings.HasPrefix(mt, "text/") ||
-		mt == "application/xml" ||
-		strings.HasSuffix(mt, "+xml") ||
-		mt == "application/javascript" ||
-		mt == "text/javascript"
 }
 
 // ScrubHeader replaces real values in h with placeholders.
@@ -432,7 +273,14 @@ func scanScrub(out, in []byte, eof bool, first [256][]pattern) ([]byte, int) {
 	for i := 0; i < len(in); {
 		var match pattern
 		for _, p := range first[in[i]] {
-			if len(p.from) > len(match.from) && bytes.HasPrefix(in[i:], p.from) {
+			if !bytes.HasPrefix(in[i:], p.from) {
+				continue
+			}
+			next := i + len(p.from)
+			if p.terminal && next < len(in) && base64Byte(in[next]) {
+				continue
+			}
+			if len(p.from) > len(match.from) || len(p.from) == len(match.from) && p.terminal {
 				match = p
 			}
 		}
@@ -455,8 +303,16 @@ func possibleLongerMatch(rest []byte, matched int, patterns []pattern) bool {
 		if len(p.from) > len(rest) && len(p.from) > matched && bytes.HasPrefix(p.from, rest) {
 			return true
 		}
+		if p.terminal && len(p.from) == len(rest) && bytes.Equal(p.from, rest) {
+			return true
+		}
 	}
 	return false
+}
+
+func base64Byte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
+		b == '+' || b == '/' || b == '-' || b == '_' || b == '='
 }
 
 func scrubPatterns(secrets []compiledSecret) []pattern {
@@ -469,17 +325,41 @@ func scrubPatterns(secrets []compiledSecret) []pattern {
 		}
 	}
 	var pats []pattern
-	seen := map[string]bool{}
+	type patternKey struct {
+		from     string
+		terminal bool
+	}
+	seen := map[patternKey]bool{}
+	add := func(from, to []byte, terminal bool) {
+		key := patternKey{string(from), terminal}
+		if len(from) == 0 || seen[key] {
+			return
+		}
+		seen[key] = true
+		pats = append(pats, pattern{from: from, to: to, terminal: terminal})
+	}
 	for _, s := range order {
 		first := firstByValue[s.Value]
-		to := []byte(first.Placeholder)
-		forms := []string{s.Value, s.jsonValue, jsonHTMLEscapedStringContent(s.Value), url.QueryEscape(s.Value)}
-		for _, form := range forms {
-			if form == "" || seen[form] {
-				continue
+		for _, form := range [][2]string{
+			{s.Value, first.Placeholder},
+			{s.jsonValue, jsonStringContent(first.Placeholder)},
+			{jsonHTMLEscapedStringContent(s.Value), jsonHTMLEscapedStringContent(first.Placeholder)},
+			{url.QueryEscape(s.Value), url.QueryEscape(first.Placeholder)},
+		} {
+			add([]byte(form[0]), []byte(form[1]), false)
+		}
+		for _, enc := range []*base64.Encoding{
+			base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding,
+		} {
+			for alignment := range 3 {
+				core := secretencoding.Base64Core(enc, []byte(s.Value), alignment)
+				if len(core) < 8 {
+					continue
+				}
+				add(core, secretencoding.Base64Core(enc, []byte(first.Placeholder), alignment), false)
+				add(secretencoding.Base64End(enc, []byte(s.Value), alignment),
+					secretencoding.Base64End(enc, []byte(first.Placeholder), alignment), true)
 			}
-			seen[form] = true
-			pats = append(pats, pattern{from: []byte(form), to: to})
 		}
 	}
 	slices.SortStableFunc(pats, func(a, b pattern) int {
