@@ -22,7 +22,9 @@ import (
 	"github.com/solev/hibernaut/internal/ca"
 )
 
-var testNow = time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC)
+// testNow is the real time when the tests start, not a fixed date: Init and Load use the real
+// clock, so a fixed date would fall outside the CA's validity sooner or later.
+var testNow = time.Now().UTC().Truncate(time.Second)
 
 func caFiles(t *testing.T) (string, string) {
 	t.Helper()
