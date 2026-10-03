@@ -355,6 +355,38 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+func TestReadValueTrimsOneNewlineBeforeTheSizeCheck(t *testing.T) {
+	full := strings.Repeat("a", 64<<10)
+	for _, tc := range []struct {
+		name, in, want, err string
+	}{
+		{name: "plain", in: "token", want: "token"},
+		{name: "newline", in: "token\n", want: "token"},
+		{name: "crlf", in: "token\r\n", want: "token"},
+		{name: "only one newline", in: "token\n\n", want: "token\n"},
+		{name: "64 KiB", in: full, want: full},
+		{name: "64 KiB and newline", in: full + "\n", want: full},
+		{name: "64 KiB and crlf", in: full + "\r\n", want: full},
+		{name: "too big", in: full + "a", err: "bigger than 64 KiB"},
+		{name: "too big with newline", in: full + "a\n", err: "bigger than 64 KiB"},
+		{name: "empty", in: "", err: "empty"},
+		{name: "newline only", in: "\n", err: "empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := vault.ReadValue(strings.NewReader(tc.in))
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("ReadValue error = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("ReadValue = %d bytes, %v; want %d bytes", len(got), err, len(tc.want))
+			}
+		})
+	}
+}
+
 func TestRemoveAndSecrets(t *testing.T) {
 	key := newKey(t)
 	f := new(vault.File)

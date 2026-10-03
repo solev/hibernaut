@@ -20,7 +20,7 @@ import (
 
 func (a *app) secret(ctx context.Context, cfg *config, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(a.stderr, "usage: hib secret add NAME --env VAR --bind SITE[,SITE...] | secret ls | secret rm NAME")
+		fmt.Fprintln(a.stderr, "usage: hib secret add NAME -env VAR -bind SITE[,SITE...] | secret ls | secret rm NAME")
 		return 2
 	}
 	switch args[0] {
@@ -39,7 +39,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, args []string) int {
 	fl := a.flags("secret add")
 	env := fl.String("env", "", "environment variable to set in machines")
 	bind := fl.String("bind", "", "comma-separated bound sites")
-	names, ok := a.parse(fl, args, 1, "secret add NAME --env VAR --bind SITE[,SITE...]")
+	names, ok := a.parse(fl, args, 1, "secret add NAME -env VAR -bind SITE[,SITE...]")
 	if !ok {
 		return 2
 	}
