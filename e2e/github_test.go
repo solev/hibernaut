@@ -28,15 +28,18 @@ func TestGitHubFullFlow(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("hib status exited %d: %s%s", code, stdout, stderr)
 	}
-	found := false
+	foundLogin, secretOK := false, false
 	for line := range strings.SplitSeq(stdout, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 1 && fields[0] == "GitHub" && strings.TrimSuffix(fields[1], ",") == login {
-			found = true
+			foundLogin = true
+		}
+		if len(fields) > 2 && fields[0] == "github" && fields[2] == "ok" {
+			secretOK = true
 		}
 	}
-	if !found {
-		t.Fatalf("hib status doesn't show the GitHub login %q:\n%s", login, stdout)
+	if !foundLogin || !secretOK {
+		t.Fatalf("hib status doesn't show the GitHub login %q and secret github ok:\n%s", login, stdout)
 	}
 	idText, err := output(exec.CommandContext(ctx, "gh", "api", "--hostname", "github.com", "user", "--jq", ".id"))
 	id, parseErr := strconv.ParseInt(idText, 10, 64)
