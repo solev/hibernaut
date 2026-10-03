@@ -373,21 +373,18 @@ type scrubReader struct {
 	first [256][]pattern
 	buf   []byte
 	out   []byte
+	sent  int
 	eof   bool
 	err   error
 }
 
 func (r *scrubReader) Read(p []byte) (int, error) {
-	for len(r.out) == 0 && r.err == nil {
+	for r.sent == len(r.out) && r.err == nil {
 		r.fill()
 	}
-	if len(r.out) > 0 {
-		n := copy(p, r.out)
-		if n == len(r.out) {
-			r.out = r.out[:0]
-		} else {
-			r.out = r.out[n:]
-		}
+	if r.sent < len(r.out) {
+		n := copy(p, r.out[r.sent:])
+		r.sent += n
 		return n, nil
 	}
 	return 0, r.err
@@ -413,9 +410,9 @@ func (r *scrubReader) fill() {
 			}
 		}
 	}
-	r.out = r.out[:0]
-	consumed := 0
-	r.out, consumed = scanScrub(r.out, r.buf, r.eof, r.first)
+	var consumed int
+	r.out, consumed = scanScrub(r.out[:0], r.buf, r.eof, r.first)
+	r.sent = 0
 	if consumed > 0 {
 		copy(r.buf, r.buf[consumed:])
 		r.buf = r.buf[:len(r.buf)-consumed]
