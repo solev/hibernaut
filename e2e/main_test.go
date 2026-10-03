@@ -81,6 +81,10 @@ func setUp(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "e2e:", err)
 		return 1
 	}
+	if err := deleteLeftoverGitHub(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e:", err)
+		return 1
+	}
 	return m.Run()
 }
 

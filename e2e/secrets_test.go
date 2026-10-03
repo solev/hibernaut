@@ -236,11 +236,11 @@ func deleteLeftoverSecrets(ctx context.Context) error {
 
 func laptopGitHub(t *testing.T, ctx context.Context) (token, login string) {
 	t.Helper()
-	token, err := output(exec.CommandContext(ctx, "gh", "auth", "token"))
+	token, err := output(exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com"))
 	if err != nil || token == "" {
 		t.Fatalf("gh auth token: %v (log in on the laptop with gh auth login)", err)
 	}
-	if login, err = output(exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login")); err != nil || login == "" {
+	if login, err = output(exec.CommandContext(ctx, "gh", "api", "--hostname", "github.com", "user", "--jq", ".login")); err != nil || login == "" {
 		t.Fatalf("gh api user: %v", err)
 	}
 	return token, login
