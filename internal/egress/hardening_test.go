@@ -92,6 +92,28 @@ func TestOnlyAuthorizationReachesUpstreamAsASecret(t *testing.T) {
 	}
 }
 
+func TestUnparsableQueryReachesUpstreamUnchanged(t *testing.T) {
+	t.Parallel()
+	const rawQuery = "semi=a;b&bad=%zz&keep=" + placeholder
+	for _, h2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("h2=%t", h2), func(t *testing.T) {
+			got := make(chan string, 1)
+			fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got <- r.URL.RawQuery
+			}))
+			defer fx.close()
+			resp, err := fx.client(h2).Get(fx.url("/?" + rawQuery))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if q := <-got; q != rawQuery {
+				t.Fatalf("upstream query = %q, want %q", q, rawQuery)
+			}
+		})
+	}
+}
+
 func TestEveryBoundResponseScrubsHeadersBinaryBodyAndTrailers(t *testing.T) {
 	t.Parallel()
 	for _, clientHTTP2 := range []bool{false, true} {

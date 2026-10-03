@@ -646,6 +646,51 @@ func TestRemovedSecretStopsSwappingOnOpenConnection(t *testing.T) {
 	}
 }
 
+func TestUnboundSiteOnOpenConnectionStillScrubsResponses(t *testing.T) {
+	t.Parallel()
+	const otherPlaceholder, otherValue = "sk_hib_other_placeholder", "sk_real_other_secret"
+	other := swap.Secret{Name: "other", Placeholder: otherPlaceholder, Value: otherValue, Sites: []string{"other.example"}}
+	bound, err := swap.New([]swap.Secret{{Name: secretName, Placeholder: placeholder, Value: realValue, Sites: []string{"localhost"}}, other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbound, err := swap.New([]swap.Secret{other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unbind atomic.Bool
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Echo", otherValue)
+		_, _ = io.WriteString(w, "token "+otherValue)
+	}), func(s *Server) {
+		s.Swapper = func() *swap.Swapper {
+			if unbind.Load() {
+				return unbound
+			}
+			return bound
+		}
+	})
+	defer fx.close()
+	// The client trusts only the Hibernaut CA, so the second request fails unless it reuses the
+	// intercepted connection.
+	client := fx.client(false)
+	for i := range 2 {
+		resp, err := client.Get(fx.url("/"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Header.Get("X-Echo") != otherPlaceholder || string(data) != "token "+otherPlaceholder {
+			t.Fatalf("response %d has header %q, body %q", i, resp.Header.Get("X-Echo"), data)
+		}
+		unbind.Store(true)
+	}
+}
+
 func TestAuditEntriesIncludeMachineIdentityOnlyForSwaps(t *testing.T) {
 	t.Parallel()
 	entries := make(chan audit.Entry, 3)

@@ -57,6 +57,7 @@ both ways. Otherwise it terminates TLS with a certificate for that host, refuses
 `Host` isn't the SNI host, swaps, connects to the real destination, verifies the site's
 certificate for the SNI host, and scrubs the response. It reloads the vault when `vault.json`
 changes. Removing a secret takes effect on the next request, including on open connections.
+An open connection keeps scrubbing responses after its site loses its last binding.
 The proxy also reloads when `vault.key` changes or first appears. Reload fingerprints come from the
 opened files and include size, modification time and file identity. Missing or invalid files disable
 swaps until a later change. Errors are rate-limited and never include values or file contents.
@@ -256,3 +257,5 @@ End-to-end:
 - 2026-10-03: Leak scans fix the newest build ID before a bounded readiness and local-upload
   wait. They validate referenced builds too, reject incomplete files, and never fall back to an
   older ready snapshot. Canary reruns reconcile their reserved namespace under a host lock.
+- 2026-10-03: An open connection keeps scrubbing responses after its site loses its last
+  binding. The site now gets query parameters Go's reverse proxy can't parse, unchanged.

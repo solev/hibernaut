@@ -240,11 +240,10 @@ func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Tran
 			http.Error(w, "misdirected request\n", http.StatusMisdirectedRequest)
 			return
 		}
+		// A connection stays intercepted after its site loses its last binding, so responses are
+		// scrubbed even when nothing is swapped.
 		active := s.currentSwapper()
-		if active != nil && !active.Bound(sni) {
-			active = nil
-		}
-		if active != nil {
+		if active != nil && active.Bound(sni) {
 			names, err := active.Request(r, sni)
 			if err != nil {
 				s.logf("egress swap %s %s: %v", r.Method, r.URL.EscapedPath(), err)
@@ -284,6 +283,9 @@ func (s *Server) reverseProxy(sni string, sw *swap.Swapper, transport *http.Tran
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "https"
 			pr.Out.URL.Host = sni
+			// ReverseProxy drops query parameters it can't parse. Nothing is swapped in the URL,
+			// so the site gets the query exactly as the machine sent it.
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = sni
 			pr.Out.Header.Del("Accept-Encoding")
 		},
