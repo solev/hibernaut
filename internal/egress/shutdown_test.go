@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,8 +83,8 @@ func TestServeCancellationClosesOpenConnections(t *testing.T) {
 				<-done
 			}
 			_ = client.SetReadDeadline(time.Now().Add(time.Second))
-			if _, err := client.Read(make([]byte, 1)); err == nil {
-				t.Fatal("client connection stayed open")
+			if _, err := client.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("client connection stayed open: %v", err)
 			}
 		})
 	}
