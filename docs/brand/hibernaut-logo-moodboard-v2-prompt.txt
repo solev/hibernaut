@@ -1,0 +1,57 @@
+Use case: logo-brand.
+Create ONE polished logo exploration moodboard for Hibernaut, a self-hosted developer infrastructure tool. Product: named Linux Firecracker microVMs accessed through ordinary "ssh app.hib"; idle guests snapshot memory AND disk and wake with processes intact; host sleeps to stop compute billing. Planned v1: GitHub/Codex/Copilot connected once; real secrets stay on host, guests hold only useless placeholders, egress proxy swaps them only on approved sites; golden images and forks copy ready live work. Personality calm, capable, economical, precise, curious, quietly playful.
+
+Composition: landscape 4:3 board, exactly FOUR COLUMNS and THREE ROWS, twelve equal spacious tiles. Uniform neutral off-white #F5F3ED background across entire board. Very subtle thin dividers allowed. No header, no footer, no palette chips. Each tile has a generous centered logo in its upper area and a short centered two-line caption in its lower area: concept name in medium-weight sans serif, explanatory line smaller. All captions readable, identically positioned, no overlapping. Preserve order exactly below. Crisp flat vector-style raster artwork, solid colors, clean edges, careful negative space, icon-scale simplicity, coherent premium developer-tool design quality. Each concept must be structurally distinct, not twelve recolorings. Mix 5 standalone symbols, 2 custom wordmarks, and 5 combinations with the exact lowercase word "hibernaut". Make typography deliberate and legible. Spelling h-i-b-e-r-n-a-u-t. Varied restrained 1–2-color palettes on the common off-white board.
+
+ROW 1 left to right:
+1. Dormant terminal: standalone symbol, a minimal terminal prompt >_ resting under a low lid, accent upright cursor hints wake; ink navy and muted cyan. Caption exact two lines:
+"Dormant terminal"
+"Machines sleep, wake on SSH"
+
+2. Retained cursor: WORDMARK ONLY, exact "hibernaut", custom warm black lowercase lettering, two upright pause strokes integrated subtly into the h and a coral terminal cursor after the final t. No separate symbol. Caption:
+"Retained cursor"
+"Resume the same session"
+
+3. Named door: combination mark. Compact architectural doorway with a terminal-chevron negative-space opening, small "app.hib" lettering above or within door as address, "hibernaut" alongside or beneath. Forest green, lime accent. Caption:
+"Named door"
+"SSH into a named machine"
+
+4. Memory folio: standalone symbol, two offset flat rectangular pages wrapped around one continuous process line that emerges unchanged, no 3D perspective. Violet and lilac. Caption:
+"Memory folio"
+"Save memory and disk"
+
+ROW 2 left to right:
+5. External key: combination mark, guest square with a small hollow token circle inside; solid abstract key clearly OUTSIDE square separated by a gap, real key never enters square. Ink charcoal and mustard; "hibernaut" below. Caption:
+"External key"
+"Real secrets stay outside"
+
+6. Bound gate: standalone symbol, compact geometric gate formed by two parallel bars; hollow request circle on entry side, solid request circle on outward side with ONE approved outgoing route; spare logo geometry, not a network diagram. Cobalt and teal. Caption:
+"Bound gate"
+"Swap tokens at bound sites"
+
+7. Forked h: combination mark, bold abstract lowercase h made from a single stem branching into three matching square endpoints; one endpoint continues origin, others split, all simple. Burnt orange and dark brown; "hibernaut" beside or below. Caption:
+"Forked h"
+"Copy live state in parallel"
+
+8. Golden imprint: standalone symbol, amber master square with a distinct stepped negative-space cutout beside an identical smaller copy, suggests stamp and copied ready workspace; flat no shadows. Ochre and warm black. Caption:
+"Golden imprint"
+"Save ready-to-run machines"
+
+ROW 3 left to right:
+9. Connected once: WORDMARK ONLY exact "hibernaut" in custom lowercase geometric type, one continuous understated connector joins selected letter bases, compact and readable, no nodes everywhere. Deep blue and restrained turquoise. Caption:
+"Connected once"
+"One login, tools everywhere"
+
+10. Agent watch: combination mark, small terminal frame enclosing a single unbroken pulse stroke ending in steady dot, no robot, no sparkle, shape should look like an identity mark not medical clipart. Burgundy and rose; "hibernaut" next to it. Caption:
+"Agent watch"
+"Busy agents stay awake"
+
+11. Separate rooms: standalone symbol, two independent non-touching guest squares with clear gaps inside a single rectangular host outline; asymmetrical negative space makes memorable logo, no shipping containers, no 3D cubes. Graphite and sage. Caption:
+"Separate rooms"
+"Isolated VMs on your host"
+
+12. Quiet host: combination mark, low closed server bar enclosing a preserved state dot, tiny sleep-notch in top contour, distinctive flat quiet shape with no power-off symbol. Midnight blue and muted periwinkle; "hibernaut" below. Caption:
+"Quiet host"
+"Sleep the host, keep work"
+
+Avoid astronauts, rockets, planets, stars, orbit rings, generic cloud outlines, AI sparkles, robot heads, stock shields, locks inside guests, container branding, gradients, shadows, 3D rendering, photorealism, mockups, merchandise, tiny circuitry, glossy effects. Do not add more than twelve concepts or change the grid. The result is a brand concept sheet, not a UI screenshot or architecture infographic.

@@ -1,0 +1,146 @@
+{
+  "themes": {
+    "loaded": [
+      {
+        "family": "JetBrains Mono",
+        "loaded": true
+      },
+      {
+        "family": "Oxanium",
+        "loaded": true
+      }
+    ],
+    "overflow": [],
+    "width": 1920,
+    "height": 1247,
+    "scrollWidth": 1920,
+    "scrollHeight": 1387,
+    "fontFaces": [
+      {
+        "family": "JetBrains Mono",
+        "weight": "400",
+        "status": "loaded"
+      },
+      {
+        "family": "JetBrains Mono",
+        "weight": "500",
+        "status": "loaded"
+      },
+      {
+        "family": "Oxanium",
+        "weight": "600",
+        "status": "loaded"
+      }
+    ],
+    "exactSleepingMarkInstances": 24
+  },
+  "glacier": {
+    "loaded": [
+      {
+        "family": "JetBrains Mono",
+        "loaded": true
+      },
+      {
+        "family": "Oxanium",
+        "loaded": true
+      }
+    ],
+    "overflow": [],
+    "width": 1600,
+    "height": 857,
+    "scrollWidth": 1600,
+    "scrollHeight": 1000,
+    "footerBottom": 986.4296875,
+    "fontFaces": [
+      {
+        "family": "JetBrains Mono",
+        "weight": "400",
+        "status": "loaded"
+      },
+      {
+        "family": "JetBrains Mono",
+        "weight": "500",
+        "status": "loaded"
+      },
+      {
+        "family": "Oxanium",
+        "weight": "600",
+        "status": "loaded"
+      }
+    ],
+    "exactSleepingMarkInstances": 5
+  },
+  "lamplight": {
+    "loaded": [
+      {
+        "family": "JetBrains Mono",
+        "loaded": true
+      },
+      {
+        "family": "Oxanium",
+        "loaded": true
+      }
+    ],
+    "overflow": [],
+    "width": 1600,
+    "height": 857,
+    "scrollWidth": 1600,
+    "scrollHeight": 1000,
+    "footerBottom": 986.4296875,
+    "fontFaces": [
+      {
+        "family": "JetBrains Mono",
+        "weight": "400",
+        "status": "loaded"
+      },
+      {
+        "family": "JetBrains Mono",
+        "weight": "500",
+        "status": "loaded"
+      },
+      {
+        "family": "Oxanium",
+        "weight": "600",
+        "status": "loaded"
+      }
+    ],
+    "exactSleepingMarkInstances": 5
+  },
+  "paper": {
+    "loaded": [
+      {
+        "family": "JetBrains Mono",
+        "loaded": true
+      },
+      {
+        "family": "Oxanium",
+        "loaded": true
+      }
+    ],
+    "overflow": [],
+    "width": 1600,
+    "height": 857,
+    "scrollWidth": 1600,
+    "scrollHeight": 1000,
+    "footerBottom": 986.4296875,
+    "fontFaces": [
+      {
+        "family": "JetBrains Mono",
+        "weight": "400",
+        "status": "loaded"
+      },
+      {
+        "family": "JetBrains Mono",
+        "weight": "500",
+        "status": "loaded"
+      },
+      {
+        "family": "Oxanium",
+        "weight": "600",
+        "status": "loaded"
+      }
+    ],
+    "exactSleepingMarkInstances": 5
+  },
+  "sourceMarkSHA256": "272595270ad971ff2da349f2bade25c841c1c108f7f1e9d018b29b697b5612b5"
+}

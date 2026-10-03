@@ -1,0 +1,62 @@
+[
+  {
+    "name": "01-dashes",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-bd78361f-efbb-43eb-9321-543a21965abf.png",
+    "prompt": "REGENERATION: create a clean digital flat logo from the reference SHAPE ONLY. Do not reproduce the reference image's raster texture. Mandatory uniform #09090b background and uniform #f4f4f5 white fill. Absolutely no grain, light falloff, color variation or photographic treatment. Highest quality 1024x1024 square. Mark centered, 45% canvas width. optically perfected two lower, closer capsule eye dashes. Slightly squircle box with two short capsule eye dashes closer together and lower at 57% down face. No text. Crisp vector-like antialiasing only. Blue only if explicitly specified."
+  },
+  {
+    "name": "02-arcs",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-beafae6c-7dfc-478d-b9cc-df7a0cca4208.png",
+    "prompt": "REGENERATION: create a clean digital flat logo from the reference SHAPE ONLY. Do not reproduce the reference image's raster texture. Mandatory uniform #09090b background and uniform #f4f4f5 white fill. Absolutely no grain, light falloff, color variation or photographic treatment. Highest quality 1024x1024 square. Mark centered, 45% canvas width. Solid softly rounded box. Two small downward-curved closed-eye arcs cut out of face, peaceful sleeping eyes shaped as shallow U curves whose centers dip below endpoints, thick uniform strokes with round caps. Place at 57% down face. No blue..  No text. Crisp vector-like antialiasing only. Blue only if explicitly specified."
+  },
+  {
+    "name": "03-lid",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-3e08a05c-0764-41d5-a26f-4aaff92d478a.png",
+    "prompt": "REGENERATION: create a clean digital flat logo from the reference SHAPE ONLY. Do not reproduce the reference image's raster texture. Mandatory uniform #09090b background and uniform #f4f4f5 white fill. Absolutely no grain, light falloff, color variation or photographic treatment. Highest quality 1024x1024 square. Mark centered, 45% canvas width. Solid softly rounded box with ONE single long horizontal capsule sleep-line cut out at 57% down the face, spanning 68% of face width, thickness 6%. No blue..  No text. Crisp vector-like antialiasing only. Blue only if explicitly specified."
+  },
+  {
+    "name": "04-dreaming",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-d35fcf1a-2aa9-4f7b-acb6-bef4482536e6.png",
+    "prompt": "REGENERATION: create a clean digital flat logo from the reference SHAPE ONLY. Do not reproduce the reference image's raster texture. Mandatory uniform #09090b background and uniform #f4f4f5 white fill. Absolutely no grain, light falloff, color variation or photographic treatment. Highest quality 1024x1024 square. Mark centered, 45% canvas width. Solid softly rounded box with two lower close capsule closed-eye dashes. ONE tiny glacier-blue #7dd3fc rounded square floating just above and just right of top-right corner, detached by a clear small gap. Mini box expresses dreaming. No literal z or other marks..  No text. Crisp vector-like antialiasing only. Blue only if explicitly specified."
+  },
+  {
+    "name": "05-bite",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-90d0eee3-064a-4278-bdb3-ed290f7cea34.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. Reference SHAPE only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Refine crescent-box reference, no eyes. White rounded square with circular crescent bite cut out of top-right corner, smooth mathematically clean circle, balanced concavity, concentric clean moon geometry. Preserve reference silhouette, clean consistent corner radii. No blue."
+  },
+  {
+    "name": "06-deep",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-2ff3792e-b20c-484e-8707-710d4bc665bb.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. Reference SHAPE only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Rounded square with a larger deeper circular crescent bite from top-right corner. Circular cutout reaches near center, leaving a thick moon-like rounded box body. No eyes, no blue."
+  },
+  {
+    "name": "07-accent-moon",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-573442b1-09ca-4447-8159-af016fb2607f.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. Reference SHAPE only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Rounded square with clean circular crescent bite from top-right corner. ONE small glacier-blue #7dd3fc rounded square floats centered inside the empty bite, fully detached from white edges. No eyes, no extra dot."
+  },
+  {
+    "name": "08-outline",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-adc853d2-11bc-4244-a123-8073f76c28be.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. Reference SHAPE only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Same crescent-box silhouette as reference but rendered as ONE closed consistent thick white outline stroke following entire outside AND concave circular bite contour. Interior black. Stroke about 6% of mark width. Smooth round joins, no separate moon or inner shapes, no eyes or blue."
+  },
+  {
+    "name": "09-crescent-dashes",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-5532d1e5-f2aa-4939-991e-84e652e81863.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. References are SHAPE guidance only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Primary merged concept. White softly rounded square with clean circular crescent bite cut from top-right corner like reference 07. Two short capsule closed-eye dashes cut out in lower face at about 63% down; positioned slightly left to balance crescent bite. Eye lengths 20% of box width, thickness 6%, middle gap 11%. Preserve ample white around eyes. No blue. Harmonize sleep and moon into one exceptionally refined silhouette."
+  },
+  {
+    "name": "10-crescent-arcs",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-6915e803-af2f-480b-8581-3522a8232f41.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. References are SHAPE guidance only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Primary merged concept. White softly rounded square with circular crescent bite cut from top-right corner. Two peaceful closed-eye arcs cut out in lower face at 63% down, shifted slightly left for balance. Arcs are shallow downward U curves whose middle dips below endpoints, thick uniform round-capped strokes. Ample white around eyes. No blue."
+  },
+  {
+    "name": "11-crescent-lid",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-a3c9144b-e569-44ad-a5d2-76cec888a07b.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. References are SHAPE guidance only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Primary merged concept. White softly rounded square with circular crescent bite cut from top-right corner. ONE horizontal capsule sleep line cut out in lower face at 64% down, spanning 65% of box width, about 6% thick, shifted slightly left. Ample white surrounds it. No blue."
+  },
+  {
+    "name": "12-crescent-accent",
+    "source": "/Users/martinsolev/.codex/generated_images/01a0fdb6-27f1-7001-b248-a4c5b0a8709b/exec-453749ff-62cf-486c-9528-0166eefed90a.png",
+    "prompt": "REGENERATION: highest-quality 1024x1024 minimal digital logo. References are SHAPE guidance only, discard all reference texture. Strictly flat uniform solid #09090b background, solid #f4f4f5 mark, accent #7dd3fc ONLY when specified. Mark exactly 460x460px centered. No grain, gradients, shadows, lighting, 3D, text. Primary merged concept. White softly rounded square with clean circular crescent bite cut from top-right corner. Two short closed-eye capsule dashes cut out in lower face at 63% down, shifted slightly left. ONE tiny glacier-blue #7dd3fc rounded square centered in the empty bite, fully detached from white edges. Exactly one accent, no additional symbols."
+  }
+]

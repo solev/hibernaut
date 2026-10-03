@@ -1,0 +1,99 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hibernaut / Glacier</title><style>@font-face {
+  font-family: 'Chakra Petch';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/0.ttf), url(https://fonts.gstatic.com/s/chakrapetch/v13/cIflMapbsEk7TDLdtEz1BwkeQI5FQA.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Exo 2';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/1.ttf), url(https://fonts.gstatic.com/s/exo2/v26/7cH1v4okm5zmbvwkAx_sfcEuiD8jYPWcPg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/2.ttf), url(https://fonts.gstatic.com/s/geist/v5/gyBhhwUxId8gMGYQMKR3pzfaWI_RQuQ4nQ.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/3.ttf), url(https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbY2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKxjPQ.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/4.ttf), url(https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbY2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8-qxjPQ.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Lexend';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/5.ttf), url(https://fonts.gstatic.com/s/lexend/v26/wlptgwvFAVdoq2_F94zlCfv0bz1WC-UR_LA.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Oxanium';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/6.ttf), url(https://fonts.gstatic.com/s/oxanium/v21/RrQPboN_4yJ0JmiMUW7sIGjd1IA9G82XeXiM.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Rubik';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/7.ttf), url(https://fonts.gstatic.com/s/rubik/v31/iJWZBXyIfDnIV5PNhY1KTN7Z-Yh-2Y-1UA.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Saira';
+  font-style: normal;
+  font-weight: 600;
+  font-stretch: normal;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/8.ttf), url(https://fonts.gstatic.com/s/saira/v23/memWYa2wxmKQyPMrZX79wwYZQMhsyuShhKMjjbU9uXuA74TFosg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Sora';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/9.ttf), url(https://fonts.gstatic.com/s/sora/v17/xMQOuFFYT72X5wkB_18qmnndmSeMmX-K.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/10.ttf), url(https://fonts.gstatic.com/s/spacegrotesk/v22/V8mQoQDjQSkFtoMM3T6r8E7mF71Q-gOoraIAEj42Vksj.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Tomorrow';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url(file:///tmp/hibernaut-fonts/11.ttf), url(https://fonts.gstatic.com/s/tomorrow/v19/WBLhrETNbFtZCeGqgR0NX0XI.ttf) format('truetype');
+}
+
+*{box-sizing:border-box}body{margin:0}button,a{font:inherit}a{color:inherit;text-decoration:none}
+.mark{display:block;flex-shrink:0;width:40px;height:40px}.lockup{display:inline-flex;align-items:center;gap:14px;white-space:nowrap}.wordmark{font-family:'Oxanium';font-weight:600;font-size:44px;letter-spacing:-.03em;line-height:1;display:inline-block}.i{position:relative}.i:before{content:'';position:absolute;width:.125em;height:.125em;border-radius:.017em;left:50%;transform:translateX(-50%);top:.105em;background:var(--accent)}
+.mono{font-family:'JetBrains Mono',monospace}.muted{color:var(--muted)}.accent,.awake{color:var(--accent)}.asleep{color:var(--muted)}
+
+body{background:var(--bg);color:var(--fg);font-family:'JetBrains Mono';padding:0 80px;min-height:1000px}.nav{height:100px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid color-mix(in srgb,var(--fg) 13%,transparent)}.nav .mark{width:32px;height:32px}.nav .wordmark{font-size:36px}.nav-links{display:flex;align-items:center;gap:35px;font-size:13px}.nav-links .github{border:1px solid color-mix(in srgb,var(--fg) 24%,transparent);padding:12px 18px;border-radius:7px}.hero{display:grid;grid-template-columns:1.03fr 1fr;gap:74px;align-items:center;padding:55px 0 32px}.eyebrow{font-size:11px;letter-spacing:.09em;display:flex;align-items:center;gap:10px;margin:0 0 29px}.status-dot{width:6px;height:6px;background:var(--accent);border-radius:50%;display:inline-block}h1{font-family:'Oxanium';font-size:68px;line-height:1.06;letter-spacing:-.045em;font-weight:600;margin:0 0 28px}.subcopy{font-size:15px;line-height:1.9;max-width:560px;color:var(--muted);margin:0 0 31px}.install{font-size:13px;background:var(--surface);border:1px solid color-mix(in srgb,var(--fg) 15%,transparent);padding:19px 21px;border-radius:8px;display:flex;justify-content:space-between;margin-bottom:23px;max-width:550px}.copy-button{background:none;border:0;color:var(--muted);cursor:pointer;min-width:55px}.actions{display:flex;align-items:center;gap:27px;font-size:12px}.cta{background:var(--accent);color:var(--bg);padding:16px 24px;border-radius:7px;font-weight:500;border:0;cursor:pointer}.secondary{border-bottom:1px solid var(--muted);padding-bottom:5px}.hero-note{font-size:10px;line-height:1.7;color:var(--muted);margin:23px 0 0}.fleet{background:var(--surface);border:1px solid color-mix(in srgb,var(--fg) 19%,transparent);border-radius:14px;overflow:hidden;box-shadow:0 30px 80px #00000015}.fleet-top{display:flex;justify-content:space-between;align-items:center;padding:21px 25px;border-bottom:1px solid color-mix(in srgb,var(--fg) 13%,transparent);font-size:12px}.fleet-caption{padding:24px 26px 15px;display:flex;justify-content:space-between;align-items:flex-start}.fleet-caption h2{font-family:'Oxanium';font-size:27px;letter-spacing:-.025em;margin:0 0 7px}.fleet-caption p{font-size:10px;margin:0;color:var(--muted)}.new-box{font-size:11px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,var(--surface));padding:9px 12px;border-radius:6px;background:transparent;cursor:pointer}.machine{margin:0 25px;display:grid;grid-template-columns:36px 1fr 100px;gap:15px;align-items:center;min-height:64px;border-bottom:1px solid color-mix(in srgb,var(--fg) 10%,transparent)}.machine:last-child{border-bottom:0}.machine .mark{width:31px;height:31px}.machine strong{font-size:13px;font-weight:400}.machine small{display:block;font-size:10px;margin-top:7px;color:var(--muted)}.machine-state{font-size:11px;text-align:right}.fleet-shell{margin:16px 25px 25px;padding:17px 18px;background:var(--bg);border-radius:8px;font-size:11px;line-height:1.95}.benefits{display:grid;grid-template-columns:1fr 1fr 1fr;gap:55px;border-top:1px solid color-mix(in srgb,var(--fg) 13%,transparent);padding:24px 0}.benefits .number{font-size:10px;color:var(--accent)}.benefits h3{font-family:'Oxanium';font-weight:600;font-size:21px;margin:11px 0}.benefits p{font-size:11px;line-height:1.8;color:var(--muted);margin:0;max-width:370px}.preview-footer{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);padding-top:10px}.preview-footer .lockup{gap:6px}.preview-footer .mark{width:14px;height:14px}.preview-footer .wordmark{font-size:16px}.doc-section{padding:55px 0;border-top:1px solid color-mix(in srgb,var(--fg) 15%,transparent);display:none}.doc-section:target{display:block}.doc-section h2{font-family:'Oxanium'}.doc-section p{font-size:13px;line-height:1.9;max-width:900px;color:var(--muted)}@media(max-width:1100px){body{padding:0 35px}.hero{grid-template-columns:1fr;gap:45px;padding:55px 0}h1{font-size:65px}.hero-copy{max-width:700px}.fleet{max-width:750px}.benefits{gap:25px}}@media(max-width:650px){body{padding:0 24px}.nav{height:100px}.nav-links{gap:15px}.nav-links a:first-child{display:none}.nav .wordmark{font-size:28px}.nav .mark{width:26px;height:26px}.hero{padding-top:45px}h1{font-size:48px}.subcopy{font-size:13px}.install{font-size:11px;padding:16px 12px}.benefits{grid-template-columns:1fr}.preview-footer{display:block;line-height:2}}
+</style><body style="--bg:#090e13;--surface:#111b24;--fg:#ecf6fc;--accent:#7dd3fc;--muted:#8496a5"><header class="nav"><a href="themes.html" aria-label="Hibernaut theme comparison"><span class="lockup"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M19.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H19.6a3.4 3.4 0 0 1 0-6.8Z M61.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H61.6a3.4 3.4 0 0 1 0-6.8Z"/></svg><span class="wordmark" aria-label="hibernaut">h<span class="i" aria-hidden="true">ı</span>bernaut</span></span></a><nav class="nav-links"><a href="#how-it-works">How it works</a><a href="#docs">Docs</a><a class="github" href="https://github.com/solev/hibernaut">GitHub ↗</a></nav></header><main><section class="hero"><div class="hero-copy"><p class="eyebrow accent"><span class="status-dot"></span> SELF-HOSTED MICROVMS</p><h1>Sandboxes that<br>sleep between<br>missions.</h1><p class="subcopy">Tiny Linux boxes for you and your coding agents.<br>Hibernate when idle. Wake over SSH with your files,<br>processes, and unfinished work intact.</p><div class="install"><code><span class="muted">$</span> go install ./cmd/hib</code><button class="copy-button" type="button" onclick="navigator.clipboard.writeText('go install ./cmd/hib').then(()=>this.textContent='Copied').catch(()=>this.textContent='Select')" aria-label="Copy install command">Copy</button></div><div class="actions"><a class="cta" href="#docs">Create your first box ↗</a><a class="secondary" href="#how-it-works">How sleep works</a></div><p class="hero-note">From a local checkout · requires Go and a configured host.<br>Warm resume measured at 340–380ms on the test setup.</p></div><section class="fleet" aria-label="Machine fleet preview"><div class="fleet-top"><span><span class="accent">◈</span>&nbsp; my machines</span><span class="muted">local / self-hosted</span></div><div class="fleet-caption"><div><h2>Ready when you are.</h2><p>2 awake · 3 asleep · memory saved</p></div><button class="new-box" onclick="location.hash='docs'">+ new box</button></div><div class="machine"><div class="awake"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M26.6 51.8h4.8a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1h-4.8a1 1 0 0 1-1-1v-4.8a1 1 0 0 1 1-1Z M68.6 51.8h4.8a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1h-4.8a1 1 0 0 1-1-1v-4.8a1 1 0 0 1 1-1Z"/></svg></div><div><strong>app</strong><small>Debian 12 · 2 vCPU · connected</small></div><span class="machine-state awake">● awake</span></div><div class="machine"><div class="awake"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M26.6 51.8h4.8a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1h-4.8a1 1 0 0 1-1-1v-4.8a1 1 0 0 1 1-1Z M68.6 51.8h4.8a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1h-4.8a1 1 0 0 1-1-1v-4.8a1 1 0 0 1 1-1Z"/></svg></div><div><strong>agent-01</strong><small>Codex · working on auth</small></div><span class="machine-state awake">● awake</span></div><div class="machine"><div class="asleep"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M19.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H19.6a3.4 3.4 0 0 1 0-6.8Z M61.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H61.6a3.4 3.4 0 0 1 0-6.8Z"/></svg></div><div><strong>db</strong><small>PostgreSQL · snapshot saved</small></div><span class="machine-state asleep">○ asleep</span></div><div class="machine"><div class="asleep"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M19.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H19.6a3.4 3.4 0 0 1 0-6.8Z M61.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H61.6a3.4 3.4 0 0 1 0-6.8Z"/></svg></div><div><strong>docs</strong><small>Debian 12 · idle for 2h</small></div><span class="machine-state asleep">○ asleep</span></div><div class="machine"><div class="asleep"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M19.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H19.6a3.4 3.4 0 0 1 0-6.8Z M61.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H61.6a3.4 3.4 0 0 1 0-6.8Z"/></svg></div><div><strong>experiment</strong><small>Debian 12 · idle for 1d</small></div><span class="machine-state asleep">○ asleep</span></div><div class="fleet-shell"><div><span class="muted">$</span> ssh db.hib</div><div class="accent">resuming db… <span class="muted">340ms</span></div><div class="muted">Back where you left off. <span class="accent">▍</span></div></div></section></section><section class="benefits" id="how-it-works"><div><span class="number">01 / ISOLATE</span><h3>A kernel of your own.</h3><p>Each box is a Firecracker microVM with its own Linux kernel and filesystem.</p></div><div><span class="number">02 / HIBERNATE</span><h3>Keep your place.</h3><p>Idle boxes save memory and disk. Your processes resume from the snapshot.</p></div><div><span class="number">03 / WAKE</span><h3>Just SSH.</h3><p>Connect with ssh app.hib. Hibernaut wakes the box before opening your shell.</p></div></section><footer class="preview-footer"><span><span class="lockup"><svg class="mark" viewBox="0 0 100 100" fill-rule="evenodd" aria-hidden="true"><path fill="currentColor" d="M13.3 0h73.4A13.3 13.3 0 0 1 100 13.3v73.4A13.3 13.3 0 0 1 86.7 100H13.3A13.3 13.3 0 0 1 0 86.7V13.3A13.3 13.3 0 0 1 13.3 0Z M19.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H19.6a3.4 3.4 0 0 1 0-6.8Z M61.6 51.8h18.8a3.4 3.4 0 0 1 0 6.8H61.6a3.4 3.4 0 0 1 0-6.8Z"/></svg><span class="wordmark" aria-label="hibernaut">h<span class="i" aria-hidden="true">ı</span>bernaut</span></span></span><span>THEME 01 / GLACIER · OXANIUM + JETBRAINS MONO</span></footer><section class="doc-section" id="docs"><h2>Create your first box</h2><p>This is a brand preview. In the repository, build the CLI with <code>go install ./cmd/hib</code>, configure a host with <code>hib init</code>, then run <code>hib new app</code> and <code>ssh app.hib</code>. The README has the full host setup and prerequisites.</p><a href="https://github.com/solev/hibernaut#quick-start">Read the setup instructions ↗</a></section></main><script>
+document.fonts.ready.then(()=>{
+const families=[...new Set([...document.querySelectorAll('*')].map(e=>getComputedStyle(e).fontFamily.split(',')[0].replaceAll('"','')))];
+const loaded=families.filter(f=>['Oxanium','JetBrains Mono'].includes(f)).map(f=>({family:f,loaded:document.fonts.check(`600 20px "${f}"`)}));
+const overflow=[...document.querySelectorAll('article,.fleet,.machine,.hero-copy,.swatches')].filter(e=>e.scrollWidth>e.clientWidth+1 || (e.tagName==='ARTICLE' && e.scrollHeight>e.clientHeight+1)).map(e=>e.className);
+document.body.dataset.verification=JSON.stringify({loaded,overflow,width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight,footerBottom:document.querySelector(".preview-footer")?.getBoundingClientRect().bottom,fontFaces:[...document.fonts].filter(f=>f.status==="loaded").map(f=>({family:f.family,weight:f.weight,status:f.status}))});
+document.documentElement.dataset.fonts='ready';
+});</script></body></html>

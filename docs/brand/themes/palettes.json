@@ -1,0 +1,218 @@
+[
+  {
+    "name": "Zinc mono",
+    "slug": "zinc-mono",
+    "background": "#09090b",
+    "surface": "#18181b",
+    "foreground": "#f4f4f5",
+    "accent": "#d4d4d8",
+    "asleep": "#a1a1aa",
+    "contrast": {
+      "fg/bg": 18.1,
+      "accent/bg": 13.46,
+      "fg/surface": 16.12,
+      "accent/surface": 11.99,
+      "asleep/bg": 7.76,
+      "asleep/surface": 6.91,
+      "button": 13.46
+    }
+  },
+  {
+    "name": "Glacier",
+    "slug": "glacier",
+    "background": "#090e13",
+    "surface": "#111b24",
+    "foreground": "#ecf6fc",
+    "accent": "#7dd3fc",
+    "asleep": "#8496a5",
+    "contrast": {
+      "fg/bg": 17.67,
+      "accent/bg": 11.62,
+      "fg/surface": 15.88,
+      "accent/surface": 10.44,
+      "asleep/bg": 6.35,
+      "asleep/surface": 5.71,
+      "button": 11.62
+    }
+  },
+  {
+    "name": "Midnight",
+    "slug": "midnight",
+    "background": "#080f23",
+    "surface": "#101c35",
+    "foreground": "#e5eaf5",
+    "accent": "#b9c7e0",
+    "asleep": "#8798b6",
+    "contrast": {
+      "fg/bg": 15.79,
+      "accent/bg": 11.16,
+      "fg/surface": 14.05,
+      "accent/surface": 9.93,
+      "asleep/bg": 6.53,
+      "asleep/surface": 5.81,
+      "button": 11.16
+    }
+  },
+  {
+    "name": "Aurora",
+    "slug": "aurora",
+    "background": "#080f0e",
+    "surface": "#101e1a",
+    "foreground": "#e9f5ed",
+    "accent": "#83e8bf",
+    "asleep": "#86a296",
+    "contrast": {
+      "fg/bg": 17.28,
+      "accent/bg": 13.14,
+      "fg/surface": 15.33,
+      "accent/surface": 11.66,
+      "asleep/bg": 7.03,
+      "asleep/surface": 6.23,
+      "button": 13.14
+    }
+  },
+  {
+    "name": "Lamplight",
+    "slug": "lamplight",
+    "background": "#14110e",
+    "surface": "#211b16",
+    "foreground": "#f5efe5",
+    "accent": "#f3c77c",
+    "asleep": "#a69784",
+    "contrast": {
+      "fg/bg": 16.45,
+      "accent/bg": 11.89,
+      "fg/surface": 14.89,
+      "accent/surface": 10.76,
+      "asleep/bg": 6.61,
+      "asleep/surface": 5.99,
+      "button": 11.89
+    }
+  },
+  {
+    "name": "Dusk",
+    "slug": "dusk",
+    "background": "#100e1b",
+    "surface": "#1c1830",
+    "foreground": "#eeeafb",
+    "accent": "#c4b5fd",
+    "asleep": "#a299b7",
+    "contrast": {
+      "fg/bg": 16.17,
+      "accent/bg": 10.33,
+      "fg/surface": 14.56,
+      "accent/surface": 9.3,
+      "asleep/bg": 7.07,
+      "asleep/surface": 6.36,
+      "button": 10.33
+    }
+  },
+  {
+    "name": "Paper",
+    "slug": "paper",
+    "background": "#f5f2eb",
+    "surface": "#eae5da",
+    "foreground": "#24231f",
+    "accent": "#175d80",
+    "asleep": "#68645b",
+    "contrast": {
+      "fg/bg": 14.07,
+      "accent/bg": 6.45,
+      "fg/surface": 12.52,
+      "accent/surface": 5.74,
+      "asleep/bg": 5.27,
+      "asleep/surface": 4.69,
+      "button": 6.45
+    }
+  },
+  {
+    "name": "Frost",
+    "slug": "frost",
+    "background": "#f3f8fc",
+    "surface": "#e3edf5",
+    "foreground": "#152c3d",
+    "accent": "#075d87",
+    "asleep": "#506a7a",
+    "contrast": {
+      "fg/bg": 13.46,
+      "accent/bg": 6.72,
+      "fg/surface": 12.13,
+      "accent/surface": 6.05,
+      "asleep/bg": 5.33,
+      "asleep/surface": 4.8,
+      "button": 6.72
+    }
+  },
+  {
+    "name": "Terminal",
+    "slug": "terminal",
+    "background": "#070b07",
+    "surface": "#111a10",
+    "foreground": "#edf5e9",
+    "accent": "#a0ed78",
+    "asleep": "#8ca282",
+    "contrast": {
+      "fg/bg": 17.77,
+      "accent/bg": 14.04,
+      "fg/surface": 15.98,
+      "accent/surface": 12.62,
+      "asleep/bg": 7.18,
+      "asleep/surface": 6.45,
+      "button": 14.04
+    }
+  },
+  {
+    "name": "Ember",
+    "slug": "ember",
+    "background": "#140b0d",
+    "surface": "#251317",
+    "foreground": "#fff0ed",
+    "accent": "#ffa294",
+    "asleep": "#b89499",
+    "contrast": {
+      "fg/bg": 17.48,
+      "accent/bg": 10.01,
+      "fg/surface": 15.99,
+      "accent/surface": 9.16,
+      "asleep/bg": 7.14,
+      "asleep/surface": 6.53,
+      "button": 10.01
+    }
+  },
+  {
+    "name": "Nordic",
+    "slug": "nordic",
+    "background": "#152025",
+    "surface": "#202e34",
+    "foreground": "#eef5f4",
+    "accent": "#94cbc7",
+    "asleep": "#9aafb4",
+    "contrast": {
+      "fg/bg": 15.02,
+      "accent/bg": 9.19,
+      "fg/surface": 12.65,
+      "accent/surface": 7.74,
+      "asleep/bg": 7.24,
+      "asleep/surface": 6.1,
+      "button": 9.19
+    }
+  },
+  {
+    "name": "Night shift",
+    "slug": "night-shift",
+    "background": "#0b131b",
+    "surface": "#14212c",
+    "foreground": "#f5f1e7",
+    "accent": "#dbc79d",
+    "asleep": "#98a5b3",
+    "contrast": {
+      "fg/bg": 16.58,
+      "accent/bg": 11.28,
+      "fg/surface": 14.5,
+      "accent/surface": 9.87,
+      "asleep/bg": 7.45,
+      "asleep/surface": 6.52,
+      "button": 11.28
+    }
+  }
+]

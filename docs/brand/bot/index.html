@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut / bot</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root[data-theme="lamplight"] {
+    --bg: #14110e; --surface: #211b16; --line: #2e2620;
+    --fg: #f5efe5; --accent: #f3c77c; --muted: #a69784;
+  }
+  :root[data-theme="paper"] {
+    --bg: #f5f2eb; --surface: #eae5da; --line: #dcd5c6;
+    --fg: #24231f; --accent: #175d80; --muted: #68645b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 "JetBrains Mono", ui-monospace, monospace;
+    display: grid; grid-template-rows: auto 1fr auto; min-height: 100vh;
+    transition: background .4s, color .4s;
+  }
+  hib-bot { --hib-accent: var(--accent); color: var(--fg); display: block; }
+  header, footer { display: flex; align-items: center; justify-content: space-between; padding: 24px 40px; }
+  header .brand { display: flex; align-items: center; gap: 10px; font: 600 22px "Oxanium", sans-serif; letter-spacing: -.01em; }
+  header .brand hib-bot { width: 28px; height: 28px; }
+  header .brand i { font-style: normal; color: var(--muted); font: 400 13px "JetBrains Mono", monospace; margin-left: 6px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; padding: 3px; background: var(--surface); }
+  .seg button { all: unset; cursor: pointer; padding: 6px 12px; border-radius: 7px; color: var(--muted); font-size: 12px; }
+  .seg button[aria-pressed="true"] { background: var(--bg); color: var(--fg); }
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 32px; padding: 8px 40px 24px; align-items: stretch; }
+  .stage {
+    border: 1px solid var(--line); border-radius: 20px; background: var(--surface);
+    display: grid; place-items: center; position: relative; min-height: 520px; overflow: hidden;
+  }
+  .stage hib-bot { width: min(560px, 90%); aspect-ratio: 190 / 175; }
+  .stage .caption { position: absolute; left: 24px; bottom: 20px; right: 24px; display: flex; justify-content: space-between; gap: 16px; }
+  .stage .caption b { font-weight: 500; color: var(--accent); }
+  .stage .caption span { color: var(--muted); }
+  aside { display: flex; flex-direction: column; gap: 20px; }
+  .panel { border: 1px solid var(--line); border-radius: 16px; padding: 18px; background: var(--surface); }
+  .panel h2 { margin: 0 0 12px; font: 500 11px "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .states { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .states button {
+    all: unset; cursor: pointer; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent;
+    color: var(--fg); font-size: 13px; display: flex; align-items: center; gap: 8px;
+  }
+  .states button::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--line); }
+  .states button:hover { border-color: var(--line); }
+  .states button[aria-pressed="true"] { background: var(--bg); border-color: var(--line); }
+  .states button[aria-pressed="true"]::before { background: var(--accent); }
+  .story { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+  .sizes { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+  .sizes figure { margin: 0; display: grid; justify-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+  .fleet { display: grid; gap: 8px; }
+  .fleet div { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
+  .fleet hib-bot { width: 22px; height: 22px; }
+  .fleet em { font-style: normal; font-size: 12px; color: var(--muted); }
+  .fleet em.on { color: var(--accent); }
+  footer { color: var(--muted); font-size: 12px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><hib-bot tight state="asleep"></hib-bot>hibernaut<i>/ bot</i></div>
+  <div class="seg" id="theme">
+    <button data-theme="lamplight" aria-pressed="true">Lamplight</button>
+    <button data-theme="paper" aria-pressed="false">Paper</button>
+  </div>
+</header>
+
+<main>
+  <section class="stage">
+    <hib-bot id="bot" state="asleep"></hib-bot>
+    <div class="caption"><b id="name">asleep</b><span id="meaning"></span></div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <h2>States</h2>
+      <div class="states" id="states"></div>
+      <div class="story">
+        <span>Autoplay story</span>
+        <div class="seg" id="story">
+          <button data-on="1" aria-pressed="true">On</button>
+          <button data-on="0" aria-pressed="false">Off</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Sizes</h2>
+      <div class="sizes" id="sizes"></div>
+    </div>
+
+    <div class="panel">
+      <h2>As status icons</h2>
+      <div class="fleet">
+        <div><hib-bot tight state="working"></hib-bot>agent-01<em class="on">working</em></div>
+        <div><hib-bot tight state="idle"></hib-bot>app<em class="on">awake</em></div>
+        <div><hib-bot tight state="thinking"></hib-bot>review<em class="on">thinking</em></div>
+        <div><hib-bot tight state="asleep"></hib-bot>db<em>asleep</em></div>
+        <div><hib-bot tight state="asleep"></hib-bot>experiment<em>asleep</em></div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <span>&lt;hib-bot state="…"&gt; · exact mark geometry · respects prefers-reduced-motion</span>
+  <span>Lamplight / Paper</span>
+</footer>
+
+<script type="module">
+  import './hibernaut-bot.js';
+
+  const MEANING = {
+    asleep: 'Hibernated. Memory and disk saved, costs nothing.',
+    wake: 'ssh app.hib → resuming from snapshot (~340 ms).',
+    idle: 'Awake, waiting for you.',
+    listening: 'Input streaming in: a prompt, a voice, a webhook.',
+    thinking: 'Agent waiting on the model.',
+    working: 'Running commands, reading code.',
+    happy: 'Task done.',
+    fork: 'Forked: live state copied into a new box.',
+    hibernate: 'Idle timeout: snapshotting, then sleep.',
+  };
+  const STORY = [
+    ['asleep', 5], ['wake'], ['idle', 3.5], ['listening', 3.5], ['thinking', 3.5],
+    ['working', 4], ['happy'], ['fork', 5], ['idle', 2], ['hibernate'],
+  ];
+
+  const bot = document.getElementById('bot');
+  const statesEl = document.getElementById('states');
+  const sizesEl = document.getElementById('sizes');
+  const mirrors = [];
+
+  for (const px of [16, 24, 32, 48, 96]) {
+    const f = document.createElement('figure');
+    const b = document.createElement('hib-bot');
+    b.setAttribute('tight', '');
+    b.style.width = b.style.height = px + 'px';
+    f.append(b, Object.assign(document.createElement('figcaption'), { textContent: px + 'px' }));
+    sizesEl.append(f);
+    mirrors.push(b);
+  }
+
+  for (const s of Object.keys(MEANING)) {
+    const btn = document.createElement('button');
+    btn.textContent = s;
+    btn.dataset.state = s;
+    btn.onclick = () => { stopStory(); bot.state = s; };
+    statesEl.append(btn);
+  }
+
+  const onState = (s) => {
+    document.getElementById('name').textContent = s;
+    document.getElementById('meaning').textContent = MEANING[s];
+    for (const b of statesEl.children) b.setAttribute('aria-pressed', b.dataset.state === s);
+    for (const m of mirrors) m.state = s;
+  };
+  bot.addEventListener('statechange', (e) => onState(e.detail));
+  onState(bot.state);
+
+  let token = 0;
+  const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
+  const settled = () => new Promise((r) => bot.addEventListener('settled', r, { once: true }));
+  async function story() {
+    const my = ++token;
+    while (my === token) {
+      for (const [s, d] of STORY) {
+        if (my !== token) return;
+        const wait = d ? sleep(d) : settled();
+        bot.state = s;
+        await wait;
+      }
+    }
+  }
+  function stopStory() {
+    token++;
+    for (const b of document.querySelectorAll('#story button')) b.setAttribute('aria-pressed', b.dataset.on === '0');
+  }
+  document.getElementById('story').onclick = (e) => {
+    const on = e.target.dataset?.on;
+    if (on === undefined) return;
+    if (on === '1') {
+      for (const b of document.querySelectorAll('#story button')) b.setAttribute('aria-pressed', b.dataset.on === '1');
+      story();
+    } else stopStory();
+  };
+
+  document.getElementById('theme').onclick = (e) => {
+    const t = e.target.dataset?.theme;
+    if (!t) return;
+    document.documentElement.dataset.theme = t;
+    for (const b of e.currentTarget.children) b.setAttribute('aria-pressed', b.dataset.theme === t);
+  };
+
+  const params = new URLSearchParams(location.search);
+  if (params.get('theme')) document.querySelector(`#theme [data-theme="${params.get('theme')}"]`)?.click();
+  if (params.get('state')) { stopStory(); bot.state = params.get('state'); }
+  else story();
+</script>
+</body>
+</html>
