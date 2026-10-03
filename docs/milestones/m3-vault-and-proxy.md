@@ -1,8 +1,67 @@
 # M3 Vault, egress proxy, leak scan
 
-Status: **not started** · Spec: §4.1, §4.2, §4.5, §8 (leak scan) · Spikes: S1 (first), S8
+Status: **in progress** · Spec: §4.1, §4.2, §4.5, §8 (leak scan) · Spikes: S1 (first), S8
 
 **Goal:** machines use secrets without ever holding them, and we can prove it.
+
+## Design
+
+The M3 code is built against this section. Code that has to differ updates it in the same commit.
+
+**Files on the host:**
+
+| Path | Owner, mode | Holds |
+| --- | --- | --- |
+| `/etc/hibernaut/vault.key` | root, 0600 | The 32-byte AES-256-GCM key. The first `hibd secret add` makes it. |
+| `/var/lib/hibernaut/vault.json` | root, 0644 | Each secret's name, variable, sites and placeholder in plain text, and its real value sealed with the key. The plain fields are the sealed value's additional data, so editing a binding makes the value unreadable. |
+| `/etc/hibernaut/ca.key`, `/etc/hibernaut/ca.crt` | root, 0600 and 0644 | The Hibernaut CA. `hibd ca init` makes it once, from `vm/setup-host.sh`. |
+| `/var/log/hibernaut/audit.jsonl` | root, 0644 | The audit log, one JSON object per request with a swap. It rotates to `audit.jsonl.1`. |
+
+**Who runs what:**
+
+- `hib secret add` and `hib secret rm` run `sudo -n hibd secret …` on the host, because sealing a
+  value needs the key. The value travels on stdin, never in an argument.
+- `hib secret ls` and `hib log` run `hibd` as the login user. The files they read hold no real
+  value.
+- `hibd proxy` runs as root in its own unit, `hibd-proxy.service`, so a crash in the proxy leaves
+  the busy watcher running. On a clean stop, and in `ExecStopPost` after a crash, it removes its
+  iptables rule, and machines go back to E2B's path. They hold only placeholders, so that's safe.
+- `hibd leakscan` runs as root (`sudo hibd leakscan`). It needs the real values and E2B's files.
+
+**Packages:**
+
+- `internal/vault`: the vault file, its key, and placeholders.
+- `internal/envblock`: renders the managed block and merges it into `/etc/environment`.
+- `internal/audit`: the audit log's entry, writer and reader.
+- `internal/ca`: makes and loads the CA, and mints a certificate per host.
+- `internal/egress/swap`: swaps placeholders for real values in requests, and real values for
+  placeholders in responses. No network code.
+- `internal/egress`: the proxy server. SNI, passthrough, TLS termination, HTTP/1.1, HTTP/2 and
+  WebSocket.
+- `internal/egress/hook`: Linux only. The iptables rule, `SO_ORIGINAL_DST`, and the `veth-*` check.
+- `internal/slots`: Linux only. Finds the sandbox a machine's connection comes from (S1).
+- `internal/leakscan`: rebuilds a snapshot's memory and disk from E2B's headers and searches them.
+
+**Delivery:** `hibd new` writes the managed block before it returns, so the first login has the
+variables. `hibd secret add` and `hibd secret rm` write it into every running machine. The daemon
+keeps the hash of the block it last wrote to each machine, and on each look writes it to any running
+machine whose hash is out of date: one that just woke, one that was missed, or every machine after
+a restart. Writes go through envd as root, with placeholders only.
+
+**Proxy:** `hibd proxy` listens on port `HIBD_PROXY_PORT` (default 5443) on all addresses, and
+closes any connection whose local address isn't on a `veth-*` interface. Its rule carries the
+comment `hibernaut`. For each connection it reads the real destination with `SO_ORIGINAL_DST` and
+refuses private, loopback and link-local destinations. It reads the SNI without decrypting. If no
+secret is bound to that host, or there's no SNI, it dials the real destination and copies bytes
+both ways. Otherwise it terminates TLS with a certificate for that host, refuses a request whose
+`Host` isn't the SNI host, swaps, connects to the real destination, verifies the site's
+certificate for the SNI host, and scrubs the response. It reloads the vault when `vault.json`
+changes.
+
+**Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
+order, so a value that spans blocks from different builds is still found. It refuses headers newer
+than version 3, which E2B compresses. It reports the secret's name, the encoding, the file and the
+offset, never the value.
 
 ## Tasks
 
