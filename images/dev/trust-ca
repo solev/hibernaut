@@ -8,11 +8,7 @@ cert="${root}/usr/local/share/ca-certificates/hibernaut.crt"
 bundle="${root}/etc/ssl/certs/ca-certificates.crt"
 env_file="${root}/etc/environment"
 
-if [ "$#" -eq 0 ]; then
-	update-ca-certificates
-else
-	update-ca-certificates "$root"
-fi
+update-ca-certificates
 openssl verify -CAfile "$bundle" "$cert" >/dev/null
 
 install -d -m 755 "$(dirname "$env_file")"

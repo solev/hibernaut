@@ -125,10 +125,11 @@ func TestHibernautCAInstallStep(t *testing.T) {
 	update := filepath.Join(bin, "update-ca-certificates")
 	updateScript := `#!/bin/sh
 set -eu
-	root="${1:-}"
-mkdir -p "$root/etc/ssl/certs"
-cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca-certificates.crt"
-`
+	[ "$#" -eq 0 ]
+	root="${FAKE_ROOT:?}"
+	mkdir -p "$root/etc/ssl/certs"
+	cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca-certificates.crt"
+	`
 	if err := os.WriteFile(update, []byte(updateScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca
 	}
 	trustCA := filepath.Join(root, "usr", "lib", "hibernaut", "trust-ca")
 	cmd = exec.Command(trustCA, root)
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "FAKE_ROOT="+root, "PATH="+bin+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("CA step: %v: %s", err, out)
 	}
@@ -188,7 +189,7 @@ cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca
 	}
 	afterFirst := bytes.Clone(env)
 	cmd = exec.Command(trustCA, root)
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "FAKE_ROOT="+root, "PATH="+bin+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("second CA step: %v: %s", err, out)
 	}
