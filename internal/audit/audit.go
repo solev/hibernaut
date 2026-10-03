@@ -6,10 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+)
+
+const (
+	maxPathBytes      = 1024
+	maxSiteBytes      = 253
+	maxMethodBytes    = 32
+	maxMachineBytes   = 64
+	maxSecretBytes    = 64
+	maxSecrets        = 32
+	maxAuditLineBytes = 64 << 10
 )
 
 // Entry is one request where the proxy swapped placeholders for real secrets.
@@ -54,7 +66,7 @@ func (l *Log) Write(e Entry) error {
 	if l.file == nil {
 		return errors.New("audit log is closed")
 	}
-	e.Path = stripQuery(e.Path)
+	e = cleanEntry(e)
 	line, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -149,19 +161,70 @@ func readFile(path string) ([]Entry, int, error) {
 	defer file.Close()
 	var entries []Entry
 	corrupt := 0
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var e Entry
-		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+	reader := bufio.NewReader(file)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if errors.Is(readErr, io.EOF) && len(line) == 0 {
+			break
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, 0, readErr
+		}
+		if len(line) > maxAuditLineBytes {
 			corrupt++
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			corrupt++
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
 		entries = append(entries, e)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, 0, err
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 	return entries, corrupt, nil
+}
+
+func cleanEntry(e Entry) Entry {
+	e.Machine = cleanString(e.Machine, maxMachineBytes)
+	e.MachineID = cleanString(e.MachineID, maxMachineBytes)
+	e.Site = cleanString(e.Site, maxSiteBytes)
+	e.Method = cleanString(e.Method, maxMethodBytes)
+	e.Path = cleanString(stripQuery(e.Path), maxPathBytes)
+	if len(e.Secrets) > maxSecrets {
+		e.Secrets = e.Secrets[:maxSecrets]
+	}
+	for i := range e.Secrets {
+		e.Secrets[i] = cleanString(e.Secrets[i], maxSecretBytes)
+	}
+	return e
+}
+
+func cleanString(s string, maxBytes int) string {
+	var b strings.Builder
+	b.Grow(min(len(s), maxBytes))
+	for len(s) > 0 && b.Len() < maxBytes {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 || r < 0x20 || r == 0x7f {
+			b.WriteByte('?')
+			s = s[size:]
+			continue
+		}
+		if b.Len()+size > maxBytes {
+			break
+		}
+		b.WriteString(s[:size])
+		s = s[size:]
+	}
+	return b.String()
 }
 
 func stripQuery(path string) string {

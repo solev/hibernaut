@@ -130,6 +130,9 @@ func findBlock(file []byte) (blockLocation, error) {
 			loc.start = l.start
 			loc.bodyStart = l.end
 		case endLine:
+			if loc.ok {
+				return blockLocation{}, errors.New("more than one managed block")
+			}
 			if loc.bodyStart == 0 && loc.start == 0 {
 				return blockLocation{}, errors.New("managed block end before begin")
 			}

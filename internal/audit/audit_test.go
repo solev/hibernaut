@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/solev/hibernaut/internal/audit"
 )
@@ -134,6 +135,68 @@ func TestConcurrentWritersProduceWholeLines(t *testing.T) {
 	}
 }
 
+func TestWriteCleansUntrustedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	log := openLog(t, path, 1<<20)
+	secrets := make([]string, 33)
+	for i := range secrets {
+		secrets[i] = strings.Repeat("s", 70) + "\x00\xff"
+	}
+	if err := log.Write(audit.Entry{
+		Time:      time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC),
+		Machine:   "web\x1b\xff" + strings.Repeat("m", 70),
+		MachineID: "id\x7f" + strings.Repeat("i", 70),
+		Site:      strings.Repeat("a", 300) + ".example.com",
+		Method:    "GE\x00T" + strings.Repeat("M", 40),
+		Path:      "/safe\x1b/" + strings.Repeat("p", 1100) + "?token=placeholder",
+		Secrets:   secrets,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := audit.Read(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(got.Entries))
+	}
+	entry := got.Entries[0]
+	for name, value := range map[string]string{
+		"machine":   entry.Machine,
+		"machineID": entry.MachineID,
+		"site":      entry.Site,
+		"method":    entry.Method,
+		"path":      entry.Path,
+		"secret":    entry.Secrets[0],
+	} {
+		if !utf8.ValidString(value) || strings.ContainsAny(value, "\x00\x1b\x7f") || strings.ContainsRune(value, utf8.RuneError) {
+			t.Errorf("%s = %q, want printable valid UTF-8", name, value)
+		}
+	}
+	if len(entry.Path) != 1024 || strings.Contains(entry.Path, "token=placeholder") {
+		t.Errorf("path = len %d %q, want 1024 bytes and no query data", len(entry.Path), entry.Path)
+	}
+	if len(entry.Site) != 253 {
+		t.Errorf("site len = %d, want 253", len(entry.Site))
+	}
+	if len(entry.Method) != 32 {
+		t.Errorf("method len = %d, want 32", len(entry.Method))
+	}
+	if len(entry.Machine) != 64 || len(entry.MachineID) != 64 {
+		t.Errorf("machine lens = %d and %d, want 64", len(entry.Machine), len(entry.MachineID))
+	}
+	if len(entry.Secrets) != 32 {
+		t.Fatalf("secrets len = %d, want 32", len(entry.Secrets))
+	}
+	if len(entry.Secrets[0]) != 64 {
+		t.Errorf("secret len = %d, want 64", len(entry.Secrets[0]))
+	}
+}
+
 func TestReadSkipsCorruptLinesAndLimits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	first := entry("one", "/one")
@@ -166,6 +229,40 @@ func TestReadSkipsCorruptLinesAndLimits(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Entries, []audit.Entry{second}) {
 		t.Errorf("limited entries = %#v, want %#v", got.Entries, []audit.Entry{second})
+	}
+}
+
+func TestReadSkipsVeryLongCorruptLineAndContinues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	first := entry("one", "/one")
+	second := entry("two", "/two")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := json.NewEncoder(f)
+	if err := enc.Encode(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(strings.Repeat("x", 100<<10) + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Encode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := audit.Read(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Corrupt != 1 {
+		t.Errorf("Corrupt = %d, want 1", got.Corrupt)
+	}
+	if !reflect.DeepEqual(got.Entries, []audit.Entry{first, second}) {
+		t.Errorf("entries = %#v, want first and second", got.Entries)
 	}
 }
 

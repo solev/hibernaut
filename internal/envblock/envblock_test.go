@@ -102,6 +102,7 @@ func TestMergeRefusesMalformedFiles(t *testing.T) {
 		"end before begin":  end + begin,
 		"more than one":     string(block) + string(block),
 		"nested begin":      begin + begin + end,
+		"second end":        begin + "GH_TOKEN=gho_hib\n" + end + "user line\n" + end,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := envblock.Merge([]byte(file), block); err == nil {
@@ -144,6 +145,7 @@ func FuzzMerge(f *testing.F) {
 		[]byte("A=1\nB=2\n"),
 		[]byte("A=1\r\nB=2\r\n"),
 		[]byte(mustRender(f, []envblock.Var{{Name: "OLD", Value: "old_hib"}})),
+		[]byte("# BEGIN hibernaut secrets: hibd manages this block and replaces edits\nOLD=old_hib\n# END hibernaut secrets\nuser line\n# END hibernaut secrets\n"),
 	} {
 		f.Add(seed)
 	}
@@ -187,14 +189,8 @@ func mustRender(tb testing.TB, vars []envblock.Var) []byte {
 }
 
 func outsideLinesInOrder(file, merged []byte) bool {
-	want, err := outsideLineTexts(file)
-	if err != nil {
-		return true
-	}
-	got, err := outsideLineTexts(merged)
-	if err != nil {
-		return false
-	}
+	want := outsideLineTexts(file)
+	got := outsideLineTexts(merged)
 	j := 0
 	for _, line := range got {
 		if j < len(want) && line == want[j] {
@@ -204,13 +200,30 @@ func outsideLinesInOrder(file, merged []byte) bool {
 	return j == len(want)
 }
 
-func outsideLineTexts(file []byte) ([]string, error) {
-	block, err := envblock.Merge(file, nil)
-	if err != nil {
-		return nil, err
+func outsideLineTexts(file []byte) []string {
+	const (
+		begin = "# BEGIN hibernaut secrets: hibd manages this block and replaces edits"
+		end   = "# END hibernaut secrets"
+	)
+	var out []string
+	inBlock := false
+	sawBlock := false
+	for _, line := range strings.SplitAfter(string(file), "\n") {
+		text := strings.TrimSuffix(line, "\n")
+		if !sawBlock && text == begin {
+			inBlock = true
+			sawBlock = true
+			continue
+		}
+		if inBlock {
+			if text == end {
+				inBlock = false
+			}
+			continue
+		}
+		if line != "" {
+			out = append(out, strings.TrimSuffix(line, "\n"))
+		}
 	}
-	if len(block) == 0 {
-		return nil, nil
-	}
-	return strings.Split(strings.TrimSuffix(string(block), "\n"), "\n"), nil
+	return out
 }
