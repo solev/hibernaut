@@ -551,8 +551,22 @@ Key Vault through the VM's managed identity).
 - After each end-to-end scenario, `hibd` pauses every test machine and searches its snapshot, both
   memory and disk, for every real secret value. Expected hits: zero. E2B writes uncompressed
   version 3 headers on this host. The scan refuses compressed version 4 and later headers.
-- A canary value written into one machine on purpose must be found. That proves the scan works.
-- Saved images are scanned the same way.
+- The scan selects the newest build by creation time, regardless of status. It fixes that build
+  ID before polling once a second for up to 15 minutes. A failed build fails immediately.
+  Pending builds and incomplete uploads never cause a scan of an older ready build.
+- E2B can mark a pause successful before its local upload finishes. A complete build has both
+  readable headers, a non-empty `snapfile`, and valid `metadata.json` for that build. The headers
+  must identify that build and cover their logical sizes. Every mapped data file must reach its
+  furthest storage offset plus length. The same checks apply to all referenced builds. Missing or
+  short files fail the scan. A timeout returns an error, not a clean verdict.
+- An empty diff needs no new data file if its mappings use only ancestors or zero blocks.
+  Missing headers are not empty diffs. Filesystem-only snapshots cannot prove memory is clean
+  and fail the scan.
+- A canary value written into one machine on purpose must be found in both memory and disk.
+  Canary runs hold an exclusive host lock. Before creating a machine, they remove machines and
+  vault secrets left under the reserved name `leakscan-canary-` followed by 12 lowercase hex
+  digits. That makes a rerun after a crash converge without removing normal machines or secrets.
+- Saved images use the same newest-build selection and completion checks.
 
 **Other invariants with their own tests:**
 

@@ -115,12 +115,12 @@ func TestSearchFindsMatchesAcrossEveryReadBoundary(t *testing.T) {
 	}
 }
 
-func TestSearchHasNoFalsePositivesOnRandomData(t *testing.T) {
+func TestSearchFindsPlantedMatchesWithoutRandomFalsePositives(t *testing.T) {
 	needles := []leakscan.Needle{
 		{Secret: "one", Encoding: "raw", Pattern: []byte("not-in-random-one")},
 		{Secret: "two", Encoding: "raw", Pattern: []byte("not-in-random-two")},
 	}
-	data := make([]byte, 1<<20)
+	data := make([]byte, (1<<20)+128)
 	if _, err := crand.Read(data); err != nil {
 		t.Fatal(err)
 	}
@@ -131,25 +131,33 @@ func TestSearchHasNoFalsePositivesOnRandomData(t *testing.T) {
 	if len(hits) != 0 {
 		t.Fatalf("Search found random hits: %+v", hits)
 	}
+	copy(data[17:], []byte("not-in-random-one"))
+	copy(data[1048571:], []byte("not-in-random-two"))
+	hits, err = leakscan.Search(bytes.NewReader(data), needles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := hitKeys(hits), []string{"one/raw@17", "two/raw@1048571"}; !slices.Equal(got, want) {
+		t.Fatalf("Search planted values = %v, want %v", got, want)
+	}
 }
 
 func TestScanBuildReadsLogicalFilesAndRawBuildFiles(t *testing.T) {
 	storage := t.TempDir()
-	leakscantest.WriteBuildFile(t, storage, buildA, "memfile", []byte("aaaaVALUE-"))
-	leakscantest.WriteBuildFile(t, storage, buildB, "memfile", []byte("SPANbbbb"))
-	leakscantest.WriteBuildFile(t, storage, buildA, "rootfs.ext4", []byte("raw disk secret is here"))
-	leakscantest.WriteBuildFile(t, storage, buildB, "rootfs.ext4", []byte("disk-VALUE-"))
-	leakscantest.WriteBuildFile(t, storage, buildC, "rootfs.ext4", []byte("SPAN-disk"))
+	leakscantest.WriteBuild(t, storage, buildA, []byte("aaaaVALUE-"), []byte("raw disk secret is here"))
+	leakscantest.WriteBuild(t, storage, buildB, []byte("SPANbbbb"), []byte("disk-VALUE-"))
+	leakscantest.WriteBuild(t, storage, buildC, nil, []byte("SPAN-disk"))
 	leakscantest.WriteBuildFile(t, storage, buildC, "snapfile", []byte("cpu state has VALUE-SPAN too"))
 
 	leakscantest.WriteHeaderVersion(t, storage, buildB, "memfile.header", 3, 20,
 		leakscantest.Mapping{Offset: 10, Length: 5, Build: buildB, StorageOffset: 0},
 		leakscantest.Mapping{Offset: 0, Length: 10, Build: buildA, StorageOffset: 0},
+		leakscantest.Mapping{Offset: 15, Length: 5, Build: nilID},
 	)
 	leakscantest.WriteHeaderVersion(t, storage, buildB, "rootfs.ext4.header", 3, 40,
 		leakscantest.Mapping{Offset: 0, Length: 11, Build: buildB, StorageOffset: 0},
 		leakscantest.Mapping{Offset: 11, Length: 9, Build: buildC, StorageOffset: 0},
-		leakscantest.Mapping{Offset: 25, Length: 5, Build: nilID, StorageOffset: 0},
+		leakscantest.Mapping{Offset: 20, Length: 20, Build: nilID, StorageOffset: 0},
 	)
 	needles := []leakscan.Needle{{Secret: "token", Encoding: "raw", Pattern: []byte("VALUE-SPAN")}}
 	hits, err := leakscan.ScanBuild(storage, buildB, needles)
@@ -199,10 +207,72 @@ func TestScanBuildRejectsBadHeadersAndShortFiles(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			storage := t.TempDir()
+			leakscantest.WriteBuild(t, storage, buildA, []byte("abcdef"), []byte("abcdef"))
 			setup(t, storage)
 			_, err := leakscan.ScanBuild(storage, buildA, []leakscan.Needle{{Secret: "x", Encoding: "raw", Pattern: []byte("abcdef")}})
-			if err == nil {
-				t.Fatal("ScanBuild succeeded")
+			want := map[string]string{
+				"cut mapping":           "mappings are cut short",
+				"version 4":             "compressed data",
+				"mapping past file end": "file is 3 bytes",
+			}[name]
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("ScanBuild = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestScanBuildRequiresEverySnapshotArtifact(t *testing.T) {
+	for _, name := range []string{"memfile.header", "rootfs.ext4.header", "memfile", "rootfs.ext4", "snapfile", "metadata.json"} {
+		t.Run(name, func(t *testing.T) {
+			storage := t.TempDir()
+			leakscantest.WriteBuild(t, storage, buildA, []byte("memory value-123"), []byte("disk value-123"))
+			needles := []leakscan.Needle{{Secret: "token", Encoding: "raw", Pattern: []byte("value-123")}}
+			hits, err := leakscan.ScanBuild(storage, buildA, needles)
+			if err != nil || !slices.Contains(scanHitKeys(hits), "token/raw@memory:7") {
+				t.Fatalf("complete snapshot scan = %+v, %v, want memory hit at 7", hits, err)
+			}
+			path := filepath.Join(storage, buildA, name)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := leakscan.ScanBuild(storage, buildA, needles); err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("missing %s: error = %v, want missing artifact path", name, err)
+			}
+			if _, err := leakscan.ScanBuild(storage, buildA, nil); err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("missing %s with no needles: %v, want missing artifact path", name, err)
+			}
+		})
+	}
+}
+
+func TestScanBuildRequiresCompleteReferencedBuilds(t *testing.T) {
+	for _, name := range []string{"memfile.header", "rootfs.ext4.header", "snapfile", "metadata.json", "memfile", "rootfs.ext4"} {
+		t.Run(name, func(t *testing.T) {
+			storage := t.TempDir()
+			leakscantest.WriteBuild(t, storage, buildA, []byte("old value-123"), []byte("old value-123"))
+			leakscantest.WriteBuild(t, storage, buildB, nil, nil)
+			leakscantest.WriteHeader(t, storage, buildB, "memfile.header", 4,
+				leakscantest.Mapping{Length: 4, Build: buildA})
+			leakscantest.WriteHeader(t, storage, buildB, "rootfs.ext4.header", 4,
+				leakscantest.Mapping{Length: 4, Build: buildA})
+			needles := []leakscan.Needle{{Secret: "token", Encoding: "raw", Pattern: []byte("value-123")}}
+			hits, err := leakscan.ScanBuild(storage, buildB, needles)
+			want := "token/raw@" + filepath.Join(storage, buildA, "memfile") + ":4"
+			if err != nil || !slices.Contains(scanHitKeys(hits), want) {
+				t.Fatalf("ancestor scan = %+v, %v, want old raw hit", hits, err)
+			}
+			path := filepath.Join(storage, buildA, name)
+			if name == "memfile" || name == "rootfs.ext4" {
+				err = os.Truncate(path, 4)
+			} else {
+				err = os.Remove(path)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := leakscan.ScanBuild(storage, buildB, needles); err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("incomplete ancestor %s: %v, want artifact path", name, err)
 			}
 		})
 	}
@@ -228,6 +298,27 @@ func TestBuildLookup(t *testing.T) {
 	}
 	if !strings.Contains(gotSQL, "env_aliases") || !strings.Contains(gotSQL, "hib-dev") || strings.Contains(gotSQL, ";") {
 		t.Fatalf("TemplateBuild SQL = %q", gotSQL)
+	}
+}
+
+func TestBuildLookupSelectsNewestEvenWhenItIsNotReady(t *testing.T) {
+	for _, status := range []string{"pending", "in_progress", "failed", "ready"} {
+		t.Run(status, func(t *testing.T) {
+			query := func(_ context.Context, sql string) ([][]string, error) {
+				id := buildB
+				if strings.Contains(sql, "b.status_group = 'ready'") && status != "ready" ||
+					strings.Contains(sql, "coalesce(b.finished_at, b.created_at)") {
+					id = buildA
+				}
+				return [][]string{{id}}, nil
+			}
+			if got, err := leakscan.SnapshotBuild(t.Context(), query, "sandbox123"); err != nil || got != buildB {
+				t.Fatalf("SnapshotBuild = %q, %v, want newest build %s", got, err, buildB)
+			}
+			if got, err := leakscan.TemplateBuild(t.Context(), query, "hib-dev"); err != nil || got != buildB {
+				t.Fatalf("TemplateBuild = %q, %v, want newest build %s", got, err, buildB)
+			}
+		})
 	}
 }
 

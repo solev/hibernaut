@@ -84,10 +84,34 @@ The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested h
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
 order, so a value that spans blocks from different builds is still found. It also scans every file
 of the build, and of the builds its headers reference, as raw bytes, which covers `snapfile` and
-blocks that a later pause replaced. It refuses version 4 and later headers, which E2B compresses.
-It reports the secret's name, the encoding, the file and the offset, never the value. Known limit:
-memory is scanned in guest-physical order, so a value split across two guest pages that are not
-adjacent physically can be missed. The canary checks the common case.
+blocks that a later pause replaced. It checks referenced builds recursively, so a missing or short
+ancestor file cannot produce a clean verdict.
+
+After a pause, it selects the newest build by creation time without filtering its status. Image
+scans use the same rule. The selected ID stays fixed while the scan polls once a second for up to
+15 minutes. The clock and sleep are injectable for fast tests. A failed build fails immediately.
+A timeout reports the build ID and its last status or missing file. It never scans an older ready
+build instead. A 32 GiB export at 50 MiB per second takes about 11 minutes. The 15-minute limit
+leaves time for its disk diff and competing host I/O while keeping the wait bounded.
+
+Readiness in the database is not enough. E2B uploads files in parallel after the pause RPC returns,
+and each local file appears through an atomic rename. Completion requires both headers to parse,
+identify the build, and cover their logical sizes. It also requires valid `metadata.json` and a
+non-empty `snapfile`. Legacy metadata without a build ID is accepted. If metadata declares an ID,
+it must match the build.
+Each mapped data file must reach the furthest storage offset plus length. Empty diffs can omit
+their own data files when all mappings use ancestors or zero blocks. A missing header is not an
+empty diff. Filesystem-only snapshots fail because they cannot prove memory is clean. The scan
+also fails on a short read if a file shrinks after the size check.
+
+The scan refuses version 4 and later headers, which E2B compresses. It reports the secret's name,
+the encoding, the file and the offset, never the value. Known limit: memory is scanned in
+guest-physical order, so a value split across two guest pages that are not adjacent physically can
+be missed. The canary checks the common case and requires hits in both memory and disk. It holds
+`$HIBD_STATE_DIR/leakscan-canary.lock` for the whole run. Before creating a fresh canary, it removes
+machines and vault secrets named `leakscan-canary-` followed by 12 lowercase hex digits. That
+namespace is reserved for canaries. The lock prevents a second run from removing an active canary
+and releases automatically on process exit.
 
 ## Tasks
 
@@ -229,3 +253,6 @@ End-to-end:
 - 2026-10-03: Credential renewals keep placeholders despite length, expiry, nonce, token hash,
   session ID or signing-key changes. Changed token types, prefixes or exposed JWT identity
   claims make new placeholders. JWT placeholders now use an expiry of 2100-01-01 (§4.4).
+- 2026-10-03: Leak scans fix the newest build ID before a bounded readiness and local-upload
+  wait. They validate referenced builds too, reject incomplete files, and never fall back to an
+  older ready snapshot. Canary reruns reconcile their reserved namespace under a host lock.

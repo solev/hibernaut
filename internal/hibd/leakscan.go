@@ -21,10 +21,46 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-type leakscanTarget struct {
-	kind string
+type leakscanTarget interface {
+	api() hibapi.LeakScanTarget
+	resolve(context.Context, engine.Engine, scanpkg.Query) (hibapi.LeakScanTarget, string, error)
+}
+
+type machineScanTarget struct {
 	name string
-	id   string
+}
+
+func (t machineScanTarget) api() hibapi.LeakScanTarget {
+	return hibapi.LeakScanTarget{Kind: "machine", Name: t.name}
+}
+
+func (t machineScanTarget) resolve(ctx context.Context, e engine.Engine, query scanpkg.Query) (hibapi.LeakScanTarget, string, error) {
+	m, err := findLeakscanMachine(ctx, e, t.name)
+	if err != nil {
+		return hibapi.LeakScanTarget{}, "", err
+	}
+	if m.State == engine.Running {
+		if err := e.Pause(ctx, m.ID); err != nil {
+			return hibapi.LeakScanTarget{}, "", err
+		}
+	}
+	build, err := scanpkg.SnapshotBuild(ctx, query, m.ID)
+	target := t.api()
+	target.ID = m.ID
+	return target, build, err
+}
+
+type imageScanTarget struct {
+	name string
+}
+
+func (t imageScanTarget) api() hibapi.LeakScanTarget {
+	return hibapi.LeakScanTarget{Kind: "image", Name: t.name}
+}
+
+func (t imageScanTarget) resolve(ctx context.Context, _ engine.Engine, query scanpkg.Query) (hibapi.LeakScanTarget, string, error) {
+	build, err := scanpkg.TemplateBuild(ctx, query, images.Template(t.name))
+	return t.api(), build, err
 }
 
 const leakscanUsage = "usage: hibd leakscan [-json] NAME | leakscan [-json] -image NAME | leakscan [-json] -canary"
@@ -58,9 +94,9 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 			fmt.Fprintf(a.Stderr, "hibd leakscan: no image %q (there is: %s)\n", *image, strings.Join(images.Names(), ", "))
 			return 2
 		}
-		target = leakscanTarget{kind: "image", name: *image}
+		target = imageScanTarget{name: *image}
 	} else {
-		target = leakscanTarget{kind: "machine", name: rest[0]}
+		target = machineScanTarget{name: rest[0]}
 	}
 	if err := a.wantRoot("leakscan"); err != nil {
 		return a.fail(*asJSON, "leakscan", err)
@@ -74,7 +110,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 		return a.fail(*asJSON, "leakscan", err)
 	}
 	if len(secrets) == 0 {
-		r := hibapi.LeakScan{Target: apiLeakscanTarget(target), Hits: []hibapi.LeakScanHit{}}
+		r := hibapi.LeakScan{Target: target.api(), Hits: []hibapi.LeakScanHit{}}
 		if *asJSON {
 			return a.reply(hibapi.Response{LeakScan: &r})
 		}
@@ -94,34 +130,17 @@ func (a *App) runLeakscan(ctx context.Context, cfg config, target leakscanTarget
 		return hibapi.LeakScan{}, err
 	}
 	query := a.query()
-	switch target.kind {
-	case "machine":
-		m, err := findLeakscanMachine(ctx, e, target.name)
-		if err != nil {
-			return hibapi.LeakScan{}, err
-		}
-		target.id = m.ID
-		if m.State == engine.Running {
-			if err := e.Pause(ctx, m.ID); err != nil {
-				return hibapi.LeakScan{}, err
-			}
-		}
-		build, err := scanpkg.SnapshotBuild(ctx, query, m.ID)
-		if err != nil {
-			return hibapi.LeakScan{}, err
-		}
-		return scanBuild(cfg, target, build, secrets)
-	case "image":
-		build, err := scanpkg.TemplateBuild(ctx, query, images.Template(target.name))
-		if err != nil {
-			return hibapi.LeakScan{}, err
-		}
-		return scanBuild(cfg, target, build, secrets)
+	resolved, build, err := target.resolve(ctx, e, query)
+	if err != nil {
+		return hibapi.LeakScan{}, err
 	}
-	return hibapi.LeakScan{}, fmt.Errorf("unknown leakscan target %q", target.kind)
+	return scanBuild(ctx, query, cfg, resolved, build, secrets)
 }
 
-func scanBuild(cfg config, target leakscanTarget, build string, secrets []scanpkg.Secret) (hibapi.LeakScan, error) {
+func scanBuild(ctx context.Context, query scanpkg.Query, cfg config, target hibapi.LeakScanTarget, build string, secrets []scanpkg.Secret) (hibapi.LeakScan, error) {
+	if err := scanpkg.WaitBuild(ctx, query, cfg.e2bStorage, build, scanpkg.WaitOptions{}); err != nil {
+		return hibapi.LeakScan{}, err
+	}
 	needles, err := scanpkg.Needles(secrets)
 	if err != nil {
 		return hibapi.LeakScan{}, err
@@ -131,7 +150,7 @@ func scanBuild(cfg config, target leakscanTarget, build string, secrets []scanpk
 		return hibapi.LeakScan{}, err
 	}
 	return hibapi.LeakScan{
-		Target:      apiLeakscanTarget(target),
+		Target:      target,
 		BuildID:     build,
 		SecretCount: len(secrets),
 		Hits:        apiLeakscanHits(hits),
@@ -143,8 +162,16 @@ func (a *App) leakscanCanary(ctx context.Context, asJSON bool) int {
 	if err != nil {
 		return a.fail(asJSON, "leakscan", err)
 	}
+	lock, err := lockCanary(cfg.stateDir)
+	if err != nil {
+		return a.fail(asJSON, "leakscan", err)
+	}
+	defer lock.Close()
 	e, err := a.engine()
 	if err != nil {
+		return a.fail(asJSON, "leakscan", err)
+	}
+	if err := reconcileCanaries(ctx, cfg, e); err != nil {
 		return a.fail(asJSON, "leakscan", err)
 	}
 	canary, err := a.newCanary()
@@ -209,7 +236,8 @@ func (a *App) runCanaryScan(ctx context.Context, cfg config, e engine.Engine, m 
 	if err != nil {
 		return hibapi.LeakScan{}, err
 	}
-	result, err := scanBuild(cfg, leakscanTarget{kind: "canary", name: name, id: m.ID}, build, []scanpkg.Secret{{Name: "canary", Value: canary}})
+	target := hibapi.LeakScanTarget{Kind: "canary", Name: name, ID: m.ID}
+	result, err := scanBuild(ctx, a.query(), cfg, target, build, []scanpkg.Secret{{Name: "canary", Value: canary}})
 	if err != nil {
 		return hibapi.LeakScan{}, err
 	}
@@ -322,10 +350,6 @@ func (a *App) newCanary() (string, error) {
 		return "", err
 	}
 	return "hibcanary_" + hex.EncodeToString(b), nil
-}
-
-func apiLeakscanTarget(t leakscanTarget) hibapi.LeakScanTarget {
-	return hibapi.LeakScanTarget{Kind: t.kind, Name: t.name, ID: t.id}
 }
 
 func apiLeakscanHits(hits []scanpkg.Hit) []hibapi.LeakScanHit {

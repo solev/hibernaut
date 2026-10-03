@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -52,6 +53,77 @@ func TestLeakscanArgErrorsAndRootCheck(t *testing.T) {
 	}
 }
 
+func TestLeakscanNeverCertifiesAReadyBuildBeforeANewerFailedBuild(t *testing.T) {
+	for _, args := range [][]string{
+		{"leakscan", "-json", "app"},
+		{"leakscan", "-json", "-image", "dev"},
+		{"leakscan", "-json", "-canary"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			e := fake.New(fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+				return engine.ExecResult{}, nil
+			}))
+			e.Add(engine.Machine{ID: "sandbox123", State: engine.Running, Metadata: map[string]string{"hib.name": "app"}})
+			a, out, errOut, cfg := newLeakscanApp(t, e)
+			writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", "secret-value-123456789")
+			writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("old clean memory"), []byte("old clean disk"))
+			writeLeakBuild(t, cfg.e2bStorage, leakBuildB, []byte("new clean memory"), []byte("new clean disk"))
+			a.Query = func(_ context.Context, sql string) ([][]string, error) {
+				if strings.HasPrefix(sql, "SELECT status_group") {
+					return [][]string{{"failed"}}, nil
+				}
+				if strings.Contains(sql, "b.status_group = 'ready'") {
+					return [][]string{{leakBuildA}}, nil
+				}
+				return [][]string{{leakBuildB}}, nil
+			}
+			if code := a.Run(t.Context(), args); code != 1 {
+				t.Fatalf("code = %d, want failure, stdout %q stderr %q", code, out.String(), errOut.String())
+			}
+			if !strings.Contains(out.String(), "build "+leakBuildB+" failed") {
+				t.Fatalf("stdout = %q, want newest failed build error", out.String())
+			}
+		})
+	}
+}
+
+func TestLeakscanPendingNewestBuildCannotReturnACleanVerdict(t *testing.T) {
+	for _, status := range []string{"pending", "in_progress", "ready"} {
+		for _, args := range [][]string{
+			{"leakscan", "-json", "app"},
+			{"leakscan", "-json", "-image", "dev"},
+			{"leakscan", "-json", "-canary"},
+		} {
+			t.Run(status+"/"+strings.Join(args, " "), func(t *testing.T) {
+				e := fake.New(fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+					return engine.ExecResult{}, nil
+				}))
+				e.Add(engine.Machine{ID: "sandbox123", State: engine.Running, Metadata: map[string]string{"hib.name": "app"}})
+				a, out, errOut, cfg := newLeakscanApp(t, e)
+				writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", "secret-value-123456789")
+				writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("old clean memory"), []byte("old clean disk"))
+				a.Query = func(_ context.Context, sql string) ([][]string, error) {
+					if strings.HasPrefix(sql, "SELECT status_group") {
+						return [][]string{{status}}, nil
+					}
+					if strings.Contains(sql, "b.status_group = 'ready'") {
+						return [][]string{{leakBuildA}}, nil
+					}
+					return [][]string{{leakBuildB}}, nil
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+				defer cancel()
+				if code := a.Run(ctx, args); code != 1 {
+					t.Fatalf("code = %d, want failure, stdout %q stderr %q", code, out.String(), errOut.String())
+				}
+				if !strings.Contains(out.String(), leakBuildB) || !strings.Contains(out.String(), "deadline exceeded") {
+					t.Fatalf("stdout = %q, want selected build's deadline error", out.String())
+				}
+			})
+		}
+	}
+}
+
 func TestLeakscanMachinePausesRunningMachineAndScansVault(t *testing.T) {
 	value := "secret-value-123456789"
 	e := fake.New()
@@ -60,6 +132,9 @@ func TestLeakscanMachinePausesRunningMachineAndScansVault(t *testing.T) {
 	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("mem "+value), []byte("clean disk"))
 	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", value)
 	a.Query = func(_ context.Context, sql string) ([][]string, error) {
+		if strings.HasPrefix(sql, "SELECT status_group") {
+			return [][]string{{"ready"}}, nil
+		}
 		if !strings.Contains(sql, "sandbox123") || !strings.Contains(sql, "snapshots") {
 			t.Fatalf("query SQL = %q, want snapshot lookup by sandbox ID", sql)
 		}
@@ -111,6 +186,9 @@ func TestLeakscanImageScansTemplateBuild(t *testing.T) {
 	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("clean memory"), []byte("disk "+value))
 	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", value)
 	a.Query = func(_ context.Context, sql string) ([][]string, error) {
+		if strings.HasPrefix(sql, "SELECT status_group") {
+			return [][]string{{"ready"}}, nil
+		}
 		if !strings.Contains(sql, "env_aliases") || !strings.Contains(sql, images.Template("dev")) {
 			t.Fatalf("query SQL = %q, want template lookup", sql)
 		}
@@ -324,16 +402,14 @@ func writeVault(t *testing.T, vaultPath, keyPath, name, value string) {
 
 func writeLeakBuild(t *testing.T, storage, build string, mem, disk []byte) {
 	t.Helper()
-	leakscantest.WriteBuildFile(t, storage, build, "memfile", mem)
-	leakscantest.WriteBuildFile(t, storage, build, "rootfs.ext4", disk)
-	leakscantest.WriteHeader(t, storage, build, "memfile.header", uint64(len(mem)),
-		leakscantest.Mapping{Offset: 0, Length: uint64(len(mem)), Build: build})
-	leakscantest.WriteHeader(t, storage, build, "rootfs.ext4.header", uint64(len(disk)),
-		leakscantest.Mapping{Offset: 0, Length: uint64(len(disk)), Build: build})
+	leakscantest.WriteBuild(t, storage, build, mem, disk)
 }
 
 func oneBuildQuery(build string) func(context.Context, string) ([][]string, error) {
-	return func(context.Context, string) ([][]string, error) {
+	return func(_ context.Context, sql string) ([][]string, error) {
+		if strings.HasPrefix(sql, "SELECT status_group") {
+			return [][]string{{"ready"}}, nil
+		}
 		return [][]string{{build}}, nil
 	}
 }

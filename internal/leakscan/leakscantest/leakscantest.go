@@ -4,6 +4,7 @@ package leakscantest
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,26 @@ type Mapping struct {
 	Length        uint64
 	Build         string
 	StorageOffset uint64
+}
+
+// WriteBuild writes a complete memory snapshot with version 3 headers.
+func WriteBuild(t testing.TB, storage, build string, mem, disk []byte) {
+	t.Helper()
+	WriteBuildFile(t, storage, build, "memfile", mem)
+	WriteBuildFile(t, storage, build, "rootfs.ext4", disk)
+	WriteHeader(t, storage, build, "memfile.header", uint64(len(mem)),
+		Mapping{Length: uint64(len(mem)), Build: build})
+	WriteHeader(t, storage, build, "rootfs.ext4.header", uint64(len(disk)),
+		Mapping{Length: uint64(len(disk)), Build: build})
+	WriteBuildFile(t, storage, build, "snapfile", []byte("VM state"))
+	meta, err := json.Marshal(map[string]any{
+		"version":  2,
+		"template": map[string]string{"build_id": build},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	WriteBuildFile(t, storage, build, "metadata.json", meta)
 }
 
 // WriteBuildFile writes name in storage/build.

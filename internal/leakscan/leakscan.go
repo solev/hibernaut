@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -260,6 +261,10 @@ func ScanBuild(storageDir, buildID string, needles []Needle) ([]Hit, error) {
 	if !buildIDRE.MatchString(buildID) {
 		return nil, fmt.Errorf("bad build ID %q", buildID)
 	}
+	builds, err := readBuildSet(storageDir, buildID)
+	if err != nil {
+		return nil, err
+	}
 	if len(needles) == 0 {
 		return nil, nil
 	}
@@ -276,30 +281,23 @@ func ScanBuild(storageDir, buildID string, needles []Needle) ([]Hit, error) {
 			hits = append(hits, h)
 		}
 	}
-	refs := map[string]bool{buildID: true}
-	for _, spec := range []struct {
-		header, data, where string
-	}{
-		{"memfile.header", "memfile", "memory"},
-		{"rootfs.ext4.header", "rootfs.ext4", "disk"},
-	} {
-		headerPath := filepath.Join(storageDir, buildID, spec.header)
-		b, err := os.ReadFile(headerPath)
-		if err != nil {
-			return nil, err
-		}
-		h, err := parseHeader(b)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", headerPath, err)
-		}
-		for _, ref := range h.refs {
-			refs[ref] = true
-		}
-		if err := scanLogical(scanner, storageDir, spec.data, spec.where, h, emit); err != nil {
+	for _, spec := range builds[buildID] {
+		if err := scanLogical(scanner, storageDir, spec.data, spec.where, spec.header, emit); err != nil {
 			return nil, err
 		}
 	}
-	for _, ref := range slices.Sorted(maps.Keys(refs)) {
+	paths := map[string]bool{}
+	for ref, files := range builds {
+		for _, name := range []string{"memfile.header", "rootfs.ext4.header", "snapfile", "metadata.json"} {
+			paths[filepath.Join(storageDir, ref, name)] = true
+		}
+		for _, file := range files {
+			for _, m := range file.header.maps {
+				if m.build != nilUUID && m.length > 0 {
+					paths[filepath.Join(storageDir, m.build, file.data)] = true
+				}
+			}
+		}
 		dir := filepath.Join(storageDir, ref)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -309,51 +307,51 @@ func ScanBuild(storageDir, buildID string, needles []Needle) ([]Hit, error) {
 			if e.IsDir() {
 				continue
 			}
-			path := filepath.Join(dir, e.Name())
-			f, err := os.Open(path)
-			if err != nil {
-				return nil, err
-			}
-			scanner.reset(0)
-			err = scanner.scan(f, func(h Hit) error {
-				emit(path, h)
-				return nil
-			})
-			cerr := f.Close()
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", path, err)
-			}
-			if cerr != nil {
-				return nil, fmt.Errorf("%s: %w", path, cerr)
-			}
+			paths[filepath.Join(dir, e.Name())] = true
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(paths)) {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			f.Close()
+			return nil, fmt.Errorf("%s: not a regular file", path)
+		}
+		scanner.reset(0)
+		r := &io.LimitedReader{R: f, N: info.Size()}
+		err = scanner.scan(r, func(h Hit) error {
+			emit(path, h)
+			return nil
+		})
+		cerr := f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if cerr != nil {
+			return nil, fmt.Errorf("%s: %w", path, cerr)
+		}
+		if r.N != 0 {
+			return nil, fmt.Errorf("%s: %w: short raw read", path, errIncomplete)
 		}
 	}
 	return hits, nil
 }
 
 func scanLogical(scanner *scanner, storageDir, dataName, where string, h header, emit func(string, Hit)) error {
-	pos := uint64(0)
 	scanner.reset(0)
 	for _, m := range h.maps {
-		if m.offset > h.size {
-			return fmt.Errorf("%s mapping starts past logical size", where)
-		}
-		if m.offset > pos {
-			// Holes are synthetic zeroes, not stored secret bytes. Resetting avoids reading GiB
-			// of empty ranges and keeps matches from bridging data through a hole.
-			scanner.reset(int64(m.offset))
-			pos = m.offset
-		}
-		if m.offset < pos {
-			return fmt.Errorf("%s mappings overlap at offset %d", where, m.offset)
-		}
-		end := m.offset + m.length
-		if end > h.size || end < m.offset {
-			return fmt.Errorf("%s mapping at offset %d is past logical size", where, m.offset)
+		if m.length == 0 {
+			continue
 		}
 		if m.build == nilUUID {
-			scanner.reset(int64(end))
-			pos = end
+			scanner.reset(int64(m.offset + m.length))
 			continue
 		}
 		path := filepath.Join(storageDir, m.build, dataName)
@@ -366,7 +364,11 @@ func scanLogical(scanner *scanner, storageDir, dataName, where string, h header,
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		scanner.offset = int64(m.offset)
-		err = scanner.scan(io.NewSectionReader(f, int64(m.storageOffset), int64(m.length)), func(h Hit) error {
+		r := &io.LimitedReader{
+			R: io.NewSectionReader(f, int64(m.storageOffset), int64(m.length)),
+			N: int64(m.length),
+		}
+		err = scanner.scan(r, func(h Hit) error {
 			emit(where, h)
 			return nil
 		})
@@ -377,7 +379,9 @@ func scanLogical(scanner *scanner, storageDir, dataName, where string, h header,
 		if cerr != nil {
 			return fmt.Errorf("%s: %w", path, cerr)
 		}
-		pos = end
+		if r.N != 0 {
+			return fmt.Errorf("%s: %w: short logical read", path, errIncomplete)
+		}
 	}
 	return nil
 }
@@ -387,17 +391,21 @@ func checkRange(f *os.File, offset, length uint64) error {
 	if err != nil {
 		return err
 	}
+	if !info.Mode().IsRegular() {
+		return errors.New("not a regular file")
+	}
 	size := uint64(info.Size())
 	if offset > size || length > size-offset {
-		return fmt.Errorf("mapping reads [%d,%d), but file is %d bytes", offset, offset+length, size)
+		return fmt.Errorf("%w: mapping reads [%d,%d), but file is %d bytes", errIncomplete, offset, offset+length, size)
 	}
 	return nil
 }
 
 type header struct {
-	size uint64
-	maps []mapping
-	refs []string
+	build string
+	size  uint64
+	maps  []mapping
+	refs  []string
 }
 
 type mapping struct {
@@ -421,7 +429,7 @@ func parseHeader(b []byte) (header, error) {
 	if (len(b)-headerMetadataSize)%headerMappingSize != 0 {
 		return header{}, fmt.Errorf("header is %d bytes: its mappings are cut short", len(b))
 	}
-	h := header{size: binary.LittleEndian.Uint64(b[16:24])}
+	h := header{build: uuid(b[32:48]), size: binary.LittleEndian.Uint64(b[16:24])}
 	refs := map[string]bool{}
 	for _, id := range []string{uuid(b[32:48]), uuid(b[48:64])} {
 		if id != nilUUID {
@@ -441,6 +449,23 @@ func parseHeader(b []byte) (header, error) {
 		h.maps = append(h.maps, m)
 	}
 	slices.SortFunc(h.maps, func(a, b mapping) int { return cmp.Compare(a.offset, b.offset) })
+	if h.size > math.MaxInt64 {
+		return header{}, fmt.Errorf("logical size %d exceeds supported file size", h.size)
+	}
+	pos := uint64(0)
+	for _, m := range h.maps {
+		if m.offset != pos {
+			return header{}, fmt.Errorf("logical mappings leave a gap or overlap at %d, want %d", m.offset, pos)
+		}
+		end := m.offset + m.length
+		if end < m.offset || end > h.size {
+			return header{}, fmt.Errorf("logical mapping at %d is past size %d", m.offset, h.size)
+		}
+		pos = end
+	}
+	if pos != h.size {
+		return header{}, fmt.Errorf("logical mappings cover %d bytes, want %d", pos, h.size)
+	}
 	h.refs = slices.Sorted(maps.Keys(refs))
 	return h, nil
 }
@@ -453,7 +478,8 @@ func uuid(b []byte) string {
 var tokenRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 var buildIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// SnapshotBuild returns the latest ready snapshot build for sandboxID.
+// SnapshotBuild selects the newest snapshot build, regardless of its status.
+// WaitBuild must succeed before the selected build can be scanned.
 func SnapshotBuild(ctx context.Context, query Query, sandboxID string) (string, error) {
 	if !tokenRE.MatchString(sandboxID) {
 		return "", fmt.Errorf("bad sandbox ID %q", sandboxID)
@@ -462,13 +488,14 @@ func SnapshotBuild(ctx context.Context, query Query, sandboxID string) (string, 
 FROM snapshots s
 JOIN env_build_assignments a ON a.env_id = s.env_id
 JOIN env_builds b ON b.id = a.build_id
-WHERE s.sandbox_id = '` + sandboxID + `' AND b.status_group = 'ready'
-ORDER BY coalesce(b.finished_at, b.created_at) DESC, a.created_at DESC
+WHERE s.sandbox_id = '` + sandboxID + `'
+ORDER BY b.created_at DESC, a.created_at DESC, b.id DESC
 LIMIT 1`
 	return oneBuild(ctx, query, sql)
 }
 
-// TemplateBuild returns the latest finished build of template name.
+// TemplateBuild selects the newest build of template name, regardless of its status.
+// WaitBuild must succeed before the selected build can be scanned.
 func TemplateBuild(ctx context.Context, query Query, name string) (string, error) {
 	if !tokenRE.MatchString(name) {
 		return "", fmt.Errorf("bad template name %q", name)
@@ -477,8 +504,8 @@ func TemplateBuild(ctx context.Context, query Query, name string) (string, error
 FROM env_aliases al
 JOIN env_build_assignments a ON a.env_id = al.env_id
 JOIN env_builds b ON b.id = a.build_id
-WHERE al.alias = '` + name + `' AND b.status_group = 'ready'
-ORDER BY coalesce(b.finished_at, b.created_at) DESC, a.created_at DESC
+WHERE al.alias = '` + name + `'
+ORDER BY b.created_at DESC, a.created_at DESC, b.id DESC
 LIMIT 1`
 	return oneBuild(ctx, query, sql)
 }
