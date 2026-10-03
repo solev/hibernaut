@@ -22,15 +22,18 @@ The M4 code is built against this section. Code that has to differ updates it in
   runs `sudo -n hibd connect github --source gh --json` on the host, with the token on stdin.
 - `hib connect github --token` reads the token from a hidden prompt, or from stdin when stdin isn't
   a terminal. It never takes the token as an argument, which would land in shell history. An extra
-  argument, or `--token=VALUE`, fails without echoing it. Then it runs
+  argument, or `--token=VALUE` when VALUE isn't a Go boolean literal, fails without echoing it.
+  Then it runs
   `sudo -n hibd connect github --source token --json`.
 - `hibd connect github` checks the token with `GET https://api.github.com/user`, from the host.
   That one call gives the login, ID and name from the body, and the scopes from the
   `X-OAuth-Scopes` header. If the check fails, nothing is stored. Otherwise it stores the secret,
   writes `github.json`, writes the machine setup into running machines, and replies with the
   account. A new token that fits the old placeholder keeps it, as `hib secret add` does.
-- `hib status` runs `sudo -n hibd status --json`. It never wakes the host. If ssh can't reach the
-  host and Azure says its VM isn't running, it says the host is asleep and exits 0.
+- `hib status` first asks Azure for the VM's power state, when Azure is configured. If the VM isn't
+  running, it says the host is asleep with that state and exits 0, without running ssh. Otherwise,
+  or without Azure settings, it runs `sudo -n hibd status --json`. It never wakes the host. An ssh
+  connection failure is an error, without a retry.
 - `hibd connect` and `hibd status` need root, because they read real values. Without root they
   say so before doing anything else.
 

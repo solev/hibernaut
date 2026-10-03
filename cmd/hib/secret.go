@@ -47,7 +47,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, args []string) int {
 	if err := vault.CheckSecret(names[0], *env, sites); err != nil {
 		return a.fail(err)
 	}
-	value, err := a.readSecretValue(names[0])
+	value, err := a.readSecretValue(fmt.Sprintf("Value for %s: ", names[0]))
 	if err != nil {
 		return a.fail(err)
 	}
@@ -110,9 +110,9 @@ func (a *app) log(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-func (a *app) readSecretValue(name string) (string, error) {
+func (a *app) readSecretValue(prompt string) (string, error) {
 	if file, ok := a.stdin.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
-		fmt.Fprintf(a.stderr, "Value for %s: ", name)
+		fmt.Fprint(a.stderr, termsafe.String(prompt))
 		data, err := term.ReadPassword(int(file.Fd()))
 		fmt.Fprintln(a.stderr)
 		if err != nil {

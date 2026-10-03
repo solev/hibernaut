@@ -32,6 +32,8 @@ commands:
   ls                list machines, and when each pauses unless it's busy
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
+  connect github    give machines your GitHub login (--from-gh, or --token on stdin)
+  status            show the host's, E2B's and each secret's health; never wakes the host
   secret add NAME   store a bound secret (-env VAR -bind SITE[,SITE...])
   secret ls         list bound secrets
   secret rm NAME    remove a bound secret
@@ -59,6 +61,7 @@ func main() {
 		stderr:     os.Stderr,
 		getenv:     os.Getenv,
 		ssh:        runCommand("ssh"),
+		gh:         runCommand("gh"),
 		execSSH:    execSSH,
 		az:         runAz,
 		executable: os.Executable,
@@ -77,6 +80,7 @@ type app struct {
 	stdout, stderr io.Writer
 	getenv         func(string) string
 	ssh            runFunc
+	gh             runFunc
 	// execSSH replaces hib with ssh.
 	execSSH    func(args []string) error
 	az         func(ctx context.Context, args ...string) ([]byte, error)
@@ -107,7 +111,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 	case "help":
 		fmt.Fprint(a.stdout, usage)
 		return 0
-	case "init", "new", "ls", "rm", "pause", "exec", "image", "bridge", "secret", "log":
+	case "init", "new", "ls", "rm", "pause", "exec", "image", "bridge", "secret", "log", "connect", "status":
 	default:
 		fmt.Fprintf(a.stderr, "hib: unknown command %q\n\n%s", cmd, usage)
 		return 2
@@ -134,6 +138,10 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.byName(ctx, cfg, "pause", "paused", args)
 	case "secret":
 		return a.secret(ctx, cfg, args)
+	case "connect":
+		return a.connect(ctx, cfg, args)
+	case "status":
+		return a.status(ctx, cfg, args)
 	case "log":
 		return a.log(ctx, cfg, args)
 	case "exec":
