@@ -100,14 +100,18 @@ func e2bServicePorts(t *testing.T, ctx context.Context) []string {
 }
 
 // probe tries each host:port target from machine name, and returns the targets whose far end
-// sent at least one byte within 4 seconds. A probe sends a Postgres SSLRequest and a CRLF, which
-// HTTP, Postgres and Redis servers answer. SSH servers speak first anyway.
+// sent at least one byte within 4 seconds. Port 22 gets an SSH identification, because GitHub's
+// SSH server closes on anything else without a reply. Other ports get a Postgres SSLRequest and a
+// CRLF, which HTTP, Postgres and Redis servers answer.
 func probe(t *testing.T, ctx context.Context, name string, targets []string) map[string]bool {
 	t.Helper()
 	script := `probe() {
 	timeout 4 bash -c '
 		exec 3<>"/dev/tcp/${0%:*}/${0##*:}" || exit 1
-		printf "\000\000\000\010\004\322\026\057\r\n" >&3
+		case "${0##*:}" in
+		22) printf "SSH-2.0-hibernaut-probe\r\n" >&3 ;;
+		*) printf "\000\000\000\010\004\322\026\057\r\n" >&3 ;;
+		esac
 		[ "$(head -c1 <&3 | wc -c)" -gt 0 ]' "$1" 2>/dev/null && echo "answered $1"
 	true
 }
