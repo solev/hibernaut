@@ -132,18 +132,18 @@ revoked or failed, and 0 otherwise, also when the host is asleep.
 
 ## Tasks
 
-- [ ] `hib connect github --from-gh`: reads `gh auth token` on the laptop. `hibd` checks it with
+- [x] `hib connect github --from-gh`: reads `gh auth token` on the laptop. `hibd` checks it with
       `GET /user` on the host, then stores secret `github` (`GH_TOKEN`, bound to `github.com`,
       `api.github.com`, `uploads.github.com`) and your name, ID and login.
-- [ ] Scope check from the `X-OAuth-Scopes` response header. Without `workflow`, warn and suggest
+- [x] Scope check from the `X-OAuth-Scopes` response header. Without `workflow`, warn and suggest
       `gh auth refresh -s workflow`.
-- [ ] `hib connect github --token` for fine-grained tokens: same path, checked with `GET /user`.
+- [x] `hib connect github --token` for fine-grained tokens: same path, checked with `GET /user`.
       The token comes from a hidden prompt or stdin, never an argument.
-- [ ] `dev` image: gh is git's credential helper for GitHub in `/etc/gitconfig`, and
+- [x] `dev` image: gh is git's credential helper for GitHub in `/etc/gitconfig`, and
       `git@github.com:` and `ssh://git@github.com/` are rewritten to `https://github.com/`.
-- [ ] `hibd` writes git `user.name` and the noreply `user.email` into each machine at create, and
+- [x] `hibd` writes git `user.name` and the noreply `user.email` into each machine at create, and
       again after reconnecting.
-- [ ] `hib status`: host, E2B and each secret's health. GitHub is checked with `GET /user`; a 401
+- [x] `hib status`: host, E2B and each secret's health. GitHub is checked with `GET /user`. A 401
       says "revoked: run `hib connect github --from-gh` again".
 - [x] Fixture repo `solev/hibernaut-e2e`: private, with a README and a workflow file.
 
@@ -151,18 +151,18 @@ revoked or failed, and 0 otherwise, also when the host is asleep.
 
 Unit:
 
-- [ ] Scope parsing and warnings; the noreply address format.
+- [x] Scope parsing and warnings, and the noreply address format.
 
 Integration (fake GitHub signed by the test CA):
 
-- [ ] Real `git` clones and pushes through the proxy to a local `git http-backend` posing as
+- [x] Real `git` clones and pushes through the proxy to a local `git http-backend` posing as
       `github.com`. The backend sees the real token, the client only the placeholder.
-- [ ] `gh api user` through the proxy against a fake API.
-- [ ] `hib status` reports a revoked token (the fake answers 401).
+- [x] `gh api user` through the proxy against a fake API.
+- [x] `hib status` reports a revoked token (the fake answers 401).
 
 End-to-end:
 
-- [ ] `TestGitHubFullFlow`, on a fresh machine:
+- [x] `TestGitHubFullFlow`, on a fresh machine:
   - clone `solev/hibernaut-e2e` over HTTPS and again as `git@github.com:…`;
   - commit (author is your noreply address) and push a branch;
   - `gh pr create`, then `gh pr close --delete-branch`;
@@ -173,8 +173,10 @@ End-to-end:
 
 ## Done when
 
-- [ ] `make lint test`, CI and `make e2e` are green.
-- [ ] README: `hib connect github --from-gh`, the `workflow` scope, `hib status`.
+- [x] `make lint test`, CI and `make e2e` are green. CI is parked, so `make lint test`,
+      `make test-host-remote` and a clean `make generate` stand in for it. `make e2e-slow` passed
+      too, with `TestWorkflowPush` skipped until the token has the `workflow` scope.
+- [x] README: `hib connect github --from-gh`, the `workflow` scope, `hib status`.
 
 ## Changes
 

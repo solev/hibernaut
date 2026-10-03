@@ -3,7 +3,8 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**Next: [M4 GitHub](m4-github.md).**
+**In progress: [M4 GitHub](m4-github.md).** Only `TestWorkflowPush` is left: it needs a token with
+the `workflow` scope.
 [M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md),
 [M2 Idle and wake](m2-idle-and-wake.md) and
 [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md) are done.
