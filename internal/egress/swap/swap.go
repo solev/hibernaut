@@ -14,8 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -29,8 +27,9 @@ type Secret struct {
 
 // Swapper swaps placeholders in requests and scrubs real values from responses.
 type Swapper struct {
-	secrets []compiledSecret
-	scrub   []pattern
+	secrets    []compiledSecret
+	scrub      []pattern
+	scrubIndex [256][]pattern
 }
 
 type compiledSecret struct {
@@ -99,6 +98,7 @@ func New(secrets []Secret) (*Swapper, error) {
 		sw.secrets = append(sw.secrets, cs)
 	}
 	sw.scrub = scrubPatterns(sw.secrets)
+	sw.scrubIndex = indexPatterns(sw.scrub)
 	return sw, nil
 }
 
@@ -118,15 +118,6 @@ func compileSite(site string) (siteMatcher, error) {
 		return siteMatcher{}, errors.New("bad wildcard site")
 	}
 	return siteMatcher{name: site}, nil
-}
-
-// Match reports whether host matches site. A wildcard site matches subdomains only.
-func Match(site, host string) bool {
-	m, err := compileSite(site)
-	if err != nil {
-		return false
-	}
-	return m.match(host)
 }
 
 func (m siteMatcher) match(host string) bool {
@@ -177,7 +168,6 @@ func (sw *Swapper) Request(r *http.Request, host string) ([]string, error) {
 			next = replacePlaceholders(next, bound, valueKindRaw, swapped)
 			values[i] = next
 		}
-		r.Header[key] = values
 	}
 	r.URL.RawQuery = swapQuery(r.URL.RawQuery, bound, swapped)
 	if err := sw.swapBody(r, bound, swapped); err != nil {
@@ -366,38 +356,25 @@ func Text(contentType string) bool {
 
 // ScrubHeader replaces real values in h with placeholders.
 func (sw *Swapper) ScrubHeader(h http.Header) {
-	for key, values := range h {
+	for _, values := range h {
 		for i, value := range values {
-			values[i] = string(replaceBytes([]byte(value), sw.scrub))
+			values[i] = string(replaceBytes([]byte(value), sw.scrubIndex))
 		}
-		h[key] = values
 	}
 }
 
 // ScrubBody returns a stream that replaces real values with placeholders.
 func (sw *Swapper) ScrubBody(body io.ReadCloser) io.ReadCloser {
-	pats := slices.Clone(sw.scrub)
-	sort.SliceStable(pats, func(i, j int) bool {
-		if len(pats[i].from) != len(pats[j].from) {
-			return len(pats[i].from) > len(pats[j].from)
-		}
-		return string(pats[i].from) < string(pats[j].from)
-	})
-	first := map[byte][]pattern{}
-	for _, p := range pats {
-		first[p.from[0]] = append(first[p.from[0]], p)
-	}
-	return &scrubReader{src: body, patterns: pats, first: first, buf: make([]byte, 0, 32<<10)}
+	return &scrubReader{src: body, first: sw.scrubIndex, buf: make([]byte, 0, 32<<10), out: make([]byte, 0, 32<<10)}
 }
 
 type scrubReader struct {
-	src      io.ReadCloser
-	patterns []pattern
-	first    map[byte][]pattern
-	buf      []byte
-	out      []byte
-	eof      bool
-	err      error
+	src   io.ReadCloser
+	first [256][]pattern
+	buf   []byte
+	out   []byte
+	eof   bool
+	err   error
 }
 
 func (r *scrubReader) Read(p []byte) (int, error) {
@@ -406,7 +383,11 @@ func (r *scrubReader) Read(p []byte) (int, error) {
 	}
 	if len(r.out) > 0 {
 		n := copy(p, r.out)
-		r.out = r.out[n:]
+		if n == len(r.out) {
+			r.out = r.out[:0]
+		} else {
+			r.out = r.out[n:]
+		}
 		return n, nil
 	}
 	return 0, r.err
@@ -418,11 +399,13 @@ func (r *scrubReader) Close() error {
 
 func (r *scrubReader) fill() {
 	if !r.eof {
-		var tmp [32 << 10]byte
-		n, err := r.src.Read(tmp[:])
-		if n > 0 {
-			r.buf = append(r.buf, tmp[:n]...)
+		if cap(r.buf)-len(r.buf) < 32<<10 {
+			next := make([]byte, len(r.buf), len(r.buf)+(32<<10))
+			copy(next, r.buf)
+			r.buf = next
 		}
+		n, err := r.src.Read(r.buf[len(r.buf):cap(r.buf)])
+		r.buf = r.buf[:len(r.buf)+n]
 		if err != nil {
 			r.eof = true
 			if err != io.EOF {
@@ -430,19 +413,12 @@ func (r *scrubReader) fill() {
 			}
 		}
 	}
-	hold := 0
-	if !r.eof {
-		hold = r.hold()
-	}
-	limit := len(r.buf) - hold
-	if limit > 0 {
-		r.out = append(r.out, r.replace(r.buf[:limit])...)
-		r.buf = append([]byte(nil), r.buf[limit:]...)
-		return
-	}
-	if r.eof && len(r.buf) > 0 {
-		r.out = append(r.out, r.replace(r.buf)...)
-		r.buf = nil
+	r.out = r.out[:0]
+	consumed := 0
+	r.out, consumed = scanScrub(r.out, r.buf, r.eof, r.first)
+	if consumed > 0 {
+		copy(r.buf, r.buf[consumed:])
+		r.buf = r.buf[:len(r.buf)-consumed]
 		return
 	}
 	if r.eof && len(r.buf) == 0 && r.err == nil {
@@ -450,33 +426,21 @@ func (r *scrubReader) fill() {
 	}
 }
 
-func (r *scrubReader) replace(in []byte) []byte {
-	return replaceWithFirst(in, r.first)
+func replaceBytes(in []byte, first [256][]pattern) []byte {
+	out, _ := scanScrub(make([]byte, 0, len(in)), in, true, first)
+	return out
 }
 
-func replaceBytes(in []byte, patterns []pattern) []byte {
-	pats := slices.Clone(patterns)
-	sort.SliceStable(pats, func(i, j int) bool {
-		if len(pats[i].from) != len(pats[j].from) {
-			return len(pats[i].from) > len(pats[j].from)
-		}
-		return string(pats[i].from) < string(pats[j].from)
-	})
-	first := map[byte][]pattern{}
-	for _, p := range pats {
-		first[p.from[0]] = append(first[p.from[0]], p)
-	}
-	return replaceWithFirst(in, first)
-}
-
-func replaceWithFirst(in []byte, first map[byte][]pattern) []byte {
-	out := make([]byte, 0, len(in))
+func scanScrub(out, in []byte, eof bool, first [256][]pattern) ([]byte, int) {
 	for i := 0; i < len(in); {
 		var match pattern
 		for _, p := range first[in[i]] {
 			if len(p.from) > len(match.from) && bytes.HasPrefix(in[i:], p.from) {
 				match = p
 			}
+		}
+		if !eof && possibleLongerMatch(in[i:], len(match.from), first[in[i]]) {
+			return out, i
 		}
 		if match.from != nil {
 			out = append(out, match.to...)
@@ -486,21 +450,16 @@ func replaceWithFirst(in []byte, first map[byte][]pattern) []byte {
 		out = append(out, in[i])
 		i++
 	}
-	return out
+	return out, len(in)
 }
 
-func (r *scrubReader) hold() int {
-	var hold int
-	for _, p := range r.patterns {
-		max := min(len(p.from)-1, len(r.buf))
-		for n := max; n > hold; n-- {
-			if p.from[n-1] == r.buf[len(r.buf)-1] && bytes.HasSuffix(r.buf, p.from[:n]) {
-				hold = n
-				break
-			}
+func possibleLongerMatch(rest []byte, matched int, patterns []pattern) bool {
+	for _, p := range patterns {
+		if len(p.from) > len(rest) && len(p.from) > matched && bytes.HasPrefix(p.from, rest) {
+			return true
 		}
 	}
-	return hold
+	return false
 }
 
 func scrubPatterns(secrets []compiledSecret) []pattern {
@@ -526,11 +485,31 @@ func scrubPatterns(secrets []compiledSecret) []pattern {
 			pats = append(pats, pattern{from: []byte(form), to: to})
 		}
 	}
+	slices.SortStableFunc(pats, func(a, b pattern) int {
+		if len(a.from) != len(b.from) {
+			return len(b.from) - len(a.from)
+		}
+		return bytes.Compare(a.from, b.from)
+	})
 	return pats
 }
 
+func indexPatterns(patterns []pattern) [256][]pattern {
+	var first [256][]pattern
+	for _, p := range patterns {
+		first[p.from[0]] = append(first[p.from[0]], p)
+	}
+	return first
+}
+
 func jsonStringContent(s string) string {
-	q := strconv.Quote(s)
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return ""
+	}
+	q := strings.TrimSuffix(b.String(), "\n")
 	return q[1 : len(q)-1]
 }
 

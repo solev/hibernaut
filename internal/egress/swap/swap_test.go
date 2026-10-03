@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +53,7 @@ func newSwapper(t testHelper, secrets []swap.Secret) *swap.Swapper {
 	return sw
 }
 
-func TestMatch(t *testing.T) {
+func TestBoundMatchesSites(t *testing.T) {
 	for _, tc := range []struct {
 		name, site, host string
 		want             bool
@@ -68,8 +67,14 @@ func TestMatch(t *testing.T) {
 		{name: "wildcard refuses suffix trick", site: "*.github.com", host: "evilgithub.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := swap.Match(tc.site, tc.host); got != tc.want {
-				t.Errorf("Match(%q, %q) = %v, want %v", tc.site, tc.host, got, tc.want)
+			sw := newSwapper(t, []swap.Secret{{
+				Name:        "TOKEN",
+				Placeholder: "placeholder",
+				Value:       "value",
+				Sites:       []string{tc.site},
+			}})
+			if got := sw.Bound(tc.host); got != tc.want {
+				t.Errorf("Bound(%q) with site %q = %v, want %v", tc.host, tc.site, got, tc.want)
 			}
 		})
 	}
@@ -406,6 +411,43 @@ func TestScrubBodyDoesNotDelayWhenThereIsNoPossiblePrefix(t *testing.T) {
 	}
 }
 
+func TestScrubBodyScrubsValueSplitBeforeSuffixThatIsAPrefix(t *testing.T) {
+	value := "gho_" + strings.Repeat("Z", 31) + "g"
+	placeholder := "gho_" + strings.Repeat("h", 32)
+	sw := newSwapper(t, []swap.Secret{{
+		Name:        "gh",
+		Placeholder: placeholder,
+		Value:       value,
+		Sites:       []string{"api.github.com"},
+	}})
+	body := sw.ScrubBody(&chunkReadCloser{chunks: []string{`{"token":"` + value, `"}`}})
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"token":"` + placeholder + `"}`
+	if string(got) != want {
+		t.Fatalf("ScrubBody = %q, want %q", got, want)
+	}
+}
+
+func TestScrubBodyWaitsForLongestMatchAcrossBoundary(t *testing.T) {
+	secrets := []swap.Secret{
+		{Name: "short", Placeholder: "short-placeholder", Value: "token-prefix", Sites: []string{"api.github.com"}},
+		{Name: "long", Placeholder: "long-placeholder", Value: "token-prefix-long", Sites: []string{"api.github.com"}},
+	}
+	sw := newSwapper(t, secrets)
+	body := sw.ScrubBody(&chunkReadCloser{chunks: []string{`{"token":"token-prefix`, `-long"}`}})
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"token":"long-placeholder"}`
+	if string(got) != want {
+		t.Fatalf("ScrubBody = %q, want %q", got, want)
+	}
+}
+
 type oneByteReadCloser struct{ r *strings.Reader }
 
 func (r oneByteReadCloser) Read(p []byte) (int, error) {
@@ -421,6 +463,55 @@ func (r oneByteReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r oneByteReadCloser) Close() error { return nil }
+
+type chunkReadCloser struct {
+	chunks []string
+}
+
+func (r *chunkReadCloser) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.chunks[0])
+	r.chunks[0] = r.chunks[0][n:]
+	if r.chunks[0] == "" {
+		r.chunks = r.chunks[1:]
+	}
+	return n, nil
+}
+
+func (r *chunkReadCloser) Close() error { return nil }
+
+type sizedReadCloser struct {
+	data  string
+	sizes []byte
+	pos   int
+	step  int
+}
+
+func newSizedReadCloser(data string, sizes []byte) *sizedReadCloser {
+	if len(sizes) == 0 {
+		sizes = []byte{1}
+	}
+	return &sizedReadCloser{data: data, sizes: sizes}
+}
+
+func (r *sizedReadCloser) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	size := int(r.sizes[r.step%len(r.sizes)])
+	r.step++
+	if size == 0 {
+		size = 1
+	}
+	size = min(size, len(p), len(r.data)-r.pos)
+	n := copy(p, r.data[r.pos:r.pos+size])
+	r.pos += n
+	return n, nil
+}
+
+func (r *sizedReadCloser) Close() error { return nil }
 
 func TestText(t *testing.T) {
 	for _, ct := range []string{
@@ -467,10 +558,11 @@ func FuzzRequest(f *testing.F) {
 		}
 		after := requestText(req)
 		for _, s := range secrets {
-			if !swap.Match(s.Sites[0], host) && strings.Count(after, s.Value) > strings.Count(before, s.Value) {
+			bound := secretBound(t, s, host)
+			if !bound && strings.Count(after, s.Value) > strings.Count(before, s.Value) {
 				t.Fatalf("unbound value for %s appeared", s.Name)
 			}
-			if swap.Match(s.Sites[0], host) {
+			if bound {
 				if strings.Contains(req.Header.Get("X-Test"), s.Placeholder) {
 					t.Fatalf("bound header placeholder for %s remains", s.Name)
 				}
@@ -494,6 +586,11 @@ func FuzzRequest(f *testing.F) {
 	})
 }
 
+func secretBound(t testHelper, s swap.Secret, host string) bool {
+	t.Helper()
+	return newSwapper(t, []swap.Secret{s}).Bound(host)
+}
+
 func requestText(req *http.Request) string {
 	var b strings.Builder
 	b.WriteString(req.URL.RawQuery)
@@ -511,14 +608,20 @@ func requestText(req *http.Request) string {
 }
 
 func FuzzScrub(f *testing.F) {
-	secrets := testSecrets()
-	f.Add("plain")
-	f.Add("before " + secrets[0].Value + " after")
-	f.Add(url.QueryEscape(secrets[0].Value))
-	f.Fuzz(func(t *testing.T, in string) {
+	secrets := append(testSecrets(),
+		swap.Secret{Name: "BOUNDARY", Placeholder: "boundary-placeholder", Value: "gho_" + strings.Repeat("Z", 31) + "g", Sites: []string{"api.github.com"}},
+		swap.Secret{Name: "PREFIX_SHORT", Placeholder: "short-placeholder", Value: "token-prefix", Sites: []string{"api.github.com"}},
+		swap.Secret{Name: "PREFIX_LONG", Placeholder: "long-placeholder", Value: "token-prefix-long", Sites: []string{"api.github.com"}},
+	)
+	f.Add("plain", []byte{1})
+	f.Add("before "+secrets[0].Value+" after", []byte{1, 2, 3})
+	f.Add(url.QueryEscape(secrets[0].Value), []byte{4, 1})
+	f.Add(`{"token":"`+secrets[3].Value+`"}`, []byte{byte(len(`{"token":"` + secrets[3].Value))})
+	f.Add(`{"token":"token-prefix-long"}`, []byte{byte(len(`{"token":"token-prefix`))})
+	f.Fuzz(func(t *testing.T, in string, sizes []byte) {
 		sw := newSwapper(t, secrets)
 		want := referenceScrub(in, secrets)
-		got, err := io.ReadAll(sw.ScrubBody(oneByteReadCloser{r: strings.NewReader(in)}))
+		got, err := io.ReadAll(sw.ScrubBody(newSizedReadCloser(in, sizes)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -551,7 +654,7 @@ func referenceScrub(in string, secrets []swap.Secret) string {
 		quoted, _ := json.Marshal(s.Value)
 		for _, form := range []string{
 			s.Value,
-			strconvQuoteContent(s.Value),
+			jsonContentNoHTML(s.Value),
 			strings.Trim(string(quoted), `"`),
 			url.QueryEscape(s.Value),
 		} {
@@ -580,8 +683,14 @@ func referenceScrub(in string, secrets []swap.Secret) string {
 	return out.String()
 }
 
-func strconvQuoteContent(s string) string {
-	quoted := strconv.Quote(s)
+func jsonContentNoHTML(s string) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return ""
+	}
+	quoted := strings.TrimSuffix(b.String(), "\n")
 	return quoted[1 : len(quoted)-1]
 }
 
