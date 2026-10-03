@@ -62,8 +62,8 @@ The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested h
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
 order, so a value that spans blocks from different builds is still found. It also scans every file
 of the build, and of the builds its headers reference, as raw bytes, which covers `snapfile` and
-blocks that a later pause replaced. It refuses headers newer than version 3, which E2B compresses. It
-reports the secret's name, the encoding, the file and the offset, never the value. Known limit:
+blocks that a later pause replaced. It refuses headers newer than version 3, which E2B compresses.
+It reports the secret's name, the encoding, the file and the offset, never the value. Known limit:
 memory is scanned in guest-physical order, so a value split across two guest pages that are not
 adjacent physically can be missed. The canary checks the common case.
 
