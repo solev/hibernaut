@@ -44,7 +44,6 @@ systemctl enable -q --now idle-deallocate.timer hibernaut-nightly.timer
 systemctl enable -q hibd.service hibd-proxy.service hibd-pause-all.service
 # Restarting the daemon picks up a new hibd; stopping it leaves machines alone.
 systemctl restart hibd.service
-# Restarting the proxy only drops open proxied connections.
 systemctl restart hibd-proxy.service
 # Starting the guard would start E2B through Requires=, so only start it next to a running
 # orchestrator. Never restart it: stopping it pauses every machine.
