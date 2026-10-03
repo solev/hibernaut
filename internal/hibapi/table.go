@@ -25,3 +25,57 @@ func PrintSecrets(w io.Writer, secrets []Secret) {
 	}
 	tw.Flush()
 }
+
+// PrintStatus writes the host's health for people, terminal-safe, one line per field. host is
+// what the first line calls the host. "" leaves that line out.
+func PrintStatus(w io.Writer, host string, s Status) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	if host != "" {
+		fmt.Fprintf(tw, "host\t%s\n", oneLine(host))
+	}
+	fmt.Fprintf(tw, "hibd\t%s\n", oneLine(s.Version))
+	switch {
+	case s.E2B.OK:
+		fmt.Fprintln(tw, "E2B\tok")
+	case s.E2B.Detail == "":
+		fmt.Fprintln(tw, "E2B\tdown")
+	default:
+		fmt.Fprintf(tw, "E2B\tdown: %s\n", oneLine(s.E2B.Detail))
+	}
+	if g := s.GitHub; g != nil {
+		who := oneLine(g.Login)
+		if g.Name != "" && g.Name != g.Login {
+			who += " (" + oneLine(g.Name) + ")"
+		}
+		fmt.Fprintf(tw, "GitHub\t%s, commits as %s\n", who, oneLine(g.Email))
+		if warning := g.ScopeWarning(); warning != "" {
+			fmt.Fprintf(tw, "\twarning: %s\n", warning)
+		}
+	} else {
+		fmt.Fprintln(tw, "GitHub\tnot connected: run hib connect github --from-gh")
+	}
+	if len(s.Secrets) == 0 {
+		fmt.Fprintln(tw, "secrets\tnone")
+		tw.Flush()
+		return
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+	tw = tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SECRET\tSITES\tSTATE\tDETAIL")
+	for _, sec := range s.Secrets {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", oneLine(sec.Name), oneLine(strings.Join(sec.Sites, ",")),
+			oneLine(string(sec.State)), oneLine(sec.Detail))
+	}
+	tw.Flush()
+}
+
+// oneLine makes s safe for a terminal and one table cell: escapes as termsafe.String writes
+// them, runs of white space as one space, and "-" if nothing is left.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(termsafe.String(s)), " ")
+	if s == "" {
+		return "-"
+	}
+	return s
+}

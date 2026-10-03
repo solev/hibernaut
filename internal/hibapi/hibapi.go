@@ -106,6 +106,10 @@ type Response struct {
 	Version string `json:"version,omitempty"`
 	// LeakScan is the result of a leak scan.
 	LeakScan *LeakScan `json:"leakScan,omitempty"`
+	// GitHub is the account connect github stored.
+	GitHub *GitHub `json:"github,omitempty"`
+	// Status is the host's health, from status.
+	Status *Status `json:"status,omitempty"`
 }
 
 // LeakScan is a leak scan result. It never carries secret values.
