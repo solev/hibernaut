@@ -40,6 +40,16 @@ func (p Profile) Email() string {
 	return Noreply(p.ID, p.Login)
 }
 
+// Account is the account as hib shows it. Its scopes come from u, GitHub's answer for the token,
+// unless u is nil.
+func (p Profile) Account(u *User) hibapi.GitHub {
+	g := hibapi.GitHub{Login: p.Login, ID: p.ID, Name: p.Name, Email: p.Email(), Source: p.Source}
+	if u != nil {
+		g.Scopes, g.ScopesKnown = u.Scopes, u.ScopesKnown
+	}
+	return g
+}
+
 func (p Profile) check() error {
 	if err := CheckLogin(p.Login); err != nil {
 		return err

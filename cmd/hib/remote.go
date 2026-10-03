@@ -103,7 +103,7 @@ func runAz(ctx context.Context, args ...string) ([]byte, error) {
 // hibd's messages go to stderr, made safe for a terminal. If ssh can't reach the host and it's
 // an Azure VM that isn't running, remote starts it, waits for it and tries again.
 func (a *app) remote(ctx context.Context, cfg *config, timeout time.Duration, args ...string) (hibapi.Response, error) {
-	return a.call(ctx, cfg, timeout, cfg.sshArgs(args...), nil, false, true)
+	return a.call(ctx, cfg, timeout, cfg.sshArgs(args...), callOptions{mayWake: true})
 }
 
 func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration, stdin []byte, args ...string) (hibapi.Response, error) {
@@ -111,21 +111,31 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 	if err != nil {
 		return hibapi.Response{}, err
 	}
-	return a.call(ctx, cfg, timeout, sshArgs, stdin, true, true)
+	return a.call(ctx, cfg, timeout, sshArgs, callOptions{stdin: stdin, sudo: true, mayWake: true})
 }
 
-func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, stdin []byte, sudo, mayWake bool) (hibapi.Response, error) {
+// callOptions is how call runs hibd.
+type callOptions struct {
+	// stdin is hibd's input, if not nil.
+	stdin []byte
+	// sudo means sshArgs run hibd through sudo -n, so a failure with no output is sudo's.
+	sudo bool
+	// mayWake lets call start an Azure VM that isn't running, then try again.
+	mayWake bool
+}
+
+func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, opts callOptions) (hibapi.Response, error) {
 	for woke := false; ; woke = true {
 		var out bytes.Buffer
 		var in io.Reader
-		if stdin != nil {
-			in = bytes.NewReader(stdin)
+		if opts.stdin != nil {
+			in = bytes.NewReader(opts.stdin)
 		}
 		code, err := a.runSSH(ctx, timeout, sshArgs, in, &out)
 		if err != nil {
 			return hibapi.Response{}, err
 		}
-		if code == 255 && !woke && mayWake {
+		if code == 255 && !woke && opts.mayWake {
 			err := a.wake(ctx, cfg)
 			if err == nil {
 				continue
@@ -137,7 +147,7 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 		if code != 0 && code != 1 {
 			return hibapi.Response{}, exitError(cfg, code)
 		}
-		if sudo && code != 0 && out.Len() == 0 {
+		if opts.sudo && code != 0 && out.Len() == 0 {
 			return hibapi.Response{}, errors.New("hibd needs passwordless sudo on the host")
 		}
 		return hibapi.DecodeResponse(out.Bytes())

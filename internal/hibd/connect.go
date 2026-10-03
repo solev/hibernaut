@@ -98,8 +98,7 @@ func (a *App) storeGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 		return hibapi.GitHub{}, err
 	}
 	a.pushSetup(ctx, cfg, "GitHub connected")
-	return hibapi.GitHub{Login: p.Login, ID: p.ID, Name: p.Name, Email: p.Email(), Source: p.Source,
-		Scopes: user.Scopes, ScopesKnown: user.ScopesKnown}, nil
+	return p.Account(&user), nil
 }
 
 // checkGHTokenFree fails if a secret other than github sets GH_TOKEN in machines.
@@ -115,20 +114,13 @@ func checkGHTokenFree(f *vault.File) error {
 
 // refusedToken says GitHub refused a token from source, and how to get one that works.
 func refusedToken(source string) error {
+	reconnect := hibapi.GitHub{Source: source}.Reconnect()
 	if source == hibapi.GitHubFromToken {
-		return fmt.Errorf("%w. Nothing was stored. Make a new token on github.com, then run hib connect github --token again",
-			github.ErrUnauthorized)
+		return fmt.Errorf("%w. Nothing was stored. Make a new token on github.com, then run %s again",
+			github.ErrUnauthorized, reconnect)
 	}
-	return fmt.Errorf("%w. Nothing was stored. To fix it, run gh auth login -h github.com, then hib connect github --from-gh",
-		github.ErrUnauthorized)
-}
-
-// needRoot fails unless hibd runs as root, saying how to run command.
-func (a *App) needRoot(command string) error {
-	if a.euid() != 0 {
-		return fmt.Errorf("it reads real secret values, so run it as root: sudo hibd %s", command)
-	}
-	return nil
+	return fmt.Errorf("%w. Nothing was stored. To fix it, run gh auth login -h github.com, then %s",
+		github.ErrUnauthorized, reconnect)
 }
 
 func (a *App) githubAPI() string {

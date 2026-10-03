@@ -79,7 +79,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 			fmt.Fprintln(a.Stderr, leakscanUsage)
 			return 2
 		}
-		if err := a.wantRoot("leakscan"); err != nil {
+		if err := a.needRoot("leakscan"); err != nil {
 			return a.fail(*asJSON, "leakscan", err)
 		}
 		return a.leakscanCanary(ctx, *asJSON)
@@ -98,7 +98,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 	} else {
 		target = machineScanTarget{name: rest[0]}
 	}
-	if err := a.wantRoot("leakscan"); err != nil {
+	if err := a.needRoot("leakscan"); err != nil {
 		return a.fail(*asJSON, "leakscan", err)
 	}
 	cfg, err := loadConfig(a.Getenv)
@@ -323,9 +323,10 @@ func findLeakscanMachine(ctx context.Context, e engine.Engine, name string) (eng
 	}
 }
 
-func (a *App) wantRoot(command string) error {
+// needRoot fails unless hibd runs as root, saying how to run command.
+func (a *App) needRoot(command string) error {
 	if a.euid() != 0 {
-		return fmt.Errorf("%s must run as root. Use sudo hibd %s", command, command)
+		return fmt.Errorf("run it as root: sudo hibd %s", command)
 	}
 	return nil
 }

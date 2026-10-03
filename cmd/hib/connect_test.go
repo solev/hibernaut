@@ -48,7 +48,7 @@ func TestConnectGitHubFromGH(t *testing.T) {
 	if code != 0 || ghCalls != 1 || sshCalls != 1 {
 		t.Fatalf("exit %d, gh calls %d, ssh calls %d", code, ghCalls, sshCalls)
 	}
-	want := "connected GitHub as octocat; machines commit as 1+octocat@users.noreply.github.com\n"
+	want := "connected GitHub as octocat. Machines commit as 1+octocat@users.noreply.github.com\n"
 	if c.out.String() != want || c.errOut.String() != "\\x1b[31mgh diagnostic\\x1b[0m\n" {
 		t.Error("connect didn't print the account and terminal-safe gh diagnostic")
 	}
@@ -79,7 +79,7 @@ func TestConnectGitHubFromStdin(t *testing.T) {
 	if code != 0 || !received {
 		t.Fatalf("connect exit %d, expected the token only on ssh stdin", code)
 	}
-	want := "connected GitHub as octocat (The Octocat); machines commit as 1+octocat@users.noreply.github.com\n"
+	want := "connected GitHub as octocat (The Octocat). Machines commit as 1+octocat@users.noreply.github.com\n"
 	if c.out.String() != want || c.errOut.Len() != 0 {
 		t.Error("connect didn't print the connected account")
 	}
@@ -330,7 +330,7 @@ func TestConnectGitHubAccountIsTerminalSafe(t *testing.T) {
 	}
 	code := c.hib("connect", "github", "--token")
 	assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
-	want := "connected GitHub as octocat\\x1b (The Octocat\\x07); machines commit as 1+octocat@users.noreply.github.com\\x1b\n"
+	want := "connected GitHub as octocat\\x1b (The Octocat\\x07). Machines commit as 1+octocat@users.noreply.github.com\\x1b\n"
 	if code != 0 || c.out.String() != want {
 		t.Errorf("exit %d, account fields weren't terminal-safe", code)
 	}

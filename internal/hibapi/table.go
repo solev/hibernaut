@@ -43,11 +43,7 @@ func PrintStatus(w io.Writer, host string, s Status) {
 		fmt.Fprintf(tw, "E2B\tdown: %s\n", oneLine(s.E2B.Detail))
 	}
 	if g := s.GitHub; g != nil {
-		who := oneLine(g.Login)
-		if g.Name != "" && g.Name != g.Login {
-			who += " (" + oneLine(g.Name) + ")"
-		}
-		fmt.Fprintf(tw, "GitHub\t%s, commits as %s\n", who, oneLine(g.Email))
+		fmt.Fprintf(tw, "GitHub\t%s, commits as %s\n", oneLine(g.Who()), oneLine(g.Email))
 		if warning := g.ScopeWarning(); warning != "" {
 			fmt.Fprintf(tw, "\twarning: %s\n", warning)
 		}

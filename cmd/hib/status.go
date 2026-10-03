@@ -35,7 +35,7 @@ func (a *app) status(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	r, err := a.call(ctx, cfg, shortTimeout, sshArgs, nil, true, false)
+	r, err := a.call(ctx, cfg, shortTimeout, sshArgs, callOptions{sudo: true})
 	if err != nil {
 		return a.fail(err)
 	}

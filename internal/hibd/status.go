@@ -69,11 +69,8 @@ func (a *App) hostStatus(ctx context.Context, cfg config) (hibapi.Status, error)
 
 	s := hibapi.Status{Version: version.Version, E2B: e2b, Secrets: health}
 	if profile != nil && slices.ContainsFunc(secrets, func(r vault.Revealed) bool { return r.Name == github.SecretName }) {
-		s.GitHub = &hibapi.GitHub{Login: profile.Login, ID: profile.ID, Name: profile.Name, Email: profile.Email(),
-			Source: profile.Source}
-		if githubUser != nil {
-			s.GitHub.Scopes, s.GitHub.ScopesKnown = githubUser.Scopes, githubUser.ScopesKnown
-		}
+		g := profile.Account(githubUser)
+		s.GitHub = &g
 	}
 	return s, nil
 }

@@ -69,6 +69,18 @@ func TestReconnect(t *testing.T) {
 	}
 }
 
+func TestWho(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"The Octocat", "octocat (The Octocat)"},
+		{"octocat", "octocat"},
+		{"", "octocat"},
+	} {
+		if got := (hibapi.GitHub{Login: "octocat", Name: tc.name}).Who(); got != tc.want {
+			t.Errorf("Who() with name %q = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestStatusOK(t *testing.T) {
 	up := hibapi.Health{OK: true}
 	for _, tc := range []struct {

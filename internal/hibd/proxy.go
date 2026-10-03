@@ -24,7 +24,7 @@ func (a *App) ca(args []string) int {
 		fmt.Fprintln(a.Stderr, "usage: hibd ca init")
 		return 2
 	}
-	if err := a.wantRoot("ca init"); err != nil {
+	if err := a.needRoot("ca init"); err != nil {
 		return a.fail(false, "ca init", err)
 	}
 	cfg, err := loadSettings(a.Getenv)
@@ -49,7 +49,7 @@ func (a *App) proxy(ctx context.Context, args []string) int {
 	if _, ok := a.parse(fl, args, 0, "proxy [-unhook]"); !ok {
 		return 2
 	}
-	if err := a.wantRoot("proxy"); err != nil {
+	if err := a.needRoot("proxy"); err != nil {
 		return a.fail(false, "proxy", err)
 	}
 	if *unhook {

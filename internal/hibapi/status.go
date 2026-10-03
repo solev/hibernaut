@@ -38,6 +38,14 @@ func (g GitHub) Reconnect() string {
 	return "hib connect github --from-gh"
 }
 
+// Who is the login, then the name in parentheses when it differs.
+func (g GitHub) Who() string {
+	if g.Name == "" || g.Name == g.Login {
+		return g.Login
+	}
+	return g.Login + " (" + g.Name + ")"
+}
+
 // ScopeWarning says what machines can't do because the token lacks the repo or workflow scope,
 // and how to fix it. It's "" if the token has both, or if its scopes aren't known.
 func (g GitHub) ScopeWarning() string {

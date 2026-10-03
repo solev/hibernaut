@@ -3,6 +3,7 @@ package github_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -53,6 +54,20 @@ func TestLoadProfileMissingMeansNotConnected(t *testing.T) {
 	p, err := github.LoadProfile(filepath.Join(t.TempDir(), "github.json"))
 	if p != nil || err != nil {
 		t.Fatalf("LoadProfile = %+v, %v, want nil, nil", p, err)
+	}
+}
+
+func TestProfileAccount(t *testing.T) {
+	p := github.Profile{Login: "octocat", ID: 583231, Name: "The Octocat", Source: hibapi.GitHubFromToken}
+	want := hibapi.GitHub{Login: "octocat", ID: 583231, Name: "The Octocat",
+		Email: "583231+octocat@users.noreply.github.com", Source: hibapi.GitHubFromToken}
+	if got := p.Account(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("Account(nil) = %+v, want %+v", got, want)
+	}
+	user := &github.User{Login: "octocat", ID: 583231, Scopes: []string{"repo"}, ScopesKnown: true}
+	want.Scopes, want.ScopesKnown = []string{"repo"}, true
+	if got := p.Account(user); !reflect.DeepEqual(got, want) {
+		t.Errorf("Account(user) = %+v, want %+v", got, want)
 	}
 }
 

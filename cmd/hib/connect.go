@@ -66,11 +66,7 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 		return a.fail(errors.New("hibd didn't say which account it connected"))
 	}
 	g := r.GitHub
-	who := termsafe.String(g.Login)
-	if g.Name != "" && g.Name != g.Login {
-		who += " (" + termsafe.String(g.Name) + ")"
-	}
-	fmt.Fprintf(a.stdout, "connected GitHub as %s; machines commit as %s\n", who, termsafe.String(g.Email))
+	fmt.Fprintf(a.stdout, "connected GitHub as %s. Machines commit as %s\n", termsafe.String(g.Who()), termsafe.String(g.Email))
 	if warning := g.ScopeWarning(); warning != "" {
 		fmt.Fprintf(a.stderr, "hib: warning: %s\n", termsafe.String(warning))
 	}
@@ -80,7 +76,7 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 func (a *app) readGitHubToken(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, shortTimeout)
 	defer cancel()
-	var out, diagnostics tokenOutput
+	var out, diagnostics cappedBuffer
 	stderr := termsafe.NewWriter(a.stderr)
 	defer stderr.Flush()
 	code, err := a.gh(ctx, []string{"auth", "token", "--hostname", "github.com"}, nil, &out, &diagnostics)
@@ -89,7 +85,7 @@ func (a *app) readGitHubToken(ctx context.Context) (string, error) {
 	redacted.Write(diagnostics.buffer.Bytes())
 	redacted.Flush()
 	if diagnostics.overflow {
-		fmt.Fprintln(a.stderr, "hib: gh diagnostics were truncated after 64 KiB")
+		fmt.Fprintf(a.stderr, "hib: gh diagnostics were truncated after %d KiB\n", maxGHOutput>>10)
 	}
 	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		return "", errors.New("install gh and run gh auth login -h github.com, or use hib connect github --token")
@@ -98,20 +94,24 @@ func (a *app) readGitHubToken(ctx context.Context) (string, error) {
 		return "", errors.New("couldn't read the token from gh: run gh auth login -h github.com first, or use --token")
 	}
 	if out.overflow {
-		return "", errors.New("gh returned more than 64 KiB: run gh auth login -h github.com first")
+		return "", fmt.Errorf("gh returned more than %d KiB: run gh auth login -h github.com first", maxGHOutput>>10)
 	}
 	return value, valueErr
 }
 
-// tokenOutput drains gh's output while keeping at most 64 KiB and a trailing CRLF.
-type tokenOutput struct {
+// maxGHOutput is how much of gh's output, and of its diagnostics, hib keeps.
+const maxGHOutput = 64 << 10
+
+// cappedBuffer keeps the first maxGHOutput bytes written to it, plus room for a trailing CRLF,
+// and drains the rest.
+type cappedBuffer struct {
 	buffer   bytes.Buffer
 	overflow bool
 }
 
-func (w *tokenOutput) Write(p []byte) (int, error) {
+func (w *cappedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
-	left := (64 << 10) + 2 - w.buffer.Len()
+	left := maxGHOutput + 2 - w.buffer.Len()
 	if n > left {
 		w.overflow = true
 		p = p[:left]
