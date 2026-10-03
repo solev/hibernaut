@@ -164,30 +164,21 @@ func readFile(path string) ([]Entry, int, error) {
 	reader := bufio.NewReader(file)
 	for {
 		line, readErr := reader.ReadBytes('\n')
-		if errors.Is(readErr, io.EOF) && len(line) == 0 {
-			break
-		}
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return nil, 0, readErr
-		}
-		if len(line) > maxAuditLineBytes {
-			corrupt++
-			if errors.Is(readErr, io.EOF) {
-				break
+		if len(line) > 0 {
+			var e Entry
+			if len(line) > maxAuditLineBytes {
+				corrupt++
+			} else if err := json.Unmarshal(line, &e); err != nil {
+				corrupt++
+			} else {
+				entries = append(entries, e)
 			}
-			continue
 		}
-		var e Entry
-		if err := json.Unmarshal(line, &e); err != nil {
-			corrupt++
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
-			continue
-		}
-		entries = append(entries, e)
 		if errors.Is(readErr, io.EOF) {
 			break
+		}
+		if readErr != nil {
+			return nil, 0, readErr
 		}
 	}
 	return entries, corrupt, nil
@@ -199,12 +190,12 @@ func cleanEntry(e Entry) Entry {
 	e.Site = cleanString(e.Site, maxSiteBytes)
 	e.Method = cleanString(e.Method, maxMethodBytes)
 	e.Path = cleanString(stripQuery(e.Path), maxPathBytes)
-	if len(e.Secrets) > maxSecrets {
-		e.Secrets = e.Secrets[:maxSecrets]
+	limit := min(len(e.Secrets), maxSecrets)
+	secrets := make([]string, limit)
+	for i := range limit {
+		secrets[i] = cleanString(e.Secrets[i], maxSecretBytes)
 	}
-	for i := range e.Secrets {
-		e.Secrets[i] = cleanString(e.Secrets[i], maxSecretBytes)
-	}
+	e.Secrets = secrets
 	return e
 }
 

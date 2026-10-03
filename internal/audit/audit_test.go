@@ -142,6 +142,7 @@ func TestWriteCleansUntrustedFields(t *testing.T) {
 	for i := range secrets {
 		secrets[i] = strings.Repeat("s", 70) + "\x00\xff"
 	}
+	originalSecrets := append([]string(nil), secrets...)
 	if err := log.Write(audit.Entry{
 		Time:      time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC),
 		Machine:   "web\x1b\xff" + strings.Repeat("m", 70),
@@ -155,6 +156,9 @@ func TestWriteCleansUntrustedFields(t *testing.T) {
 	}
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(secrets, originalSecrets) {
+		t.Fatalf("Write mutated caller secrets: got %#v, want %#v", secrets, originalSecrets)
 	}
 
 	got, err := audit.Read(path, 0)
