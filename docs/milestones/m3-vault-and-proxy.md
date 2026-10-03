@@ -118,7 +118,7 @@ offset, never the value.
 Unit and fuzz:
 
 - [x] Placeholder shapes (`gho_`, `github_pat_`, `sk-`, JWTs, …).
-- [ ] Swap in every location; a real value never goes to an unbound site (fuzzed); responses
+- [x] Swap in every location; a real value never goes to an unbound site (fuzzed); responses
       scrubbed.
 - [x] Vault round-trip; the vault file never contains a plaintext value.
 - [x] `/etc/environment` block: idempotent, leaves the rest of the file alone.
