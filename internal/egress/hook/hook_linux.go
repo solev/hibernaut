@@ -78,7 +78,10 @@ func (r Rule) Keep(ctx context.Context, every time.Duration, logf func(string, .
 				if ctx.Err() != nil {
 					return nil
 				}
-				return err
+				if logf != nil {
+					logf("Ensure failed: %v", err)
+				}
+				continue
 			}
 			if changed && logf != nil {
 				logf("re-added hibernaut iptables hook")

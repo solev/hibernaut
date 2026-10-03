@@ -29,7 +29,7 @@ func parseRules(output string) (parsedRules, error) {
 		if line == "" || !strings.HasPrefix(line, "-A PREROUTING ") {
 			continue
 		}
-		if !strings.Contains(line, "--comment") || !strings.Contains(line, "hibernaut") {
+		if !hasHibernautComment(strings.Fields(line)) {
 			ruleIndex++
 			continue
 		}
@@ -45,6 +45,15 @@ func parseRules(output string) (parsedRules, error) {
 		ruleIndex++
 	}
 	return parsed, nil
+}
+
+func hasHibernautComment(fields []string) bool {
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "--comment" && fields[i+1] == "hibernaut" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseHibernautRule(line string) (parsedRule, error) {

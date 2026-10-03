@@ -153,9 +153,7 @@ func newNetnsHost(t *testing.T) *netnsHost {
 
 	host.must(t, "ip", "netns", "add", host.hostNS)
 	host.must(t, "ip", "netns", "add", host.machineNS)
-	host.must(t, "ip", "link", "add", "veth-99", "type", "veth", "peer", "name", "vm-99")
-	host.must(t, "ip", "link", "set", "veth-99", "netns", host.hostNS)
-	host.must(t, "ip", "link", "set", "vm-99", "netns", host.machineNS)
+	host.must(t, "ip", "-n", host.hostNS, "link", "add", "veth-99", "type", "veth", "peer", "name", "vm-99", "netns", host.machineNS)
 	host.must(t, "ip", "netns", "exec", host.hostNS, "ip", "addr", "add", "10.250.0.1/30", "dev", "veth-99")
 	host.must(t, "ip", "netns", "exec", host.hostNS, "ip", "link", "set", "veth-99", "up")
 	host.must(t, "ip", "netns", "exec", host.hostNS, "ip", "link", "set", "lo", "up")
