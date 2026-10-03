@@ -31,7 +31,7 @@ func (a *App) log(args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "log", err)
 	}
-	if result.Corrupt > 0 {
+	if result.Corrupt > 0 && !*asJSON {
 		fmt.Fprintf(a.Stderr, "warning: skipped %d corrupt audit log line(s)\n", result.Corrupt)
 	}
 	entries := apiLogEntries(result.Entries)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -48,7 +49,7 @@ func WriteBlock(ctx context.Context, e engine.Engine, id string, block []byte) e
 		if err == nil {
 			return nil
 		}
-		if !isCASMismatch(err) {
+		if !errors.Is(err, errCASMismatch) {
 			return err
 		}
 		last = err
@@ -86,11 +87,7 @@ func compareAndSwapEnvironment(ctx context.Context, e engine.Engine, id string, 
 	return fmt.Errorf("writing %s exited %d: %q", environmentPath, res.ExitCode, tail(res.Stderr, 1024))
 }
 
-var errCASMismatch = fmt.Errorf("current %s changed", environmentPath)
-
-func isCASMismatch(err error) bool {
-	return err == errCASMismatch
-}
+var errCASMismatch = errors.New("current /etc/environment changed")
 
 const casScript = `set -eu
 file=/etc/environment

@@ -43,7 +43,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, args []string) int {
 	if !ok {
 		return 2
 	}
-	sites := splitSites(*bind)
+	sites := vault.SplitSites(*bind)
 	if err := vault.CheckSecret(names[0], *env, sites); err != nil {
 		return a.fail(err)
 	}
@@ -51,7 +51,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, strings.NewReader(value), "secret", "add", names[0], "--env", *env, "--bind", strings.Join(sites, ","), "--json")
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, []byte(value), "secret", "add", names[0], "--env", *env, "--bind", strings.Join(sites, ","), "--json")
 	if err != nil {
 		return a.fail(err)
 	}
@@ -79,7 +79,7 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 	if !ok {
 		return 2
 	}
-	if err := vault.CheckName(names[0]); err != nil {
+	if err := hibapi.CheckName(names[0]); err != nil {
 		return a.fail(err)
 	}
 	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, nil, "secret", "rm", names[0], "--json"); err != nil {
@@ -118,45 +118,9 @@ func (a *app) readSecretValue(name string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return cleanSecretValue(data)
+		return vault.ReadValue(bytes.NewReader(data))
 	}
-	data, err := io.ReadAll(io.LimitReader(a.stdin, vault.MaxValue+1))
-	if err != nil {
-		return "", err
-	}
-	return cleanSecretValue(data)
-}
-
-func cleanSecretValue(data []byte) (string, error) {
-	if len(data) > vault.MaxValue {
-		return "", fmt.Errorf("secret value is bigger than 64 KiB")
-	}
-	data = trimOneNewline(data)
-	if len(data) == 0 {
-		return "", errors.New("secret value is empty")
-	}
-	return string(data), nil
-}
-
-func trimOneNewline(data []byte) []byte {
-	if len(data) >= 2 && bytes.Equal(data[len(data)-2:], []byte("\r\n")) {
-		return data[:len(data)-2]
-	}
-	if len(data) > 0 && data[len(data)-1] == '\n' {
-		return data[:len(data)-1]
-	}
-	return data
-}
-
-func splitSites(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
+	return vault.ReadValue(a.stdin)
 }
 
 func printSecrets(w io.Writer, secrets []hibapi.Secret) {

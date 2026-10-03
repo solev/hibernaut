@@ -27,8 +27,7 @@ const (
 	fileVersion = 1
 	keySize     = 32
 	nonceSize   = 12
-	// MaxValue is the largest real secret value accepted by the vault and CLIs.
-	MaxValue = 64 << 10
+	maxValue    = 64 << 10
 )
 
 // ErrNotFound is wrapped when removing a secret that does not exist.
@@ -63,26 +62,49 @@ type diskFile struct {
 	Secrets []entry `json:"secrets"`
 }
 
-// CheckName reports whether name is a valid secret name.
-func CheckName(name string) error {
-	return hibapi.CheckName(name)
-}
-
-// CheckEnv reports whether env is a safe environment variable for a secret.
-func CheckEnv(env string) error {
-	s := Secret{Name: "check", Env: env, Sites: []string{"example.com"}}
-	return normalizeSecret(&s)
-}
-
-// CheckSite reports whether site is a safe bound site. Wildcards may appear only as "*.".
-func CheckSite(site string) error {
-	return checkSite(strings.ToLower(site))
-}
-
 // CheckSecret reports whether name, env and sites form valid public secret metadata.
 func CheckSecret(name, env string, sites []string) error {
 	s := Secret{Name: name, Env: env, Sites: slices.Clone(sites)}
 	return normalizeSecret(&s)
+}
+
+// ReadValue reads one secret value, trims one trailing newline or CRLF, and enforces the
+// vault's size and non-empty rules.
+func ReadValue(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxValue+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxValue {
+		return "", fmt.Errorf("secret value is bigger than 64 KiB")
+	}
+	data = trimOneNewline(data)
+	if len(data) == 0 {
+		return "", errors.New("secret value is empty")
+	}
+	return string(data), nil
+}
+
+// SplitSites splits a comma-separated site list and trims each site.
+func SplitSites(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+func trimOneNewline(data []byte) []byte {
+	if len(data) >= 2 && data[len(data)-2] == '\r' && data[len(data)-1] == '\n' {
+		return data[:len(data)-2]
+	}
+	if len(data) >= 1 && data[len(data)-1] == '\n' {
+		return data[:len(data)-1]
+	}
+	return data
 }
 
 // Key is the AES-256-GCM vault key. It does not print or marshal its bytes.
@@ -574,7 +596,7 @@ func checkSite(site string) error {
 }
 
 func validateValue(value string) error {
-	if len(value) == 0 || len(value) > MaxValue {
+	if len(value) == 0 || len(value) > maxValue {
 		return fmt.Errorf("secret value must be 1 byte to 64 KiB")
 	}
 	for _, c := range []byte(value) {

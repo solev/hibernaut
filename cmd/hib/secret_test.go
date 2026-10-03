@@ -72,3 +72,41 @@ func TestSecretAddUsesSudoAndStdin(t *testing.T) {
 		t.Fatalf("stdout = %q", c.out.String())
 	}
 }
+
+func TestSecretAddSendsFullStdinAfterWakeRetry(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	h.states = []string{"VM deallocated"}
+	value := strings.Repeat("x", 60<<10)
+	var calls int
+	var first, second string
+	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+		if len(words) == 0 || words[0] != "sudo" {
+			return 0, false
+		}
+		calls++
+		data, err := io.ReadAll(h.lastStdin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch calls {
+		case 1:
+			first = string(data)
+			return 255, true
+		case 2:
+			second = string(data)
+			return writeTestResponse(stdout, hibapi.Response{Secret: &hibapi.Secret{
+				Name: "github", Env: "GH_TOKEN", Sites: []string{"github.com"}, Placeholder: "gho_hibplaceholder1234567890",
+			}}), true
+		}
+		t.Fatalf("unexpected sudo call %d", calls)
+		return 1, true
+	}
+	c.app.stdin = strings.NewReader(value)
+	if code := c.hib("secret", "add", "github", "--env", "GH_TOKEN", "--bind", "github.com"); code != 0 {
+		t.Fatalf("exit %d, stderr %s", code, c.errOut)
+	}
+	if first != value || second != value {
+		t.Fatalf("stdin lengths first=%d second=%d, want %d", len(first), len(second), len(value))
+	}
+}

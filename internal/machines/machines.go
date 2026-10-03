@@ -73,7 +73,7 @@ type Config struct {
 	// resume a machine. Default room.Read.
 	ReadRoom func() (room.Host, error)
 	// EnvBlock is the managed /etc/environment block written after machine-init. It contains
-	// placeholders only. Nil removes any existing block and writes nothing into a new machine.
+	// placeholders only. Nil writes nothing into a new machine.
 	EnvBlock []byte
 }
 
@@ -178,25 +178,29 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	if err != nil {
 		return hibapi.Machine{}, m.refused(ctx, name, memoryMB, fmt.Errorf("creating %q: %w", name, err))
 	}
-	if _, err := m.initMachine(ctx, em.ID, keys); err != nil {
-		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-		defer cancel()
-		if kerr := m.e.Kill(kctx, em.ID); kerr != nil && !errors.Is(kerr, engine.ErrNotFound) {
-			return hibapi.Machine{}, fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, em.ID, kerr)
-		}
-		return hibapi.Machine{}, fmt.Errorf("setting up %q: %w", name, err)
-	}
-	if len(m.envBlock) > 0 {
-		if err := WriteBlock(ctx, m.e, em.ID, m.envBlock); err != nil {
-			kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-			defer cancel()
-			if kerr := m.e.Kill(kctx, em.ID); kerr != nil && !errors.Is(kerr, engine.ErrNotFound) {
-				return hibapi.Machine{}, fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, em.ID, kerr)
-			}
-			return hibapi.Machine{}, fmt.Errorf("setting up %q: %w", name, err)
-		}
+	if err := m.setupMachine(ctx, em.ID, keys); err != nil {
+		return hibapi.Machine{}, m.killFailedSetup(ctx, name, em.ID, err)
 	}
 	return toAPI(em), nil
+}
+
+func (m *Manager) setupMachine(ctx context.Context, id string, keys []byte) error {
+	if _, err := m.initMachine(ctx, id, keys); err != nil {
+		return err
+	}
+	if len(m.envBlock) == 0 {
+		return nil
+	}
+	return WriteBlock(ctx, m.e, id, m.envBlock)
+}
+
+func (m *Manager) killFailedSetup(ctx context.Context, name, id string, err error) error {
+	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	if kerr := m.e.Kill(kctx, id); kerr != nil && !errors.Is(kerr, engine.ErrNotFound) {
+		return fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, id, kerr)
+	}
+	return fmt.Errorf("setting up %q: %w", name, err)
 }
 
 // List returns the machines in state, or all machines if state is "". Machines hibd didn't

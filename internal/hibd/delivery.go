@@ -38,28 +38,33 @@ func (d *blockDelivery) look(ctx context.Context) {
 		return
 	}
 	running := map[string]bool{}
+	var stale []engine.Machine
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 	for _, m := range ms {
-		name := machines.Name(m)
-		if name == "" {
+		if machines.Name(m) == "" {
 			continue
 		}
 		running[m.ID] = true
 		if d.hashes[m.ID] == hash {
 			continue
 		}
+		stale = append(stale, m)
+	}
+	results := make([]error, len(stale))
+	for i, m := range stale {
 		wg.Go(func() {
-			err := machines.WriteBlock(ctx, d.engine, m.ID, block)
-			mu.Lock()
-			defer mu.Unlock()
-			if err == nil {
-				d.hashes[m.ID] = hash
-			}
-			d.report("updating "+name, err)
+			results[i] = machines.WriteBlock(ctx, d.engine, m.ID, block)
 		})
 	}
 	wg.Wait()
+	for i, m := range stale {
+		name := machines.Name(m)
+		err := results[i]
+		if err == nil {
+			d.hashes[m.ID] = hash
+		}
+		d.report("updating "+name, err)
+	}
 	for id := range d.hashes {
 		if !running[id] {
 			delete(d.hashes, id)

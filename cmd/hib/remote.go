@@ -103,36 +103,25 @@ func runAz(ctx context.Context, args ...string) ([]byte, error) {
 // hibd's messages go to stderr, made safe for a terminal. If ssh can't reach the host and it's
 // an Azure VM that isn't running, remote starts it, waits for it and tries again.
 func (a *app) remote(ctx context.Context, cfg *config, timeout time.Duration, args ...string) (hibapi.Response, error) {
-	for woke := false; ; woke = true {
-		var out bytes.Buffer
-		code, err := a.runRemote(ctx, cfg, timeout, args, nil, &out)
-		if err != nil {
-			return hibapi.Response{}, err
-		}
-		if code == 255 && !woke {
-			err := a.wake(ctx, cfg)
-			if err == nil {
-				continue
-			}
-			if !errors.Is(err, errAwake) {
-				return hibapi.Response{}, err
-			}
-		}
-		if code != 0 && code != 1 {
-			return hibapi.Response{}, exitError(cfg, code)
-		}
-		return hibapi.DecodeResponse(out.Bytes())
-	}
+	return a.call(ctx, cfg, timeout, cfg.sshArgs(args...), nil, false)
 }
 
-func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration, stdin io.Reader, args ...string) (hibapi.Response, error) {
+func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration, stdin []byte, args ...string) (hibapi.Response, error) {
 	sshArgs, err := cfg.sudoHibdArgs(args...)
 	if err != nil {
 		return hibapi.Response{}, err
 	}
+	return a.call(ctx, cfg, timeout, sshArgs, stdin, true)
+}
+
+func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, stdin []byte, sudo bool) (hibapi.Response, error) {
 	for woke := false; ; woke = true {
 		var out bytes.Buffer
-		code, err := a.runSSH(ctx, timeout, sshArgs, stdin, &out)
+		var in io.Reader
+		if stdin != nil {
+			in = bytes.NewReader(stdin)
+		}
+		code, err := a.runSSH(ctx, timeout, sshArgs, in, &out)
 		if err != nil {
 			return hibapi.Response{}, err
 		}
@@ -148,15 +137,11 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 		if code != 0 && code != 1 {
 			return hibapi.Response{}, exitError(cfg, code)
 		}
-		if code != 0 && out.Len() == 0 {
+		if sudo && code != 0 && out.Len() == 0 {
 			return hibapi.Response{}, errors.New("hibd needs passwordless sudo on the host")
 		}
 		return hibapi.DecodeResponse(out.Bytes())
 	}
-}
-
-func (a *app) runRemote(ctx context.Context, cfg *config, timeout time.Duration, args []string, stdin io.Reader, stdout io.Writer) (int, error) {
-	return a.runSSH(ctx, timeout, cfg.sshArgs(args...), stdin, stdout)
 }
 
 func (a *app) runSSH(ctx context.Context, timeout time.Duration, args []string, stdin io.Reader, stdout io.Writer) (int, error) {

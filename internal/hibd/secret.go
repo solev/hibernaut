@@ -44,11 +44,11 @@ func (a *App) secretAdd(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	sites := splitSites(*bind)
+	sites := vault.SplitSites(*bind)
 	if err := vault.CheckSecret(names[0], *env, sites); err != nil {
 		return a.fail(*asJSON, "secret add", err)
 	}
-	value, err := readSecretValue(a.Stdin)
+	value, err := vault.ReadValue(a.Stdin)
 	if err != nil {
 		return a.fail(*asJSON, "secret add", err)
 	}
@@ -121,42 +121,6 @@ func (a *App) secretLS(args []string) int {
 	}
 	printSecrets(a.Stdout, secrets)
 	return 0
-}
-
-func readSecretValue(r io.Reader) (string, error) {
-	data, err := io.ReadAll(io.LimitReader(r, vault.MaxValue+1))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > vault.MaxValue {
-		return "", fmt.Errorf("secret value is bigger than 64 KiB")
-	}
-	data = trimOneNewline(data)
-	if len(data) == 0 {
-		return "", errors.New("secret value is empty")
-	}
-	return string(data), nil
-}
-
-func trimOneNewline(data []byte) []byte {
-	if len(data) >= 2 && data[len(data)-2] == '\r' && data[len(data)-1] == '\n' {
-		return data[:len(data)-2]
-	}
-	if len(data) >= 1 && data[len(data)-1] == '\n' {
-		return data[:len(data)-1]
-	}
-	return data
-}
-
-func splitSites(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
 }
 
 func loadSecretBlock(path string) ([]byte, error) {
