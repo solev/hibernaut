@@ -50,6 +50,7 @@ func TestPublicDestination(t *testing.T) {
 		{"100.64.0.1", false},
 		{"127.0.0.1", false},
 		{"169.254.1.1", false},
+		{"168.63.129.16", false},
 		{"172.16.0.1", false},
 		{"192.168.0.1", false},
 		{"0.1.2.3", false},
@@ -73,6 +74,37 @@ func TestPublicDestination(t *testing.T) {
 				t.Fatalf("PublicDestination(%s) = %v, want %v", tt.addr, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExpectContinueKeepsFinalStatusAndNoInternalHeaders(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, "nope")
+	}))
+	defer fx.close()
+	tr := fx.transport(false)
+	tr.ExpectContinueTimeout = 5 * time.Second
+	req, err := http.NewRequest(http.MethodPost, fx.url("/x"), strings.NewReader(strings.Repeat("a", 2000)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Expect", "100-continue")
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, headers %v", resp.StatusCode, resp.Header)
+	}
+	for name := range resp.Header {
+		if strings.HasPrefix(name, "X-Hibernaut-") {
+			t.Fatalf("internal header reached client: %s=%q", name, resp.Header.Values(name))
+		}
 	}
 }
 
@@ -160,6 +192,29 @@ func TestHTTP2EndToEnd(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.Proto != "HTTP/2.0" {
 		t.Fatalf("resp.Proto = %s, want HTTP/2.0", resp.Proto)
+	}
+}
+
+func TestUpstreamUsesHTTP2WhenSiteOffersIt(t *testing.T) {
+	t.Parallel()
+	got := make(chan string, 1)
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Proto
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer fx.close()
+	resp, err := fx.client(false).Get(fx.url("/upstream-h2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	select {
+	case proto := <-got:
+		if proto != "HTTP/2.0" {
+			t.Fatalf("upstream proto = %s, want HTTP/2.0", proto)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream was not called")
 	}
 }
 
@@ -417,6 +472,42 @@ func TestWebSocketThroughProxy(t *testing.T) {
 	}
 }
 
+func TestWebSocketReleasesConnectionAfterClose(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		_, data, err := conn.Read(r.Context())
+		if err != nil {
+			return
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, data)
+	}))
+	defer fx.close()
+	ctx := context.Background()
+	conn, resp, err := websocket.Dial(ctx, strings.Replace(fx.url("/ws"), "https://", "wss://", 1), &websocket.DialOptions{HTTPClient: fx.client(false)})
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = conn.Read(ctx)
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+	_ = fx.proxy.Close()
+	select {
+	case <-fx.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve still waiting on a finished WebSocket connection")
+	}
+}
+
 func TestInvalidUpstreamCertificateRefusedBeforeRequest(t *testing.T) {
 	t.Parallel()
 	var upstreamCalls atomic.Int32
@@ -479,6 +570,57 @@ func TestNonTextResponseIsByteIdentical(t *testing.T) {
 	got, _ := io.ReadAll(resp.Body)
 	if string(got) != string(want) {
 		t.Fatalf("body = %v, want %v", got, want)
+	}
+}
+
+func TestRemovedSecretStopsSwappingOnOpenConnection(t *testing.T) {
+	t.Parallel()
+	var got []string
+	var revoked atomic.Bool
+	empty, err := swap.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := swap.New([]swap.Secret{{Name: secretName, Placeholder: placeholder, Value: realValue, Sites: []string{"localhost"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+	}), func(s *Server) {
+		s.Swapper = func() *swap.Swapper {
+			if revoked.Load() {
+				return empty
+			}
+			return full
+		}
+	})
+	defer fx.close()
+	client := fx.client(false)
+	for i := range 2 {
+		req, err := http.NewRequest(http.MethodGet, fx.url("/"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if i == 0 {
+			revoked.Store(true)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("upstream requests = %d, want 2", len(got))
+	}
+	if got[0] != "Bearer "+realValue {
+		t.Fatalf("before removal upstream saw %q", got[0])
+	}
+	if got[1] != "Bearer "+placeholder {
+		t.Fatalf("after removal upstream saw %q", got[1])
 	}
 }
 

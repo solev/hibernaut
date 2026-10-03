@@ -9,12 +9,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/solev/hibernaut/internal/audit"
@@ -26,8 +28,6 @@ const (
 	maxClientHello       = 64 << 10
 	readHeaderTimeout    = 10 * time.Second
 	terminatedIdle       = 2 * time.Minute
-	terminatedRead       = 5 * time.Minute
-	terminatedWrite      = 5 * time.Minute
 	genericUpstreamError = "bad gateway\n"
 )
 
@@ -105,7 +105,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		s.passthrough(ctx, conn, dst, peeked)
 		return
 	}
-	s.terminate(ctx, conn, dst, sni, peeked, sw)
+	s.terminate(ctx, conn, dst, sni, peeked)
 }
 
 // PublicDestination reports whether addr is routable public internet space for egress.
@@ -134,6 +134,7 @@ var deniedPrefixes = mustPrefixes(
 	"100.64.0.0/10",
 	"127.0.0.0/8",
 	"169.254.0.0/16",
+	"168.63.129.16/32", // Azure host services address.
 	"172.16.0.0/12",
 	"192.0.0.0/24",
 	"192.0.2.0/24",
@@ -172,7 +173,7 @@ func (s *Server) passthrough(ctx context.Context, client net.Conn, dst netip.Add
 	copyBoth(client, upstream, peeked)
 }
 
-func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrPort, sni string, peeked []byte, sw *swap.Swapper) {
+func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrPort, sni string, peeked []byte) {
 	if s.Leaf == nil {
 		s.logf("egress leaf seam is nil")
 		return
@@ -188,24 +189,34 @@ func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrP
 		NextProtos:   []string{"h2", "http/1.1"},
 		MinVersion:   tls.VersionTLS12,
 	})
-	transport := s.transport(dst, sni)
+	transport := s.transport(dst, sni, []string{"h2", "http/1.1"}, true)
 	defer transport.CloseIdleConnections()
+	upgradeTransport := s.transport(dst, sni, []string{"http/1.1"}, false)
+	defer upgradeTransport.CloseIdleConnections()
 	identify := &connIdentity{conn: client, identify: s.Identify, logf: s.logf}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)
+	// Long responses and request bodies must not be cut off by server-wide deadlines.
 	server := &http.Server{
 		Protocols:         protocols,
 		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       terminatedRead,
-		WriteTimeout:      terminatedWrite,
 		IdleTimeout:       terminatedIdle,
-		Handler:           s.proxyHandler(sni, sw, transport, identify),
+		ErrorLog:          log.New(logWriter{s.logf}, "", 0),
 	}
 	listener := &singleConnListener{conn: tlsConn, closec: make(chan struct{}), ctx: ctx}
+	var hijacked atomic.Bool
+	server.Handler = s.proxyHandler(sni, transport, upgradeTransport, identify, func() {
+		if hijacked.Load() {
+			_ = listener.Close()
+		}
+	})
 	server.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateClosed {
-			listener.Close()
+		switch state {
+		case http.StateClosed:
+			_ = listener.Close()
+		case http.StateHijacked:
+			hijacked.Store(true)
 		}
 	}
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
@@ -213,8 +224,54 @@ func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrP
 	}
 }
 
-func (s *Server) proxyHandler(sni string, sw *swap.Swapper, transport *http.Transport, identify *connIdentity) http.Handler {
-	proxy := &httputil.ReverseProxy{
+func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Transport, identify *connIdentity, afterServeHTTP func()) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer afterServeHTTP()
+		active := s.currentSwapper()
+		if active != nil && !active.Bound(sni) {
+			active = nil
+		}
+		if active != nil {
+			if normalizeHost(r.Host) != sni {
+				http.Error(w, "misdirected request\n", http.StatusMisdirectedRequest)
+				return
+			}
+			names, err := active.Request(r, sni)
+			if err != nil {
+				s.logf("egress swap %s %s: %v", r.Method, r.URL.EscapedPath(), err)
+				http.Error(w, genericUpstreamError, http.StatusBadGateway)
+				return
+			}
+			if len(names) > 0 {
+				machine, machineID := identify.get()
+				entry := audit.Entry{
+					Time:      s.now(),
+					Machine:   machine,
+					MachineID: machineID,
+					Site:      sni,
+					Method:    r.Method,
+					Path:      r.URL.EscapedPath(),
+					Secrets:   names,
+				}
+				if s.Audit != nil {
+					if err := s.Audit(entry); err != nil {
+						s.logf("egress audit %s %s: %v", r.Method, r.URL.EscapedPath(), err)
+						http.Error(w, genericUpstreamError, http.StatusBadGateway)
+						return
+					}
+				}
+			}
+		}
+		proxy := s.reverseProxy(sni, active, transport)
+		if isUpgrade(r) {
+			proxy = s.reverseProxy(sni, active, upgradeTransport)
+		}
+		proxy.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) reverseProxy(sni string, sw *swap.Swapper, transport *http.Transport) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "https"
 			pr.Out.URL.Host = sni
@@ -224,12 +281,14 @@ func (s *Server) proxyHandler(sni string, sw *swap.Swapper, transport *http.Tran
 		Transport:     transport,
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
+			if sw == nil {
+				return nil
+			}
 			sw.ScrubHeader(resp.Header)
 			if swap.Text(resp.Header.Get("Content-Type")) && resp.Body != nil {
 				resp.Body = sw.ScrubBody(resp.Body)
 				resp.ContentLength = -1
 				resp.Header.Del("Content-Length")
-				resp.Header.Set("X-Hibernaut-Chunked", "1")
 			}
 			return nil
 		},
@@ -238,56 +297,28 @@ func (s *Server) proxyHandler(sni string, sw *swap.Swapper, transport *http.Tran
 			http.Error(w, genericUpstreamError, http.StatusBadGateway)
 		},
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if normalizeHost(r.Host) != sni {
-			http.Error(w, "misdirected request\n", http.StatusMisdirectedRequest)
-			return
-		}
-		r.Header.Del("Accept-Encoding")
-		names, err := sw.Request(r, sni)
-		if err != nil {
-			s.logf("egress swap %s %s: %v", r.Method, r.URL.EscapedPath(), err)
-			http.Error(w, genericUpstreamError, http.StatusBadGateway)
-			return
-		}
-		if len(names) > 0 {
-			machine, machineID := identify.get()
-			entry := audit.Entry{
-				Time:      s.now(),
-				Machine:   machine,
-				MachineID: machineID,
-				Site:      sni,
-				Method:    r.Method,
-				Path:      r.URL.EscapedPath(),
-				Secrets:   names,
-			}
-			if s.Audit != nil {
-				if err := s.Audit(entry); err != nil {
-					s.logf("egress audit %s %s: %v", r.Method, r.URL.EscapedPath(), err)
-					http.Error(w, genericUpstreamError, http.StatusBadGateway)
-					return
-				}
-			}
-		}
-		proxy.ServeHTTP(&chunkedResponseWriter{ResponseWriter: w}, r)
-	})
 }
 
-func (s *Server) transport(dst netip.AddrPort, sni string) *http.Transport {
+func isUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || headerHasToken(r.Header.Get("Connection"), "upgrade")
+}
+
+func headerHasToken(value, token string) bool {
+	for part := range strings.SplitSeq(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) transport(dst netip.AddrPort, sni string, nextProtos []string, forceHTTP2 bool) *http.Transport {
 	return &http.Transport{
 		Proxy:             nil,
-		ForceAttemptHTTP2: true,
-		DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			raw, err := s.dial(ctx, network, dst.String())
-			if err != nil {
-				return nil, err
-			}
-			tlsConn := tls.Client(raw, &tls.Config{ServerName: sni, RootCAs: s.RootCAs, MinVersion: tls.VersionTLS12})
-			if err := tlsConn.HandshakeContext(ctx); err != nil {
-				_ = raw.Close()
-				return nil, err
-			}
-			return tlsConn, nil
+		ForceAttemptHTTP2: forceHTTP2,
+		TLSClientConfig:   &tls.Config{ServerName: sni, RootCAs: s.RootCAs, NextProtos: nextProtos, MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return s.dial(ctx, network, dst.String())
 		},
 	}
 }
@@ -320,46 +351,15 @@ func (s *Server) logf(format string, args ...any) {
 	}
 }
 
-type chunkedResponseWriter struct {
-	http.ResponseWriter
-	wrote bool
+type logWriter struct {
+	logf func(string, ...any)
 }
 
-func (w *chunkedResponseWriter) WriteHeader(status int) {
-	if w.wrote {
-		return
+func (w logWriter) Write(p []byte) (int, error) {
+	if w.logf != nil {
+		w.logf("%s", strings.TrimSpace(string(p)))
 	}
-	w.wrote = true
-	if w.Header().Get("X-Hibernaut-Chunked") != "" {
-		w.Header().Del("X-Hibernaut-Chunked")
-		w.ResponseWriter.WriteHeader(status)
-		if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		return
-	}
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *chunkedResponseWriter) Write(p []byte) (int, error) {
-	if !w.wrote {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(p)
-}
-
-func (w *chunkedResponseWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func (w *chunkedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hijacker, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("response writer does not support hijack")
-	}
-	return hijacker.Hijack()
+	return len(p), nil
 }
 
 type connIdentity struct {

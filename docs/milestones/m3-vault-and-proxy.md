@@ -56,10 +56,12 @@ secret is bound to that host, or there's no SNI, it dials the real destination a
 both ways. Otherwise it terminates TLS with a certificate for that host, refuses a request whose
 `Host` isn't the SNI host, swaps, connects to the real destination, verifies the site's
 certificate for the SNI host, and scrubs the response. It reloads the vault when `vault.json`
-changes. It strips client `Accept-Encoding` before forwarding, so the upstream transport can
-request gzip and scrub plain text after decompression. If audit writing fails, the proxy returns
-502 without forwarding. Non-TLS connections pass through when they have no SNI. WebSocket
-frames after an upgrade pass through unscrubbed.
+changes. Removing a secret takes effect on the next request, including on open connections. It
+strips client `Accept-Encoding` before forwarding, so the upstream transport can request gzip and
+scrub plain text after decompression. The proxy talks HTTP/2 to sites that offer it, and uses
+HTTP/1.1 for WebSocket upgrades. If audit writing fails, the proxy returns 502 without forwarding.
+Non-TLS connections pass through when they have no SNI. WebSocket frames after an upgrade pass
+through unscrubbed.
 The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested host.
 
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
