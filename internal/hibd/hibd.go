@@ -26,6 +26,7 @@ import (
 	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b"
+	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/pauseall"
@@ -48,6 +49,9 @@ commands:
   secret ls         list bound secrets
   secret rm NAME    remove a bound secret
   log               show secret swap audit entries (-n, default 50)
+  connect github    store a GitHub token from stdin as secret github, after GitHub accepts it,
+                    and give machines git's identity, as root (-source gh|token)
+  status            check E2B and every secret, as root
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image (-force rebuilds every step)
@@ -61,7 +65,7 @@ commands:
                     removed and hourly; systemd runs it as root
   version           print the version
 
-new, ls, rm, pause, image build and version print JSON with -json.
+new, ls, rm, pause, image build, connect github, status and version print JSON with -json.
 
 hibd reads its settings from ` + defaultConfig + ` ($HIBD_CONFIG overrides the path).
 Environment variables of the same names override the file:
@@ -114,6 +118,12 @@ type App struct {
 	EUID func() int
 	// NewCanary returns a canary secret for leakscan -canary. If it's nil, App uses random bytes.
 	NewCanary func() (string, error)
+	// GitHubAPI is the base URL of GitHub's API, for tests only. It's never a setting, so no
+	// config can send a token elsewhere. If it's "", App uses github.APIBase.
+	GitHubAPI string
+	// GitHubClient is the HTTP client for GitHub's API, for tests only. If it's nil, App uses
+	// github.NewClient().
+	GitHubClient *http.Client
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -137,6 +147,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.bridge(ctx, args)
 	case "secret":
 		return a.secret(ctx, args)
+	case "connect":
+		return a.connect(ctx, args)
+	case "status":
+		return a.status(ctx, args)
 	case "log":
 		return a.log(args)
 	case "ca":
@@ -185,11 +199,11 @@ func (a *App) new(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
-	block, err := loadSecretBlock(cfg.vaultPath)
+	setup, err := loadSetup(cfg)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
-	m, err := a.managerWithBlock(block)
+	m, err := a.managerWithSetup(setup)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
@@ -550,7 +564,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	}
 	s := &sweeper{engine: e, logf: func(format string, args ...any) { logger.Printf("cleanup: "+format, args...) }}
 	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
-	delivery := newBlockDelivery(e, cfg.vaultPath, func(format string, args ...any) { logger.Printf("secrets: "+format, args...) })
+	delivery := newSetupDelivery(e, cfg, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	t := time.NewTicker(*every)
 	defer t.Stop()
@@ -689,10 +703,11 @@ func (a *App) awake() error {
 }
 
 func (a *App) manager() (*machines.Manager, error) {
-	return a.managerWithBlock(nil)
+	return a.managerWithSetup(machines.Setup{})
 }
 
-func (a *App) managerWithBlock(block []byte) (*machines.Manager, error) {
+// managerWithSetup returns a Manager that writes setup into new machines.
+func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) {
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
 		return nil, err
@@ -701,7 +716,7 @@ func (a *App) managerWithBlock(block []byte) (*machines.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys, ReadRoom: a.ReadRoom, EnvBlock: block}), nil
+	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys, ReadRoom: a.ReadRoom, Setup: setup}), nil
 }
 
 func (a *App) engine() (engine.Engine, error) {
@@ -719,6 +734,7 @@ type config struct {
 	e2b            e2b.Config
 	healthURLs     []string
 	stateDir       string
+	githubProfile  string
 	vaultPath      string
 	vaultKeyPath   string
 	e2bStorage     string
@@ -800,6 +816,7 @@ func loadSettings(getenv func(string) string) (config, error) {
 	if cfg.vaultPath == "" {
 		cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")
 	}
+	cfg.githubProfile = filepath.Join(cfg.stateDir, github.ProfileFile)
 	return cfg, nil
 }
 

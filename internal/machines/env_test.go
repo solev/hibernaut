@@ -20,9 +20,11 @@ type envFileGuest struct {
 	content           []byte
 	casMismatchesLeft int
 	requests          []engine.ExecRequest
+	// git runs the script that sets git's identity. Nil answers as if sh were missing.
+	git func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
 }
 
-func (g *envFileGuest) exec(_ context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
+func (g *envFileGuest) exec(ctx context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
 	g.requests = append(g.requests, req)
 	if req.User != "root" {
 		return engine.ExecResult{ExitCode: 127, Stderr: []byte("not root")}, nil
@@ -33,7 +35,10 @@ func (g *envFileGuest) exec(_ context.Context, _ engine.Machine, _ string, req e
 			return engine.ExecResult{Stdout: append([]byte(nil), g.content...)}, nil
 		}
 	case "sh":
-		if len(req.Args) == 5 && req.Args[0] == "-c" {
+		if len(req.Args) == 5 && req.Args[0] == "-c" && req.Args[2] == "hibd-git" && g.git != nil {
+			return g.git(ctx, req)
+		}
+		if len(req.Args) == 5 && req.Args[0] == "-c" && req.Args[2] == "hibd-env" {
 			if g.casMismatchesLeft > 0 {
 				g.casMismatchesLeft--
 				g.content = append(g.content, []byte("# concurrent edit\n")...)

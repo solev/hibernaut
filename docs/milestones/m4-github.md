@@ -98,9 +98,10 @@ too. Machines made before the image is rebuilt don't have it.
 - E2B: each URL in `E2B_HEALTH_URLS` once, with a 5-second timeout. Down if any fails.
 - GitHub: the account in `github.json` while the vault has secret `github`, else nothing. Its
   scopes come from that secret's check.
-- Each secret: one bound to `api.github.com` is checked with `GET /user`. 200 is `ok`, 401 is
-  `revoked`, and anything else is `failed` with a short reason. Others are `unchecked`, since
-  there's no general way to test a key. Checks run in parallel, at most 8 at once.
+- Each secret: one bound to `api.github.com`, by name or by a wildcard such as `*.github.com`, is
+  checked with `GET /user`. 200 is `ok`, 401 is `revoked`, and anything else is `failed` with a
+  short reason. Others are `unchecked`, since there's no general way to test a key. Checks run in
+  parallel, at most 8 at once.
 - A revoked `github` says "revoked: run hib connect github --from-gh again" (or `--token`, after
   how it was connected). Another revoked secret says "revoked: run hib secret add NAME again".
 

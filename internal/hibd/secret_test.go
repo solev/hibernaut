@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -29,6 +32,13 @@ type secretGuest struct {
 	env      []byte
 	requests []engine.ExecRequest
 	hostKey  ssh.PublicKey
+	// git is git's identity, as the setup wrote it.
+	git *machines.GitIdentity
+	// gitExit, if set, is the exit code of setting git's identity.
+	gitExit int
+	// noGit, if set, runs the setup's git script for real, in a shell whose PATH is this empty
+	// directory, as in an image without git.
+	noGit string
 }
 
 func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
@@ -44,7 +54,10 @@ func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req en
 	case "cat":
 		return engine.ExecResult{Stdout: append([]byte(nil), g.env...)}, nil
 	case "sh":
-		if len(req.Args) == 5 {
+		if len(req.Args) == 5 && req.Args[2] == "hibd-git" {
+			return g.setGit(req)
+		}
+		if len(req.Args) == 5 && req.Args[2] == "hibd-env" {
 			if got := sha256.Sum256(g.env); req.Args[3] != hexHash(got[:]) {
 				return engine.ExecResult{ExitCode: 75}, nil
 			}
@@ -57,6 +70,37 @@ func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req en
 		}
 	}
 	return engine.ExecResult{ExitCode: 127}, nil
+}
+
+// setGit plays the setup's git script. g.mu is held.
+func (g *secretGuest) setGit(req engine.ExecRequest) (engine.ExecResult, error) {
+	if req.User != "root" {
+		return engine.ExecResult{ExitCode: 1, Stderr: []byte("not root")}, nil
+	}
+	if g.noGit != "" {
+		cmd := exec.Command("/bin/sh", req.Args...)
+		cmd.Env = []string{"PATH=" + g.noGit}
+		out, err := cmd.CombinedOutput()
+		if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
+			return engine.ExecResult{}, err
+		}
+		return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stderr: out}, nil
+	}
+	if g.gitExit != 0 {
+		return engine.ExecResult{ExitCode: g.gitExit, Stderr: []byte("error: could not lock config file /etc/gitconfig")}, nil
+	}
+	g.git = &machines.GitIdentity{Name: req.Args[3], Email: req.Args[4]}
+	return engine.ExecResult{}, nil
+}
+
+func (g *secretGuest) identity() *machines.GitIdentity {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.git == nil {
+		return nil
+	}
+	id := *g.git
+	return &id
 }
 
 func (g *secretGuest) envString() string {

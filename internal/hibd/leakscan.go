@@ -324,14 +324,17 @@ func findLeakscanMachine(ctx context.Context, e engine.Engine, name string) (eng
 }
 
 func (a *App) wantRoot(command string) error {
-	euid := os.Geteuid
-	if a.EUID != nil {
-		euid = a.EUID
-	}
-	if euid() != 0 {
+	if a.euid() != 0 {
 		return fmt.Errorf("%s must run as root. Use sudo hibd %s", command, command)
 	}
 	return nil
+}
+
+func (a *App) euid() int {
+	if a.EUID != nil {
+		return a.EUID()
+	}
+	return os.Geteuid()
 }
 
 func (a *App) query() scanpkg.Query {

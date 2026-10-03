@@ -7,12 +7,9 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
 
-	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
-	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -63,7 +60,7 @@ func (a *App) secretAdd(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "secret add", sudoHint(err))
 	}
-	a.pushSecrets(ctx, cfg)
+	a.pushSetup(ctx, cfg, "secrets saved")
 	secret := apiSecret(saved)
 	if *asJSON {
 		return a.reply(hibapi.Response{Secret: &secret})
@@ -92,7 +89,7 @@ func (a *App) secretRM(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "secret rm", sudoHint(err))
 	}
-	a.pushSecrets(ctx, cfg)
+	a.pushSetup(ctx, cfg, "secrets saved")
 	if *asJSON {
 		return a.reply(hibapi.Response{})
 	}
@@ -127,38 +124,6 @@ func loadSecretBlock(path string) ([]byte, error) {
 		return nil, err
 	}
 	return machines.BlockFromSecrets(f.Secrets())
-}
-
-func (a *App) pushSecrets(ctx context.Context, cfg config) {
-	if _, err := os.Stat(cfg.quiescing); err == nil {
-		return
-	}
-	block, err := loadSecretBlock(cfg.vaultPath)
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "warning: secrets saved, but loading placeholders failed: %s\n", termsafe.String(err.Error()))
-		return
-	}
-	e, err := a.engine()
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "warning: secrets saved, but listing machines failed: %s\n", termsafe.String(err.Error()))
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	ms, err := e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
-	if err != nil {
-		fmt.Fprintf(a.Stderr, "warning: secrets saved, but listing machines failed: %s\n", termsafe.String(err.Error()))
-		return
-	}
-	for _, m := range ms {
-		if machines.Name(m) == "" {
-			continue
-		}
-		if err := machines.WriteBlock(ctx, e, m.ID, block); err != nil {
-			name := termsafe.String(machines.Name(m))
-			fmt.Fprintf(a.Stderr, "warning: secrets saved, but updating %s failed: %s\n", name, termsafe.String(err.Error()))
-		}
-	}
 }
 
 func sudoHint(err error) error {

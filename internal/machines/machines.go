@@ -72,9 +72,8 @@ type Config struct {
 	// ReadRoom reads the room on the host, which Create and Dial check before they start or
 	// resume a machine. Default room.Read.
 	ReadRoom func() (room.Host, error)
-	// EnvBlock is the managed /etc/environment block written after machine-init. It contains
-	// placeholders only. Nil writes nothing into a new machine.
-	EnvBlock []byte
+	// Setup is written into each new machine after machine-init. An empty Setup writes nothing.
+	Setup Setup
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -85,7 +84,7 @@ type Manager struct {
 	keysFile string
 	now      func() time.Time
 	readRoom func() (room.Host, error)
-	envBlock []byte
+	setup    Setup
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -98,7 +97,7 @@ func New(cfg Config) *Manager {
 	if readRoom == nil {
 		readRoom = room.Read
 	}
-	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom, envBlock: cfg.EnvBlock}
+	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom, setup: cfg.Setup}
 }
 
 // Name returns the name of machine em, or "" if hibd didn't make it.
@@ -188,10 +187,10 @@ func (m *Manager) setupMachine(ctx context.Context, id string, keys []byte) erro
 	if _, err := m.initMachine(ctx, id, keys); err != nil {
 		return err
 	}
-	if len(m.envBlock) == 0 {
+	if m.setup.empty() {
 		return nil
 	}
-	return WriteBlock(ctx, m.e, id, m.envBlock)
+	return m.setup.Write(ctx, m.e, id)
 }
 
 func (m *Manager) killFailedSetup(ctx context.Context, name, id string, err error) error {
