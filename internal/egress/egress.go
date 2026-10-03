@@ -227,15 +227,15 @@ func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrP
 func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Transport, identify *connIdentity, afterServeHTTP func()) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer afterServeHTTP()
+		if normalizeHost(r.Host) != sni {
+			http.Error(w, "misdirected request\n", http.StatusMisdirectedRequest)
+			return
+		}
 		active := s.currentSwapper()
 		if active != nil && !active.Bound(sni) {
 			active = nil
 		}
 		if active != nil {
-			if normalizeHost(r.Host) != sni {
-				http.Error(w, "misdirected request\n", http.StatusMisdirectedRequest)
-				return
-			}
 			names, err := active.Request(r, sni)
 			if err != nil {
 				s.logf("egress swap %s %s: %v", r.Method, r.URL.EscapedPath(), err)
@@ -262,11 +262,11 @@ func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Tran
 				}
 			}
 		}
-		proxy := s.reverseProxy(sni, active, transport)
+		t := transport
 		if isUpgrade(r) {
-			proxy = s.reverseProxy(sni, active, upgradeTransport)
+			t = upgradeTransport
 		}
-		proxy.ServeHTTP(w, r)
+		s.reverseProxy(sni, active, t).ServeHTTP(w, r)
 	})
 }
 
