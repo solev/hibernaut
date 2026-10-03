@@ -13,12 +13,12 @@ import (
 	"syscall"
 )
 
-// Finder reads host state. Empty roots use the real host paths.
+// Finder reads host state. Empty roots use the real host paths: /proc, /run/netns and
+// /sys/fs/cgroup/e2b.
 type Finder struct {
 	Proc    string
 	Netns   string
 	Cgroups string
-	Net     string
 }
 
 // Sandbox returns the E2B sandbox ID that owns an intercepted connection.

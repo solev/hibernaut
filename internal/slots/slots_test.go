@@ -62,10 +62,9 @@ func newHost(t *testing.T) *fakeHost {
 			Proc:    filepath.Join(root, "proc"),
 			Netns:   filepath.Join(root, "run", "netns"),
 			Cgroups: filepath.Join(root, "sys", "fs", "cgroup", "e2b"),
-			Net:     filepath.Join(root, "sys", "class", "net"),
 		},
 	}
-	for _, dir := range []string{h.finder.Proc, h.finder.Netns, h.finder.Cgroups, h.finder.Net} {
+	for _, dir := range []string{h.finder.Proc, h.finder.Netns, h.finder.Cgroups} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
