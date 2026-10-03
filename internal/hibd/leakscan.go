@@ -4,7 +4,6 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,7 +43,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 			fmt.Fprintln(a.Stderr, leakscanUsage)
 			return 2
 		}
-		if err := a.wantRoot(); err != nil {
+		if err := a.wantRoot("leakscan"); err != nil {
 			return a.fail(*asJSON, "leakscan", err)
 		}
 		return a.leakscanCanary(ctx, *asJSON)
@@ -63,7 +62,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 	} else {
 		target = leakscanTarget{kind: "machine", name: rest[0]}
 	}
-	if err := a.wantRoot(); err != nil {
+	if err := a.wantRoot("leakscan"); err != nil {
 		return a.fail(*asJSON, "leakscan", err)
 	}
 	cfg, err := loadConfig(a.Getenv)
@@ -296,13 +295,13 @@ func findLeakscanMachine(ctx context.Context, e engine.Engine, name string) (eng
 	}
 }
 
-func (a *App) wantRoot() error {
+func (a *App) wantRoot(command string) error {
 	euid := os.Geteuid
 	if a.EUID != nil {
 		euid = a.EUID
 	}
 	if euid() != 0 {
-		return errors.New("leakscan must run as root; use sudo hibd leakscan")
+		return fmt.Errorf("%s must run as root. Use sudo hibd %s", command, command)
 	}
 	return nil
 }

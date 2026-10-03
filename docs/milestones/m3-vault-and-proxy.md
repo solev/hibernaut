@@ -56,10 +56,18 @@ secret is bound to that host, or there's no SNI, it dials the real destination a
 both ways. Otherwise it terminates TLS with a certificate for that host, refuses a request whose
 `Host` isn't the SNI host, swaps, connects to the real destination, verifies the site's
 certificate for the SNI host, and scrubs the response. It reloads the vault when `vault.json`
-changes. Removing a secret takes effect on the next request, including on open connections. It
-strips client `Accept-Encoding` before forwarding, so the upstream transport can request gzip and
-scrub plain text after decompression. The proxy talks HTTP/2 to sites that offer it, and uses
-HTTP/1.1 for WebSocket upgrades. If audit writing fails, the proxy returns 502 without forwarding.
+changes. Removing a secret takes effect on the next request, including on open connections.
+The proxy also reloads when `vault.key` changes or first appears. Reload fingerprints come from the
+opened files and include size, modification time and file identity. Missing or invalid files disable
+swaps until a later change. Errors are rate-limited and never include values or file contents.
+Machine names come from the engine's `hib.name` metadata. The proxy caches names and refreshes
+on a miss at most once every five seconds. If the name lookup fails, the audit keeps the sandbox ID.
+On stop, the proxy stops hook repairs, removes the rule, closes open connections and closes the
+audit log. Rule removal has a ten-second timeout. The unit allows thirty seconds to stop.
+The proxy strips client `Accept-Encoding` before forwarding, so the upstream transport can request
+gzip and scrub plain text after decompression. The proxy talks HTTP/2 to sites that offer it.
+It uses HTTP/1.1 for WebSocket upgrades. If audit writing fails, the proxy returns 502 without
+forwarding.
 Non-TLS connections pass through when they have no SNI. WebSocket frames after an upgrade pass
 through unscrubbed.
 The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested host.
@@ -96,14 +104,14 @@ adjacent physically can be missed. The canary checks the common case.
 
 **CA**
 
-- [ ] `hibd` creates the Hibernaut CA once; its key never leaves the host.
+- [x] `hibd` creates the Hibernaut CA once; its key never leaves the host.
 - [x] The `dev` image trusts it and sets `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
       `REQUESTS_CA_BUNDLE`, `CODEX_CA_CERTIFICATE` (§4.2).
 
 **Proxy**
 
-- [ ] Interception port that only accepts connections arriving on machine interfaces (`veth-*`).
-- [ ] iptables hook `-I PREROUTING 1 -i veth-+ -p tcp --dport 443 -j REDIRECT`: added on start,
+- [x] Interception port that only accepts connections arriving on machine interfaces (`veth-*`).
+- [x] iptables hook `-I PREROUTING 1 -i veth-+ -p tcp --dport 443 -j REDIRECT`: added on start,
       checked and re-added every few seconds, removed on clean stop.
 - [x] Real destination from `SO_ORIGINAL_DST`; hostname from SNI.
 - [x] Unbound sites: bytes pass straight through, nothing decrypted.
@@ -112,7 +120,7 @@ adjacent physically can be missed. The canary checks the common case.
 - [x] Swap in headers, decoded Basic auth, the URL query and text bodies up to 1 MB. Everything
       else streams through unbuffered. WebSocket upgrades work.
 - [x] Scrub responses: a real value is turned back into its placeholder.
-- [ ] Audit log (time, machine, site, method, path, secret name) and `hib log`.
+- [x] Audit log (time, machine, site, method, path, secret name) and `hib log`.
 
 **Leak scan**
 
@@ -175,3 +183,15 @@ End-to-end:
   `SSL_CERT_FILE`, so e2e covers gh in a machine there.
 - 2026-10-03: The leak scan refuses compressed (version 4 and later) headers instead of
   decompressing them. E2B on this host writes version 3, which is uncompressed.
+- 2026-10-03: Wired CA initialization and the root proxy service. Added descriptor-safe vault and
+  key reloads, cached audit names and bounded shutdown. Added opened-file vault readers for the
+  reload fingerprint. Fixed proxy cancellation leaving open connections alive and a concurrent
+  listener-close panic. Live checks covered CA persistence, TLS refusal, swapping, audit names,
+  clean stop, crash restart and hook repair under systemd hardening.
+- 2026-10-03: M3 end-to-end checks passed audit and leak scan. Secret swap's clients passed, but its
+  final scan intermittently found a snapshot file before E2B had written it. Preserved failed
+  snapshots later had those files, with cleanup stopped throughout the run. The host-access test
+  stopped at its GitHub control probe. GitHub closed its Postgres-style probe without a reply,
+  but valid SSH identification got a reply from the host and a machine. These failures remain
+  outside the proxy wiring. A manual check with a valid control probed 1,462 host and Azure targets.
+  Only the expected host SSH and E2B service answered. End-to-end and completion boxes stay open.

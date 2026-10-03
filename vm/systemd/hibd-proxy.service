@@ -1,0 +1,24 @@
+# The root proxy needs the host network and read access to E2B's slot state.
+[Unit]
+Description=Hibernaut secret egress proxy
+After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service
+
+[Service]
+User=root
+EnvironmentFile=/etc/hibernaut/hibd.env
+ExecStart=/usr/local/bin/hibd proxy
+ExecStopPost=/usr/local/bin/hibd proxy -unhook
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+LogsDirectory=hibernaut
+LogsDirectoryMode=0755
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

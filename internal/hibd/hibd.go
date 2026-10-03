@@ -48,6 +48,8 @@ commands:
   secret ls         list bound secrets
   secret rm NAME    remove a bound secret
   log               show secret swap audit entries (-n, default 50)
+  ca init           create the Hibernaut CA once, as root
+  proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image (-force rebuilds every step)
   ready             wait until E2B answers (-timeout)
   pause-all         pause every running machine; wait until none is running
@@ -73,8 +75,9 @@ Environment variables of the same names override the file:
   HIBD_E2B_STORAGE      E2B snapshot storage, default /var/lib/e2b/local-template-storage
   HIBD_AUDIT_LOG        default /var/log/hibernaut/audit.jsonl
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
-  HIBD_CA_CERT          Hibernaut CA certificate for image builds, default
-                        /etc/hibernaut/ca.crt
+  HIBD_CA_CERT          CA certificate for the proxy and image builds, default /etc/hibernaut/ca.crt
+  HIBD_CA_KEY           CA private key, default /etc/hibernaut/ca.key
+  HIBD_PROXY_PORT       interception port, default 5443
   HIBD_QUIESCING        new, bridge and image build refuse while it exists, and daemon leaves
                         machines alone; default /run/hibernaut/quiescing, which quiesce makes
                         before pausing everything
@@ -136,6 +139,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.secret(ctx, args)
 	case "log":
 		return a.log(args)
+	case "ca":
+		return a.ca(args)
+	case "proxy":
+		return a.proxy(ctx, args)
 	case "image":
 		return a.image(ctx, args)
 	case "ready":
@@ -721,10 +728,27 @@ type config struct {
 	agents         []string
 	cgroups        string
 	caCert         string
+	caKey          string
+	proxyPort      string
 }
 
 // loadConfig reads the env file, then lets environment variables override it.
 func loadConfig(getenv func(string) string) (config, error) {
+	cfg, err := loadSettings(getenv)
+	if err != nil {
+		return config{}, err
+	}
+	if cfg.e2b.APIKey == "" {
+		path := getenv("HIBD_CONFIG")
+		if path == "" {
+			path = defaultConfig
+		}
+		return config{}, fmt.Errorf("E2B_API_KEY is not set (in the environment or %s)", path)
+	}
+	return cfg, nil
+}
+
+func loadSettings(getenv func(string) string) (config, error) {
 	path := getenv("HIBD_CONFIG")
 	if path == "" {
 		path = defaultConfig
@@ -770,12 +794,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		agents:         strings.Fields(get("HIBD_AGENTS", "")),
 		cgroups:        get("HIBD_CGROUPS", "/sys/fs/cgroup/e2b"),
 		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
+		caKey:          get("HIBD_CA_KEY", "/etc/hibernaut/ca.key"),
+		proxyPort:      get("HIBD_PROXY_PORT", "5443"),
 	}
 	if cfg.vaultPath == "" {
 		cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")
-	}
-	if cfg.e2b.APIKey == "" {
-		return config{}, fmt.Errorf("E2B_API_KEY is not set (in the environment or %s)", path)
 	}
 	return cfg, nil
 }

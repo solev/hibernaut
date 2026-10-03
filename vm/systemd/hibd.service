@@ -4,6 +4,7 @@ Description=Hibernaut daemon: keeps busy machines running and cleans up their sn
 After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service
 
 [Service]
+EnvironmentFile=/etc/hibernaut/hibd.env
 ExecStart=/usr/local/bin/hibd daemon
 Restart=always
 RestartSec=5

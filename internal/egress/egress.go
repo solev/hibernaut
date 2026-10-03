@@ -47,6 +47,7 @@ type Server struct {
 
 // Serve accepts connections from l until ctx ends or l fails.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
+	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	done := make(chan struct{})
 	go func() {
@@ -57,7 +58,9 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		}
 	}()
 	defer func() {
+		cancel()
 		close(done)
+		_ = l.Close()
 		wg.Wait()
 	}()
 
@@ -78,6 +81,8 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 }
 
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	defer conn.Close()
 	if s.Accept != nil {
 		if err := s.Accept(conn); err != nil {
@@ -170,6 +175,8 @@ func (s *Server) passthrough(ctx context.Context, client net.Conn, dst netip.Add
 		return
 	}
 	defer upstream.Close()
+	stop := context.AfterFunc(ctx, func() { _ = upstream.Close() })
+	defer stop()
 	copyBoth(client, upstream, peeked)
 }
 
@@ -203,7 +210,9 @@ func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrP
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       terminatedIdle,
 		ErrorLog:          log.New(logWriter{s.logf}, "", 0),
+		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
+	defer server.Close()
 	listener := &singleConnListener{conn: tlsConn, closec: make(chan struct{}), ctx: ctx}
 	var hijacked atomic.Bool
 	server.Handler = s.proxyHandler(sni, transport, upgradeTransport, identify, func() {
@@ -399,10 +408,11 @@ func (c replayConn) Read(p []byte) (int, error) {
 }
 
 type singleConnListener struct {
-	conn   net.Conn
-	once   sync.Once
-	closec chan struct{}
-	ctx    context.Context
+	conn      net.Conn
+	once      sync.Once
+	closeOnce sync.Once
+	closec    chan struct{}
+	ctx       context.Context
 }
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
@@ -419,11 +429,7 @@ func (l *singleConnListener) Accept() (net.Conn, error) {
 }
 
 func (l *singleConnListener) Close() error {
-	select {
-	case <-l.closec:
-	default:
-		close(l.closec)
-	}
+	l.closeOnce.Do(func() { close(l.closec) })
 	return nil
 }
 

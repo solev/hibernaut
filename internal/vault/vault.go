@@ -162,26 +162,37 @@ func CreateKey(path string, rand io.Reader) (Key, error) {
 
 // LoadKey loads a key file and checks its size, owner and mode.
 func LoadKey(path string) (Key, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return Key{}, fmt.Errorf("loading vault key: %w", err)
+	}
+	defer f.Close()
+	return LoadKeyFile(f)
+}
+
+// LoadKeyFile reads an opened key and checks that file's size, owner and mode.
+// It leaves the file open.
+func LoadKeyFile(f *os.File) (Key, error) {
+	info, err := f.Stat()
 	if err != nil {
 		return Key{}, fmt.Errorf("loading vault key: %w", err)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
-		return Key{}, fmt.Errorf("vault key %s: group or others can access it (%v)", path, info.Mode().Perm())
+		return Key{}, fmt.Errorf("vault key %s: group or others can access it (%v)", f.Name(), info.Mode().Perm())
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return Key{}, fmt.Errorf("vault key %s: can't tell its owner", path)
+		return Key{}, fmt.Errorf("vault key %s: can't tell its owner", f.Name())
 	}
 	if uid := os.Geteuid(); int(st.Uid) != uid {
-		return Key{}, fmt.Errorf("vault key %s: belongs to uid %d, not %d", path, st.Uid, uid)
+		return Key{}, fmt.Errorf("vault key %s: belongs to uid %d, not %d", f.Name(), st.Uid, uid)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, keySize+1))
 	if err != nil {
 		return Key{}, fmt.Errorf("loading vault key: %w", err)
 	}
 	if len(data) != keySize {
-		return Key{}, fmt.Errorf("vault key %s: got %d bytes, want %d", path, len(data), keySize)
+		return Key{}, fmt.Errorf("vault key %s: got %d bytes, want %d", f.Name(), len(data), keySize)
 	}
 	var k Key
 	copy(k.b[:], data)
@@ -206,10 +217,20 @@ func (Key) MarshalJSON() ([]byte, error) {
 
 // Load loads path. A missing file is an empty vault.
 func Load(path string) (*File, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return new(File), nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return LoadFile(file)
+}
+
+// LoadFile loads an opened vault, leaving the file open.
+func LoadFile(file *os.File) (*File, error) {
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
