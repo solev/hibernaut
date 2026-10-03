@@ -241,6 +241,10 @@ Per the repo architecture data-store table (https://github.com/e2b-dev/infra/blo
 ```
 Key architectural claim: **"A template and a paused-sandbox snapshot have the same artifact shape — a snapshot is just a new build whose memfile/rootfs are stored as diffs against the template it came from"** (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/docs/ARCHITECTURE.md#L346-L348) — the `SchedulingMetadata` fields (`memfile_base_build_id`, `rootfs_base_build_id`, `memfile_build_ids`/`rootfs_build_ids` lists) referenced in both protos describe this ancestor-chain deduplication.
 
+**Host check (2026-10-03):** `/var/lib/e2b/local-template-storage/<build-id>/` has `memfile`,
+`memfile.header`, `metadata.json`, `rootfs.ext4`, `rootfs.ext4.header` and `snapfile`. A sampled
+`memfile.header` was uncompressed version 3, with 64 bytes of metadata before 40-byte mappings.
+
 ### 6.3 End-to-end flow (**Verified** proto/paths.go; sequence narrative **Docs-only** from ARCHITECTURE.md, not independently re-derived from `pkg/sandbox/{fc,uffd,rootfs,nbd,block,template}` source in this pass)
 
 1. API build endpoints send gRPC `TemplateCreate` to a build node running the orchestrator binary in `template-manager` role.

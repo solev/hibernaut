@@ -62,7 +62,9 @@ The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested h
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
 order, so a value that spans blocks from different builds is still found. It refuses headers newer
 than version 3, which E2B compresses. It reports the secret's name, the encoding, the file and the
-offset, never the value.
+offset, never the value. Known limit: memory is scanned in guest-physical order, so a value split
+across two guest pages that are not adjacent physically can be missed. The canary checks the common
+case.
 
 ## Tasks
 
@@ -162,3 +164,4 @@ End-to-end:
 
 - S1 verified the design on the live host. The proxy can keep the default port 5443 and iptables
   hook. The hardened systemd unit does not need `ReadWritePaths` for iptables on this host.
+- 2026-10-03: Documented the leak scan's guest-physical memory ordering limit.
