@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"slices"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
@@ -70,7 +68,7 @@ func (a *App) secretAdd(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Secret: &secret})
 	}
-	printSecrets(a.Stdout, []hibapi.Secret{secret})
+	hibapi.PrintSecrets(a.Stdout, []hibapi.Secret{secret}, "")
 	return 0
 }
 
@@ -119,7 +117,7 @@ func (a *App) secretLS(args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Secrets: secrets})
 	}
-	printSecrets(a.Stdout, secrets)
+	hibapi.PrintSecrets(a.Stdout, secrets, "")
 	return 0
 }
 
@@ -185,14 +183,4 @@ func apiSecrets(secrets []vault.Secret) []hibapi.Secret {
 
 func apiSecret(s vault.Secret) hibapi.Secret {
 	return hibapi.Secret{Name: s.Name, Env: s.Env, Sites: slices.Clone(s.Sites), Placeholder: s.Placeholder}
-}
-
-func printSecrets(w io.Writer, secrets []hibapi.Secret) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tENV\tSITES\tPLACEHOLDER")
-	for _, s := range secrets {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", termsafe.String(s.Name), termsafe.String(s.Env),
-			termsafe.String(strings.Join(s.Sites, ",")), termsafe.String(s.Placeholder))
-	}
-	tw.Flush()
 }

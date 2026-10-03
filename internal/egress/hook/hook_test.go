@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -30,13 +31,19 @@ func TestParseRulesFindsFirstMatchingRuleAndDuplicates(t *testing.T) {
 }
 
 func TestParseRulesIgnoresQuotedHibernautComment(t *testing.T) {
-	const rules = `-A PREROUTING -i veth-+ -p tcp -m tcp --dport 443 -m comment --comment "hibernaut" -j REDIRECT --to-ports 5443`
+	const rules = `-A PREROUTING -i veth-+ -p tcp -m tcp --dport 443 -m comment --comment "hibernaut" -j REDIRECT --to-ports 5443
+-A PREROUTING -i veth-+ -p tcp -m tcp --dport 443 -m comment --comment hibernaut -j REDIRECT --to-ports 5444`
 	got, err := parseRules(rules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.rules) != 0 {
-		t.Fatalf("len(rules) = %d, want 0", len(got.rules))
+	if len(got.rules) != 1 {
+		t.Fatalf("parsed rules = %#v, want only the unquoted rule", got.rules)
+	}
+	want := []string{"-D", "PREROUTING", "-i", "veth-+", "-p", "tcp", "-m", "tcp",
+		"--dport", "443", "-m", "comment", "--comment", "hibernaut", "-j", "REDIRECT", "--to-ports", "5444"}
+	if !slices.Equal(got.rules[0].deleteArgs, want) {
+		t.Fatalf("delete args = %q, want %q", got.rules[0].deleteArgs, want)
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// e2bServiceAddr is the address where E2B's own services answer machines.
 const e2bServiceAddr = "192.0.2.1"
 
 // TestNoHostAccess is spike S8: a machine can't reach the host's own services or Azure's
@@ -58,7 +57,6 @@ func TestNoHostAccess(t *testing.T) {
 	t.Logf("probed %d addresses on %d ports. Answered: %v", len(addrs), len(ports), slices.Sorted(maps.Keys(answered)))
 }
 
-// hostAddrs returns the host's IPv4 addresses, other than loopback.
 func hostAddrs(t *testing.T, ctx context.Context) []string {
 	t.Helper()
 	var addrs []string
@@ -74,7 +72,6 @@ func hostAddrs(t *testing.T, ctx context.Context) []string {
 	return addrs
 }
 
-// hostPorts returns every TCP port something listens on in the host's network namespace.
 func hostPorts(t *testing.T, ctx context.Context) []string {
 	t.Helper()
 	var ports []string
@@ -87,7 +84,6 @@ func hostPorts(t *testing.T, ctx context.Context) []string {
 	return ports
 }
 
-// e2bServicePorts returns the ports E2B redirects from e2bServiceAddr to its own services.
 func e2bServicePorts(t *testing.T, ctx context.Context) []string {
 	t.Helper()
 	var ports []string

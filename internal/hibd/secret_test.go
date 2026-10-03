@@ -28,7 +28,6 @@ type secretGuest struct {
 	mu       sync.Mutex
 	env      []byte
 	requests []engine.ExecRequest
-	reads    int
 	hostKey  ssh.PublicKey
 }
 
@@ -43,11 +42,10 @@ func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req en
 		}
 		return engine.ExecResult{Stdout: []byte(hibapi.FormatHostKey(g.hostKey) + "\n")}, nil
 	case "cat":
-		g.reads++
 		return engine.ExecResult{Stdout: append([]byte(nil), g.env...)}, nil
 	case "sh":
 		if len(req.Args) == 5 {
-			if got := sha256.Sum256(g.env); req.Args[3] != base64Hash(got[:]) {
+			if got := sha256.Sum256(g.env); req.Args[3] != hexHash(got[:]) {
 				return engine.ExecResult{ExitCode: 75}, nil
 			}
 			next, err := base64.StdEncoding.DecodeString(req.Args[4])
@@ -67,19 +65,13 @@ func (g *secretGuest) envString() string {
 	return string(g.env)
 }
 
-func (g *secretGuest) readCount() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.reads
-}
-
 func (g *secretGuest) allRequests() []engine.ExecRequest {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return slices.Clone(g.requests)
 }
 
-func base64Hash(sum []byte) string {
+func hexHash(sum []byte) string {
 	const hex = "0123456789abcdef"
 	var out strings.Builder
 	for _, b := range sum {
@@ -152,8 +144,9 @@ func TestSecretListAndLogOutputAreTerminalSafe(t *testing.T) {
 		t.Fatalf("invalid secret name exit %d, want 1", code)
 	}
 	a.Stdin = strings.NewReader("gho_realSecretValue1234567890")
-	if code := a.Run(t.Context(), []string{"secret", "add", "github", "-env", "GH_TOKEN", "-bind", "github.com"}); code != 0 {
-		t.Fatalf("secret add exit %d: %s", code, errOut)
+	code, r, err := runJSON(t, a, out, "secret", "add", "github", "-env", "GH_TOKEN", "-bind", "github.com", "-json")
+	if code != 0 || err != nil || r.Secret == nil {
+		t.Fatalf("secret add exit %d, response %#v, err %v, stderr %s", code, r, err, errOut)
 	}
 	out.Reset()
 	if code := a.Run(t.Context(), []string{"secret", "ls"}); code != 0 {
@@ -161,6 +154,10 @@ func TestSecretListAndLogOutputAreTerminalSafe(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), "realSecretValue") {
 		t.Fatalf("unsafe or secret output: %q", out.String())
+	}
+	want := []string{"NAME", "ENV", "SITES", "PLACEHOLDER", "github", "GH_TOKEN", "github.com", r.Secret.Placeholder}
+	if got := strings.Fields(out.String()); !slices.Equal(got, want) {
+		t.Fatalf("secret ls fields = %q, want %q", got, want)
 	}
 	logPath := a.Getenv("HIBD_AUDIT_LOG")
 	l, err := audit.Open(logPath, 0)
@@ -220,18 +217,18 @@ func TestDaemonRedeliversAfterSecretChangeAndRestart(t *testing.T) {
 	waitFor(t, logs, "the daemon writes the first placeholder", func() bool {
 		return strings.Contains(guest.envString(), first.Placeholder)
 	})
-	before := guest.readCount()
 	second := storeTestSecret(t, a, "openai", "OPENAI_API_KEY", "api.openai.com", "sk-proj-realSecretValue1234567890")
+	block := "# BEGIN hibernaut secrets: hibd manages this block and replaces edits\n" +
+		"GH_TOKEN=" + first.Placeholder + "\nOPENAI_API_KEY=" + second.Placeholder + "\n# END hibernaut secrets\n"
 	waitFor(t, logs, "the daemon writes the changed block", func() bool {
-		return strings.Contains(guest.envString(), second.Placeholder)
+		return guest.envString() == "PATH=/usr/bin\n"+block
 	})
 	stop()
-	if guest.readCount() <= before {
-		t.Fatalf("daemon did not re-read /etc/environment after secret change")
-	}
-	readsBeforeRestart := guest.readCount()
+	guest.env = []byte("PATH=/usr/bin\nLOCAL_SETTING=preserved\n")
 	logs, stop = startDaemon(t, a)
-	waitFor(t, logs, "the daemon re-checks after restart", func() bool { return guest.readCount() > readsBeforeRestart })
+	waitFor(t, logs, "the daemon restores both placeholders and preserves local settings after restart", func() bool {
+		return guest.envString() == "PATH=/usr/bin\nLOCAL_SETTING=preserved\n"+block
+	})
 	stop()
 }
 

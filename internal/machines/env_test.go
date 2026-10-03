@@ -19,7 +19,6 @@ import (
 type envFileGuest struct {
 	content           []byte
 	casMismatchesLeft int
-	writes            int
 	requests          []engine.ExecRequest
 }
 
@@ -49,15 +48,19 @@ func (g *envFileGuest) exec(_ context.Context, _ engine.Machine, _ string, req e
 				return engine.ExecResult{ExitCode: 64, Stderr: []byte(err.Error())}, nil
 			}
 			g.content = next
-			g.writes++
 			return engine.ExecResult{}, nil
 		}
 	}
 	return engine.ExecResult{ExitCode: 127, Stderr: []byte(fmt.Sprintf("unexpected %+v", req))}, nil
 }
 
-func TestWriteBlockRetriesCASAndNeverSendsValues(t *testing.T) {
-	guest := &envFileGuest{content: []byte("PATH=/usr/bin\n"), casMismatchesLeft: 1}
+func TestWriteBlockRetriesCASAndReplacesStaleSecretValue(t *testing.T) {
+	const value = "real-secret-value"
+	guest := &envFileGuest{
+		content: []byte("PATH=/usr/bin\n# BEGIN hibernaut secrets: hibd manages this block and replaces edits\n" +
+			"GH_TOKEN=" + value + "\n# END hibernaut secrets\n"),
+		casMismatchesLeft: 1,
+	}
 	e := fake.New(fake.WithExec(guest.exec))
 	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now()})
 	block, err := envblock.Render([]envblock.Var{{Name: "GH_TOKEN", Value: "gho_hibplaceholder1234567890"}})
@@ -67,22 +70,30 @@ func TestWriteBlockRetriesCASAndNeverSendsValues(t *testing.T) {
 	if err := machines.WriteBlock(t.Context(), e, "app1", block); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(guest.content, []byte("GH_TOKEN=gho_hibplaceholder1234567890\n")) {
-		t.Fatalf("/etc/environment = %q", guest.content)
-	}
-	if guest.writes != 1 {
-		t.Fatalf("writes = %d, want 1", guest.writes)
+	const want = "PATH=/usr/bin\n# BEGIN hibernaut secrets: hibd manages this block and replaces edits\n" +
+		"GH_TOKEN=gho_hibplaceholder1234567890\n# END hibernaut secrets\n# concurrent edit\n"
+	if got := string(guest.content); got != want {
+		t.Fatalf("/etc/environment = %q, want %q", got, want)
 	}
 	for _, req := range guest.requests {
-		if strings.Contains(strings.Join(req.Args, " "), "real-secret-value") {
+		if strings.Contains(strings.Join(req.Args, " "), value) {
 			t.Fatalf("real value reached argv: %+v", req)
+		}
+		if req.Cmd == "sh" {
+			payload, err := base64.StdEncoding.DecodeString(req.Args[4])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(payload, []byte(value)) {
+				t.Fatalf("real value reached encoded argv: %q", payload)
+			}
 		}
 	}
 	if err := machines.WriteBlock(t.Context(), e, "app1", block); err != nil {
 		t.Fatal(err)
 	}
-	if guest.writes != 1 {
-		t.Fatalf("unchanged block wrote again; writes = %d", guest.writes)
+	if got := string(guest.content); got != want {
+		t.Fatalf("repeated WriteBlock changed /etc/environment to %q, want %q", got, want)
 	}
 }
 
@@ -92,14 +103,15 @@ func TestWriteBlockReportsMergeErrorWithoutOverwriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	corrupt := []byte(strings.ReplaceAll(string(block), "# END hibernaut secrets\n", ""))
-	guest := &envFileGuest{content: append([]byte("PATH=/usr/bin\n"), corrupt...)}
+	original := append([]byte("PATH=/usr/bin\n"), corrupt...)
+	guest := &envFileGuest{content: append([]byte(nil), original...)}
 	e := fake.New(fake.WithExec(guest.exec))
 	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now()})
 	err = machines.WriteBlock(t.Context(), e, "app1", nil)
 	if err == nil || !strings.Contains(err.Error(), "managed block begin without end") {
 		t.Fatalf("WriteBlock error = %v, want merge error", err)
 	}
-	if guest.writes != 0 {
-		t.Fatalf("corrupt block was overwritten %d times", guest.writes)
+	if !bytes.Equal(guest.content, original) {
+		t.Fatalf("corrupt environment = %q, want original %q", guest.content, original)
 	}
 }

@@ -70,7 +70,7 @@ func (a *app) secretLS(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	printSecrets(a.stdout, r.Secrets)
+	hibapi.PrintSecrets(a.stdout, r.Secrets, "-")
 	return 0
 }
 
@@ -121,15 +121,6 @@ func (a *app) readSecretValue(name string) (string, error) {
 		return vault.ReadValue(bytes.NewReader(data))
 	}
 	return vault.ReadValue(a.stdin)
-}
-
-func printSecrets(w io.Writer, secrets []hibapi.Secret) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tENV\tSITES\tPLACEHOLDER")
-	for _, s := range secrets {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", safe(s.Name), safe(s.Env), safe(strings.Join(s.Sites, ",")), safe(s.Placeholder))
-	}
-	tw.Flush()
 }
 
 func printLogEntries(w io.Writer, entries []hibapi.LogEntry) {

@@ -110,3 +110,25 @@ func TestSecretAddSendsFullStdinAfterWakeRetry(t *testing.T) {
 		t.Fatalf("stdin lengths first=%d second=%d, want %d", len(first), len(second), len(value))
 	}
 }
+
+func TestSecretListShowsReturnedMetadata(t *testing.T) {
+	h := newHost(t)
+	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+		if !slices.Equal(words, []string{"secret", "ls", "--json"}) {
+			return 0, false
+		}
+		return writeTestResponse(stdout, hibapi.Response{Secrets: []hibapi.Secret{{
+			Name: "github", Env: "GH_TOKEN", Sites: []string{"github.com", "*.github.com"},
+			Placeholder: "gho_hibplaceholder1234567890",
+		}}}), true
+	}
+	c := initClient(t, h)
+	if code := c.hib("secret", "ls"); code != 0 {
+		t.Fatalf("secret ls exit %d, stderr %s", code, c.errOut)
+	}
+	want := []string{"NAME", "ENV", "SITES", "PLACEHOLDER", "github", "GH_TOKEN",
+		"github.com,*.github.com", "gho_hibplaceholder1234567890"}
+	if got := strings.Fields(c.out.String()); !slices.Equal(got, want) {
+		t.Fatalf("secret ls fields = %q, want %q", got, want)
+	}
+}

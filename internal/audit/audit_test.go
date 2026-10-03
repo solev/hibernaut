@@ -271,12 +271,26 @@ func TestReadSkipsVeryLongCorruptLineAndContinues(t *testing.T) {
 }
 
 func TestReadMissingFiles(t *testing.T) {
-	got, err := audit.Read(filepath.Join(t.TempDir(), "missing.jsonl"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Corrupt != 0 || len(got.Entries) != 0 {
-		t.Errorf("Read missing = %#v, want empty result", got)
+	for _, suffix := range []string{"", ".1"} {
+		t.Run("present file suffix "+suffix, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			got, err := audit.Read(path, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Corrupt != 0 || len(got.Entries) != 0 {
+				t.Fatalf("Read missing = %#v, want empty result", got)
+			}
+			want := []audit.Entry{entry("web", "/user")}
+			writeJSONLines(t, path+suffix, want[0])
+			got, err = audit.Read(path, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Corrupt != 0 || !reflect.DeepEqual(got.Entries, want) {
+				t.Errorf("Read with one file missing = %#v, want entries %#v and no corrupt lines", got, want)
+			}
+		})
 	}
 }
 
