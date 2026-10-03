@@ -56,7 +56,7 @@ type cacheEntry struct {
 	elem *list.Element
 }
 
-// Init makes the Hibernaut CA if both files are missing.
+// Init makes the Hibernaut CA, reusing a key left by an interrupted initialization.
 //
 // If both files exist and Load accepts them, Init leaves them alone.
 func Init(certPath, keyPath, commonName string) (bool, error) {
@@ -74,19 +74,19 @@ func Init(certPath, keyPath, commonName string) (bool, error) {
 			return false, err
 		}
 		return false, nil
-	case certExists || keyExists:
-		return false, fmt.Errorf("partial CA state at %s and %s: remove both files or restore the missing one", certPath, keyPath)
+	case certExists:
+		return false, fmt.Errorf("CA key is missing at %s: restore it to keep trusting %s", keyPath, certPath)
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	var key *ecdsa.PrivateKey
+	if keyExists {
+		key, err = loadKey(keyPath)
+	} else {
+		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	}
 	if err != nil {
 		return false, err
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return false, err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	now := time.Now()
 	serial, err := randomSerial()
 	if err != nil {
@@ -114,8 +114,15 @@ func Init(certPath, keyPath, commonName string) (bool, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	if err := writeNewFile(keyPath, keyPEM, 0o600); err != nil {
-		return false, err
+	if !keyExists {
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			return false, err
+		}
+		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+		if err := writeNewFile(keyPath, keyPEM, 0o600); err != nil {
+			return false, err
+		}
 	}
 	if err := writeNewFile(certPath, certPEM, 0o644); err != nil {
 		return false, err
@@ -125,16 +132,9 @@ func Init(certPath, keyPath, commonName string) (bool, error) {
 
 // Load reads the Hibernaut CA from disk.
 func Load(certPath, keyPath string) (*CA, error) {
-	if err := checkKeyFile(keyPath); err != nil {
-		return nil, err
-	}
-	keyPEM, err := os.ReadFile(keyPath)
+	key, err := loadKey(keyPath)
 	if err != nil {
 		return nil, err
-	}
-	key, err := parseKey(keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("reading CA key: %w", err)
 	}
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
@@ -161,6 +161,21 @@ func Load(certPath, keyPath string) (*CA, error) {
 		cache:   map[string]*cacheEntry{},
 		order:   list.New(),
 	}, nil
+}
+
+func loadKey(path string) (*ecdsa.PrivateKey, error) {
+	if err := checkKeyFile(path); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := parseKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA key: %w", err)
+	}
+	return key, nil
 }
 
 // Leaf returns a certificate for host.

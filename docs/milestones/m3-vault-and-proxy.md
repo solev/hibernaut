@@ -102,8 +102,13 @@ adjacent physically can be missed. The canary checks the common case.
 - [x] AES-GCM vault under `/var/lib/hibernaut/`, key in a root-only file.
 - [x] `hib secret add NAME --env VAR --bind site,site` (value from stdin, never from arguments),
       `hib secret ls` (never shows values), `hib secret rm`.
-- [x] Placeholders: same prefix, length and characters as the real value; stable when the real
-      value rotates.
+- [x] Opaque placeholders retain the real token's prefix, characters and initial length.
+      Renewing the same credential keeps its placeholder byte for byte, even if its length
+      changes. Only a changed token type or prefix, or changed exposed JWT identity claims,
+      makes a new placeholder. JWT identity excludes the top-level fields `exp`, `iat`, `nbf`,
+      `jti`, `auth_time`, `nonce`, `at_hash`, `c_hash`, `s_hash` and `sid`. It includes every other
+      claim (§4.1). JWT placeholders retain the claims with an expiry in 2100 and a fake
+      signature. Their encoded length may differ.
 
 **Delivery**
 
@@ -217,3 +222,10 @@ End-to-end:
   behaviour.
 - 2026-10-03: Recorded the WebSocket limit. Authorization on upgrade requests is swapped.
   Frames after the upgrade are neither swapped nor scrubbed.
+- 2026-10-03: CA initialization resumes from a published key when its certificate is missing.
+  It never replaces an existing certificate. Vault key creation publishes a complete file
+  atomically. An empty vault can repair an incomplete key, but a vault with secrets requires
+  its original key. The image's trust script replaces `/etc/environment` atomically.
+- 2026-10-03: Credential renewals keep placeholders despite length, expiry, nonce, token hash,
+  session ID or signing-key changes. Changed token types, prefixes or exposed JWT identity
+  claims make new placeholders. JWT placeholders now use an expiry of 2100-01-01 (§4.4).

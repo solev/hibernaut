@@ -2,6 +2,7 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	crand "crypto/rand"
@@ -11,10 +12,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -33,13 +36,10 @@ const (
 // ErrNotFound is wrapped when removing a secret that does not exist.
 var ErrNotFound = errors.New("secret not found")
 
+var errIncompleteKey = errors.New("vault key is incomplete")
+
 // Secret is the public metadata for a bound secret. It never holds the real value.
-type Secret struct {
-	Name        string   `json:"name"`
-	Env         string   `json:"env"`
-	Sites       []string `json:"sites"`
-	Placeholder string   `json:"placeholder"`
-}
+type Secret = hibapi.Secret
 
 // Revealed is a secret with its real value, for host-only code.
 type Revealed struct {
@@ -125,22 +125,22 @@ func NewKey(rand io.Reader) (Key, error) {
 	return k, nil
 }
 
-// CreateKey makes a new key file with mode 0600. It fails if the file already exists.
+// CreateKey atomically makes a key file with mode 0600. It fails if the file already exists.
 func CreateKey(path string, rand io.Reader) (Key, error) {
 	k, err := NewKey(rand)
 	if err != nil {
 		return Key{}, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".vault-key-*")
 	if err != nil {
 		return Key{}, fmt.Errorf("creating vault key: %w", err)
 	}
-	remove := true
-	defer func() {
-		if remove {
-			os.Remove(path)
-		}
-	}()
+	defer os.Remove(f.Name())
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return Key{}, err
+	}
 	n, err := f.Write(k.b[:])
 	if err != nil || n != len(k.b) {
 		f.Close()
@@ -156,7 +156,12 @@ func CreateKey(path string, rand io.Reader) (Key, error) {
 	if err := f.Close(); err != nil {
 		return Key{}, err
 	}
-	remove = false
+	if err := os.Link(f.Name(), path); err != nil {
+		return Key{}, fmt.Errorf("creating vault key: %w", err)
+	}
+	if err := syncDir(dir); err != nil {
+		return Key{}, err
+	}
 	return k, nil
 }
 
@@ -191,7 +196,10 @@ func LoadKeyFile(f *os.File) (Key, error) {
 	if err != nil {
 		return Key{}, fmt.Errorf("loading vault key: %w", err)
 	}
-	if len(data) != keySize {
+	if len(data) < keySize {
+		return Key{}, fmt.Errorf("%w at %s: got %d bytes, want %d", errIncompleteKey, f.Name(), len(data), keySize)
+	}
+	if len(data) > keySize {
 		return Key{}, fmt.Errorf("vault key %s: got %d bytes, want %d", f.Name(), len(data), keySize)
 	}
 	var k Key
@@ -285,8 +293,9 @@ func (f *File) Put(key Key, name, env string, sites []string, value string) (Sec
 	values := revealedValues(revealed)
 	values = append(values, value)
 	otherPlaceholders := f.placeholdersExcept(s.Name)
-	if i := f.index(name); i >= 0 && Compatible(f.secrets[i].Placeholder, value) {
-		s.Placeholder = f.secrets[i].Placeholder
+	if i := slices.IndexFunc(revealed, func(r Revealed) bool { return r.Name == name }); i >= 0 &&
+		compatibleRenewal(revealed[i].Value, value) {
+		s.Placeholder = revealed[i].Placeholder
 	} else {
 		for range 16 {
 			p, err := Placeholder(value, crand.Reader)
@@ -379,6 +388,7 @@ func (f *File) Save(path string) error {
 }
 
 // Update locks the vault, loads or makes its key, runs fn, then saves the vault.
+// It repairs incomplete keys only when the vault has no secrets.
 func Update(path, keyPath string, fn func(*File, Key) error) error {
 	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -395,6 +405,12 @@ func Update(path, keyPath string, fn func(*File, Key) error) error {
 		return err
 	}
 	key, err := LoadKey(keyPath)
+	if errors.Is(err, errIncompleteKey) && len(f.secrets) == 0 {
+		if err := os.Remove(keyPath); err != nil {
+			return err
+		}
+		key, err = CreateKey(keyPath, crand.Reader)
+	}
 	if errors.Is(err, fs.ErrNotExist) {
 		if len(f.secrets) > 0 {
 			return fmt.Errorf("vault key is missing: existing secrets can't be opened without it")
@@ -629,8 +645,8 @@ func validateValue(value string) error {
 	return nil
 }
 
-// Placeholder returns a safe placeholder with the same length and prefix as value. Body
-// separators stay in place.
+// Placeholder returns an opaque token with the same length, prefix and body separators as
+// value, or a JWT with its claims, an expiry in 2100 and a random signature.
 func Placeholder(value string, rand io.Reader) (string, error) {
 	if err := validateValue(value); err != nil {
 		return "", err
@@ -671,7 +687,7 @@ func Compatible(placeholder, value string) bool {
 	pJWT, pOK := splitJWT(placeholder)
 	vJWT, vOK := splitJWT(value)
 	if pOK || vOK {
-		return pOK && vOK && pJWT.public == vJWT.public
+		return pOK && vOK && reflect.DeepEqual(jwtIdentityClaims(pJWT.claims), jwtIdentityClaims(vJWT.claims))
 	}
 	pp := placeholderPrefix(placeholder)
 	vp := placeholderPrefix(value)
@@ -682,8 +698,18 @@ func Compatible(placeholder, value string) bool {
 		strings.HasPrefix(pp, vp) && len(value) >= len(pp) && value[len(pp)-1] == pp[len(pp)-1]
 }
 
+func compatibleRenewal(previous, value string) bool {
+	_, previousJWT := splitJWT(previous)
+	_, valueJWT := splitJWT(value)
+	if previousJWT || valueJWT {
+		return Compatible(previous, value)
+	}
+	return placeholderPrefix(previous) == placeholderPrefix(value)
+}
+
 type jwtParts struct {
-	public, signature string
+	header, signature string
+	claims            map[string]any
 }
 
 func splitJWT(s string) (jwtParts, bool) {
@@ -699,7 +725,30 @@ func splitJWT(s string) (jwtParts, bool) {
 	if err := json.Unmarshal(header, &h); err != nil || h["alg"] == nil {
 		return jwtParts{}, false
 	}
-	return jwtParts{public: parts[0] + "." + parts[1] + ".", signature: parts[2]}, true
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return jwtParts{}, false
+	}
+	var claims map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&claims); err != nil || claims == nil {
+		return jwtParts{}, false
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return jwtParts{}, false
+	}
+	return jwtParts{header: parts[0], signature: parts[2], claims: claims}, true
+}
+
+func jwtIdentityClaims(claims map[string]any) map[string]any {
+	identity := maps.Clone(claims)
+	for _, name := range []string{
+		"exp", "iat", "nbf", "jti", "auth_time", "nonce", "at_hash", "c_hash", "s_hash", "sid",
+	} {
+		delete(identity, name)
+	}
+	return identity
 }
 
 func jwtPlaceholder(jwt jwtParts, rand io.Reader) (string, error) {
@@ -710,7 +759,13 @@ func jwtPlaceholder(jwt jwtParts, rand io.Reader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jwt.public + sig, nil
+	claims := maps.Clone(jwt.claims)
+	claims["exp"] = int64(4102444800)
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	return jwt.header + "." + base64.RawURLEncoding.EncodeToString(payload) + "." + sig, nil
 }
 
 var knownPrefixes = []string{
@@ -791,18 +846,17 @@ const (
 )
 
 func chooseAlphabet(body string, fixed []bool) string {
-	full := randomBytes(body, fixed)
-	chars := significant(body, fixed)
+	chars := randomBytes(body, fixed)
 	switch {
 	case allIn(chars, alphabetDigits):
 		return alphabetDigits
-	case allIn(chars, alphabetLowerHex) && hasAny(chars, "abcdef"):
+	case allIn(chars, alphabetLowerHex) && strings.ContainsAny(chars, "abcdef"):
 		return alphabetLowerHex
-	case allIn(chars, alphabetUpperHex) && hasAny(chars, "ABCDEF"):
+	case allIn(chars, alphabetUpperHex) && strings.ContainsAny(chars, "ABCDEF"):
 		return alphabetUpperHex
 	case allIn(chars, alphabetBase62):
 		return alphabetBase62
-	case strings.ContainsAny(full, "+/") && allIn(chars, alphabetBase64):
+	case strings.ContainsAny(chars, "+/") && allIn(chars, alphabetBase64):
 		return alphabetBase64
 	default:
 		return alphabetBase62
@@ -819,23 +873,6 @@ func randomBytes(body string, fixed []bool) string {
 	return b.String()
 }
 
-func significant(body string, fixed []bool) string {
-	var b strings.Builder
-	for i, c := range []byte(body) {
-		if !fixed[i] {
-			b.WriteByte(c)
-		}
-	}
-	if b.Len() == 0 {
-		for i, c := range []byte(body) {
-			if !fixed[i] {
-				b.WriteByte(c)
-			}
-		}
-	}
-	return b.String()
-}
-
 func allIn(s, alphabet string) bool {
 	for _, c := range s {
 		if !strings.ContainsRune(alphabet, c) {
@@ -843,10 +880,6 @@ func allIn(s, alphabet string) bool {
 		}
 	}
 	return s != ""
-}
-
-func hasAny(s, chars string) bool {
-	return strings.ContainsAny(s, chars)
 }
 
 func canSpellHIB(alphabet string) bool {

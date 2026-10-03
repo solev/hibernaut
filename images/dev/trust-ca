@@ -12,16 +12,21 @@ update-ca-certificates
 openssl verify -CAfile "$bundle" "$cert" >/dev/null
 
 install -d -m 755 "$(dirname "$env_file")"
-touch "$env_file"
-chmod 644 "$env_file"
-tmp=$(mktemp)
-awk '!/^(NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CODEX_CA_CERTIFICATE)=/' \
-	"$env_file" >"$tmp"
+tmp="${env_file}.hibernaut-$$-${RANDOM}-${RANDOM}"
+(set -o noclobber; : >"$tmp")
+trap 'rm -f "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+if [[ ! -e "$env_file" ]]; then
+	: >"$tmp"
+else
+	awk '!/^(NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CODEX_CA_CERTIFICATE)=/' \
+		"$env_file" >"$tmp"
+fi
 cat >>"$tmp" <<'EOF'
 NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hibernaut.crt
 SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 CODEX_CA_CERTIFICATE=/etc/ssl/certs/ca-certificates.crt
 EOF
-cat "$tmp" >"$env_file"
-rm -f "$tmp"
+chmod 644 "$tmp"
+mv -f "$tmp" "$env_file"

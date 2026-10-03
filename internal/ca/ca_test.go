@@ -16,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,24 +98,55 @@ func TestInitMakesTheCAOnce(t *testing.T) {
 	}
 }
 
-func TestInitRefusesHalfState(t *testing.T) {
-	for name, write := range map[string]func(certPath, keyPath string) error{
-		"only key":  func(_ string, keyPath string) error { return os.WriteFile(keyPath, []byte("key"), 0o600) },
-		"only cert": func(certPath, _ string) error { return os.WriteFile(certPath, []byte("cert"), 0o644) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			certPath, keyPath := caFiles(t)
-			if err := write(certPath, keyPath); err != nil {
-				t.Fatal(err)
-			}
-			created, err := ca.Init(certPath, keyPath, "Hibernaut CA tests")
-			if err == nil {
-				t.Fatalf("Init created = %v, want an error", created)
-			}
-			if !strings.Contains(err.Error(), "remove both files or restore the missing one") {
-				t.Fatalf("Init error = %q", err)
-			}
-		})
+func TestInitRecoversAfterTheKeyWasPublished(t *testing.T) {
+	original, certPath, keyPath := initCA(t)
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(certPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(certPath), ".hibernaut-ca-interrupted"), []byte("partial certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := ca.Init(certPath, keyPath, "Hibernaut CA tests")
+	if err != nil || !created {
+		t.Fatalf("recovering Init = %v, %v, want true, nil", created, err)
+	}
+	recovered, err := ca.Load(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered.Now = func() time.Time { return testNow }
+	leaf, err := recovered.Leaf("recovered.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leaf.Leaf.Verify(x509.VerifyOptions{
+		Roots: original.Pool(), DNSName: "recovered.example.com", CurrentTime: testNow,
+	}); err != nil {
+		t.Fatalf("recovered CA no longer uses the published key: %v", err)
+	}
+	if got, err := os.ReadFile(keyPath); err != nil || !bytes.Equal(got, keyPEM) {
+		t.Fatal("recovery changed the published key")
+	}
+	if created, err := ca.Init(certPath, keyPath, "ignored"); err != nil || created {
+		t.Fatalf("completed Init = %v, %v, want false, nil", created, err)
+	}
+}
+
+func TestInitPreservesACertificateWhoseKeyIsMissing(t *testing.T) {
+	original, certPath, keyPath := initCA(t)
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := ca.Init(certPath, keyPath, "replacement"); err == nil || created {
+		t.Fatalf("Init with a missing key = %v, %v, want false and an error", created, err)
+	}
+	if got, err := os.ReadFile(certPath); err != nil || !bytes.Equal(got, original.CertPEM()) {
+		t.Fatal("Init changed an existing trusted certificate")
 	}
 }
 
@@ -199,7 +229,7 @@ func TestLeafWorksInTLSHandshake(t *testing.T) {
 	}
 }
 
-func TestLeafCacheRenewsCapsAndEvicts(t *testing.T) {
+func TestLeafReusesValidCertificatesAndRenewsBeforeExpiry(t *testing.T) {
 	c, _, _ := initCA(t)
 	first, err := c.Leaf("one.example.com")
 	if err != nil {
@@ -209,8 +239,9 @@ func TestLeafCacheRenewsCapsAndEvicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != second {
-		t.Fatal("repeat Leaf returned a different pointer")
+	verifyLeaf(t, c, second, "one.example.com", testNow)
+	if !bytes.Equal(first.Certificate[0], second.Certificate[0]) {
+		t.Fatal("repeat Leaf changed a still-valid certificate")
 	}
 
 	c.Now = func() time.Time { return first.Leaf.NotAfter.Add(-23 * time.Hour) }
@@ -218,10 +249,16 @@ func TestLeafCacheRenewsCapsAndEvicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renewed == first {
-		t.Fatal("Leaf reused a cert with less than one day left")
+	afterExpiry := first.Leaf.NotAfter.Add(time.Minute)
+	verifyLeaf(t, c, renewed, "one.example.com", afterExpiry)
+	if _, err := first.Leaf.Verify(x509.VerifyOptions{
+		Roots: c.Pool(), DNSName: "one.example.com", CurrentTime: afterExpiry,
+	}); err == nil {
+		t.Fatal("the original certificate is still valid after its expiry")
 	}
+}
 
+func TestLeafLifetimeDoesNotExceedCALifetime(t *testing.T) {
 	certPath, keyPath := caFiles(t)
 	writeTestCert(t, certPath, keyPath, certSpec{isCA: true, notAfter: testNow.Add(3 * time.Hour)})
 	shortCA, err := ca.Load(certPath, keyPath)
@@ -236,32 +273,35 @@ func TestLeafCacheRenewsCapsAndEvicts(t *testing.T) {
 	if want := testNow.Add(3 * time.Hour); !capped.Leaf.NotAfter.Equal(want) {
 		t.Fatalf("leaf NotAfter = %v, want CA NotAfter %v", capped.Leaf.NotAfter, want)
 	}
+	verifyLeaf(t, shortCA, capped, "two.example.com", testNow)
+}
 
+func TestLeafVerifiesAfterCacheOverflow(t *testing.T) {
+	c, _, _ := initCA(t)
 	c.MaxHosts = 2
 	oldest, err := c.Leaf("oldest.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Leaf("newest.example.com"); err != nil {
-		t.Fatal(err)
+	for _, host := range []string{"newest.example.com", "overflow.example.com"} {
+		leaf, err := c.Leaf(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifyLeaf(t, c, leaf, host, testNow)
 	}
-	if _, err := c.Leaf("overflow.example.com"); err != nil {
-		t.Fatal(err)
-	}
-	c.Now = func() time.Time { return testNow }
 	reloaded, err := c.Leaf("oldest.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded == oldest {
-		t.Fatal("oldest host stayed in a full cache")
+	verifyLeaf(t, c, reloaded, "oldest.example.com", testNow)
+	if bytes.Equal(reloaded.Certificate[0], oldest.Certificate[0]) {
+		t.Fatal("Leaf returned the evicted certificate")
 	}
 }
 
-func TestLeafConcurrentCallsMintOnce(t *testing.T) {
+func TestLeafConcurrentCallsReturnTrustedCertificates(t *testing.T) {
 	c, _, _ := initCA(t)
-	var minted atomic.Int64
-	c.OnMint = func(string) { minted.Add(1) }
 	var wg sync.WaitGroup
 	certs := make(chan *tls.Certificate, 32)
 	errs := make(chan error, 32)
@@ -283,17 +323,22 @@ func TestLeafConcurrentCallsMintOnce(t *testing.T) {
 	for err := range errs {
 		t.Fatal(err)
 	}
-	var first *tls.Certificate
+	var verified int
 	for cert := range certs {
-		if first == nil {
-			first = cert
-		}
-		if cert != first {
-			t.Fatal("concurrent Leaf calls returned different cert pointers")
-		}
+		verifyLeaf(t, c, cert, "same.example.com", testNow)
+		verified++
 	}
-	if minted.Load() != 1 {
-		t.Fatalf("minted %d certs, want 1", minted.Load())
+	if verified != 32 {
+		t.Fatalf("received %d trusted certificates, want 32", verified)
+	}
+}
+
+func verifyLeaf(t *testing.T, c *ca.CA, cert *tls.Certificate, host string, now time.Time) {
+	t.Helper()
+	if _, err := cert.Leaf.Verify(x509.VerifyOptions{
+		Roots: c.Pool(), DNSName: host, CurrentTime: now,
+	}); err != nil {
+		t.Fatalf("Verify(%s): %v", host, err)
 	}
 }
 
@@ -339,7 +384,7 @@ func writeTestCert(t *testing.T, certPath, keyPath string, spec certSpec) {
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "Hibernaut CA tests", Organization: []string{"Hibernaut"}},
-		NotBefore:             spec.notAfter.Add(-time.Hour),
+		NotBefore:             testNow.Add(-time.Hour),
 		NotAfter:              spec.notAfter,
 		IsCA:                  spec.isCA,
 		BasicConstraintsValid: true,

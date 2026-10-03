@@ -41,9 +41,9 @@ func TestPlaceholderShapes(t *testing.T) {
 		{
 			name:   "jwt",
 			value:  jwt,
-			prefix: strings.Join(strings.Split(jwt, ".")[:2], ".") + ".",
+			prefix: strings.Split(jwt, ".")[0] + ".",
 			keeps: func(p string) bool {
-				return strings.Join(strings.Split(p, ".")[:2], ".") == strings.Join(strings.Split(jwt, ".")[:2], ".")
+				return strings.Split(p, ".")[0] == strings.Split(jwt, ".")[0]
 			},
 		},
 		{name: "aws access key", value: "AKIA" + strings.Repeat("A", 16), prefix: "AKIA"},
@@ -57,7 +57,7 @@ func TestPlaceholderShapes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got) != len(tc.value) {
+			if tc.name != "jwt" && len(got) != len(tc.value) {
 				t.Fatalf("placeholder length = %d, want %d", len(got), len(tc.value))
 			}
 			if !strings.HasPrefix(got, tc.prefix) {
@@ -492,6 +492,117 @@ func TestUpdateKeepsConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestUpdateRecoversAnInterruptedKeyForAnEmptyVault(t *testing.T) {
+	for _, size := range []int{0, 1, 31} {
+		t.Run(fmt.Sprintf("%d bytes", size), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "vault.json")
+			keyPath := filepath.Join(dir, "vault.key")
+			if err := os.WriteFile(keyPath, bytes.Repeat([]byte{1}, size), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".vault-key-interrupted"), []byte("partial key"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			value := "gho_" + strings.Repeat("az", 20)
+			for range 2 {
+				if err := vault.Update(path, keyPath, func(f *vault.File, key vault.Key) error {
+					_, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, value)
+					return err
+				}); err != nil {
+					t.Fatalf("Update after interrupted key creation: %v", err)
+				}
+			}
+			key, err := vault.LoadKey(keyPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := vault.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			secrets, err := f.Open(key)
+			if err != nil || len(secrets) != 1 || secrets[0].Value != value {
+				t.Fatalf("Open after recovery = %#v, %v, want the stored value", secrets, err)
+			}
+			info, err := os.Stat(keyPath)
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("recovered key mode = %v, %v, want 0600", info, err)
+			}
+		})
+	}
+}
+
+func TestCreateKeyNeverReplacesACompleteKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "vault.key")
+	key, err := vault.CreateKey(keyPath, seededRand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f vault.File
+	value := "gho_" + strings.Repeat("az", 20)
+	if _, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, value); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vault.CreateKey(keyPath, bytes.NewReader(bytes.Repeat([]byte{9}, 32))); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("CreateKey on a complete key = %v, want file exists", err)
+	}
+	loaded, err := vault.LoadKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := f.Open(loaded)
+	if err != nil || len(secrets) != 1 || secrets[0].Value != value {
+		t.Fatalf("Open with preserved key = %#v, %v, want the stored value", secrets, err)
+	}
+}
+
+func TestUpdatePreservesAnIncompleteKeyWhenSecretsAlreadyExist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.json")
+	keyPath := filepath.Join(dir, "vault.key")
+	value := "gho_" + strings.Repeat("az", 20)
+	put := func(f *vault.File, key vault.Key) error {
+		_, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, value)
+		return err
+	}
+	if err := vault.Update(path, keyPath, put); err != nil {
+		t.Fatal(err)
+	}
+	complete, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := complete[:15]
+	if err := os.WriteFile(keyPath, partial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Update(path, keyPath, put); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("Update with existing secrets and an incomplete key = %v, want an error", err)
+	}
+	if got, err := os.ReadFile(keyPath); err != nil || !bytes.Equal(got, partial) {
+		t.Fatal("Update replaced the incomplete key of an existing vault")
+	}
+	if err := os.WriteFile(keyPath, complete, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Update(path, keyPath, put); err != nil {
+		t.Fatalf("Update after restoring the original key: %v", err)
+	}
+	key, err := vault.LoadKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := vault.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := f.Open(key)
+	if err != nil || len(secrets) != 1 || secrets[0].Value != value {
+		t.Fatalf("Open after restoring the key = %#v, %v", secrets, err)
+	}
+}
+
 func TestUpdateDoesNotCreateMissingKeyForExistingVault(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.json")
@@ -532,6 +643,26 @@ func TestCreateKeyRemovesPartialFileOnFailure(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("key path exists after failed CreateKey: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, ".vault-key-interrupted"), []byte("partial key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := vault.CreateKey(path, seededRand())
+	if err != nil {
+		t.Fatalf("CreateKey retry: %v", err)
+	}
+	var f vault.File
+	value := "gho_" + strings.Repeat("az", 20)
+	if _, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, value); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := vault.LoadKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := f.Open(loaded)
+	if err != nil || len(secrets) != 1 || secrets[0].Value != value {
+		t.Fatalf("Open after CreateKey retry = %#v, %v", secrets, err)
+	}
 }
 
 func FuzzPlaceholder(f *testing.F) {
@@ -552,7 +683,17 @@ func FuzzPlaceholder(f *testing.F) {
 			t.Skip()
 		}
 		if len(placeholder) != len(value) {
-			t.Fatalf("len = %d, want %d", len(placeholder), len(value))
+			parts := strings.Split(placeholder, ".")
+			if len(parts) != 3 {
+				t.Fatalf("opaque placeholder length = %d, want %d", len(placeholder), len(value))
+			}
+			payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+			var claims struct {
+				Expires int64 `json:"exp"`
+			}
+			if err != nil || json.Unmarshal(payload, &claims) != nil || claims.Expires != 4102444800 {
+				t.Fatalf("unequal-length placeholder is not a far-future JWT: %q", placeholder)
+			}
 		}
 		if placeholder == value || strings.Contains(placeholder, value) || strings.Contains(value, placeholder) {
 			t.Fatalf("placeholder %q is not safely distinct from value", placeholder)

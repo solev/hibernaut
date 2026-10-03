@@ -95,9 +95,17 @@ and key-based, so v1 needs no HTTPS API, domain, TLS certificates or API keys.
 Every credential is a **bound secret**: a name, a real value (encrypted, host only), the sites it may
 be sent to, and a **placeholder**.
 
-- **Placeholder** = the same prefix and length as the real token plus randomness (e.g.
-  `gho_hib…`), so tools accept it as a real token. It is stable, so rotating the real value changes
-  nothing inside machines.
+- **Placeholder** = the same prefix and initial length as an opaque real token plus randomness
+  (e.g. `gho_hib…`), so tools accept it as a real token. JWT placeholders carry the real claims,
+  an expiry of 2100-01-01 and a fake signature (§4.4). Their encoded length may differ.
+  A renewal of the same credential keeps its placeholder byte for byte, even when the real
+  token's length changes. A new placeholder is made only when the token type or prefix changes,
+  or when a JWT's exposed identity claims change. JWT identity comparison uses every decoded
+  claim except the top-level renewal fields `exp`, `iat`, `nbf`, `jti`, `auth_time`, `nonce`,
+  `at_hash`, `c_hash`, `s_hash` and `sid`. All other claims count as identity, including `sub`,
+  `iss`, `aud`, `email`, `email_verified` and all fields under `https://api.openai.com/auth`
+  (account, plan, user ID and FedRAMP status). JWT headers, signatures, claim order and JSON
+  whitespace do not change identity.
 - **Delivery:** `hibd` writes a managed block of placeholders (`GH_TOKEN=…`, …) into each
   machine's `/etc/environment`. Tools that read a login file instead (Codex, §4.4) get that file
   with placeholders in it. `hibd` writes both on create, on resume, and whenever secrets change.
