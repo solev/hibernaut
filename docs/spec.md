@@ -436,9 +436,6 @@ All three are native E2B operations. Hibernaut only wraps them.
 | `hib image save app rocket` | `POST /sandboxes/{id}/snapshots` `{name: "rocket"}` | An image with memory, so processes keep running; it outlives `app` |
 | `hib fork app --count 3` | `POST /sandboxes/{id}/fork` | `app` pauses for a moment and keeps running; 3 new machines in the same state |
 
-The dev image trusts the Hibernaut CA after `hib image build dev`. Machines made before that build
-need to be recreated to trust it.
-
 Copies carry everything in the machine. That's fine, because a machine holds only placeholders and
 your public key. A fork carries the origin's SSH host key until it's re-keyed (see SSH path).
 

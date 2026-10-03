@@ -3,7 +3,7 @@ LDFLAGS := -X github.com/solev/hibernaut/internal/version.Version=$(VERSION)
 STATICCHECK := go run honnef.co/go/tools/cmd/staticcheck@v0.8.1
 SHELL_SCRIPTS := azure/*.sh vm/*.sh $(filter-out %.go,$(wildcard vm/lib/*)) vm/idle-deallocate/idle-deallocate \
 	images/dev/packages images/dev/configure images/dev/start images/dev/ready images/dev/machine-init \
-	images/dev/hib-term.sh
+	images/dev/hib-term.sh images/dev/trust-ca
 
 .PHONY: build build-linux lint test test-host generate deploy up down e2e e2e-slow
 

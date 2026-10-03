@@ -6,16 +6,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"io"
 	"maps"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/solev/hibernaut/images"
+	"github.com/solev/hibernaut/internal/ca"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -795,28 +791,17 @@ func (b *syncBuffer) String() string {
 
 func testCAPEM(t *testing.T) []byte {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	if _, err := ca.Init(certPath, keyPath, "Hibernaut Test CA"); err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "Hibernaut Test CA"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return caPEM
 }
 
 // startDaemon runs a's daemon, looking every 10ms, until stop is called or the test ends.

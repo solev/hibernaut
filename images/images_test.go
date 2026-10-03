@@ -3,25 +3,22 @@ package images
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
 	"io/fs"
-	"math/big"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/solev/hibernaut/internal/ca"
 )
 
 func TestSpecDev(t *testing.T) {
-	caPEM := testCertPEM(t, true)
+	caPEM := testCAPEM(t)
 	spec, err := Spec(Default, caPEM)
 	if err != nil {
 		t.Fatal(err)
@@ -59,9 +56,11 @@ func TestSpecDev(t *testing.T) {
 	}
 	caStep := spec.Steps[2].Cmd
 	if !strings.Contains(caStep, "/usr/local/share/ca-certificates/hibernaut.crt") ||
-		!strings.Contains(caStep, "update-ca-certificates") ||
-		!strings.Contains(caStep, "openssl verify -CAfile") {
+		!strings.HasSuffix(caStep, "; /usr/lib/hibernaut/trust-ca") {
 		t.Errorf("CA step = %q", caStep)
+	}
+	if strings.Contains(caStep, "HIBERNAUT_IMAGE_ROOT") || strings.Contains(caStep, "runtime_root") {
+		t.Errorf("CA step has a test-only runtime root seam: %q", caStep)
 	}
 	if strings.Contains(caStep, string(caPEM)) {
 		t.Error("CA step embeds raw PEM instead of base64")
@@ -72,7 +71,7 @@ func TestSpecDev(t *testing.T) {
 }
 
 func TestSpecUnknown(t *testing.T) {
-	_, err := Spec("nope", testCertPEM(t, true))
+	_, err := Spec("nope", testCAPEM(t))
 	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "dev") {
 		t.Fatalf("err %v", err)
 	}
@@ -82,7 +81,7 @@ func TestSpecUnknown(t *testing.T) {
 }
 
 func TestSpecRejectsBadCA(t *testing.T) {
-	caPEM := testCertPEM(t, true)
+	caPEM := testCAPEM(t)
 	for _, tc := range []struct {
 		name string
 		pem  []byte
@@ -90,7 +89,7 @@ func TestSpecRejectsBadCA(t *testing.T) {
 	}{
 		{"not PEM", []byte("not a pem certificate"), "one PEM CERTIFICATE block"},
 		{"not a certificate", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("x")}), "one PEM CERTIFICATE block"},
-		{"not a CA", testCertPEM(t, false), "not a CA certificate"},
+		{"not a CA", testLeafPEM(t), "not a CA certificate"},
 		{"two certificates", append(bytes.Clone(caPEM), caPEM...), "one PEM CERTIFICATE block"},
 		{"trailing junk", append(bytes.Clone(caPEM), []byte("junk")...), "one PEM CERTIFICATE block"},
 	} {
@@ -104,7 +103,7 @@ func TestSpecRejectsBadCA(t *testing.T) {
 }
 
 func TestHibernautCAInstallStep(t *testing.T) {
-	caPEM := testCertPEM(t, true)
+	caPEM := testCAPEM(t)
 	spec, err := Spec(Default, caPEM)
 	if err != nil {
 		t.Fatal(err)
@@ -116,10 +115,7 @@ func TestHibernautCAInstallStep(t *testing.T) {
 	}
 	before := strings.Join([]string{
 		"UNRELATED=kept",
-		"# BEGIN hibernaut secrets",
-		"NODE_EXTRA_CA_CERTS=inside-managed-block",
-		"SECRET_PLACEHOLDER=kept",
-		"# END hibernaut secrets",
+		"SSL_CERT_FILE=/old",
 		"",
 	}, "\n")
 	if err := os.WriteFile(envPath, []byte(before), 0o644); err != nil {
@@ -129,7 +125,7 @@ func TestHibernautCAInstallStep(t *testing.T) {
 	update := filepath.Join(bin, "update-ca-certificates")
 	updateScript := `#!/bin/sh
 set -eu
-root="${HIBERNAUT_IMAGE_ROOT:-}"
+	root="${1:-}"
 mkdir -p "$root/etc/ssl/certs"
 cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca-certificates.crt"
 `
@@ -137,8 +133,22 @@ cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("bash", "-c", spec.Steps[len(spec.Steps)-1].Cmd)
-	cmd.Env = append(os.Environ(), "HIBERNAUT_IMAGE_ROOT="+root, "PATH="+bin+":"+os.Getenv("PATH"))
+	if _, _, ok := strings.Cut(spec.Steps[len(spec.Steps)-1].Cmd, "; /usr/lib/hibernaut/trust-ca"); !ok {
+		t.Fatalf("last step = %q, want it to run trust-ca", spec.Steps[len(spec.Steps)-1].Cmd)
+	}
+	catalogStep := catalog[Default].steps[len(catalog[Default].steps)-1]
+	install, err := installStepScript(Default, root, catalogStep, caPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", install)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("CA install: %v: %s", err, out)
+	}
+	trustCA := filepath.Join(root, "usr", "lib", "hibernaut", "trust-ca")
+	cmd = exec.Command(trustCA, root)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("CA step: %v: %s", err, out)
 	}
@@ -163,10 +173,6 @@ cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca
 	}
 	wantLines := []string{
 		"UNRELATED=kept",
-		"# BEGIN hibernaut secrets",
-		"NODE_EXTRA_CA_CERTS=inside-managed-block",
-		"SECRET_PLACEHOLDER=kept",
-		"# END hibernaut secrets",
 		"NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hibernaut.crt",
 		"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
 		"REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
@@ -177,9 +183,12 @@ cp "$root/usr/local/share/ca-certificates/hibernaut.crt" "$root/etc/ssl/certs/ca
 			t.Errorf("/etc/environment missing %q:\n%s", line, env)
 		}
 	}
+	if strings.Contains(string(env), "SSL_CERT_FILE=/old") {
+		t.Errorf("/etc/environment kept stale SSL_CERT_FILE:\n%s", env)
+	}
 	afterFirst := bytes.Clone(env)
-	cmd = exec.Command("bash", "-c", spec.Steps[len(spec.Steps)-1].Cmd)
-	cmd.Env = append(os.Environ(), "HIBERNAUT_IMAGE_ROOT="+root, "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd = exec.Command(trustCA, root)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("second CA step: %v: %s", err, out)
 	}
@@ -260,6 +269,13 @@ func TestInstallScriptQuotesPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantPrefix := `set -euo pipefail; umask 022; put() { install -d -m 755 "$(dirname "$1")"; printf %s "$3" | base64 -d >"$1.tmp"; chmod "$2" "$1.tmp"; mv -f "$1.tmp" "$1"; }; `
+	if !strings.HasPrefix(script, wantPrefix) {
+		t.Fatalf("installScript prefix changed:\n%s", script)
+	}
+	if strings.Contains(script, "HIBERNAUT_IMAGE_ROOT") || strings.Contains(script, "runtime_root") {
+		t.Fatalf("installScript has a shipped runtime root seam:\n%s", script)
+	}
 	if out, err := exec.Command("bash", "-c", script).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
@@ -268,33 +284,42 @@ func TestInstallScriptQuotesPaths(t *testing.T) {
 	}
 }
 
-func testCertPEM(t *testing.T, isCA bool) []byte {
+func testCAPEM(t *testing.T) []byte {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	if _, err := ca.Init(certPath, keyPath, "Hibernaut Test CA"); err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	return caPEM
+}
+
+func testLeafPEM(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	if _, err := ca.Init(certPath, keyPath, "Hibernaut Test CA"); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := ca.Load(certPath, keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "Hibernaut Test CA"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		IsCA:         isCA,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-	}
-	if isCA {
-		tmpl.KeyUsage |= x509.KeyUsageCertSign
-		tmpl.BasicConstraintsValid = true
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	cert, err := authority.Leaf("localhost")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 }
 
 // A login shell keeps a TERM the machine has terminfo for and falls back to xterm-256color for

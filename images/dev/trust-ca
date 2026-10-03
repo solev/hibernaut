@@ -1,0 +1,31 @@
+#!/bin/bash
+# Trusts the Hibernaut CA and points tools that replace roots at the full system bundle.
+set -euo pipefail
+export PATH=${PATH:-}:/usr/sbin:/usr/bin:/sbin:/bin
+
+root="${1:-}"
+cert="${root}/usr/local/share/ca-certificates/hibernaut.crt"
+bundle="${root}/etc/ssl/certs/ca-certificates.crt"
+env_file="${root}/etc/environment"
+
+if [ "$#" -eq 0 ]; then
+	update-ca-certificates
+else
+	update-ca-certificates "$root"
+fi
+openssl verify -CAfile "$bundle" "$cert" >/dev/null
+
+install -d -m 755 "$(dirname "$env_file")"
+touch "$env_file"
+chmod 644 "$env_file"
+tmp=$(mktemp)
+awk '!/^(NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CODEX_CA_CERTIFICATE)=/' \
+	"$env_file" >"$tmp"
+cat >>"$tmp" <<'EOF'
+NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hibernaut.crt
+SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+CODEX_CA_CERTIFICATE=/etc/ssl/certs/ca-certificates.crt
+EOF
+cat "$tmp" >"$env_file"
+rm -f "$tmp"
