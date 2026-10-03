@@ -79,19 +79,23 @@ func (a *App) storeGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 	if err != nil {
 		return hibapi.GitHub{}, fmt.Errorf("checking the token with GitHub: %w. Nothing was stored", err)
 	}
+	p := github.Profile{Login: user.Login, ID: user.ID, Name: user.Name, Source: source}
+	// The account is saved under the vault's lock, so two connects can't leave one's token with
+	// the other's account.
 	err = vault.Update(cfg.vaultPath, cfg.vaultKeyPath, func(f *vault.File, key vault.Key) error {
 		if err := checkGHTokenFree(f); err != nil {
 			return err
 		}
-		_, err := f.Put(key, github.SecretName, github.Env, github.Sites(), token)
-		return err
+		if _, err := f.Put(key, github.SecretName, github.Env, github.Sites(), token); err != nil {
+			return err
+		}
+		if err := github.SaveProfile(cfg.githubProfile, p); err != nil {
+			return fmt.Errorf("saving the account failed: %w. Nothing was stored", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return hibapi.GitHub{}, err
-	}
-	p := github.Profile{Login: user.Login, ID: user.ID, Name: user.Name, Source: source}
-	if err := github.SaveProfile(cfg.githubProfile, p); err != nil {
-		return hibapi.GitHub{}, fmt.Errorf("the token is stored, but saving the account failed: %w", err)
 	}
 	a.pushSetup(ctx, cfg, "GitHub connected")
 	return hibapi.GitHub{Login: p.Login, ID: p.ID, Name: p.Name, Email: p.Email(), Source: p.Source,

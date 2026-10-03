@@ -26,9 +26,11 @@ The M4 code is built against this section. Code that has to differ updates it in
   Then it runs `sudo -n hibd connect github --source token --json`.
 - `hibd connect github` checks the token with `GET https://api.github.com/user`, from the host.
   That one call gives the login, ID and name from the body, and the scopes from the
-  `X-OAuth-Scopes` header. If the check fails, nothing is stored. Otherwise it stores the secret,
-  writes `github.json`, writes the machine setup into running machines, and replies with the
-  account. A new token that fits the old placeholder keeps it, as `hib secret add` does. While
+  `X-OAuth-Scopes` header. If the check fails, nothing is stored. Otherwise it stores the secret
+  and writes `github.json` while it holds the vault's lock, so two connects at once can't mix one's
+  token with the other's account. If `github.json` can't be written, the secret isn't stored
+  either. Then it writes the machine setup into running machines, and replies with the account.
+  A new token that fits the old placeholder keeps it, as `hib secret add` does. While
   another secret sets `GH_TOKEN`, it refuses before calling GitHub and names that secret.
 - `hib status` first asks Azure for the VM's power state, when Azure is configured. If the VM isn't
   running, it says the host is asleep with that state and exits 0, without running ssh. Otherwise,
@@ -199,3 +201,5 @@ End-to-end:
 - 2026-10-03: M3's `TestRealGHClient` had never run: it skips on macOS, and CI is parked. With gh
   2.45.0 on the host it failed, because gh's `--hostname` refuses a port and gh sends `token`, not
   `Bearer`. Fixed, and run on the host with a temporary gh.
+- 2026-10-03: `hibd connect github` writes `github.json` inside the vault's update, not after it.
+  Review found that two connects at once could leave one's token with the other's account.

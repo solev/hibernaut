@@ -454,6 +454,28 @@ func TestConnectGitHubWhileAnotherSecretSetsGHToken(t *testing.T) {
 	}
 }
 
+// The token and the account are saved together, under the vault's lock, so two connects can't
+// leave one's token with the other's account.
+func TestConnectGitHubStoresNothingIfTheAccountCantBeSaved(t *testing.T) {
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	a, out, errOut, gh := newGitHubApp(t, runningApp(guest))
+	gh.set(testToken, octocat)
+	if err := os.Mkdir(profilePath(a), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, r := connectGitHub(t, a, out, testToken)
+	if code != 1 || !strings.Contains(r.Error, "Nothing was stored") {
+		t.Errorf("exit %d, error %q; want 1 and Nothing was stored", code, r.Error)
+	}
+	if _, err := os.Stat(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "vault.json")); !os.IsNotExist(err) {
+		t.Errorf("vault.json: %v, want none", err)
+	}
+	if n := len(guest.allRequests()); n != 0 {
+		t.Errorf("machines got %d exec requests, want none", n)
+	}
+	wantNoToken(t, guest, out.String(), errOut.String())
+}
+
 func TestConnectGitHubIntoAMachineWithoutGit(t *testing.T) {
 	guest := &secretGuest{env: []byte("PATH=/usr/bin\n"), noGit: t.TempDir()}
 	a, out, errOut, gh := newGitHubApp(t, runningApp(guest))
