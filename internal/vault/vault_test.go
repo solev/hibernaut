@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,6 +36,8 @@ func TestPlaceholderShapes(t *testing.T) {
 		},
 		{name: "sk", value: "sk-" + strings.Repeat("az", 20), prefix: "sk-", containsHib: true},
 		{name: "sk proj", value: "sk-proj-" + strings.Repeat("az", 5) + "-_" + strings.Repeat("bz", 16), prefix: "sk-proj-", containsHib: true},
+		{name: "doppler", value: "dop_v1_" + strings.Repeat("az", 20), prefix: "dop_v1_", containsHib: true},
+		{name: "postman", value: "PMAK-" + strings.Repeat("az", 20), prefix: "PMAK-", containsHib: true},
 		{
 			name:   "jwt",
 			value:  jwt,
@@ -79,6 +82,59 @@ func TestPlaceholderShapes(t *testing.T) {
 	}
 }
 
+func TestPlaceholderUsesUnbiasedRandomCharacters(t *testing.T) {
+	value := strings.Repeat("azAZ09", 1100)
+	got, err := vault.Placeholder(value, newCountingReader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[rune]int{}
+	for _, c := range got[3:] {
+		counts[c]++
+	}
+	var minCount, maxCount int
+	for _, c := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" {
+		n := counts[c]
+		if minCount == 0 || n < minCount {
+			minCount = n
+		}
+		maxCount = max(maxCount, n)
+	}
+	if maxCount-minCount > 3 {
+		t.Fatalf("base62 distribution is biased: min %d, max %d, counts %#v", minCount, maxCount, counts)
+	}
+}
+
+func TestPlaceholderKeepsBodySeparators(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "uuid", value: "123e4567-e89b-12d3-a456-426614174000"},
+		{name: "slack", value: "xoxb-123456789012-234567890123-abcDEF1234567890"},
+		{name: "sk proj", value: "sk-proj-" + strings.Repeat("az", 6) + "-_" + strings.Repeat("bz", 18)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := vault.Placeholder(tc.value, seededRand())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, c := range tc.value {
+				if strings.ContainsRune("-_.~:", c) && rune(got[i]) != c {
+					t.Fatalf("placeholder %q changed separator %q at %d in %q", got, c, i, tc.value)
+				}
+			}
+			if tc.name == "uuid" {
+				for _, c := range got {
+					if c != '-' && !strings.ContainsRune("0123456789abcdef", c) {
+						t.Fatalf("uuid placeholder %q has non-lower-hex byte %q", got, c)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestPlaceholderRefusesTooShortValues(t *testing.T) {
 	if got, err := vault.Placeholder("gho_short", seededRand()); err == nil {
 		t.Fatalf("Placeholder = %q, want an error", got)
@@ -99,6 +155,10 @@ func TestCompatible(t *testing.T) {
 		{name: "same known prefix", placeholder: "gho_hib" + strings.Repeat("A", 33), value: "gho_" + strings.Repeat("b", 40), want: true},
 		{name: "different known prefix", placeholder: "gho_hib" + strings.Repeat("A", 33), value: "ghp_" + strings.Repeat("b", 40)},
 		{name: "generic prefix", placeholder: "token-hib" + strings.Repeat("A", 28), value: "token-" + strings.Repeat("b", 40), want: true},
+		{name: "separator without prefix", placeholder: "A-BCDEFGHIJKLMNOP", value: "A-000000000000000X", want: true},
+		{name: "underscore without prefix", placeholder: "hib_ABCDEFGHIJKLMNOP", value: "X00_0000000000000000", want: true},
+		{name: "leading underscore without prefix", placeholder: "_ABC-DEFGHIJKLMNOP", value: "_00X-0000000000000000", want: true},
+		{name: "body separator after generic prefix", placeholder: "a-hib-ABCDEFGHIJKLMNOP", value: "a-000-0X00000000000000", want: true},
 		{name: "jwt same public claims", placeholder: jwtA, value: jwtA[:len(jwtA)-10] + strings.Repeat("c", 10), want: true},
 		{name: "jwt changed public claims", placeholder: jwtA, value: jwtB},
 		{name: "jwt versus opaque", placeholder: jwtA, value: "token-" + strings.Repeat("b", 40)},
@@ -194,6 +254,67 @@ func TestVaultRoundTripAndTamper(t *testing.T) {
 				t.Fatalf("Open tampered vault error = %v, want secret context", err)
 			}
 		})
+	}
+}
+
+func TestPutRefusesValuesThatAreOrContainPlaceholders(t *testing.T) {
+	key := newKey(t)
+	var f vault.File
+	first, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, "gho_"+strings.Repeat("az", 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "same as placeholder", value: first.Placeholder},
+		{name: "contains placeholder", value: "x" + first.Placeholder + "x"},
+		{name: "contained in placeholder", value: first.Placeholder[:20]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := f.Put(key, "openai", "OPENAI_TOKEN", []string{"chatgpt.com"}, tc.value)
+			if err == nil || !strings.Contains(err.Error(), "that value is a placeholder, or holds one") {
+				t.Fatalf("Put error = %v, want placeholder warning", err)
+			}
+		})
+	}
+	if _, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, first.Placeholder); err == nil || !strings.Contains(err.Error(), "that value is a placeholder, or holds one") {
+		t.Fatalf("rotating to its own placeholder error = %v, want placeholder warning", err)
+	}
+	if _, err := f.Put(key, "copy", "GITHUB_TOKEN", []string{"api.github.com"}, "gho_"+strings.Repeat("az", 20)); err != nil {
+		t.Fatalf("Put shared value: %v", err)
+	}
+}
+
+func TestPutChecksOtherSecretsCanOpen(t *testing.T) {
+	key := newKey(t)
+	var f vault.File
+	if _, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, "gho_"+strings.Repeat("az", 20)); err != nil {
+		t.Fatal(err)
+	}
+	other, err := vault.NewKey(bytes.NewReader(bytes.Repeat([]byte{9}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Put(other, "openai", "OPENAI_TOKEN", []string{"chatgpt.com"}, "sk-"+strings.Repeat("az", 20)); err == nil || !strings.Contains(err.Error(), "github") {
+		t.Fatalf("Put with unreadable existing secret error = %v, want existing secret name", err)
+	}
+}
+
+func TestPutRetriesPlaceholdersThatCollideWithValues(t *testing.T) {
+	key := newKey(t)
+	var f vault.File
+	value := "gho_hib" + strings.Repeat("a", 37)
+	if _, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, value); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := f.Put(key, "openai", "OPENAI_TOKEN", []string{"chatgpt.com"}, "sk-"+strings.Repeat("az", 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret.Placeholder == value || strings.Contains(secret.Placeholder, value) || strings.Contains(value, secret.Placeholder) {
+		t.Fatalf("Put kept a colliding placeholder %q against value %q", secret.Placeholder, value)
 	}
 }
 
@@ -339,6 +460,48 @@ func TestUpdateKeepsConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestUpdateDoesNotCreateMissingKeyForExistingVault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.json")
+	keyPath := filepath.Join(dir, "vault.key")
+	key, err := vault.CreateKey(keyPath, seededRand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f vault.File
+	if _, err := f.Put(key, "github", "GH_TOKEN", []string{"github.com"}, "gho_"+strings.Repeat("az", 20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	err = vault.Update(path, keyPath, func(*vault.File, vault.Key) error {
+		t.Fatal("Update called fn without the existing key")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "key is missing") || !strings.Contains(err.Error(), "can't be opened") {
+		t.Fatalf("Update error = %v, want missing key message", err)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("key path exists after failed Update: %v", err)
+	}
+}
+
+func TestCreateKeyRemovesPartialFileOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.key")
+	_, err := vault.CreateKey(path, shortReader{})
+	if err == nil {
+		t.Fatal("CreateKey succeeded, want an error")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("key path exists after failed CreateKey: %v", err)
+	}
+}
+
 func FuzzPlaceholder(f *testing.F) {
 	for _, seed := range []string{
 		"gho_" + strings.Repeat("A", 40),
@@ -399,6 +562,29 @@ func seededRand() *bytes.Reader {
 		20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
 		30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
 	}, 1024))
+}
+
+type countingReader struct {
+	next byte
+}
+
+func newCountingReader() *countingReader { return new(countingReader) }
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = r.next
+		r.next++
+	}
+	return len(p), nil
+}
+
+type shortReader struct{}
+
+func (shortReader) Read(p []byte) (int, error) {
+	if len(p) > 0 {
+		p[0] = 1
+	}
+	return 1, io.ErrUnexpectedEOF
 }
 
 func newKey(t *testing.T) vault.Key {

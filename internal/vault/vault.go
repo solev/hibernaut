@@ -89,13 +89,28 @@ func CreateKey(path string, rand io.Reader) (Key, error) {
 	if err != nil {
 		return Key{}, fmt.Errorf("creating vault key: %w", err)
 	}
-	defer f.Close()
-	if _, err := f.Write(k.b[:]); err != nil {
+	remove := true
+	defer func() {
+		if remove {
+			os.Remove(path)
+		}
+	}()
+	n, err := f.Write(k.b[:])
+	if err != nil || n != len(k.b) {
+		f.Close()
+		if err == nil {
+			err = io.ErrShortWrite
+		}
 		return Key{}, err
 	}
 	if err := f.Sync(); err != nil {
+		f.Close()
 		return Key{}, err
 	}
+	if err := f.Close(); err != nil {
+		return Key{}, err
+	}
+	remove = false
 	return k, nil
 }
 
@@ -187,19 +202,41 @@ func (f *File) Put(key Key, name, env string, sites []string, value string) (Sec
 	if err := normalizeSecret(&s); err != nil {
 		return Secret{}, err
 	}
+	revealed, err := f.Open(key)
+	if err != nil {
+		return Secret{}, err
+	}
 	for _, e := range f.secrets {
 		if e.Secret.Name != s.Name && strings.EqualFold(e.Secret.Env, s.Env) {
 			return Secret{}, fmt.Errorf("environment variable %s is already used by secret %s", s.Env, e.Secret.Name)
 		}
 	}
+	placeholders := f.placeholdersExcept("")
+	if overlapsAny(value, placeholders) {
+		return Secret{}, errors.New("that value is a placeholder, or holds one: add the real value")
+	}
+	values := revealedValues(revealed)
+	values = append(values, value)
+	otherPlaceholders := f.placeholdersExcept(s.Name)
 	if i := f.index(name); i >= 0 && Compatible(f.secrets[i].Placeholder, value) {
 		s.Placeholder = f.secrets[i].Placeholder
 	} else {
-		p, err := Placeholder(value, crand.Reader)
-		if err != nil {
-			return Secret{}, err
+		for range 16 {
+			p, err := Placeholder(value, crand.Reader)
+			if err != nil {
+				return Secret{}, err
+			}
+			if placeholderSafe(p, values, otherPlaceholders) {
+				s.Placeholder = p
+				break
+			}
 		}
-		s.Placeholder = p
+		if s.Placeholder == "" {
+			return Secret{}, errors.New("could not make a placeholder that does not overlap existing values")
+		}
+	}
+	if !placeholderSafe(s.Placeholder, values, otherPlaceholders) {
+		return Secret{}, errors.New("that value is a placeholder, or holds one: add the real value")
 	}
 	sealed, err := seal(key, s, value)
 	if err != nil {
@@ -286,14 +323,17 @@ func Update(path, keyPath string, fn func(*File, Key) error) error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
-	key, err := LoadKey(keyPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		key, err = CreateKey(keyPath, crand.Reader)
-	}
+	f, err := Load(path)
 	if err != nil {
 		return err
 	}
-	f, err := Load(path)
+	key, err := LoadKey(keyPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		if len(f.secrets) > 0 {
+			return fmt.Errorf("vault key is missing: existing secrets can't be opened without it")
+		}
+		key, err = CreateKey(keyPath, crand.Reader)
+	}
 	if err != nil {
 		return err
 	}
@@ -305,6 +345,36 @@ func Update(path, keyPath string, fn func(*File, Key) error) error {
 
 func (f *File) index(name string) int {
 	return slices.IndexFunc(f.secrets, func(e entry) bool { return e.Name == name })
+}
+
+func (f *File) placeholdersExcept(name string) []string {
+	var out []string
+	for _, e := range f.secrets {
+		if e.Name != name {
+			out = append(out, e.Placeholder)
+		}
+	}
+	return out
+}
+
+func revealedValues(revealed []Revealed) []string {
+	out := make([]string, len(revealed))
+	for i, r := range revealed {
+		out[i] = r.Value
+	}
+	return out
+}
+
+func placeholderSafe(placeholder string, values, otherPlaceholders []string) bool {
+	return !overlapsAny(placeholder, values) && !overlapsAny(placeholder, otherPlaceholders)
+}
+
+func overlapsAny(s string, xs []string) bool {
+	return slices.ContainsFunc(xs, func(x string) bool { return overlaps(s, x) })
+}
+
+func overlaps(a, b string) bool {
+	return a == b || strings.Contains(a, b) || strings.Contains(b, a)
 }
 
 func cloneSecret(s Secret) Secret {
@@ -492,7 +562,8 @@ func validateValue(value string) error {
 	return nil
 }
 
-// Placeholder returns a safe placeholder with the same length and prefix as value.
+// Placeholder returns a safe placeholder with the same length and prefix as value. Body
+// separators stay in place.
 func Placeholder(value string, rand io.Reader) (string, error) {
 	if err := validateValue(value); err != nil {
 		return "", err
@@ -508,7 +579,7 @@ func Placeholder(value string, rand io.Reader) (string, error) {
 	mask := fixedMask(prefix, body)
 	alphabet := chooseAlphabet(body, mask)
 	randomPositions := countRandom(mask)
-	hib := canSpellHIB(alphabet)
+	hib := canSpellHIB(alphabet) && startsWithThreeRandom(mask)
 	randomBits := float64(randomPositions) * math.Log2(float64(len(alphabet)))
 	if hib {
 		randomBits -= 3 * math.Log2(float64(len(alphabet)))
@@ -535,7 +606,13 @@ func Compatible(placeholder, value string) bool {
 	if pOK || vOK {
 		return pOK && vOK && pJWT.public == vJWT.public
 	}
-	return placeholderPrefix(placeholder) == placeholderPrefix(value)
+	pp := placeholderPrefix(placeholder)
+	vp := placeholderPrefix(value)
+	if pp == vp {
+		return true
+	}
+	return pp != "" && !hasKnownPrefix(placeholder) && !hasKnownPrefix(value) &&
+		strings.HasPrefix(pp, vp) && len(value) >= len(pp) && value[len(pp)-1] == pp[len(pp)-1]
 }
 
 type jwtParts struct {
@@ -570,8 +647,9 @@ func jwtPlaceholder(jwt jwtParts, rand io.Reader) (string, error) {
 }
 
 var knownPrefixes = []string{
-	"github_pat_", "sk-proj-", "github_ghu_", "github_pat_", "github_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
-	"sk-ant-", "sk-", "xoxb-", "xoxp-", "xapp-", "glpat-", "npm_", "pypi-", "hf_", "at-", "AKIA", "ASIA",
+	"github_pat_", "sk-ant-api03-", "sk-or-v1-", "sk-proj-", "sk-ant-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+	"xoxb-", "xoxp-", "xapp-", "glpat-", "npm_", "pypi-", "dop_v1_", "PMAK-", "AIza", "HRKU-", "xai-",
+	"gsk_", "glsa_", "shpat_", "dckr_pat_", "sbp_", "r8_", "pplx-", "lin_api_", "hf_", "at-", "AKIA", "ASIA",
 }
 
 func placeholderPrefix(value string) string {
@@ -594,6 +672,9 @@ func placeholderPrefix(value string) string {
 		switch {
 		case c >= 'a' && c <= 'z':
 		case c == '_' || c == '-':
+			if i == 0 {
+				return ""
+			}
 			last = i
 		default:
 			return value[:last+1]
@@ -602,13 +683,14 @@ func placeholderPrefix(value string) string {
 	return value[:last+1]
 }
 
+func hasKnownPrefix(value string) bool {
+	return slices.ContainsFunc(knownPrefixes, func(p string) bool { return strings.HasPrefix(value, p) })
+}
+
 func fixedMask(prefix, body string) []bool {
 	mask := make([]bool, len(body))
-	if prefix == "github_pat_" && len(body) > 22 && body[22] == '_' {
-		mask[22] = true
-	}
 	for i, c := range []byte(body) {
-		if strings.ContainsRune(".~:", rune(c)) {
+		if strings.ContainsRune("-_.~:", rune(c)) {
 			mask[i] = true
 		}
 	}
@@ -626,6 +708,10 @@ func countRandom(mask []bool) int {
 		}
 	}
 	return n
+}
+
+func startsWithThreeRandom(mask []bool) bool {
+	return len(mask) >= 3 && !mask[0] && !mask[1] && !mask[2]
 }
 
 const (
@@ -649,9 +735,7 @@ func chooseAlphabet(body string, fixed []bool) string {
 		return alphabetUpperHex
 	case allIn(chars, alphabetBase62):
 		return alphabetBase62
-	case strings.ContainsAny(full, "-_") && allIn(full, alphabetBase64URL):
-		return alphabetBase64URL
-	case allIn(chars, alphabetBase64):
+	case strings.ContainsAny(full, "+/") && allIn(chars, alphabetBase64):
 		return alphabetBase64
 	default:
 		return alphabetBase62
@@ -671,7 +755,7 @@ func randomBytes(body string, fixed []bool) string {
 func significant(body string, fixed []bool) string {
 	var b strings.Builder
 	for i, c := range []byte(body) {
-		if !fixed[i] && !strings.ContainsRune("-_", rune(c)) {
+		if !fixed[i] {
 			b.WriteByte(c)
 		}
 	}
@@ -746,9 +830,14 @@ func randomString(n int, alphabet string, rand io.Reader) (string, error) {
 }
 
 func randomChar(alphabet string, rand io.Reader) (byte, error) {
+	limit := 256 - 256%len(alphabet)
 	var b [1]byte
-	if _, err := io.ReadFull(rand, b[:]); err != nil {
-		return 0, err
+	for {
+		if _, err := io.ReadFull(rand, b[:]); err != nil {
+			return 0, err
+		}
+		if int(b[0]) < limit {
+			return alphabet[int(b[0])%len(alphabet)], nil
+		}
 	}
-	return alphabet[int(b[0])%len(alphabet)], nil
 }
