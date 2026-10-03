@@ -70,6 +70,7 @@ var catalog = map[string]image{
 			},
 			{
 				files: []file{
+					{"gitconfig", "/etc/gitconfig", 0o644},
 					{"sshd_config", "/etc/hibernaut/sshd_config", 0o644},
 					{"hib-sshd.socket", "/etc/systemd/system/hib-sshd.socket", 0o644},
 					{"hib-sshd@.service", "/etc/systemd/system/hib-sshd@.service", 0o644},

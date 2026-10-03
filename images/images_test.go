@@ -54,6 +54,9 @@ func TestSpecDev(t *testing.T) {
 		!strings.HasSuffix(spec.Steps[1].Cmd, "; /usr/lib/hibernaut/configure") {
 		t.Errorf("steps don't end by running their script")
 	}
+	if !strings.Contains(spec.Steps[1].Cmd, "put '/etc/gitconfig' 644 '") {
+		t.Error("configure step doesn't install /etc/gitconfig with mode 0644")
+	}
 	caStep := spec.Steps[2].Cmd
 	if !strings.Contains(caStep, "/usr/local/share/ca-certificates/hibernaut.crt") ||
 		!strings.HasSuffix(caStep, "; /usr/lib/hibernaut/trust-ca") {
@@ -67,6 +70,40 @@ func TestSpecDev(t *testing.T) {
 	}
 	if !strings.Contains(caStep, base64.StdEncoding.EncodeToString(caPEM)) {
 		t.Error("CA step doesn't carry the CA as base64")
+	}
+}
+
+func TestGitHubGitConfig(t *testing.T) {
+	root := t.TempDir()
+	config, err := files.ReadFile("dev/gitconfig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "gitconfig")
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"github helper", []string{"config", "--get-all", "credential.https://github.com.helper"}, "\n!/usr/bin/gh auth git-credential\n"},
+		{"gist helper", []string{"config", "--get-all", "credential.https://gist.github.com.helper"}, "\n!/usr/bin/gh auth git-credential\n"},
+		{"scp URL", []string{"ls-remote", "--get-url", "git@github.com:solev/hibernaut-e2e.git"}, "https://github.com/solev/hibernaut-e2e.git\n"},
+		{"SSH URL", []string{"ls-remote", "--get-url", "ssh://git@github.com/solev/hibernaut-e2e.git"}, "https://github.com/solev/hibernaut-e2e.git\n"},
+		{"other host", []string{"ls-remote", "--get-url", "git@example.com:owner/repo.git"}, "git@example.com:owner/repo.git\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("git", tc.args...)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_SYSTEM="+configPath, "GIT_CONFIG_GLOBAL="+os.DevNull,
+				"GIT_CONFIG_NOSYSTEM=0", "GIT_CEILING_DIRECTORIES="+root)
+			out, err := cmd.CombinedOutput()
+			if err != nil || string(out) != tc.want {
+				t.Fatalf("git %v = %q, %v, want %q", tc.args, out, err, tc.want)
+			}
+		})
 	}
 }
 
