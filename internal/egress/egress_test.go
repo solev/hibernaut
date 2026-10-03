@@ -887,14 +887,17 @@ func TestRealGHClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := "localhost:" + port
-	cmd := exec.Command("gh", "api", "user", "--hostname", host)
-	cmd.Env = append(os.Environ(), "SSL_CERT_FILE="+fx.hibCertPath, "GH_ENTERPRISE_TOKEN="+placeholder, "GH_HOST="+host, "HTTPS_PROXY=", "https_proxy=")
+	// gh's --hostname refuses a port, but GH_HOST doesn't.
+	cmd := exec.Command("gh", "api", "user")
+	cmd.Env = append(os.Environ(), "SSL_CERT_FILE="+fx.hibCertPath, "GH_ENTERPRISE_TOKEN="+placeholder, "GH_HOST="+host,
+		"GH_CONFIG_DIR="+t.TempDir(), "HTTPS_PROXY=", "https_proxy=")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("gh failed: %v: %s", err, out)
 	}
 	seen := <-got
-	if !strings.Contains(seen, "/api/v3/user") || !strings.Contains(seen, "Bearer "+realValue) {
-		t.Fatalf("gh request was not swapped: %q", seen)
+	// gh sends its token with the "token" scheme.
+	if want := "/api/v3/user\ntoken " + realValue; seen != want {
+		t.Fatalf("gh request was not swapped: got %q, want %q", seen, want)
 	}
 }
 
