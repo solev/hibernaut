@@ -74,10 +74,10 @@ offset, never the value.
 
 **Vault**
 
-- [ ] AES-GCM vault under `/var/lib/hibernaut/`, key in a root-only file.
+- [x] AES-GCM vault under `/var/lib/hibernaut/`, key in a root-only file.
 - [ ] `hib secret add NAME --env VAR --bind site,site` (value from stdin, never from arguments),
       `hib secret ls` (never shows values), `hib secret rm`.
-- [ ] Placeholders: same prefix, length and characters as the real value; stable when the real
+- [x] Placeholders: same prefix, length and characters as the real value; stable when the real
       value rotates.
 
 **Delivery**
@@ -117,10 +117,10 @@ offset, never the value.
 
 Unit and fuzz:
 
-- [ ] Placeholder shapes (`gho_`, `github_pat_`, `sk-`, JWTs, …).
+- [x] Placeholder shapes (`gho_`, `github_pat_`, `sk-`, JWTs, …).
 - [ ] Swap in every location; a real value never goes to an unbound site (fuzzed); responses
       scrubbed.
-- [ ] Vault round-trip; the vault file never contains a plaintext value.
+- [x] Vault round-trip; the vault file never contains a plaintext value.
 - [ ] `/etc/environment` block: idempotent, leaves the rest of the file alone.
 
 Integration (laptop and CI; fake TLS servers signed by a test CA):
