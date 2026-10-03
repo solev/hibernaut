@@ -6,10 +6,16 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -47,6 +53,10 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 		"HIBD_STATE_DIR":       state,
 		"HIBD_AUTHORIZED_KEYS": keys,
 		"HIBD_QUIESCING":       filepath.Join(t.TempDir(), "quiescing"),
+		"HIBD_CA_CERT":         filepath.Join(state, "ca.crt"),
+	}
+	if err := os.WriteFile(env["HIBD_CA_CERT"], testCAPEM(t), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
 	return &App{
@@ -203,7 +213,7 @@ func TestUnknownCommand(t *testing.T) {
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hibd.env")
-	content := "# E2B\nE2B_API_URL=http://10.0.0.1:3000\n\nE2B_API_KEY=\"from-file\"\n"
+	content := "# E2B\nE2B_API_URL=http://10.0.0.1:3000\n\nE2B_API_KEY=\"from-file\"\nHIBD_CA_CERT=/from-file/ca.crt\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +228,15 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.stateDir != "/var/lib/hibernaut" || cfg.authorizedKeys != "" || len(cfg.healthURLs) != 3 {
 		t.Errorf("config = %+v, want the default state directory and health URLs, and no keys without $HOME", cfg)
 	}
+	if cfg.caCert != "/from-file/ca.crt" {
+		t.Errorf("caCert = %q, want the file's CA path", cfg.caCert)
+	}
 	env["HOME"] = "/home/me"
 	env["E2B_HEALTH_URLS"] = " http://a/health  http://b/health "
+	env["HIBD_CA_CERT"] = "/tmp/ca.crt"
 	if cfg, err := loadConfig(func(k string) string { return env[k] }); err != nil || cfg.authorizedKeys != "/home/me/.ssh/authorized_keys" ||
-		strings.Join(cfg.healthURLs, ",") != "http://a/health,http://b/health" {
-		t.Errorf("config = %+v, %v; want keys from $HOME and the two health URLs", cfg, err)
+		strings.Join(cfg.healthURLs, ",") != "http://a/health,http://b/health" || cfg.caCert != "/tmp/ca.crt" {
+		t.Errorf("config = %+v, %v; want keys from $HOME, the two health URLs and the CA path", cfg, err)
 	}
 
 	delete(env, "E2B_API_KEY")
@@ -619,6 +633,10 @@ func mustID(t *testing.T, e engine.Engine, name string) string {
 func TestImageBuild(t *testing.T) {
 	e := fake.New()
 	a, out, errOut := newApp(t, e)
+	caPEM, err := os.ReadFile(a.Getenv("HIBD_CA_CERT"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, r, err := runJSON(t, a, out, "image", "build", "dev", "-json")
 	if code != 0 || err != nil || r.Template != "tmpl-hib-dev" {
 		t.Fatalf("image build dev -json = %d, %+v, %v; stderr %s", code, r, err, errOut)
@@ -633,6 +651,9 @@ func TestImageBuild(t *testing.T) {
 	if len(built) != 2 || built[0].Name != "hib-dev" || built[0].Force || !built[1].Force {
 		t.Errorf("built %+v, want hib-dev, then hib-dev forced", built)
 	}
+	if got := built[0].Steps[len(built[0].Steps)-1].Cmd; !strings.Contains(got, base64.StdEncoding.EncodeToString(caPEM)) {
+		t.Errorf("built spec did not include the configured CA in the last step")
+	}
 	code, _, err = runJSON(t, a, out, "image", "build", "nope", "-json")
 	if code != 1 || err == nil || !strings.Contains(err.Error(), `no image "nope"`) {
 		t.Errorf("image build nope = %d, %v", code, err)
@@ -641,6 +662,23 @@ func TestImageBuild(t *testing.T) {
 		if code := a.Run(t.Context(), args); code != 2 {
 			t.Errorf("%q = exit %d, want 2", args, code)
 		}
+	}
+}
+
+func TestImageBuildRequiresCA(t *testing.T) {
+	a, out, _ := newApp(t, fake.New())
+	missing := filepath.Join(t.TempDir(), "missing-ca.crt")
+	getenv := a.Getenv
+	a.Getenv = func(k string) string {
+		if k == "HIBD_CA_CERT" {
+			return missing
+		}
+		return getenv(k)
+	}
+	code, _, err := runJSON(t, a, out, "image", "build", "dev", "-json")
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "no Hibernaut CA at "+missing) ||
+		!strings.Contains(err.Error(), "sudo hibd ca init") {
+		t.Fatalf("image build without CA = %d, %v", code, err)
 	}
 }
 
@@ -753,6 +791,32 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.b.String()
+}
+
+func testCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Hibernaut Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 // startDaemon runs a's daemon, looking every 10ms, until stop is called or the test ends.

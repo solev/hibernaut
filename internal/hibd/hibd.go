@@ -63,6 +63,8 @@ Environment variables of the same names override the file:
   E2B_HEALTH_URLS       what ready waits for, space-separated
   HIBD_STATE_DIR        default /var/lib/hibernaut
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
+  HIBD_CA_CERT          Hibernaut CA certificate for image builds, default
+                        /etc/hibernaut/ca.crt
   HIBD_QUIESCING        new, bridge and image build refuse while it exists, and daemon leaves
                         machines alone; default /run/hibernaut/quiescing, which quiesce makes
                         before pausing everything
@@ -295,7 +297,18 @@ func (a *App) image(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	spec, err := images.Spec(names[0])
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		return a.fail(*asJSON, "image build", err)
+	}
+	caPEM, err := os.ReadFile(cfg.caCert)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			err = fmt.Errorf("no Hibernaut CA at %s: run `sudo hibd ca init` (vm/setup-host.sh does this)", cfg.caCert)
+		}
+		return a.fail(*asJSON, "image build", err)
+	}
+	spec, err := images.Spec(names[0], caPEM)
 	if err != nil {
 		return a.fail(*asJSON, "image build", err)
 	}
@@ -659,6 +672,7 @@ type config struct {
 	quiescing      string
 	agents         []string
 	cgroups        string
+	caCert         string
 }
 
 // loadConfig reads the env file, then lets environment variables override it.
@@ -703,6 +717,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		quiescing:      get("HIBD_QUIESCING", "/run/hibernaut/quiescing"),
 		agents:         strings.Fields(get("HIBD_AGENTS", "")),
 		cgroups:        get("HIBD_CGROUPS", "/sys/fs/cgroup/e2b"),
+		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
 	}
 	if cfg.e2b.APIKey == "" {
 		return config{}, fmt.Errorf("E2B_API_KEY is not set (in the environment or %s)", path)

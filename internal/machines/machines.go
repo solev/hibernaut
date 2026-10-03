@@ -133,7 +133,7 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	if err := hibapi.CheckName(name); err != nil {
 		return hibapi.Machine{}, err
 	}
-	spec, err := images.Spec(image)
+	memoryMB, err := images.MemoryMB(image)
 	if err != nil {
 		return hibapi.Machine{}, err
 	}
@@ -159,7 +159,7 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	case !errors.Is(err, ErrNoMachine):
 		return hibapi.Machine{}, err
 	}
-	if err := m.checkRoom(ctx, name, spec.MemoryMB); err != nil {
+	if err := m.checkRoom(ctx, name, memoryMB); err != nil {
 		return hibapi.Machine{}, err
 	}
 
@@ -172,7 +172,7 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 		return hibapi.Machine{}, fmt.Errorf("image %q isn't built yet (run: hib image build %s)", image, image)
 	}
 	if err != nil {
-		return hibapi.Machine{}, m.refused(ctx, name, spec.MemoryMB, fmt.Errorf("creating %q: %w", name, err))
+		return hibapi.Machine{}, m.refused(ctx, name, memoryMB, fmt.Errorf("creating %q: %w", name, err))
 	}
 	if _, err := m.initMachine(ctx, em.ID, keys); err != nil {
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
@@ -323,7 +323,7 @@ func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int) erro
 
 // Room returns the room on the host for more machines of image.
 func (m *Manager) Room(ctx context.Context, image string) (hibapi.Room, error) {
-	spec, err := images.Spec(image)
+	memoryMB, err := images.MemoryMB(image)
 	if err != nil {
 		return hibapi.Room{}, err
 	}
@@ -333,7 +333,7 @@ func (m *Manager) Room(ctx context.Context, image string) (hibapi.Room, error) {
 	}
 	free, total := h.MemoryMB()
 	return hibapi.Room{
-		Fits:         h.Fits(spec.MemoryMB, roomMachines(ems)),
+		Fits:         h.Fits(memoryMB, roomMachines(ems)),
 		Image:        image,
 		MemoryFreeMB: free,
 		MemoryMB:     total,

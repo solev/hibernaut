@@ -162,6 +162,9 @@ hib pause app              # pause it now; ssh app.hib resumes it
 hib rm app                 # delete it
 ```
 
+`hib image build dev` bakes the Hibernaut CA into the image, so machines can trust the host proxy.
+Machines made before that rebuild need to be recreated to trust it.
+
 `hib init` writes `~/.config/hibernaut` and adds an `Include` for hib's `Host *.hib` block at the
 top of `~/.ssh/config`, so `ssh app.hib` just works. Behind that name, `hib bridge` resumes the
 machine if it's paused, starts the Azure VM if it's deallocated, and checks the machine's pinned

@@ -89,7 +89,7 @@ offset, never the value.
 **CA**
 
 - [ ] `hibd` creates the Hibernaut CA once; its key never leaves the host.
-- [ ] The `dev` image trusts it and sets `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
+- [x] The `dev` image trusts it and sets `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
       `REQUESTS_CA_BUNDLE`, `CODEX_CA_CERTIFICATE` (§4.2).
 
 **Proxy**

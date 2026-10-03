@@ -5,9 +5,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +75,10 @@ func newHost(t *testing.T) *host {
 	health := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(health.Close)
 	state := t.TempDir()
+	caCert := filepath.Join(state, "ca.crt")
+	if err := os.WriteFile(caCert, testCAPEM(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	h := &host{
 		t:          t,
 		machineKey: newKey(t),
@@ -85,6 +94,7 @@ func newHost(t *testing.T) *host {
 			"E2B_HEALTH_URLS":      health.URL,
 			"HIBD_STATE_DIR":       state,
 			"HIBD_AUTHORIZED_KEYS": keys,
+			"HIBD_CA_CERT":         caCert,
 			"HIBD_QUIESCING":       filepath.Join(state, "quiescing"),
 		},
 	}
@@ -116,6 +126,32 @@ func newKey(t *testing.T) ssh.PublicKey {
 		t.Fatal(err)
 	}
 	return key
+}
+
+func testCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "Hibernaut Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 func (h *host) record(call []string) {

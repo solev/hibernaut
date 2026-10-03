@@ -4,8 +4,10 @@
 package images
 
 import (
+	"crypto/x509"
 	"embed"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"io/fs"
 	"path"
@@ -44,12 +46,19 @@ type image struct {
 // A step installs files from the image's directory and then runs a command, as root. Build
 // caches each step until it, or one before it, changes: put what is slow to build first.
 type step struct {
-	files []file
-	run   string
+	files     []file
+	dataFiles []dataFile
+	run       string
 }
 
 type file struct {
 	name string // in the image's directory
+	dest string
+	mode fs.FileMode
+}
+
+type dataFile struct {
+	data []byte
 	dest string
 	mode fs.FileMode
 }
@@ -102,11 +111,23 @@ func Template(name string) string {
 	return "hib-" + name
 }
 
-// Spec returns how to build image name.
-func Spec(name string) (engine.TemplateSpec, error) {
+// MemoryMB returns the memory image name needs on the host.
+func MemoryMB(name string) (int, error) {
+	img, ok := catalog[name]
+	if !ok {
+		return 0, fmt.Errorf("no image %q (there is: %s)", name, strings.Join(Names(), ", "))
+	}
+	return img.memoryMB, nil
+}
+
+// Spec returns how to build image name with the Hibernaut CA trusted inside it.
+func Spec(name string, caPEM []byte) (engine.TemplateSpec, error) {
 	img, ok := catalog[name]
 	if !ok {
 		return engine.TemplateSpec{}, fmt.Errorf("no image %q (there is: %s)", name, strings.Join(Names(), ", "))
+	}
+	if err := validateCA(caPEM); err != nil {
+		return engine.TemplateSpec{}, err
 	}
 	spec := engine.TemplateSpec{
 		Name:          Template(name),
@@ -117,8 +138,9 @@ func Spec(name string) (engine.TemplateSpec, error) {
 		MemoryMB:      img.memoryMB,
 		MinFreeDiskMB: img.minFreeDiskMB,
 	}
-	for _, s := range img.steps {
-		install, err := installScript(name, "", s.files)
+	steps := append(slices.Clone(img.steps), caStep(caPEM))
+	for _, s := range steps {
+		install, err := installScript(name, "", s.files, s.dataFiles...)
 		if err != nil {
 			return engine.TemplateSpec{}, err
 		}
@@ -127,18 +149,49 @@ func Spec(name string) (engine.TemplateSpec, error) {
 	return spec, nil
 }
 
+func validateCA(caPEM []byte) error {
+	block, rest := pem.Decode(caPEM)
+	if block == nil || block.Type != "CERTIFICATE" || len(strings.TrimSpace(string(rest))) != 0 {
+		return fmt.Errorf("hibernaut CA must be exactly one PEM CERTIFICATE block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse hibernaut CA certificate: %w", err)
+	}
+	if !cert.IsCA {
+		return fmt.Errorf("hibernaut CA certificate is not a CA certificate")
+	}
+	return nil
+}
+
+func caStep(caPEM []byte) step {
+	return step{
+		dataFiles: []dataFile{{
+			data: caPEM,
+			dest: "/usr/local/share/ca-certificates/hibernaut.crt",
+			mode: 0o644,
+		}},
+		run: caInstallRun,
+	}
+}
+
+const caInstallRun = `root="${HIBERNAUT_IMAGE_ROOT:-}"; cert="${root}/usr/local/share/ca-certificates/hibernaut.crt"; bundle="${root}/etc/ssl/certs/ca-certificates.crt"; env_file="${root}/etc/environment"; update-ca-certificates; openssl verify -CAfile "$bundle" "$cert" >/dev/null; install -d -m 755 "$(dirname "$env_file")"; touch "$env_file"; chmod 644 "$env_file"; tmp="$(mktemp)"; awk 'BEGIN { block = 0 } $0 == "# BEGIN hibernaut secrets" { block = 1; print; next } $0 == "# END hibernaut secrets" { block = 0; print; next } !block && ($0 ~ /^(NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|CODEX_CA_CERTIFICATE)=/) { next } { print } END { print "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/hibernaut.crt"; print "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"; print "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"; print "CODEX_CA_CERTIFICATE=/etc/ssl/certs/ca-certificates.crt" }' "$env_file" >"$tmp"; cat "$tmp" >"$env_file"; rm -f "$tmp"`
+
 // installScript returns a shell command that writes files, from image name's directory, under
 // root. Each file is replaced in one rename. The command is a single line, the file contents
 // base64 in single quotes, so that nothing in the files can be read as shell.
-func installScript(name, root string, list []file) (string, error) {
+func installScript(name, root string, list []file, dataList ...dataFile) (string, error) {
 	var b strings.Builder
-	b.WriteString(`set -euo pipefail; umask 022; put() { install -d -m 755 "$(dirname "$1")"; printf %s "$3" | base64 -d >"$1.tmp"; chmod "$2" "$1.tmp"; mv -f "$1.tmp" "$1"; }; `)
+	b.WriteString(`set -euo pipefail; umask 022; runtime_root="${HIBERNAUT_IMAGE_ROOT:-}"; put() { dest="${runtime_root}$1"; install -d -m 755 "$(dirname "$dest")"; printf %s "$3" | base64 -d >"$dest.tmp"; chmod "$2" "$dest.tmp"; mv -f "$dest.tmp" "$dest"; }; `)
 	for _, f := range list {
 		data, err := files.ReadFile(path.Join(name, f.name))
 		if err != nil {
 			return "", err
 		}
 		fmt.Fprintf(&b, "put %s %o '%s'; ", quote(root+f.dest), f.mode, base64.StdEncoding.EncodeToString(data))
+	}
+	for _, f := range dataList {
+		fmt.Fprintf(&b, "put %s %o '%s'; ", quote(root+f.dest), f.mode, base64.StdEncoding.EncodeToString(f.data))
 	}
 	return b.String(), nil
 }

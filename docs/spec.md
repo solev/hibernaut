@@ -162,6 +162,8 @@ git clone https://github.com/solev/private-repo
     still works, because other sites pass through untouched.
   - E2B has a hook that installs a CA into machines (`caBundle`), but in OSS it's always empty and
     no API sets it. So our CA is baked into the image.
+  - Machines made before the image is rebuilt do not trust the CA. Recreate them after
+    `hib image build dev`.
 
 ### 4.3 GitHub
 
@@ -433,6 +435,9 @@ All three are native E2B operations. Hibernaut only wraps them.
 | `hib image build dev` | template build from the `images/dev/` files (`images/images.go`) | The base image all machines start from |
 | `hib image save app rocket` | `POST /sandboxes/{id}/snapshots` `{name: "rocket"}` | An image with memory, so processes keep running; it outlives `app` |
 | `hib fork app --count 3` | `POST /sandboxes/{id}/fork` | `app` pauses for a moment and keeps running; 3 new machines in the same state |
+
+The dev image trusts the Hibernaut CA after `hib image build dev`. Machines made before that build
+need to be recreated to trust it.
 
 Copies carry everything in the machine. That's fine, because a machine holds only placeholders and
 your public key. A fork carries the origin's SSH host key until it's re-keyed (see SSH path).
