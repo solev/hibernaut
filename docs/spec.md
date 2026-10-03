@@ -131,9 +131,10 @@ git clone https://github.com/solev/private-repo
   - Side effect: E2B's per-machine *domain* allowlists no longer cover 443 (unused in v1). Its block
     on private and internal addresses still applies, because it runs earlier, inside each machine's
     network namespace.
-  - Which machine sent it: the source address is the machine's slot IP. E2B doesn't expose the
-    slot → machine mapping, so `hibd` works it out on the host (S1). v1 needs this only for the
-    audit log, because every machine has the same secrets.
+  - Which machine sent it: the source address is the machine's slot IP. `hibd` derives the slot
+    from that address, finds `/run/netns/ns-<slot>`, then reads the sandbox ID from the matching
+    `/sys/fs/cgroup/e2b/sbx-<sandboxID>-<runid>/` cgroup. v1 needs this only for the audit log,
+    because every machine has the same secrets.
   - Fallback: `HTTPS_PROXY` set in the machine. This is still safe, because a request that bypasses
     the proxy only carries a useless placeholder.
 - **Most traffic is untouched.** The proxy reads the TLS SNI (the hostname) without decrypting:
@@ -538,7 +539,7 @@ repo (see the README).
 
 | # | Question | Status |
 | --- | --- | --- |
-| S1 | Can `hibd` intercept machine HTTPS without breaking E2B, and tell which machine sent it? | **Hook: answered in code.** E2B appends its redirects, so one rule inserted above them wins (§4.2). **Open:** the slot IP → machine mapping (E2B's API doesn't expose it), and a live test that the hook survives E2B adding and removing machines. Spike before M3. |
+| S1 | Can `hibd` intercept machine HTTPS without breaking E2B, and tell which machine sent it? | **Answered live and in code.** One iptables-nft rule inserted above E2B's appended redirects stays first while machines are created, removed, paused and resumed. A redirected connection exposes the slot source IP and local veth IP, and `internal/slots` maps that slot to the sandbox cgroup for audit. |
 | S2 | Can E2B's proxy carry a long-lived SSH websocket, and wake a paused machine? | **Yes.** It's E2B's documented SSH pattern, and traffic on any port resumes a paused machine. Needs keepalives (~10-min idle cutoff). |
 | S3 | Can E2B fork a machine or turn it into a template? | **Yes, natively** (§5 Images and fork). |
 | S4 | Do paused machines survive a host reboot? | **Yes, tested live in M0** (`TestSurvivesHostRestart`). A running machine is paused on the way down, by the guard on a reboot or by `quiesce` before the nightly deallocate, and resumes afterwards with its files and processes. E2B's pause returns before the snapshot is written, so E2B must stop cleanly before power-off (§5 Idle and wake). |

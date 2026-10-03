@@ -454,7 +454,39 @@ From `DEV-LOCAL.md` (full file read): Linux bare-metal or nested-virtualization 
 
 ### 10.7 Default egress deny set, redirect ordering and slot identity (added while finalizing the spec)
 
+- **Verified (live, 2026-10-03):** this host uses iptables through the nft backend: `iptables -V`
+  prints `iptables v1.8.10 (nf_tables)`, and `update-alternatives --display iptables` points
+  `/usr/sbin/iptables` at `/usr/sbin/iptables-nft`. E2B's host redirects are in the nft-managed
+  iptables `ip nat` table, chain `PREROUTING`. For each slot, it has rules like `-i veth-2
+  --dport 443 -j REDIRECT --to-ports 5017`, plus the `192.0.2.1` redirects for hyperloop,
+  portmapper and NFS. `nft list ruleset` shows the same rules as `redirect to :5017`.
+- **Verified (live, 2026-10-03):** port `5443` was free. The host filter table had `-P INPUT
+  ACCEPT`, so no host INPUT rule stopped a redirected `veth-*` connection from reaching a listener
+  on `0.0.0.0:5443`. The E2B slot interfaces were named `veth-1`, `veth-2`, and so on. No Docker
+  `vethXXXX` interface matched the `veth-+` pattern.
 - **Verified:** every sandbox's firewall resets its predefined deny set to `DeniedSandboxCIDRs`: `10.0.0.0/8`, `100.64.0.0/10`, `127.0.0.0/8`, `169.254.0.0/16` (including cloud metadata `169.254.169.254`), `172.16.0.0/12`, `192.168.0.0/16`, `::1/128`, `fc00::/7`, `fe80::/10` (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/shared/pkg/sandbox-network/firewall.go#L22-L36 and https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/pkg/sandbox/network/firewall.go#L333-L335). Set rules match the packet's IPv4 **destination** on the sandbox's tap interface (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/pkg/sandbox/network/firewall.go#L202-L219). Without BYOP, the predefined deny set drops all protocols, after only ESTABLISHED/RELATED and the predefined allow set are accepted (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/pkg/sandbox/network/firewall.go#L290-L327). This filter runs in the slot network namespace (PREROUTING, priority -150), before traffic reaches the host namespace's NAT redirects.
 - **Verified:** tcpfirewall installs its per-slot redirects with `iptables -t nat -A PREROUTING -i veth-<idx> -p tcp [--dport N] -j REDIRECT --to-port <proxy port>`, i.e. **appended** (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/pkg/tcpfirewall/proxy.go#L152-L173). The hyperloop, portmapper and NFS redirects are appended the same way (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/pkg/sandbox/network/network.go#L325-L348). Slot veth names are `veth-<idx>` (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/pkg/sandbox/network/slot.go#L171-L173).
-- **Inferred:** a host rule inserted at the top of `nat PREROUTING` (e.g. `-I PREROUTING 1 -i veth-+ -p tcp --dport 443 -j REDIRECT --to-port <port>`) matches before E2B's appended per-slot rules, so no E2B code change is needed to intercept guest HTTPS. Needs a live test (Hibernaut spike S1).
-- **Verified absence:** the orchestrator gRPC `List` response (`RunningSandbox`) has no slot or IP field (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/orchestrator.proto#L231-L256). Mapping a connection's source slot IP back to a sandbox ID from outside the orchestrator therefore needs host-side introspection (open in spike S1).
+- **Verified (live, 2026-10-03):** a host rule inserted at the top of `nat PREROUTING` stays ahead
+  of E2B's appended per-slot rules while machines churn. The counting-only rule `iptables -t nat
+  -I PREROUTING 1 -i veth-+ -p tcp --dport 443 -m comment --comment hibernaut-s1` stayed at line
+  1 after creating two machines, removing one, pausing the other and resuming it. Its counter grew
+  from `0` to `1`, then `2`, when the machine ran `curl -sI https://example.com`.
+- **Verified (live, 2026-10-03):** a scoped REDIRECT on `veth-2` to a root probe on `0.0.0.0:5443`
+  saw `remote=10.11.0.2:45834 local=10.12.0.4:5443 original=104.20.23.154:443 iface=veth-2`.
+  The source is the slot's host IP. The local address is the host side of that slot's veth. Linux
+  `SO_ORIGINAL_DST` returns the pre-redirect destination.
+- **Verified absence:** the orchestrator gRPC `List` response (`RunningSandbox`) has no slot or IP field (https://github.com/e2b-dev/infra/blob/5cfcf3282ddb95e90a8214ce71329641bdfe6cb6/packages/orchestrator/orchestrator.proto#L231-L256). Mapping a connection's source slot IP back to a sandbox ID from outside the orchestrator therefore needs host-side introspection.
+- **Verified (live, 2026-10-03):** host-side mapping works by deriving the slot from the source IP
+  (`10.11.0.N`) or local veth IP (`10.12.0.2N`), reading `/run/netns/ns-N`'s inode, finding the
+  Firecracker process whose `/proc/<pid>/ns/net` points at that inode, and taking the sandbox ID
+  from `/sys/fs/cgroup/e2b/sbx-<sandboxID>-<runid>/cgroup.procs`. This matched `hib ls` for
+  `s1-b` (`i3mdr17vao23k84u6zud6`, slot 1) and `s1-a` (`iv2i1k4srhy0mf2mkc3at`, slot 2). While
+  `s1-a` was paused its cgroup was gone. Immediately after resume it mapped again, but to slot 3
+  and IPs `10.11.0.3` and `10.12.0.6/31`.
+- **Verified (live, 2026-10-03):** template builds use the same network pool and slot machinery.
+  The template-manager service is the orchestrator binary, wired to `sandbox.NewFactory` with the
+  same `network.NewPool`, and build sandboxes carry `SandboxTypeBuild` for DSCP tagging.
+- **Verified (live, 2026-10-03):** `iptables -t nat -S PREROUTING` and inserting then deleting a
+  counting rule both worked in a transient unit with `ProtectSystem=strict`, `NoNewPrivileges=yes`,
+  `PrivateTmp=yes` and `ProtectHome=yes`. No `ReadWritePaths` was needed for `/run/xtables.lock`
+  on this host.

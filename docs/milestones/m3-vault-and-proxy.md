@@ -57,6 +57,7 @@ both ways. Otherwise it terminates TLS with a certificate for that host, refuses
 `Host` isn't the SNI host, swaps, connects to the real destination, verifies the site's
 certificate for the SNI host, and scrubs the response. It reloads the vault when `vault.json`
 changes.
+The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested host.
 
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
 order, so a value that spans blocks from different builds is still found. It refuses headers newer
@@ -67,9 +68,9 @@ offset, never the value.
 
 **Spike first (S1)**
 
-- [ ] Map a machine's slot IP to its sandbox ID on the host (E2B's API doesn't expose it).
-- [ ] Prove our inserted iptables rule stays first while E2B adds and removes machines.
-- [ ] Write the findings into `docs/research/e2b-capabilities.md` §10.7 and the spec.
+- [x] Map a machine's slot IP to its sandbox ID on the host (E2B's API doesn't expose it).
+- [x] Prove our inserted iptables rule stays first while E2B adds and removes machines.
+- [x] Write the findings into `docs/research/e2b-capabilities.md` §10.7 and the spec.
 
 **Vault**
 
@@ -159,4 +160,5 @@ End-to-end:
 
 ## Changes
 
-(none yet)
+- S1 verified the design on the live host. The proxy can keep the default port 5443 and iptables
+  hook. The hardened systemd unit does not need `ReadWritePaths` for iptables on this host.
