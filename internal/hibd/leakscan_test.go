@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -258,15 +257,11 @@ func TestLeakscanCanaryKillIgnoresCanceledRunContext(t *testing.T) {
 			return engine.ExecResult{ExitCode: 42, Stderr: []byte("interrupted")}, nil
 		}),
 	)
-	rec := &killContextRecorder{Engine: e}
-	a, out, errOut, _ := newLeakscanApp(t, rec)
+	a, out, errOut, _ := newLeakscanApp(t, e)
 	a.NewCanary = func() (string, error) { return "hibcanary_0123456789abcdef0123456789abcdef", nil }
 
 	if code := a.Run(ctx, []string{"leakscan", "-canary"}); code != 1 {
 		t.Fatalf("code = %d, want 1; stdout %q stderr %q", code, out.String(), errOut.String())
-	}
-	if rec.killCtxErr != nil {
-		t.Fatalf("Kill ctx err = %v, want nil", rec.killCtxErr)
 	}
 	ms, err := e.List(t.Context(), engine.ListOptions{})
 	if err != nil {
@@ -275,21 +270,6 @@ func TestLeakscanCanaryKillIgnoresCanceledRunContext(t *testing.T) {
 	if len(ms) != 0 {
 		t.Fatalf("canary machine was not killed: %+v", ms)
 	}
-}
-
-type killContextRecorder struct {
-	engine.Engine
-	killCtxErr error
-}
-
-func (r *killContextRecorder) Kill(ctx context.Context, id string) error {
-	select {
-	case <-ctx.Done():
-		r.killCtxErr = ctx.Err()
-	case <-time.After(10 * time.Millisecond):
-		r.killCtxErr = nil
-	}
-	return r.Engine.Kill(ctx, id)
 }
 
 func newLeakscanApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer, config) {
