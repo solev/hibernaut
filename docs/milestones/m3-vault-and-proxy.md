@@ -121,7 +121,7 @@ Unit and fuzz:
 - [ ] Swap in every location; a real value never goes to an unbound site (fuzzed); responses
       scrubbed.
 - [x] Vault round-trip; the vault file never contains a plaintext value.
-- [ ] `/etc/environment` block: idempotent, leaves the rest of the file alone.
+- [x] `/etc/environment` block: idempotent, leaves the rest of the file alone.
 
 Integration (laptop and CI; fake TLS servers signed by a test CA):
 
