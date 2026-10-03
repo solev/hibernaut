@@ -28,30 +28,24 @@ const (
 )
 
 func TestNeedlesFindCommonEncodings(t *testing.T) {
-	value := "token~~~ /with space+\"snowman☃\"!"
+	value := "token~~~ /with space+\"snowman☃<>&\"!"
 	needles, err := leakscan.Needles([]leakscan.Secret{{Name: "api", Value: value}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string][]byte{
-		"raw":                []byte(value),
-		"percent-query":      []byte(url.QueryEscape(value)),
-		"percent-path":       []byte(url.PathEscape(value)),
-		"json":               []byte(`token~~~ /with space+\"snowman☃\"!`),
-		"utf-16le":           utf16le(value),
-		"base64":             []byte(base64.StdEncoding.EncodeToString([]byte(value))),
-		"base64-unpadded":    []byte(base64.RawStdEncoding.EncodeToString([]byte(value))),
-		"base64url":          []byte(base64.URLEncoding.EncodeToString([]byte(value))),
-		"base64url-unpadded": []byte(base64.RawURLEncoding.EncodeToString([]byte(value))),
-		"base64-align-0":     alignedBase64(base64.StdEncoding, []byte(value), 0),
-		"base64-align-1":     alignedBase64(base64.StdEncoding, []byte(value), 1),
-		"base64-align-2":     alignedBase64(base64.StdEncoding, []byte(value), 2),
-		"base64url-align-0":  alignedBase64(base64.URLEncoding, []byte(value), 0),
-		"base64url-align-1":  alignedBase64(base64.URLEncoding, []byte(value), 1),
-		"base64url-align-2":  alignedBase64(base64.URLEncoding, []byte(value), 2),
+		"raw":           []byte(value),
+		"percent-query": []byte(url.QueryEscape(value)),
+		"percent-path":  []byte(url.PathEscape(value)),
+		"json-html":     []byte(`token~~~ /with space+\"snowman☃\u003c\u003e\u0026\"!`),
+		"json":          []byte(`token~~~ /with space+\"snowman☃<>&\"!`),
+		"utf-16le":      utf16le(value),
 	}
 	for encoding, pattern := range want {
-		if !hasNeedle(needles, "api", encoding, pattern) {
+		if !hasNeedle(needles, "api", "json", pattern) && encoding == "json-html" {
+			t.Fatalf("Needles lacks %s %q in:\n%s", encoding, pattern, dumpNeedles(needles))
+		}
+		if encoding != "json-html" && !hasNeedle(needles, "api", encoding, pattern) {
 			t.Fatalf("Needles lacks %s %q in:\n%s", encoding, pattern, dumpNeedles(needles))
 		}
 	}
@@ -87,7 +81,7 @@ func TestNeedlesFindBase64InsideLongerStringsAtEachAlignment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.ContainsFunc(hits, func(h leakscan.Hit) bool { return h.Encoding == want }) {
+			if !slices.ContainsFunc(hits, func(h leakscan.Hit) bool { return h.Encoding == enc.name }) {
 				t.Fatalf("Search did not find %s in %q; hits: %+v", want, text, hits)
 			}
 		}
@@ -103,7 +97,6 @@ func TestNeedlesRefuseShortValues(t *testing.T) {
 func TestSearchFindsMatchesAcrossEveryReadBoundary(t *testing.T) {
 	needles := []leakscan.Needle{
 		{Secret: "a", Encoding: "raw", Pattern: []byte("abc")},
-		{Secret: "b", Encoding: "raw", Pattern: []byte("bc")},
 		{Secret: "c", Encoding: "raw", Pattern: []byte("abcd")},
 	}
 	text := []byte("xxabcdyyabc")
@@ -113,7 +106,7 @@ func TestSearchFindsMatchesAcrossEveryReadBoundary(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := hitKeys(hits)
-		want := []string{"a/raw@2", "b/raw@3", "c/raw@2", "a/raw@8", "b/raw@9"}
+		want := []string{"a/raw@2", "c/raw@2", "a/raw@8"}
 		slices.Sort(got)
 		slices.Sort(want)
 		if !slices.Equal(got, want) {
@@ -255,28 +248,43 @@ func TestBuildLookupRejectsBadInputAndRows(t *testing.T) {
 	if _, err := leakscan.TemplateBuild(t.Context(), badRows, "hib-dev"); err == nil {
 		t.Error("TemplateBuild accepted a bad row")
 	}
+	badID := func(_ context.Context, _ string) ([][]string, error) {
+		return [][]string{{"ABCDEF12-1111-4111-8111-111111111111"}}, nil
+	}
+	if _, err := leakscan.TemplateBuild(t.Context(), badID, "hib-dev"); err == nil {
+		t.Error("TemplateBuild accepted a non-canonical build ID")
+	}
+}
+
+func TestScanBuildRejectsBadBuildID(t *testing.T) {
+	if _, err := leakscan.ScanBuild(t.TempDir(), "../bad", nil); err == nil {
+		t.Fatal("ScanBuild accepted a bad build ID")
+	}
 }
 
 func FuzzSearch(f *testing.F) {
-	f.Add([]byte("abcabc"), []byte("abc"))
-	f.Add([]byte("aaaaa"), []byte("aa"))
-	f.Fuzz(func(t *testing.T, haystack, needle []byte) {
-		if len(needle) == 0 || len(needle) > 64 {
+	f.Add([]byte("abcabc"), []byte("abc"), []byte("bc"), 1)
+	f.Add([]byte("aaaaa"), []byte("aa"), []byte("aaa"), 2)
+	f.Add([]byte("xxabcdyyabc"), []byte("abc"), []byte("abcd"), 3)
+	f.Fuzz(func(t *testing.T, haystack, needleA, needleB []byte, chunk int) {
+		if len(needleA) < 2 || len(needleA) > 64 || len(needleB) < 2 || len(needleB) > 64 {
 			return
 		}
-		n := leakscan.Needle{Secret: "s", Encoding: "raw", Pattern: needle}
-		got, err := leakscan.Search(bytes.NewReader(haystack), []leakscan.Needle{n})
+		chunk = 1 + int(uint(chunk)%uint(max(1, min(128, len(haystack)+len(needleA)+len(needleB)))))
+		needles := []leakscan.Needle{
+			{Secret: "a", Encoding: "raw", Pattern: needleA},
+			{Secret: "b", Encoding: "raw", Pattern: needleB},
+		}
+		got, err := leakscan.Search(&chunkReader{text: slices.Clone(haystack), n: chunk}, needles)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := naiveSearch(haystack, needle)
-		if len(got) != len(want) {
-			t.Fatalf("Search found %d hits, want %d at %v", len(got), len(want), want)
-		}
-		for i := range got {
-			if got[i].Offset != want[i] {
-				t.Fatalf("hit %d offset = %d, want %d", i, got[i].Offset, want[i])
-			}
+		want := append(naiveSearch("a", haystack, needleA), naiveSearch("b", haystack, needleB)...)
+		gotKeys := hitKeys(got)
+		slices.Sort(gotKeys)
+		slices.Sort(want)
+		if !slices.Equal(gotKeys, want) {
+			t.Fatalf("Search(chunk %d) = %v, want %v", chunk, gotKeys, want)
 		}
 	})
 }
@@ -385,15 +393,6 @@ func utf16le(s string) []byte {
 	return out
 }
 
-func alignedBase64(enc *base64.Encoding, value []byte, prefix int) []byte {
-	full := append(bytes.Repeat([]byte{0}, prefix), value...)
-	full = append(full, 0, 0)
-	text := enc.EncodeToString(full)
-	start := (prefix*8 + 5) / 6
-	end := (prefix*8 + len(value)*8) / 6
-	return []byte(text[start:end])
-}
-
 func hasNeedle(needles []leakscan.Needle, secret, encoding string, pattern []byte) bool {
 	return slices.ContainsFunc(needles, func(n leakscan.Needle) bool {
 		return n.Secret == secret && n.Encoding == encoding && bytes.Equal(n.Pattern, pattern)
@@ -424,11 +423,11 @@ func scanHitKeys(hits []leakscan.Hit) []string {
 	return keys
 }
 
-func naiveSearch(haystack, needle []byte) []int64 {
-	var hits []int64
+func naiveSearch(secret string, haystack, needle []byte) []string {
+	var hits []string
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if bytes.Equal(haystack[i:i+len(needle)], needle) {
-			hits = append(hits, int64(i))
+			hits = append(hits, fmt.Sprintf("%s/raw@%d", secret, i))
 		}
 	}
 	return hits

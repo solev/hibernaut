@@ -3,6 +3,7 @@ package leakscan
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -11,11 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"unicode/utf16"
 )
 
@@ -87,16 +90,25 @@ func Needles(secrets []Secret) ([]Needle, error) {
 		} else if escaped := string(b[1 : len(b)-1]); escaped != s.Value {
 			add(s.Name, "json", []byte(escaped))
 		}
+		var noHTML bytes.Buffer
+		encoder := json.NewEncoder(&noHTML)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(s.Value); err != nil {
+			return nil, fmt.Errorf("json-escaping %s: %w", s.Name, err)
+		}
+		escaped := strings.TrimSuffix(noHTML.String(), "\n")
+		escaped = escaped[1 : len(escaped)-1]
+		if escaped != s.Value {
+			add(s.Name, "json", []byte(escaped))
+		}
 		add(s.Name, "utf-16le", utf16LE(s.Value))
 	}
 	return out, nil
 }
 
 func base64Needles(add func(secret, encoding string, pattern []byte), secret, name string, enc *base64.Encoding, value []byte) {
-	add(secret, name, []byte(enc.EncodeToString(value)))
-	add(secret, name+"-unpadded", []byte(enc.WithPadding(base64.NoPadding).EncodeToString(value)))
 	for align := range 3 {
-		add(secret, fmt.Sprintf("%s-align-%d", name, align), base64Aligned(enc, value, align))
+		add(secret, name, base64Aligned(enc, value, align))
 	}
 }
 
@@ -124,6 +136,9 @@ func Search(r io.Reader, needles []Needle) ([]Hit, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(needles) == 0 {
+		return nil, nil
+	}
 	var hits []Hit
 	if err := scanner.scan(r, func(h Hit) error {
 		hits = append(hits, h)
@@ -136,11 +151,12 @@ func Search(r io.Reader, needles []Needle) ([]Hit, error) {
 
 type scanner struct {
 	needles []Needle
-	oneHead [256]int32
 	twoHead [65536]int32
 	next    []int32
 	maxTail int
 	tail    []byte
+	buf     []byte
+	window  []byte
 	offset  int64
 }
 
@@ -150,19 +166,17 @@ func newScanner(needles []Needle) (*scanner, error) {
 	}
 	maxLen := 0
 	for _, n := range needles {
-		if len(n.Pattern) == 0 {
-			return nil, fmt.Errorf("needle %s/%s is empty", n.Secret, n.Encoding)
+		if len(n.Pattern) < 2 {
+			return nil, fmt.Errorf("needle %s/%s is %d byte, want at least 2", n.Secret, n.Encoding, len(n.Pattern))
 		}
 		maxLen = max(maxLen, len(n.Pattern))
+	}
+	if maxLen > chunkSize {
+		return nil, fmt.Errorf("longest needle is %d bytes, want at most %d", maxLen, chunkSize)
 	}
 	s := &scanner{needles: needles, maxTail: maxLen - 1}
 	s.next = make([]int32, len(needles))
 	for i, n := range needles {
-		if len(n.Pattern) == 1 {
-			s.next[i] = s.oneHead[n.Pattern[0]]
-			s.oneHead[n.Pattern[0]] = int32(i + 1)
-			continue
-		}
 		key := uint16(n.Pattern[0])<<8 | uint16(n.Pattern[1])
 		s.next[i] = s.twoHead[key]
 		s.twoHead[key] = int32(i + 1)
@@ -177,19 +191,24 @@ func (s *scanner) reset(offset int64) {
 
 func (s *scanner) scan(r io.Reader, emit func(Hit) error) error {
 	if len(s.needles) == 0 {
-		_, err := io.Copy(io.Discard, r)
-		return err
+		return nil
 	}
-	buf := make([]byte, chunkSize)
+	if s.buf == nil {
+		s.buf = make([]byte, chunkSize)
+	}
 	for {
-		n, err := r.Read(buf)
+		n, err := r.Read(s.buf)
 		if n > 0 {
 			oldTail := len(s.tail)
 			if oldTail > 0 {
 				prefix := min(s.maxTail, n)
-				window := make([]byte, oldTail+prefix)
+				need := oldTail + prefix
+				if cap(s.window) < need {
+					s.window = make([]byte, need)
+				}
+				window := s.window[:need]
 				copy(window, s.tail)
-				copy(window[oldTail:], buf[:prefix])
+				copy(window[oldTail:], s.buf[:prefix])
 				base := s.offset - int64(oldTail)
 				if err := s.scanWindow(window, base, func(start, end int) bool {
 					return start < oldTail && end > oldTail
@@ -197,16 +216,19 @@ func (s *scanner) scan(r io.Reader, emit func(Hit) error) error {
 					return err
 				}
 			}
-			if err := s.scanWindow(buf[:n], s.offset, func(_, _ int) bool { return true }, emit); err != nil {
+			if err := s.scanWindow(s.buf[:n], s.offset, func(_, _ int) bool { return true }, emit); err != nil {
 				return err
 			}
 			if s.maxTail > 0 && n >= s.maxTail {
-				s.tail = append(s.tail[:0], buf[n-s.maxTail:n]...)
+				s.tail = append(s.tail[:0], s.buf[n-s.maxTail:n]...)
 			} else if s.maxTail > 0 {
 				keep := min(s.maxTail-n, len(s.tail))
-				next := make([]byte, keep+n)
+				if cap(s.window) < keep+n {
+					s.window = make([]byte, keep+n)
+				}
+				next := s.window[:keep+n]
 				copy(next, s.tail[len(s.tail)-keep:])
-				copy(next[keep:], buf[:n])
+				copy(next[keep:], s.buf[:n])
 				s.tail = append(s.tail[:0], next...)
 			}
 			s.offset += int64(n)
@@ -233,142 +255,31 @@ func (s *scanner) scanWindow(window []byte, base int64, shouldEmit func(start, e
 			}
 		}
 	}
-	for start, b := range window {
-		for link := s.oneHead[b]; link != 0; link = s.next[link-1] {
-			needle := s.needles[link-1]
-			end := start + len(needle.Pattern)
-			if end <= len(window) && shouldEmit(start, end) && bytes.Equal(window[start:end], needle.Pattern) {
-				if err := emit(Hit{Secret: needle.Secret, Encoding: needle.Encoding, Offset: base + int64(start)}); err != nil {
-					return err
-				}
-			}
-		}
-	}
 	return nil
 }
 
-// LogicalReader reads a snapshot file in logical order from an E2B V3 header.
-//
-// Guest memory is read in guest-physical order. If a value is split across guest pages that are
-// not adjacent in physical memory, the scan can miss it. The canary check covers the common case.
-type LogicalReader struct {
-	storage string
-	data    string
-	maps    []mapping
-	size    uint64
-	pos     uint64
-	index   int
-	reader  io.Reader
-	file    *os.File
-	zeros   uint64
-}
-
-// OpenLogicalReader opens one logical snapshot file such as memfile or rootfs.ext4.
-func OpenLogicalReader(storageDir, buildID, headerName, dataName string) (*LogicalReader, error) {
-	header, err := os.ReadFile(filepath.Join(storageDir, buildID, headerName))
-	if err != nil {
-		return nil, err
-	}
-	h, err := parseHeader(header)
-	if err != nil {
-		return nil, err
-	}
-	return &LogicalReader{storage: storageDir, data: dataName, maps: h.maps, size: h.size}, nil
-}
-
-func (r *LogicalReader) Read(p []byte) (int, error) {
-	if r.pos >= r.size {
-		return 0, io.EOF
-	}
-	written := 0
-	for written < len(p) && r.pos < r.size {
-		if r.zeros > 0 {
-			n := min(uint64(len(p)-written), r.zeros)
-			clear(p[written : written+int(n)])
-			written += int(n)
-			r.pos += n
-			r.zeros -= n
-			continue
-		}
-		if r.reader != nil {
-			n, err := r.reader.Read(p[written:])
-			written += n
-			r.pos += uint64(n)
-			if errors.Is(err, io.EOF) {
-				if cerr := r.closeCurrent(); cerr != nil {
-					return written, cerr
-				}
-				r.reader = nil
-				continue
-			}
-			if err != nil {
-				r.closeCurrent()
-				return written, err
-			}
-			if written > 0 {
-				return written, nil
-			}
-			continue
-		}
-		if r.index >= len(r.maps) || r.maps[r.index].offset > r.pos {
-			next := r.size
-			if r.index < len(r.maps) {
-				next = r.maps[r.index].offset
-			}
-			r.zeros = next - r.pos
-			continue
-		}
-		m := r.maps[r.index]
-		r.index++
-		if m.build == nilUUID {
-			r.zeros = m.length
-			continue
-		}
-		file, err := os.Open(filepath.Join(r.storage, m.build, r.data))
-		if err != nil {
-			return written, err
-		}
-		if err := checkRange(file, m.storageOffset, m.length); err != nil {
-			file.Close()
-			return written, err
-		}
-		r.reader = io.NewSectionReader(file, int64(m.storageOffset), int64(m.length))
-		r.file = file
-	}
-	if written == 0 {
-		return 0, io.EOF
-	}
-	return written, nil
-}
-
-// Close closes the current file backing r, if one is open.
-func (r *LogicalReader) Close() error {
-	return r.closeCurrent()
-}
-
-func (r *LogicalReader) closeCurrent() error {
-	r.reader = nil
-	if r.file == nil {
-		return nil
-	}
-	err := r.file.Close()
-	r.file = nil
-	return err
-}
-
 // ScanBuild scans a snapshot build's logical memory, logical disk and raw artifact files.
+//
+// Guest memory is scanned in guest-physical order. If a value is split across guest pages that
+// are not adjacent in physical memory, the scan can miss it. The canary check covers the common
+// case.
 func ScanBuild(storageDir, buildID string, needles []Needle) ([]Hit, error) {
+	if !buildIDRE.MatchString(buildID) {
+		return nil, fmt.Errorf("bad build ID %q", buildID)
+	}
+	if len(needles) == 0 {
+		return nil, nil
+	}
 	scanner, err := newScanner(needles)
 	if err != nil {
 		return nil, err
 	}
 	var hits []Hit
-	seenHits := map[string]bool{}
+	seenHits := map[Hit]bool{}
 	emit := func(where string, h Hit) {
 		h.Where = where
-		key := fmt.Sprintf("%s\x00%s\x00%s\x00%d", h.Secret, h.Encoding, h.Where, h.Offset)
-		if !seenHits[key] {
-			seenHits[key] = true
+		if !seenHits[h] {
+			seenHits[h] = true
 			hits = append(hits, h)
 		}
 	}
@@ -395,7 +306,7 @@ func ScanBuild(storageDir, buildID string, needles []Needle) ([]Hit, error) {
 			return nil, err
 		}
 	}
-	for _, ref := range slices.Sorted(mapsKeys(refs)) {
+	for _, ref := range slices.Sorted(maps.Keys(refs)) {
 		dir := filepath.Join(storageDir, ref)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -536,8 +447,8 @@ func parseHeader(b []byte) (header, error) {
 		}
 		h.maps = append(h.maps, m)
 	}
-	slices.SortFunc(h.maps, func(a, b mapping) int { return int(a.offset - b.offset) })
-	h.refs = slices.Sorted(mapsKeys(refs))
+	slices.SortFunc(h.maps, func(a, b mapping) int { return cmp.Compare(a.offset, b.offset) })
+	h.refs = slices.Sorted(maps.Keys(refs))
 	return h, nil
 }
 
@@ -546,17 +457,8 @@ func uuid(b []byte) string {
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
-func mapsKeys[V any](m map[string]V) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		for k := range m {
-			if !yield(k) {
-				return
-			}
-		}
-	}
-}
-
 var tokenRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+var buildIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // SnapshotBuild returns the latest ready snapshot build for sandboxID.
 func SnapshotBuild(ctx context.Context, query Query, sandboxID string) (string, error) {
@@ -596,7 +498,7 @@ func oneBuild(ctx context.Context, query Query, sql string) (string, error) {
 	if len(rows) == 0 {
 		return "", errors.New("no build found")
 	}
-	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == "" {
+	if len(rows) != 1 || len(rows[0]) != 1 || !buildIDRE.MatchString(rows[0][0]) {
 		return "", fmt.Errorf("got rows %q, want one build ID", rows)
 	}
 	return rows[0][0], nil
