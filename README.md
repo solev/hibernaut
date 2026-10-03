@@ -21,10 +21,12 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - Running sandboxes are **paused before the VM stops**, so they survive reboots and deallocations
   with their files and processes (tested end to end).
 - Setup is scripted: `make up` starts everything, `make down` stops paying.
+- **Secrets stay on the host.** Machines hold look-alike placeholders. The host's proxy swaps in
+  the real value only on HTTPS calls to the sites a secret is bound to.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines) and M2 (idle and wake) are done. M3 (vault and egress proxy) is next. Progress:
-  [docs/milestones](docs/milestones/README.md).
+  M1 (machines), M2 (idle and wake) and M3 (vault and egress proxy) are done. M4 (GitHub) is
+  next. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 
@@ -72,6 +74,7 @@ Azure VM  e2b-test  (Ubuntu 24.04, D4s_v5, nested virtualization → /dev/kvm)
   ├── Hibernaut host pieces
   │     hibd                   pause-all, ls (through E2B's API)
   │     hibd daemon            unit hibd: keeps busy machines running; idle ones pause
+  │     hibd proxy             unit hibd-proxy: swaps bound secrets into machines' HTTPS calls
   │     hibd-pause-all         guard unit: pauses every sandbox whenever E2B stops
   │     idle / nightly timers  quiesce (pause all, stop E2B), then deallocate
   │
@@ -89,11 +92,19 @@ and write changes to a copy-on-write layer, exposed through NBD block devices.
 ## Project layout
 
 ```
-cmd/hib/                   Laptop CLI (only `version` so far)
-cmd/hibd/                  Host tool: `pause-all`, `ls`
+cmd/hib/                   Laptop CLI: machines, images, secrets and the audit log
+cmd/hibd/                  Host tool and daemon, which hib runs over SSH (code in internal/hibd/)
 internal/engine/           The Engine interface; e2b/ (real), fake/ (in memory), enginetest/ (the
                            contract both must pass)
+internal/machines/         Makes machines from images, finds them by name, reaches their SSH
+internal/busy/, room/      Keeps busy machines running. Says whether one more machine fits.
 internal/pauseall/         Pauses every running sandbox, within a time limit
+internal/cleanup/          Finds the E2B snapshot builds that nothing needs any more
+internal/vault/, envblock/ Sealed secrets and placeholders. The placeholder block in machines.
+internal/egress/           The HTTPS proxy; hook/ (iptables, real destination), swap/ (swap, scrub)
+internal/ca/, audit/       The Hibernaut CA. The audit log of every swap.
+internal/slots/            Finds the machine an intercepted connection comes from
+internal/leakscan/         Searches machine and image snapshots for real secret values
 e2e/                       End-to-end tests against the real VM (build tag e2e)
 third_party/e2b/           E2B's API spec and envd proto at the pinned commit; clients are
                            generated from them
@@ -111,14 +122,14 @@ azure/                     Runs on your Mac (needs az CLI + ssh)
   target.sh, state.sh      Print the VM's user@ip, or its power state
 
 vm/                        Runs on the VM (synced to ~/hibernaut/vm)
-  setup-host.sh            Host pieces (root): sshd hardening, hibd, quiesce, guard, timers
+  setup-host.sh            Root host setup: sshd, hibd, the CA, proxy, quiesce, guard, timers
   install-e2b.sh           Installs E2B and its dependencies; --if-needed skips an installed version
   wait-e2b.sh              Waits until E2B is healthy; --start starts it first
   lib/quiesce              Pause every sandbox, stop E2B, flush to disk. Runs before any deallocate.
   lib/deallocate-self      Deallocates this VM through its managed identity
   lib/e2b.sh               E2B's units and health checks, shared by the scripts above
   lib/e2b-infra-ready      Waits until E2B's databases accept connections
-  systemd/                 E2B's units, the pause-all guard, the nightly timer
+  systemd/                 E2B's units, hibd, the proxy, the pause-all guard, the nightly timer
   idle-deallocate/         Script + systemd service/timer + config for auto-deallocation
   e2b/, hibd/              Settings for E2B's orchestrator and for hibd
   sshd/00-hardening.conf   No root login, no passwords, keys only
@@ -191,6 +202,47 @@ says what it would delete, and why it keeps the rest. A machine's own snapshots 
 pauses (3.6 GiB after 20 pauses of an idle one): each is a diff on the one before, and E2B never
 merges them. Compaction is planned ([M9](docs/milestones/m9-snapshot-compaction.md)).
 
+### Secrets (`hib secret`, `hib log`)
+
+Real credentials never enter a machine. You store a secret on the host and bind it to the sites
+that should get it. Machines get a look-alike placeholder in their environment instead. When a
+machine sends the placeholder over HTTPS to a bound site, the host's proxy swaps in the real
+value on the way out, and turns it back into the placeholder in the response. Sent anywhere
+else, the placeholder is a meaningless string.
+
+```bash
+gh auth token | hib secret add GH_TOKEN -env GH_TOKEN -bind api.github.com
+hib secret add OPENAI -env OPENAI_API_KEY -bind api.openai.com  # asks for the value, hidden
+hib secret ls                   # names, variables, sites and placeholders, never values
+ssh app.hib printenv GH_TOKEN   # the placeholder
+hib log                         # each swap: time, machine, site, method, path and secret
+hib secret rm GH_TOKEN
+```
+
+- The value comes from stdin or a hidden prompt, never from an argument. The host seals it with
+  AES-256-GCM, under a key only root can read.
+- `-bind` takes host names, comma-separated. `*.example.com` matches every host under
+  example.com, but not example.com itself.
+- Adding or removing a secret updates every running machine at once, and paused ones when they
+  wake. New logins see the change. The proxy uses it from the next request.
+- The proxy swaps placeholders only in the `Authorization` header, Basic auth included. That's
+  where git, gh, the Copilot CLI and Codex send credentials. It decrypts only calls to bound
+  sites. Everything else passes straight through.
+- On the host, `sudo hibd leakscan NAME` pauses a machine and searches its memory and disk for
+  every real value, raw, base64 and URL-encoded. It waits up to 15 minutes for the snapshot to be
+  fully written. `-image NAME` scans an image. `-canary` plants a value in a throwaway machine and
+  checks that the scan finds it.
+
+Limits: only HTTPS on port 443 is swapped, and only in `Authorization`. A placeholder anywhere
+else (another header, the URL, the body, a WebSocket message) goes out as it is. That's on
+purpose: swapping inside content would let a machine store the real value at the site, in a gist
+say, and read it back. So a tool that sends its key in another header, such as `x-api-key`, can't
+use a bound secret yet. Responses from bound sites are scrubbed back to placeholders in headers,
+trailers and bodies, including escaped and base64 forms. WebSocket messages and line-wrapped
+base64 aren't. A response the proxy can't decompress fails with 502 instead of passing unscrubbed.
+Bind a secret only to the API hosts that use it. If the proxy stops, machines' HTTPS goes straight
+out with placeholders. Bound calls fail, and nothing leaks.
+
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,
 > including a full reinstall, and `make e2e-slow` reboots and deallocates the VM for real.
@@ -202,6 +254,7 @@ Useful extras:
 ./azure/ssh.sh systemctl status "'e2b-*'"        # E2B's services
 ./azure/ssh.sh journalctl -fu e2b-orchestrator   # follow one service's logs
 ./azure/ssh.sh hibd ls                           # sandboxes, running and paused
+./azure/ssh.sh journalctl -fu hibd-proxy         # follow the secrets proxy
 
 # Use the E2B SDK from your Mac through an SSH tunnel:
 ./azure/ssh.sh -N -L 3000:localhost:3000 -L 3002:localhost:3002

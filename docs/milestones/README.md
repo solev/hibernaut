@@ -3,16 +3,17 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**Next: [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md).**
-[M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md) and
-[M2 Idle and wake](m2-idle-and-wake.md) are done.
+**Next: [M4 GitHub](m4-github.md).**
+[M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md),
+[M2 Idle and wake](m2-idle-and-wake.md) and
+[M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md) are done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
 | M0 | [Foundations](m0-foundations.md) | done | `TestEngineContract`, `TestPauseAll`, `TestSurvivesHostRestart` |
 | M1 | [Machines](m1-machines.md) | done | `TestMachine`, `TestMachineSecurity`, `TestMachineNetwork`, `TestMachineTerminal`, `TestQuiescing`, `TestWakeOnSSH` |
 | M2 | [Idle and wake](m2-idle-and-wake.md) | done | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestWakeOnExec`, `TestHostFull`, `TestSnapshotCleanup`, `TestPauseCycles` |
-| M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | in progress | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
+| M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | done | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
 | M4 | [GitHub](m4-github.md) | not started | `TestGitHubFullFlow`, `TestWorkflowPush` |
 | M5 | [AI tools](m5-ai-tools.md) | not started | `TestCodex`, `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | not started | `TestImageAndFork`, `TestImageLeakScan` |

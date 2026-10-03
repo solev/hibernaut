@@ -1,6 +1,6 @@
 # M3 Vault, egress proxy, leak scan
 
-Status: **in progress** · Spec: §4.1, §4.2, §4.5, §8 (leak scan) · Spikes: S1 (first), S8
+Status: **done** · Spec: §4.1, §4.2, §4.5, §8 (leak scan) · Spikes: S1 (first), S8
 
 **Goal:** machines use secrets without ever holding them, and we can prove it.
 
@@ -201,23 +201,24 @@ Host integration (Linux, sudo):
 
 End-to-end:
 
-- [ ] `TestSecretSwap`: the laptop's `gh auth token` is added as a secret bound to
+- [x] `TestSecretSwap`: the laptop's `gh auth token` is added as a secret bound to
       `api.github.com`. In a machine, `curl` to `api.github.com/user` with the placeholder
       returns your login; the same header sent to `postman-echo.com/headers` comes back as the
       placeholder. A separate synthetic secret bound to postman-echo.com tests Bearer and Basic
       response scrubbing.
-- [ ] `TestNoHostAccess` (S8): from a machine, the E2B API, Postgres, Redis, `hibd` and
+- [x] `TestNoHostAccess` (S8): from a machine, the E2B API, Postgres, Redis, `hibd` and
       `169.254.169.254` can't be reached; the host's public IP answers only on SSH; `192.0.2.1`
       exposes only E2B's expected endpoint.
-- [ ] `TestAuditLog`: `hib log` shows Bearer and Basic swaps with machine, site, and secret name.
+- [x] `TestAuditLog`: `hib log` shows Bearer and Basic swaps with machine, site, and secret name.
       Placeholders in other headers and bodies create no audit entry.
-- [ ] `TestLeakScan`: after the tests above, zero real values found; the canary is found.
+- [x] `TestLeakScan`: after the tests above, zero real values found; the canary is found.
 
 ## Done when
 
-- [ ] `make lint test test-host`, CI and `make e2e` are green.
-- [ ] Spec: S1 and S8 marked answered.
-- [ ] README: how secrets work, `hib secret`, `hib log`.
+- [x] `make lint test test-host`, CI and `make e2e` are green. CI is parked, so `make lint test`,
+      `make test-host-remote` and a clean `make generate` stand in for it.
+- [x] Spec: S1 and S8 marked answered.
+- [x] README: how secrets work, `hib secret`, `hib log`.
 
 ## Changes
 
@@ -259,3 +260,8 @@ End-to-end:
   older ready snapshot. Canary reruns reconcile their reserved namespace under a host lock.
 - 2026-10-03: An open connection keeps scrubbing responses after its site loses its last
   binding. The site now gets query parameters Go's reverse proxy can't parse, unchanged.
+- 2026-10-03: The host-access control probe sends SSH identification on port 22. All four M3
+  end-to-end tests passed live. Three more secret swap and audit runs each scanned a freshly
+  paused snapshot without a stale or incomplete file. The machine probed 44 host, gateway, E2B
+  and Azure addresses on 34 ports. Only the host's SSH and E2B's service endpoint answered.
+  `make e2e-slow` passed too, with the secret tests running after a host reboot and deallocate.
