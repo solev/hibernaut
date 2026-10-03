@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -220,17 +221,8 @@ func deleteGitHubBranch(ctx context.Context, branch string) error {
 	if err == nil {
 		return nil
 	}
-	branches, checkErr := gitHubBranches(ctx)
-	if checkErr == nil {
-		found := false
-		for _, existing := range branches {
-			if existing == branch {
-				found = true
-			}
-		}
-		if !found {
-			return nil
-		}
+	if branches, checkErr := gitHubBranches(ctx); checkErr == nil && !slices.Contains(branches, branch) {
+		return nil
 	}
 	return fmt.Errorf("deleting fixture branch %s: %w", branch, err)
 }
@@ -244,6 +236,7 @@ func gitHubBranches(ctx context.Context) ([]string, error) {
 	return strings.Fields(out), nil
 }
 
+// cleanGitHubBranch closes the fixture's open PRs from branch, then deletes it.
 func cleanGitHubBranch(ctx context.Context, branch string) error {
 	pulls, err := openGitHubPulls(ctx)
 	if err != nil {
@@ -259,20 +252,9 @@ func cleanGitHubBranch(ctx context.Context, branch string) error {
 	return deleteGitHubBranch(ctx, branch)
 }
 
+// deleteLeftoverGitHub cleans every e2e- branch that killed runs left. Their PRs need no search
+// of their own: GitHub closes a PR when its branch is deleted.
 func deleteLeftoverGitHub(ctx context.Context) error {
-	pulls, err := openGitHubPulls(ctx)
-	if err != nil {
-		return err
-	}
-	for _, pull := range pulls {
-		if !strings.HasPrefix(pull.Head.Ref, "e2e-") {
-			continue
-		}
-		fmt.Fprintf(os.Stderr, "e2e: closing fixture PR %d, left by an earlier run\n", pull.Number)
-		if err := closeGitHubPull(ctx, pull.Number); err != nil {
-			return fmt.Errorf("closing fixture PR %d: %w", pull.Number, err)
-		}
-	}
 	branches, err := gitHubBranches(ctx)
 	if err != nil {
 		return err
@@ -281,8 +263,8 @@ func deleteLeftoverGitHub(ctx context.Context) error {
 		if !strings.HasPrefix(branch, "e2e-") {
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "e2e: deleting fixture branch %s, left by an earlier run\n", branch)
-		if err := deleteGitHubBranch(ctx, branch); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: deleting fixture branch %s and its PRs, left by an earlier run\n", branch)
+		if err := cleanGitHubBranch(ctx, branch); err != nil {
 			return err
 		}
 	}
