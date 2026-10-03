@@ -70,7 +70,7 @@ func (a *app) secretLS(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	hibapi.PrintSecrets(a.stdout, r.Secrets, "-")
+	hibapi.PrintSecrets(a.stdout, r.Secrets)
 	return 0
 }
 

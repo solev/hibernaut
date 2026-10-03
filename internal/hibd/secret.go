@@ -68,7 +68,7 @@ func (a *App) secretAdd(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Secret: &secret})
 	}
-	hibapi.PrintSecrets(a.Stdout, []hibapi.Secret{secret}, "")
+	hibapi.PrintSecrets(a.Stdout, []hibapi.Secret{secret})
 	return 0
 }
 
@@ -117,7 +117,7 @@ func (a *App) secretLS(args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Secrets: secrets})
 	}
-	hibapi.PrintSecrets(a.Stdout, secrets, "")
+	hibapi.PrintSecrets(a.Stdout, secrets)
 	return 0
 }
 

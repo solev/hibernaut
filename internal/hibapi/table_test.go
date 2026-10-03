@@ -11,7 +11,6 @@ func TestPrintSecrets(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		secrets []hibapi.Secret
-		empty   string
 		want    string
 	}{
 		{
@@ -29,22 +28,15 @@ func TestPrintSecrets(t *testing.T) {
 			want: "NAME  ENV  SITES  PLACEHOLDER\n",
 		},
 		{
-			name:    "client empty fields",
+			name:    "empty fields",
 			secrets: []hibapi.Secret{{}},
-			empty:   "-",
 			want: "NAME  ENV  SITES  PLACEHOLDER\n" +
 				"-     -    -      -\n",
-		},
-		{
-			name:    "daemon empty fields",
-			secrets: []hibapi.Secret{{}},
-			want: "NAME  ENV  SITES  PLACEHOLDER\n" +
-				"                  \n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			hibapi.PrintSecrets(&out, tc.secrets, tc.empty)
+			hibapi.PrintSecrets(&out, tc.secrets)
 			if got := out.String(); got != tc.want {
 				t.Errorf("PrintSecrets = %q, want %q", got, tc.want)
 			}

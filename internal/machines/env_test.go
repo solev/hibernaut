@@ -89,11 +89,17 @@ func TestWriteBlockRetriesCASAndReplacesStaleSecretValue(t *testing.T) {
 			}
 		}
 	}
+	before := len(guest.requests)
 	if err := machines.WriteBlock(t.Context(), e, "app1", block); err != nil {
 		t.Fatal(err)
 	}
 	if got := string(guest.content); got != want {
 		t.Fatalf("repeated WriteBlock changed /etc/environment to %q, want %q", got, want)
+	}
+	for _, req := range guest.requests[before:] {
+		if req.Cmd == "sh" {
+			t.Fatalf("repeated WriteBlock rewrote an unchanged /etc/environment: %+v", req)
+		}
 	}
 }
 

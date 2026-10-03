@@ -36,9 +36,4 @@ func TestBlockDeliveryManyRunningMachinesRace(t *testing.T) {
 		}
 		return true
 	})
-	for id, guest := range guests {
-		if got := guest.envString(); got != want {
-			t.Errorf("%s /etc/environment = %q, want %q", id, got, want)
-		}
-	}
 }

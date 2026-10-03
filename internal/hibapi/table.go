@@ -9,11 +9,11 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-// PrintSecrets writes a terminal-safe metadata table. Empty fields use empty.
-func PrintSecrets(w io.Writer, secrets []Secret, empty string) {
+// PrintSecrets writes a terminal-safe metadata table. Empty fields show as "-".
+func PrintSecrets(w io.Writer, secrets []Secret) {
 	field := func(s string) string {
 		if s == "" {
-			s = empty
+			return "-"
 		}
 		return termsafe.String(s)
 	}
