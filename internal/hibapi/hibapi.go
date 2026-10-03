@@ -104,6 +104,33 @@ type Response struct {
 	Template string `json:"template,omitempty"`
 	// Version is hibd's release.
 	Version string `json:"version,omitempty"`
+	// LeakScan is the result of a leak scan.
+	LeakScan *LeakScan `json:"leakScan,omitempty"`
+}
+
+// LeakScan is a leak scan result. It never carries secret values.
+type LeakScan struct {
+	Target      LeakScanTarget `json:"target"`
+	BuildID     string         `json:"buildId,omitempty"`
+	SecretCount int            `json:"secretCount"`
+	Hits        []LeakScanHit  `json:"hits"`
+	MemoryFound bool           `json:"memoryFound,omitempty"`
+	DiskFound   bool           `json:"diskFound,omitempty"`
+}
+
+// LeakScanTarget is what was scanned.
+type LeakScanTarget struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
+	ID   string `json:"id,omitempty"`
+}
+
+// LeakScanHit is one leak scan hit. It never carries the secret value.
+type LeakScanHit struct {
+	Secret   string `json:"secret"`
+	Encoding string `json:"encoding"`
+	Where    string `json:"where"`
+	Offset   int64  `json:"offset"`
 }
 
 // Secret is bound secret metadata. It never carries the real value.

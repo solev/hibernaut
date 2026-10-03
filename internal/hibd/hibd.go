@@ -51,6 +51,8 @@ commands:
   image build NAME  build an image (-force rebuilds every step)
   ready             wait until E2B answers (-timeout)
   pause-all         pause every running machine; wait until none is running
+  leakscan          scan a paused machine or image for real secrets, as root. Running machines
+                    are paused first and stay paused (-image NAME, -canary, -json)
   cleanup           delete the build directories nothing needs any more, as root (-n only
                     says which, and why it keeps the others)
   daemon            keep busy machines running (-every), and clean up when a machine is
@@ -66,7 +68,9 @@ Environment variables of the same names override the file:
   E2B_API_KEY           required
   E2B_HEALTH_URLS       what ready waits for, space-separated
   HIBD_STATE_DIR        default /var/lib/hibernaut
+  HIBD_VAULT            default $HIBD_STATE_DIR/vault.json
   HIBD_VAULT_KEY        default /etc/hibernaut/vault.key
+  HIBD_E2B_STORAGE      E2B snapshot storage, default /var/lib/e2b/local-template-storage
   HIBD_AUDIT_LOG        default /var/log/hibernaut/audit.jsonl
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
   HIBD_CA_CERT          Hibernaut CA certificate for image builds, default
@@ -101,6 +105,12 @@ type App struct {
 	// Clean deletes the build directories nothing needs any more, like cleanup.Host.Clean. If
 	// it's nil, App cleans up this host's.
 	Clean func(ctx context.Context, e engine.Engine, now time.Time, dryRun bool, logf func(format string, args ...any)) error
+	// Query runs SQL in E2B's database. If it's nil, App uses cleanup.Postgres.
+	Query func(ctx context.Context, sql string) ([][]string, error)
+	// EUID returns the effective user ID. If it's nil, App uses os.Geteuid.
+	EUID func() int
+	// NewCanary returns a canary secret for leakscan -canary. If it's nil, App uses random bytes.
+	NewCanary func() (string, error)
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -132,6 +142,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.ready(ctx, args)
 	case "pause-all":
 		return a.pauseAll(ctx, args)
+	case "leakscan":
+		return a.leakscan(ctx, args)
 	case "cleanup":
 		return a.cleanup(ctx, args)
 	case "daemon":
@@ -694,6 +706,7 @@ type config struct {
 	stateDir       string
 	vaultPath      string
 	vaultKeyPath   string
+	e2bStorage     string
 	auditLogPath   string
 	authorizedKeys string
 	quiescing      string
@@ -740,7 +753,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		},
 		healthURLs:     strings.Fields(get("E2B_HEALTH_URLS", "http://127.0.0.1:3000/health http://127.0.0.1:5008/health http://127.0.0.1:3003/health")),
 		stateDir:       get("HIBD_STATE_DIR", "/var/lib/hibernaut"),
+		vaultPath:      get("HIBD_VAULT", ""),
 		vaultKeyPath:   get("HIBD_VAULT_KEY", "/etc/hibernaut/vault.key"),
+		e2bStorage:     get("HIBD_E2B_STORAGE", cleanup.StorageDir),
 		auditLogPath:   get("HIBD_AUDIT_LOG", "/var/log/hibernaut/audit.jsonl"),
 		authorizedKeys: get("HIBD_AUTHORIZED_KEYS", keys),
 		quiescing:      get("HIBD_QUIESCING", "/run/hibernaut/quiescing"),
@@ -748,7 +763,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		cgroups:        get("HIBD_CGROUPS", "/sys/fs/cgroup/e2b"),
 		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
 	}
-	cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")
+	if cfg.vaultPath == "" {
+		cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")
+	}
 	if cfg.e2b.APIKey == "" {
 		return config{}, fmt.Errorf("E2B_API_KEY is not set (in the environment or %s)", path)
 	}

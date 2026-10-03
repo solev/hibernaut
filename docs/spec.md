@@ -512,8 +512,8 @@ Key Vault through the VM's managed identity).
 **The leak scan** tests goal 3 directly:
 
 - After each end-to-end scenario, `hibd` pauses every test machine and searches its snapshot, both
-  memory and disk, for every real secret value. Expected hits: zero. (If E2B stores snapshots
-  compressed, the scan decompresses first. Checked in M3.)
+  memory and disk, for every real secret value. Expected hits: zero. E2B writes uncompressed
+  version 3 headers on this host. The scan refuses compressed version 4 and later headers.
 - A canary value written into one machine on purpose must be found. That proves the scan works.
 - Saved images are scanned the same way.
 

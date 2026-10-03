@@ -1,0 +1,307 @@
+package hibd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/solev/hibernaut/images"
+	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/engine/fake"
+	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/leakscan/leakscantest"
+	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/vault"
+)
+
+const (
+	leakBuildA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	leakBuildB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+)
+
+func TestLeakscanArgErrorsAndRootCheck(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no target":         {"leakscan"},
+		"machine and image": {"leakscan", "-image", "dev", "app"},
+		"canary and image":  {"leakscan", "-canary", "-image", "dev"},
+		"two machines":      {"leakscan", "app", "other"},
+		"bad image":         {"leakscan", "-image", "nope"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _, errOut, _ := newLeakscanApp(t, fake.New())
+			if code := a.Run(t.Context(), args); code != 2 {
+				t.Fatalf("code = %d, want 2; stderr %q", code, errOut.String())
+			}
+		})
+	}
+
+	a, _, errOut, _ := newLeakscanApp(t, fake.New())
+	a.EUID = func() int { return 501 }
+	if code := a.Run(t.Context(), []string{"leakscan", "app"}); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "sudo hibd leakscan") {
+		t.Fatalf("stderr = %q, want sudo hint", errOut.String())
+	}
+}
+
+func TestLeakscanMachinePausesRunningMachineAndScansVault(t *testing.T) {
+	value := "secret-value-123456789"
+	e := fake.New()
+	e.Add(engine.Machine{ID: "sandbox123", State: engine.Running, Metadata: map[string]string{"hib.name": "app", "hib.image": "dev"}})
+	a, out, errOut, cfg := newLeakscanApp(t, e)
+	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("mem "+value), []byte("clean disk"))
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", value)
+	a.Query = func(_ context.Context, sql string) ([][]string, error) {
+		if !strings.Contains(sql, "sandbox123") || !strings.Contains(sql, "snapshots") {
+			t.Fatalf("query SQL = %q, want snapshot lookup by sandbox ID", sql)
+		}
+		return [][]string{{leakBuildA}}, nil
+	}
+
+	code := a.Run(t.Context(), []string{"leakscan", "app"})
+	if code != 1 {
+		t.Fatalf("code = %d, want hits exit 1; stdout %q stderr %q", code, out.String(), errOut.String())
+	}
+	got, err := e.Get(t.Context(), "sandbox123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != engine.Paused {
+		t.Fatalf("state = %s, want paused", got.State)
+	}
+	if stdout := out.String(); !strings.Contains(stdout, "github raw memory 4") || strings.Contains(stdout, value) || strings.Contains(errOut.String(), value) {
+		t.Fatalf("stdout/stderr leaked or missed hit:\nstdout=%q\nstderr=%q", stdout, errOut.String())
+	}
+}
+
+func TestLeakscanMachineDoesNotPauseAlreadyPausedMachine(t *testing.T) {
+	paused := 0
+	e := fake.New(fake.WithPauseHook(func(context.Context, string) error {
+		paused++
+		return nil
+	}))
+	e.Add(engine.Machine{ID: "sandbox123", State: engine.Paused, Metadata: map[string]string{"hib.name": "app"}})
+	a, out, errOut, cfg := newLeakscanApp(t, e)
+	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("clean memory"), []byte("clean disk"))
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", "secret-value-123456789")
+	a.Query = oneBuildQuery(leakBuildA)
+
+	if code := a.Run(t.Context(), []string{"leakscan", "app"}); code != 0 {
+		t.Fatalf("code = %d, want clean exit 0; stdout %q stderr %q", code, out.String(), errOut.String())
+	}
+	if paused != 0 {
+		t.Fatalf("paused %d times, want none", paused)
+	}
+	if !strings.Contains(out.String(), "clean: machine app build "+leakBuildA+" scanned 1 secrets") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
+func TestLeakscanImageScansTemplateBuild(t *testing.T) {
+	value := "secret-value-123456789"
+	a, out, errOut, cfg := newLeakscanApp(t, fake.New())
+	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("clean memory"), []byte("disk "+value))
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", value)
+	a.Query = func(_ context.Context, sql string) ([][]string, error) {
+		if !strings.Contains(sql, "env_aliases") || !strings.Contains(sql, images.Template("dev")) {
+			t.Fatalf("query SQL = %q, want template lookup", sql)
+		}
+		return [][]string{{leakBuildA}}, nil
+	}
+
+	if code := a.Run(t.Context(), []string{"leakscan", "-image", "dev"}); code != 1 {
+		t.Fatalf("code = %d, want hits exit 1; stdout %q stderr %q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "github raw disk 5") || strings.Contains(out.String(), value) {
+		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
+func TestLeakscanJSONCleanAndHitsNeverPrintValues(t *testing.T) {
+	for name, tc := range map[string]struct {
+		disk     []byte
+		wantHits int
+		wantCode int
+	}{
+		"clean": {disk: []byte("clean disk"), wantCode: 0},
+		"hit":   {disk: []byte("disk secret-value-123456789"), wantHits: 2, wantCode: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := "secret-value-123456789"
+			a, out, errOut, cfg := newLeakscanApp(t, fake.New())
+			writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("clean memory"), tc.disk)
+			writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", value)
+			a.Query = oneBuildQuery(leakBuildA)
+
+			code := a.Run(t.Context(), []string{"leakscan", "-json", "-image", "dev"})
+			if code != tc.wantCode {
+				t.Fatalf("code = %d, want %d; stdout %q stderr %q", code, tc.wantCode, out.String(), errOut.String())
+			}
+			var r hibapi.Response
+			if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+				t.Fatal(err)
+			}
+			if r.LeakScan == nil || r.LeakScan.Target.Kind != "image" || r.LeakScan.Target.Name != "dev" || r.LeakScan.BuildID != leakBuildA || r.LeakScan.SecretCount != 1 || len(r.LeakScan.Hits) != tc.wantHits {
+				t.Fatalf("leakScan = %+v", r.LeakScan)
+			}
+			if bytes.Contains(out.Bytes(), []byte(value)) || strings.Contains(errOut.String(), value) {
+				t.Fatalf("output leaked value:\nstdout=%q\nstderr=%q", out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestLeakscanMissingVaultScansZeroSecretsAndDoesNotTouchState(t *testing.T) {
+	a, out, errOut, cfg := newLeakscanApp(t, fake.New())
+	before := dirEntries(t, cfg.stateDir)
+	if code := a.Run(t.Context(), []string{"leakscan", "-image", "dev"}); code != 0 {
+		t.Fatalf("code = %d, want 0; stdout %q stderr %q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "no vault secrets") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if after := dirEntries(t, cfg.stateDir); !slices.Equal(before, after) {
+		t.Fatalf("state dir changed: before %v after %v", before, after)
+	}
+}
+
+func TestLeakscanCanaryRequiresMemoryAndDiskAndAlwaysKills(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mem      bool
+		disk     bool
+		wantCode int
+	}{
+		"found":          {mem: true, disk: true, wantCode: 0},
+		"missing memory": {disk: true, wantCode: 1},
+		"missing disk":   {mem: true, wantCode: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := fake.New(fake.WithTemplates(images.Template(images.Default)))
+			a, out, errOut, _ := newLeakscanApp(t, e)
+			a.NewCanary = func() (string, error) { return "hibcanary_0123456789abcdef0123456789abcdef", nil }
+			e = fake.New(
+				fake.WithTemplates(images.Template(images.Default)),
+				fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+					return engine.ExecResult{}, nil
+				}),
+				fake.WithPauseHook(func(_ context.Context, id string) error {
+					var memData, diskData []byte
+					if tc.mem {
+						memData = []byte("mem " + "hibcanary_0123456789abcdef0123456789abcdef")
+					}
+					if tc.disk {
+						diskData = []byte("disk " + "hibcanary_0123456789abcdef0123456789abcdef")
+					}
+					cfg, err := loadConfig(a.Getenv)
+					if err != nil {
+						t.Fatal(err)
+					}
+					writeLeakBuild(t, cfg.e2bStorage, leakBuildB, memData, diskData)
+					return nil
+				}),
+			)
+			a.NewEngine = func() (engine.Engine, error) { return e, nil }
+			a.Query = oneBuildQuery(leakBuildB)
+
+			code := a.Run(t.Context(), []string{"leakscan", "-canary"})
+			if code != tc.wantCode {
+				t.Fatalf("code = %d, want %d; stdout %q stderr %q", code, tc.wantCode, out.String(), errOut.String())
+			}
+			ms, err := e.List(t.Context(), engine.ListOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ms) != 0 {
+				t.Fatalf("canary machine was not killed: %+v", ms)
+			}
+		})
+	}
+}
+
+func newLeakscanApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer, config) {
+	t.Helper()
+	state := t.TempDir()
+	storage := t.TempDir()
+	vaultDir := t.TempDir()
+	keys := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(keys, sshAuthorizedKey(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"HIBD_CONFIG":          filepath.Join(t.TempDir(), "none.env"),
+		"E2B_API_KEY":          "test",
+		"HIBD_STATE_DIR":       state,
+		"HIBD_AUTHORIZED_KEYS": keys,
+		"HIBD_VAULT":           filepath.Join(vaultDir, "vault.json"),
+		"HIBD_VAULT_KEY":       filepath.Join(vaultDir, "vault.key"),
+		"HIBD_E2B_STORAGE":     storage,
+	}
+	var out, errOut bytes.Buffer
+	a := &App{
+		Stdin:     strings.NewReader(""),
+		Stdout:    &out,
+		Stderr:    &errOut,
+		Getenv:    func(k string) string { return env[k] },
+		NewEngine: func() (engine.Engine, error) { return e, nil },
+		ReadRoom:  func() (room.Host, error) { return roomy, nil },
+		EUID:      func() int { return 0 },
+	}
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, &out, &errOut, cfg
+}
+
+func sshAuthorizedKey(t *testing.T) []byte {
+	t.Helper()
+	return ssh.MarshalAuthorizedKey(newKey(t))
+}
+
+func writeVault(t *testing.T, vaultPath, keyPath, name, value string) {
+	t.Helper()
+	if err := vault.Update(vaultPath, keyPath, func(f *vault.File, key vault.Key) error {
+		_, err := f.Put(key, name, strings.ToUpper(name)+"_TOKEN", []string{"example.com"}, value)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLeakBuild(t *testing.T, storage, build string, mem, disk []byte) {
+	t.Helper()
+	leakscantest.WriteBuildFile(t, storage, build, "memfile", mem)
+	leakscantest.WriteBuildFile(t, storage, build, "rootfs.ext4", disk)
+	leakscantest.WriteHeader(t, storage, build, "memfile.header", uint64(len(mem)),
+		leakscantest.Mapping{Offset: 0, Length: uint64(len(mem)), Build: build})
+	leakscantest.WriteHeader(t, storage, build, "rootfs.ext4.header", uint64(len(disk)),
+		leakscantest.Mapping{Offset: 0, Length: uint64(len(disk)), Build: build})
+}
+
+func oneBuildQuery(build string) func(context.Context, string) ([][]string, error) {
+	return func(context.Context, string) ([][]string, error) {
+		return [][]string{{build}}, nil
+	}
+}
+
+func dirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	return names
+}

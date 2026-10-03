@@ -67,7 +67,7 @@ The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested h
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
 order, so a value that spans blocks from different builds is still found. It also scans every file
 of the build, and of the builds its headers reference, as raw bytes, which covers `snapfile` and
-blocks that a later pause replaced. It refuses headers newer than version 3, which E2B compresses.
+blocks that a later pause replaced. It refuses version 4 and later headers, which E2B compresses.
 It reports the secret's name, the encoding, the file and the offset, never the value. Known limit:
 memory is scanned in guest-physical order, so a value split across two guest pages that are not
 adjacent physically can be missed. The canary checks the common case.
@@ -116,10 +116,10 @@ adjacent physically can be missed. The canary checks the common case.
 
 **Leak scan**
 
-- [ ] `hibd leakscan <machine|image>`: pauses the machine, then searches its memory and disk
-      snapshot files for every real secret (raw, base64 and URL-encoded), decompressing first if
-      E2B compresses them. Reports hits without printing values.
-- [ ] Canary mode: plant a known value in a machine and require the scan to find it.
+- [x] `hibd leakscan <machine|image>`: pauses the machine, then searches its memory and disk
+      snapshot files for every real secret (raw, base64 and URL-encoded). It refuses compressed
+      headers. Reports hits without printing values.
+- [x] Canary mode: plant a known value in a machine and require the scan to find it.
 
 ## Tests
 
@@ -173,3 +173,5 @@ End-to-end:
 - 2026-10-03: Documented the leak scan's guest-physical memory ordering limit.
 - 2026-10-03: gh's proxy integration case runs on Linux only. Go on macOS ignores
   `SSL_CERT_FILE`, so e2e covers gh in a machine there.
+- 2026-10-03: The leak scan refuses compressed (version 4 and later) headers instead of
+  decompressing them. E2B on this host writes version 3, which is uncompressed.
