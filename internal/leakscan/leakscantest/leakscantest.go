@@ -33,12 +33,18 @@ func WriteBuildFile(t testing.TB, storage, build, name string, data []byte) {
 // WriteHeader writes an E2B version 3 snapshot header in storage/build.
 func WriteHeader(t testing.TB, storage, build, name string, size uint64, maps ...Mapping) {
 	t.Helper()
+	WriteHeaderVersion(t, storage, build, name, 3, size, maps...)
+}
+
+// WriteHeaderVersion writes an E2B snapshot header in storage/build.
+func WriteHeaderVersion(t testing.TB, storage, build, name string, version, size uint64, maps ...Mapping) {
+	t.Helper()
 	dir := filepath.Join(storage, build)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	b := make([]byte, 64+40*len(maps))
-	binary.LittleEndian.PutUint64(b[0:8], 3)
+	binary.LittleEndian.PutUint64(b[0:8], version)
 	binary.LittleEndian.PutUint64(b[8:16], 4096)
 	binary.LittleEndian.PutUint64(b[16:24], size)
 	copyUUID(t, b[32:48], build)

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -224,6 +225,71 @@ func TestLeakscanCanaryRequiresMemoryAndDiskAndAlwaysKills(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeakscanCanaryKillsWhenPlantingFails(t *testing.T) {
+	e := fake.New(
+		fake.WithTemplates(images.Template(images.Default)),
+		fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+			return engine.ExecResult{ExitCode: 42, Stderr: []byte("nope")}, nil
+		}),
+	)
+	a, out, errOut, _ := newLeakscanApp(t, e)
+	a.NewCanary = func() (string, error) { return "hibcanary_0123456789abcdef0123456789abcdef", nil }
+
+	if code := a.Run(t.Context(), []string{"leakscan", "-canary"}); code != 1 {
+		t.Fatalf("code = %d, want 1; stdout %q stderr %q", code, out.String(), errOut.String())
+	}
+	ms, err := e.List(t.Context(), engine.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 0 {
+		t.Fatalf("canary machine was not killed: %+v", ms)
+	}
+}
+
+func TestLeakscanCanaryKillIgnoresCanceledRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	e := fake.New(
+		fake.WithTemplates(images.Template(images.Default)),
+		fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
+			cancel()
+			return engine.ExecResult{ExitCode: 42, Stderr: []byte("interrupted")}, nil
+		}),
+	)
+	rec := &killContextRecorder{Engine: e}
+	a, out, errOut, _ := newLeakscanApp(t, rec)
+	a.NewCanary = func() (string, error) { return "hibcanary_0123456789abcdef0123456789abcdef", nil }
+
+	if code := a.Run(ctx, []string{"leakscan", "-canary"}); code != 1 {
+		t.Fatalf("code = %d, want 1; stdout %q stderr %q", code, out.String(), errOut.String())
+	}
+	if rec.killCtxErr != nil {
+		t.Fatalf("Kill ctx err = %v, want nil", rec.killCtxErr)
+	}
+	ms, err := e.List(t.Context(), engine.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 0 {
+		t.Fatalf("canary machine was not killed: %+v", ms)
+	}
+}
+
+type killContextRecorder struct {
+	engine.Engine
+	killCtxErr error
+}
+
+func (r *killContextRecorder) Kill(ctx context.Context, id string) error {
+	select {
+	case <-ctx.Done():
+		r.killCtxErr = ctx.Err()
+	case <-time.After(10 * time.Millisecond):
+		r.killCtxErr = nil
+	}
+	return r.Engine.Kill(ctx, id)
 }
 
 func newLeakscanApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer, config) {

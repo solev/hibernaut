@@ -610,6 +610,18 @@ func (a *App) flags(cmd string) *flag.FlagSet {
 
 // parse parses flags wherever they are among args, and wants exactly n other arguments.
 func (a *App) parse(fl *flag.FlagSet, args []string, n int, use string) ([]string, bool) {
+	rest, ok := a.parseAny(fl, args)
+	if !ok {
+		return nil, false
+	}
+	if len(rest) != n {
+		fmt.Fprintf(a.Stderr, "usage: hibd %s\n", use)
+		return nil, false
+	}
+	return rest, true
+}
+
+func (a *App) parseAny(fl *flag.FlagSet, args []string) ([]string, bool) {
 	var rest []string
 	for {
 		if err := fl.Parse(args); err != nil {
@@ -620,10 +632,6 @@ func (a *App) parse(fl *flag.FlagSet, args []string, n int, use string) ([]strin
 		}
 		rest = append(rest, fl.Arg(0))
 		args = fl.Args()[1:]
-	}
-	if len(rest) != n {
-		fmt.Fprintf(a.Stderr, "usage: hibd %s\n", use)
-		return nil, false
 	}
 	return rest, true
 }

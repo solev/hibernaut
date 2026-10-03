@@ -5,12 +5,12 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/cleanup"
@@ -28,6 +28,8 @@ type leakscanTarget struct {
 	id   string
 }
 
+const leakscanUsage = "usage: hibd leakscan [-json] NAME | leakscan [-json] -image NAME | leakscan [-json] -canary"
+
 func (a *App) leakscan(ctx context.Context, args []string) int {
 	fl := a.flags("leakscan")
 	image := fl.String("image", "", "scan the latest build of image NAME")
@@ -39,7 +41,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 	}
 	if *canary {
 		if *image != "" || len(rest) != 0 {
-			fmt.Fprintln(a.Stderr, "usage: hibd leakscan [-json] NAME | leakscan [-json] -image NAME | leakscan [-json] -canary")
+			fmt.Fprintln(a.Stderr, leakscanUsage)
 			return 2
 		}
 		if err := a.wantRoot(); err != nil {
@@ -48,7 +50,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 		return a.leakscanCanary(ctx, *asJSON)
 	}
 	if *image != "" && len(rest) != 0 || *image == "" && len(rest) != 1 {
-		fmt.Fprintln(a.Stderr, "usage: hibd leakscan [-json] NAME | leakscan [-json] -image NAME | leakscan [-json] -canary")
+		fmt.Fprintln(a.Stderr, leakscanUsage)
 		return 2
 	}
 	var target leakscanTarget
@@ -85,21 +87,6 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 		return a.fail(*asJSON, "leakscan", err)
 	}
 	return a.printLeakscanResult(*asJSON, result)
-}
-
-func (a *App) parseAny(fl *flag.FlagSet, args []string) ([]string, bool) {
-	var rest []string
-	for {
-		if err := fl.Parse(args); err != nil {
-			return nil, false
-		}
-		if fl.NArg() == 0 {
-			break
-		}
-		rest = append(rest, fl.Arg(0))
-		args = fl.Args()[1:]
-	}
-	return rest, true
 }
 
 func (a *App) runLeakscan(ctx context.Context, cfg config, target leakscanTarget, secrets []scanpkg.Secret) (hibapi.LeakScan, error) {
@@ -176,16 +163,10 @@ func (a *App) leakscanCanary(ctx context.Context, asJSON bool) int {
 	if err != nil {
 		return a.fail(asJSON, "leakscan", err)
 	}
-	killed := false
-	kill := func() error {
-		if killed {
-			return nil
-		}
-		killed = true
-		return e.Kill(ctx, m.ID)
-	}
 	result, runErr := a.runCanaryScan(ctx, cfg, e, m, name, canary)
-	killErr := kill()
+	killCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	killErr := e.Kill(killCtx, m.ID)
 	if runErr != nil {
 		if killErr != nil {
 			runErr = fmt.Errorf("%w; also failed to kill canary %s: %v", runErr, m.ID, killErr)

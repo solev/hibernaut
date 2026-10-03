@@ -6,7 +6,6 @@ import (
 	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
 	mrand "math/rand"
@@ -18,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/solev/hibernaut/internal/leakscan"
+	"github.com/solev/hibernaut/internal/leakscan/leakscantest"
 )
 
 const (
@@ -135,21 +135,21 @@ func TestSearchHasNoFalsePositivesOnRandomData(t *testing.T) {
 
 func TestScanBuildReadsLogicalFilesAndRawBuildFiles(t *testing.T) {
 	storage := t.TempDir()
-	writeBuildFile(t, storage, buildA, "memfile", []byte("aaaaVALUE-"))
-	writeBuildFile(t, storage, buildB, "memfile", []byte("SPANbbbb"))
-	writeBuildFile(t, storage, buildA, "rootfs.ext4", []byte("raw disk secret is here"))
-	writeBuildFile(t, storage, buildB, "rootfs.ext4", []byte("disk-VALUE-"))
-	writeBuildFile(t, storage, buildC, "rootfs.ext4", []byte("SPAN-disk"))
-	writeBuildFile(t, storage, buildC, "snapfile", []byte("cpu state has VALUE-SPAN too"))
+	leakscantest.WriteBuildFile(t, storage, buildA, "memfile", []byte("aaaaVALUE-"))
+	leakscantest.WriteBuildFile(t, storage, buildB, "memfile", []byte("SPANbbbb"))
+	leakscantest.WriteBuildFile(t, storage, buildA, "rootfs.ext4", []byte("raw disk secret is here"))
+	leakscantest.WriteBuildFile(t, storage, buildB, "rootfs.ext4", []byte("disk-VALUE-"))
+	leakscantest.WriteBuildFile(t, storage, buildC, "rootfs.ext4", []byte("SPAN-disk"))
+	leakscantest.WriteBuildFile(t, storage, buildC, "snapfile", []byte("cpu state has VALUE-SPAN too"))
 
-	writeHeader(t, storage, buildB, "memfile.header", 3, 20,
-		mapping{off: 10, len: 5, build: buildB, at: 0},
-		mapping{off: 0, len: 10, build: buildA, at: 0},
+	leakscantest.WriteHeaderVersion(t, storage, buildB, "memfile.header", 3, 20,
+		leakscantest.Mapping{Offset: 10, Length: 5, Build: buildB, StorageOffset: 0},
+		leakscantest.Mapping{Offset: 0, Length: 10, Build: buildA, StorageOffset: 0},
 	)
-	writeHeader(t, storage, buildB, "rootfs.ext4.header", 3, 40,
-		mapping{off: 0, len: 11, build: buildB, at: 0},
-		mapping{off: 11, len: 9, build: buildC, at: 0},
-		mapping{off: 25, len: 5, build: nilID, at: 0},
+	leakscantest.WriteHeaderVersion(t, storage, buildB, "rootfs.ext4.header", 3, 40,
+		leakscantest.Mapping{Offset: 0, Length: 11, Build: buildB, StorageOffset: 0},
+		leakscantest.Mapping{Offset: 11, Length: 9, Build: buildC, StorageOffset: 0},
+		leakscantest.Mapping{Offset: 25, Length: 5, Build: nilID, StorageOffset: 0},
 	)
 	needles := []leakscan.Needle{{Secret: "token", Encoding: "raw", Pattern: []byte("VALUE-SPAN")}}
 	hits, err := leakscan.ScanBuild(storage, buildB, needles)
@@ -172,9 +172,9 @@ func TestScanBuildReadsLogicalFilesAndRawBuildFiles(t *testing.T) {
 func TestScanBuildRejectsBadHeadersAndShortFiles(t *testing.T) {
 	for name, setup := range map[string]func(t *testing.T, storage string){
 		"cut mapping": func(t *testing.T, storage string) {
-			writeBuildFile(t, storage, buildA, "memfile", []byte("abcdef"))
-			writeBuildFile(t, storage, buildA, "rootfs.ext4", []byte("abcdef"))
-			writeHeader(t, storage, buildA, "memfile.header", 3, 6, mapping{off: 0, len: 6, build: buildA, at: 0})
+			leakscantest.WriteBuildFile(t, storage, buildA, "memfile", []byte("abcdef"))
+			leakscantest.WriteBuildFile(t, storage, buildA, "rootfs.ext4", []byte("abcdef"))
+			leakscantest.WriteHeaderVersion(t, storage, buildA, "memfile.header", 3, 6, leakscantest.Mapping{Offset: 0, Length: 6, Build: buildA, StorageOffset: 0})
 			b, err := os.ReadFile(filepath.Join(storage, buildA, "memfile.header"))
 			if err != nil {
 				t.Fatal(err)
@@ -182,19 +182,19 @@ func TestScanBuildRejectsBadHeadersAndShortFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(storage, buildA, "memfile.header"), b[:len(b)-1], 0o644); err != nil {
 				t.Fatal(err)
 			}
-			writeHeader(t, storage, buildA, "rootfs.ext4.header", 3, 6, mapping{off: 0, len: 6, build: buildA, at: 0})
+			leakscantest.WriteHeaderVersion(t, storage, buildA, "rootfs.ext4.header", 3, 6, leakscantest.Mapping{Offset: 0, Length: 6, Build: buildA, StorageOffset: 0})
 		},
 		"version 4": func(t *testing.T, storage string) {
-			writeBuildFile(t, storage, buildA, "memfile", []byte("abcdef"))
-			writeBuildFile(t, storage, buildA, "rootfs.ext4", []byte("abcdef"))
-			writeHeader(t, storage, buildA, "memfile.header", 4, 6, mapping{off: 0, len: 6, build: buildA, at: 0})
-			writeHeader(t, storage, buildA, "rootfs.ext4.header", 3, 6, mapping{off: 0, len: 6, build: buildA, at: 0})
+			leakscantest.WriteBuildFile(t, storage, buildA, "memfile", []byte("abcdef"))
+			leakscantest.WriteBuildFile(t, storage, buildA, "rootfs.ext4", []byte("abcdef"))
+			leakscantest.WriteHeaderVersion(t, storage, buildA, "memfile.header", 4, 6, leakscantest.Mapping{Offset: 0, Length: 6, Build: buildA, StorageOffset: 0})
+			leakscantest.WriteHeaderVersion(t, storage, buildA, "rootfs.ext4.header", 3, 6, leakscantest.Mapping{Offset: 0, Length: 6, Build: buildA, StorageOffset: 0})
 		},
 		"mapping past file end": func(t *testing.T, storage string) {
-			writeBuildFile(t, storage, buildA, "memfile", []byte("abc"))
-			writeBuildFile(t, storage, buildA, "rootfs.ext4", []byte("abcdef"))
-			writeHeader(t, storage, buildA, "memfile.header", 3, 6, mapping{off: 0, len: 6, build: buildA, at: 0})
-			writeHeader(t, storage, buildA, "rootfs.ext4.header", 3, 6, mapping{off: 0, len: 6, build: buildA, at: 0})
+			leakscantest.WriteBuildFile(t, storage, buildA, "memfile", []byte("abc"))
+			leakscantest.WriteBuildFile(t, storage, buildA, "rootfs.ext4", []byte("abcdef"))
+			leakscantest.WriteHeaderVersion(t, storage, buildA, "memfile.header", 3, 6, leakscantest.Mapping{Offset: 0, Length: 6, Build: buildA, StorageOffset: 0})
+			leakscantest.WriteHeaderVersion(t, storage, buildA, "rootfs.ext4.header", 3, 6, leakscantest.Mapping{Offset: 0, Length: 6, Build: buildA, StorageOffset: 0})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -325,56 +325,6 @@ func (r *chunkReader) Read(p []byte) (int, error) {
 	copy(p, r.text[:n])
 	r.text = r.text[n:]
 	return n, nil
-}
-
-type mapping struct {
-	off, len uint64
-	build    string
-	at       uint64
-}
-
-func writeBuildFile(t *testing.T, storage, build, name string, data []byte) {
-	t.Helper()
-	dir := filepath.Join(storage, build)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func writeHeader(t *testing.T, storage, build, name string, version, size uint64, maps ...mapping) {
-	t.Helper()
-	dir := filepath.Join(storage, build)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	b := make([]byte, 64+40*len(maps))
-	binary.LittleEndian.PutUint64(b[0:8], version)
-	binary.LittleEndian.PutUint64(b[8:16], 4096)
-	binary.LittleEndian.PutUint64(b[16:24], size)
-	copyUUID(t, b[32:48], build)
-	copyUUID(t, b[48:64], buildA)
-	for i, m := range maps {
-		p := b[64+i*40:]
-		binary.LittleEndian.PutUint64(p[0:8], m.off)
-		binary.LittleEndian.PutUint64(p[8:16], m.len)
-		copyUUID(t, p[16:32], m.build)
-		binary.LittleEndian.PutUint64(p[32:40], m.at)
-	}
-	if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func copyUUID(t *testing.T, dst []byte, id string) {
-	t.Helper()
-	raw, err := hex.DecodeString(strings.ReplaceAll(id, "-", ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	copy(dst, raw)
 }
 
 func utf16le(s string) []byte {
