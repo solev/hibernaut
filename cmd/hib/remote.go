@@ -20,6 +20,13 @@ import (
 // config from adding anything to the connection that could get in the way: forwardings, a
 // local command printing into the bridge, or a remote command of its own.
 func (c *config) sshArgs(args ...string) []string {
+	out := c.sshBase()
+	// The host's shell splits the command on spaces. Every arg is a checked name, a flag, or a
+	// time.Duration's String, which has only digits, letters, '.' and '-'.
+	return append(append(out, "--", c.Host, "hibd"), args...)
+}
+
+func (c *config) sshBase() []string {
 	out := []string{"-T",
 		"-o", "ClearAllForwardings=yes",
 		"-o", "ForwardAgent=no",
@@ -36,9 +43,22 @@ func (c *config) sshArgs(args ...string) []string {
 	if c.Identity != "" {
 		out = append(out, "-i", c.Identity, "-o", "IdentitiesOnly=yes")
 	}
-	// The host's shell splits the command on spaces. Every arg is a checked name, a flag, or a
-	// time.Duration's String, which has only digits, letters, '.' and '-'.
-	return append(append(out, "--", c.Host, "hibd"), args...)
+	return out
+}
+
+func (c *config) sudoHibdArgs(args ...string) ([]string, error) {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		if strings.Contains(arg, "'") {
+			return nil, fmt.Errorf("remote argument contains a quote")
+		}
+		quoted[i] = "'" + arg + "'"
+	}
+	cmd := "sudo -n hibd"
+	if len(quoted) > 0 {
+		cmd += " " + strings.Join(quoted, " ")
+	}
+	return append(append(c.sshBase(), "--", c.Host), cmd), nil
 }
 
 // runCommand returns a runFunc for program.
@@ -105,14 +125,48 @@ func (a *app) remote(ctx context.Context, cfg *config, timeout time.Duration, ar
 	}
 }
 
+func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration, stdin io.Reader, args ...string) (hibapi.Response, error) {
+	sshArgs, err := cfg.sudoHibdArgs(args...)
+	if err != nil {
+		return hibapi.Response{}, err
+	}
+	for woke := false; ; woke = true {
+		var out bytes.Buffer
+		code, err := a.runSSH(ctx, timeout, sshArgs, stdin, &out)
+		if err != nil {
+			return hibapi.Response{}, err
+		}
+		if code == 255 && !woke {
+			err := a.wake(ctx, cfg)
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, errAwake) {
+				return hibapi.Response{}, err
+			}
+		}
+		if code != 0 && code != 1 {
+			return hibapi.Response{}, exitError(cfg, code)
+		}
+		if code != 0 && out.Len() == 0 {
+			return hibapi.Response{}, errors.New("hibd needs passwordless sudo on the host")
+		}
+		return hibapi.DecodeResponse(out.Bytes())
+	}
+}
+
 func (a *app) runRemote(ctx context.Context, cfg *config, timeout time.Duration, args []string, stdin io.Reader, stdout io.Writer) (int, error) {
+	return a.runSSH(ctx, timeout, cfg.sshArgs(args...), stdin, stdout)
+}
+
+func (a *app) runSSH(ctx context.Context, timeout time.Duration, args []string, stdin io.Reader, stdout io.Writer) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	stderr := termsafe.NewWriter(a.stderr)
 	defer stderr.Flush()
-	code, err := a.ssh(ctx, cfg.sshArgs(args...), stdin, stdout, stderr)
+	code, err := a.ssh(ctx, args, stdin, stdout, stderr)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return code, fmt.Errorf("gave up on hibd %s after %v", args[0], timeout)
+		return code, fmt.Errorf("gave up on hibd after %v", timeout)
 	}
 	return code, err
 }

@@ -72,6 +72,9 @@ type Config struct {
 	// ReadRoom reads the room on the host, which Create and Dial check before they start or
 	// resume a machine. Default room.Read.
 	ReadRoom func() (room.Host, error)
+	// EnvBlock is the managed /etc/environment block written after machine-init. It contains
+	// placeholders only. Nil removes any existing block and writes nothing into a new machine.
+	EnvBlock []byte
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -82,6 +85,7 @@ type Manager struct {
 	keysFile string
 	now      func() time.Time
 	readRoom func() (room.Host, error)
+	envBlock []byte
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -94,7 +98,7 @@ func New(cfg Config) *Manager {
 	if readRoom == nil {
 		readRoom = room.Read
 	}
-	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom}
+	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom, envBlock: cfg.EnvBlock}
 }
 
 // Name returns the name of machine em, or "" if hibd didn't make it.
@@ -181,6 +185,16 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 			return hibapi.Machine{}, fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, em.ID, kerr)
 		}
 		return hibapi.Machine{}, fmt.Errorf("setting up %q: %w", name, err)
+	}
+	if len(m.envBlock) > 0 {
+		if err := WriteBlock(ctx, m.e, em.ID, m.envBlock); err != nil {
+			kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+			defer cancel()
+			if kerr := m.e.Kill(kctx, em.ID); kerr != nil && !errors.Is(kerr, engine.ErrNotFound) {
+				return hibapi.Machine{}, fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, em.ID, kerr)
+			}
+			return hibapi.Machine{}, fmt.Errorf("setting up %q: %w", name, err)
+		}
 	}
 	return toAPI(em), nil
 }

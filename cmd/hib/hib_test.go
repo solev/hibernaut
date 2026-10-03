@@ -48,7 +48,8 @@ type host struct {
 	far        chan net.Conn
 	sshVersion string
 	// override answers a hibd command in hibd's place when it returns true.
-	override func(words []string, stdout, stderr io.Writer) (int, bool)
+	override  func(words []string, stdout, stderr io.Writer) (int, bool)
+	lastStdin io.Reader
 
 	mu    sync.Mutex
 	calls [][]string
@@ -180,15 +181,20 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 		return 255, nil
 	}
 	// The host's shell splits the command into words.
-	words := strings.Fields(strings.Join(args[i+2:], " "))
+	words := shellFields(strings.Join(args[i+2:], " "))
+	h.lastStdin = stdin
+	if h.override != nil {
+		overrideWords := words
+		if len(words) > 0 && words[0] == "hibd" {
+			overrideWords = words[1:]
+		}
+		if code, ok := h.override(overrideWords, stdout, stderr); ok {
+			return code, nil
+		}
+	}
 	if words[0] != "hibd" {
 		fmt.Fprintf(stderr, "bash: %s: command not found\n", words[0])
 		return 127, nil
-	}
-	if h.override != nil {
-		if code, ok := h.override(words[1:], stdout, stderr); ok {
-			return code, nil
-		}
 	}
 	if stdin == nil {
 		stdin = strings.NewReader("")
@@ -202,6 +208,33 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 		ReadRoom:  h.readRoom,
 	}
 	return app.Run(ctx, words[1:]), nil
+}
+
+func shellFields(s string) []string {
+	var out []string
+	var b strings.Builder
+	quoted := false
+	inWord := false
+	for _, r := range s {
+		switch {
+		case r == '\'':
+			quoted = !quoted
+			inWord = true
+		case (r == ' ' || r == '\t' || r == '\n') && !quoted:
+			if inWord {
+				out = append(out, b.String())
+				b.Reset()
+				inWord = false
+			}
+		default:
+			b.WriteRune(r)
+			inWord = true
+		}
+	}
+	if inWord {
+		out = append(out, b.String())
+	}
+	return out
 }
 
 func (h *host) az(_ context.Context, args ...string) ([]byte, error) {

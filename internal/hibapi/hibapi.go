@@ -90,16 +90,38 @@ func FormatMB(mb int64) string {
 // Response is what a hibd command prints with --json: one object, then the command exits. A
 // failed command prints only Error, and exits 1.
 type Response struct {
-	V        int       `json:"v"`
-	Error    string    `json:"error,omitempty"`
-	Machine  *Machine  `json:"machine,omitempty"`
-	Machines []Machine `json:"machines,omitempty"`
+	V        int        `json:"v"`
+	Error    string     `json:"error,omitempty"`
+	Machine  *Machine   `json:"machine,omitempty"`
+	Machines []Machine  `json:"machines,omitempty"`
+	Secret   *Secret    `json:"secret,omitempty"`
+	Secrets  []Secret   `json:"secrets,omitempty"`
+	Logs     []LogEntry `json:"logs,omitempty"`
+	Corrupt  int        `json:"corrupt,omitempty"`
 	// Room is the room on the host, from ls. It's nil if hibd couldn't read it.
 	Room *Room `json:"room,omitempty"`
 	// Template is the ID of the template an image was built into.
 	Template string `json:"template,omitempty"`
 	// Version is hibd's release.
 	Version string `json:"version,omitempty"`
+}
+
+// Secret is bound secret metadata. It never carries the real value.
+type Secret struct {
+	Name        string   `json:"name"`
+	Env         string   `json:"env"`
+	Sites       []string `json:"sites"`
+	Placeholder string   `json:"placeholder"`
+}
+
+// LogEntry is one audit log entry where placeholders were swapped for real secrets.
+type LogEntry struct {
+	Time    time.Time `json:"time"`
+	Machine string    `json:"machine,omitempty"`
+	Site    string    `json:"site"`
+	Method  string    `json:"method"`
+	Path    string    `json:"path"`
+	Secrets []string  `json:"secrets"`
 }
 
 // Room is the room on the host for more running machines.

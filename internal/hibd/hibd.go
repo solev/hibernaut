@@ -44,6 +44,10 @@ commands:
   rm NAME           delete a machine for good
   pause NAME        pause a machine
   bridge NAME       connect stdin and stdout to a machine's SSH server
+  secret add NAME   store a bound secret from stdin (-env VAR -bind SITE[,SITE...])
+  secret ls         list bound secrets
+  secret rm NAME    remove a bound secret
+  log               show secret swap audit entries (-n, default 50)
   image build NAME  build an image (-force rebuilds every step)
   ready             wait until E2B answers (-timeout)
   pause-all         pause every running machine; wait until none is running
@@ -62,6 +66,8 @@ Environment variables of the same names override the file:
   E2B_API_KEY           required
   E2B_HEALTH_URLS       what ready waits for, space-separated
   HIBD_STATE_DIR        default /var/lib/hibernaut
+  HIBD_VAULT_KEY        default /etc/hibernaut/vault.key
+  HIBD_AUDIT_LOG        default /var/log/hibernaut/audit.jsonl
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
   HIBD_CA_CERT          Hibernaut CA certificate for image builds, default
                         /etc/hibernaut/ca.crt
@@ -116,6 +122,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.byName(ctx, "pause", args, (*machines.Manager).Pause)
 	case "bridge":
 		return a.bridge(ctx, args)
+	case "secret":
+		return a.secret(ctx, args)
+	case "log":
+		return a.log(args)
 	case "image":
 		return a.image(ctx, args)
 	case "ready":
@@ -152,7 +162,15 @@ func (a *App) new(ctx context.Context, args []string) int {
 	if err := a.awake(); err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
-	m, err := a.manager()
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		return a.fail(*asJSON, "new", err)
+	}
+	block, err := loadSecretBlock(cfg.vaultPath)
+	if err != nil {
+		return a.fail(*asJSON, "new", err)
+	}
+	m, err := a.managerWithBlock(block)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
@@ -513,6 +531,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	}
 	s := &sweeper{engine: e, logf: func(format string, args ...any) { logger.Printf("cleanup: "+format, args...) }}
 	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
+	delivery := newBlockDelivery(e, cfg.vaultPath, func(format string, args ...any) { logger.Printf("secrets: "+format, args...) })
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	t := time.NewTicker(*every)
 	defer t.Stop()
@@ -538,6 +557,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 			if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
 				now = err.Error()
 			}
+			delivery.look(ctx)
 		}
 		if now != problem {
 			if now == "" {
@@ -642,6 +662,10 @@ func (a *App) awake() error {
 }
 
 func (a *App) manager() (*machines.Manager, error) {
+	return a.managerWithBlock(nil)
+}
+
+func (a *App) managerWithBlock(block []byte) (*machines.Manager, error) {
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
 		return nil, err
@@ -650,7 +674,7 @@ func (a *App) manager() (*machines.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys, ReadRoom: a.ReadRoom}), nil
+	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys, ReadRoom: a.ReadRoom, EnvBlock: block}), nil
 }
 
 func (a *App) engine() (engine.Engine, error) {
@@ -668,6 +692,9 @@ type config struct {
 	e2b            e2b.Config
 	healthURLs     []string
 	stateDir       string
+	vaultPath      string
+	vaultKeyPath   string
+	auditLogPath   string
 	authorizedKeys string
 	quiescing      string
 	agents         []string
@@ -713,12 +740,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 		},
 		healthURLs:     strings.Fields(get("E2B_HEALTH_URLS", "http://127.0.0.1:3000/health http://127.0.0.1:5008/health http://127.0.0.1:3003/health")),
 		stateDir:       get("HIBD_STATE_DIR", "/var/lib/hibernaut"),
+		vaultKeyPath:   get("HIBD_VAULT_KEY", "/etc/hibernaut/vault.key"),
+		auditLogPath:   get("HIBD_AUDIT_LOG", "/var/log/hibernaut/audit.jsonl"),
 		authorizedKeys: get("HIBD_AUTHORIZED_KEYS", keys),
 		quiescing:      get("HIBD_QUIESCING", "/run/hibernaut/quiescing"),
 		agents:         strings.Fields(get("HIBD_AGENTS", "")),
 		cgroups:        get("HIBD_CGROUPS", "/sys/fs/cgroup/e2b"),
 		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
 	}
+	cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")
 	if cfg.e2b.APIKey == "" {
 		return config{}, fmt.Errorf("E2B_API_KEY is not set (in the environment or %s)", path)
 	}

@@ -32,6 +32,10 @@ commands:
   ls                list machines, and when each pauses unless it's busy
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
+  secret add NAME   store a bound secret (-env VAR -bind SITE[,SITE...])
+  secret ls         list bound secrets
+  secret rm NAME    remove a bound secret
+  log               show secret swap audit entries (-n, default 50)
   exec NAME -- CMD  run CMD on a machine, as ssh NAME.hib -- CMD does
   image build NAME  build an image on the host (-force rebuilds every step)
   bridge NAME.hib   connect to a machine's SSH server; ssh runs this for you
@@ -103,7 +107,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 	case "help":
 		fmt.Fprint(a.stdout, usage)
 		return 0
-	case "init", "new", "ls", "rm", "pause", "exec", "image", "bridge":
+	case "init", "new", "ls", "rm", "pause", "exec", "image", "bridge", "secret", "log":
 	default:
 		fmt.Fprintf(a.stderr, "hib: unknown command %q\n\n%s", cmd, usage)
 		return 2
@@ -128,6 +132,10 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.byName(ctx, cfg, "rm", "removed", args)
 	case "pause":
 		return a.byName(ctx, cfg, "pause", "paused", args)
+	case "secret":
+		return a.secret(ctx, cfg, args)
+	case "log":
+		return a.log(ctx, cfg, args)
 	case "exec":
 		return a.exec(cfg, args)
 	case "image":

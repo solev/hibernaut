@@ -75,14 +75,14 @@ offset, never the value.
 **Vault**
 
 - [x] AES-GCM vault under `/var/lib/hibernaut/`, key in a root-only file.
-- [ ] `hib secret add NAME --env VAR --bind site,site` (value from stdin, never from arguments),
+- [x] `hib secret add NAME --env VAR --bind site,site` (value from stdin, never from arguments),
       `hib secret ls` (never shows values), `hib secret rm`.
 - [x] Placeholders: same prefix, length and characters as the real value; stable when the real
       value rotates.
 
 **Delivery**
 
-- [ ] Managed placeholder block in each machine's `/etc/environment`, written through envd at
+- [x] Managed placeholder block in each machine's `/etc/environment`, written through envd at
       create. When secrets change, running machines are updated at once and paused ones when they
       next wake (the poll loop notices).
 

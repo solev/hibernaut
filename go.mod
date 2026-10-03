@@ -7,6 +7,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/oapi-codegen/runtime v1.7.0
 	golang.org/x/crypto v0.57.0
+	golang.org/x/term v0.46.0
 	google.golang.org/protobuf v1.36.12
 )
 
