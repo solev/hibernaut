@@ -5,7 +5,7 @@ SHELL_SCRIPTS := azure/*.sh vm/*.sh $(filter-out %.go,$(wildcard vm/lib/*)) vm/i
 	images/dev/packages images/dev/configure images/dev/start images/dev/ready images/dev/machine-init \
 	images/dev/hib-term.sh images/dev/trust-ca
 
-.PHONY: build build-linux lint test test-host generate deploy up down e2e e2e-slow
+.PHONY: build build-linux lint test test-host test-host-remote generate deploy up down e2e e2e-slow
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -25,9 +25,21 @@ lint:
 test:
 	go test -race ./...
 
-# Tests that need a Linux host with systemd.
+# Tests that need root on a Linux host. Only the hook package runs under sudo.
 test-host:
-	go test -tags host ./...
+	go test -tags host -exec sudo ./internal/egress/hook/
+
+# Cross-compiles the hook host tests, runs them on the Azure host and removes the binary.
+test-host-remote:
+	@set -e; \
+	tmp=$$(mktemp -t hibernaut-hook-test.XXXXXX); \
+	remote=/tmp/hibernaut-hook-test-$$$$; \
+	trap 'rm -f "$$tmp"' EXIT; \
+	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$tmp" ./internal/egress/hook; \
+	azure/start.sh || { echo "Azure host is not reachable. Run azure/start.sh and retry." >&2; exit 1; }; \
+	target=$$(bash -c 'source azure/common.sh; printf "%s@%s" "$$VM_USER" "$$(vm_ip)"'); \
+	scp "$$tmp" "$$target:$$remote"; \
+	azure/ssh.sh "sudo $$remote -test.v; status=\$$?; rm -f $$remote; exit \$$status"
 
 generate:
 	go generate ./...

@@ -37,6 +37,16 @@ jobs:
           go-version: 1.26.x
       - run: make test
 
+  test-host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+      - run: make test-host
+
   generate:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
