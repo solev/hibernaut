@@ -23,13 +23,13 @@ The M4 code is built against this section. Code that has to differ updates it in
 - `hib connect github --token` reads the token from a hidden prompt, or from stdin when stdin isn't
   a terminal. It never takes the token as an argument, which would land in shell history. An extra
   argument, or `--token=VALUE` when VALUE isn't a Go boolean literal, fails without echoing it.
-  Then it runs
-  `sudo -n hibd connect github --source token --json`.
+  Then it runs `sudo -n hibd connect github --source token --json`.
 - `hibd connect github` checks the token with `GET https://api.github.com/user`, from the host.
   That one call gives the login, ID and name from the body, and the scopes from the
   `X-OAuth-Scopes` header. If the check fails, nothing is stored. Otherwise it stores the secret,
   writes `github.json`, writes the machine setup into running machines, and replies with the
-  account. A new token that fits the old placeholder keeps it, as `hib secret add` does.
+  account. A new token that fits the old placeholder keeps it, as `hib secret add` does. While
+  another secret sets `GH_TOKEN`, it refuses before calling GitHub and names that secret.
 - `hib status` first asks Azure for the VM's power state, when Azure is configured. If the VM isn't
   running, it says the host is asleep with that state and exits 0, without running ssh. Otherwise,
   or without Azure settings, it runs `sudo -n hibd status --json`. It never wakes the host. An ssh
@@ -185,3 +185,17 @@ End-to-end:
   `gh auth setup-git` for `user`, so every user in a machine gets it.
 - 2026-10-03: The fixture repo `solev/hibernaut-e2e` exists, with Actions disabled. Its workflow
   only runs on `workflow_dispatch`, so it never runs.
+- 2026-10-03: `hib status` asks Azure for the VM's power state before ssh. An asleep host is
+  reported at once, with no ssh timeout and no wake.
+- 2026-10-03: `hib connect github --token=true`, or another Go boolean literal, is a flag. Any other
+  `--token=VALUE` is taken as a pasted token and refused without echoing it.
+- 2026-10-03: `hibd status` also checks secrets bound to `api.github.com` through a wildcard such as
+  `*.github.com`, since the proxy matches sites that way.
+- 2026-10-03: `hibd connect github` refuses while another secret sets `GH_TOKEN`, since a machine
+  can hold only one.
+- 2026-10-03: Found: without `workflow`, GitHub refuses a push that changes `.github/workflows/`,
+  but deleting a branch with such a change works. Deleting a branch that's gone answers 422, not
+  404, so e2e cleanup lists the branches after a failed delete.
+- 2026-10-03: M3's `TestRealGHClient` had never run: it skips on macOS, and CI is parked. With gh
+  2.45.0 on the host it failed, because gh's `--hostname` refuses a port and gh sends `token`, not
+  `Bearer`. Fixed, and run on the host with a temporary gh.

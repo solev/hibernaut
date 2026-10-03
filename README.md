@@ -23,6 +23,8 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - Setup is scripted: `make up` starts everything, `make down` stops paying.
 - **Secrets stay on the host.** Machines hold look-alike placeholders. The host's proxy swaps in
   the real value only on HTTPS calls to the sites a secret is bound to.
+- **GitHub is connected once.** `hib connect github --from-gh` gives every machine your GitHub
+  login: `git clone`, `git push` and `gh` work, with only a placeholder inside.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
   M1 (machines), M2 (idle and wake) and M3 (vault and egress proxy) are done. M4 (GitHub) is
@@ -92,7 +94,7 @@ and write changes to a copy-on-write layer, exposed through NBD block devices.
 ## Project layout
 
 ```
-cmd/hib/                   Laptop CLI: machines, images, secrets and the audit log
+cmd/hib/                   Laptop CLI: machines, images, secrets, GitHub, status and the audit log
 cmd/hibd/                  Host tool and daemon, which hib runs over SSH (code in internal/hibd/)
 internal/engine/           The Engine interface; e2b/ (real), fake/ (in memory), enginetest/ (the
                            contract both must pass)
@@ -103,6 +105,7 @@ internal/cleanup/          Finds the E2B snapshot builds that nothing needs any 
 internal/vault/, envblock/ Sealed secrets and placeholders. The placeholder block in machines.
 internal/egress/           The HTTPS proxy; hook/ (iptables, real destination), swap/ (swap, scrub)
 internal/ca/, audit/       The Hibernaut CA. The audit log of every swap.
+internal/github/           Checks a GitHub token with GET /user. The connected account, github.json.
 internal/slots/            Finds the machine an intercepted connection comes from
 internal/leakscan/         Searches machine and image snapshots for real secret values
 e2e/                       End-to-end tests against the real VM (build tag e2e)
@@ -211,16 +214,17 @@ value on the way out, and turns it back into the placeholder in the response. Se
 else, the placeholder is a meaningless string.
 
 ```bash
-gh auth token | hib secret add GH_TOKEN -env GH_TOKEN -bind api.github.com
 hib secret add OPENAI -env OPENAI_API_KEY -bind api.openai.com  # asks for the value, hidden
-hib secret ls                   # names, variables, sites and placeholders, never values
-ssh app.hib printenv GH_TOKEN   # the placeholder
-hib log                         # each swap: time, machine, site, method, path and secret
-hib secret rm GH_TOKEN
+hib secret ls                         # names, variables, sites and placeholders, never values
+ssh app.hib printenv OPENAI_API_KEY   # the placeholder
+hib log                               # each swap: time, machine, site, method, path and secret
+hib secret rm OPENAI
 ```
 
 - The value comes from stdin or a hidden prompt, never from an argument. The host seals it with
   AES-256-GCM, under a key only root can read.
+- For GitHub, use `hib connect github` ([below](#github-hib-connect-github-hib-status)). It
+  stores the token as secret `github` and sets up git too.
 - `-bind` takes host names, comma-separated. `*.example.com` matches every host under
   example.com, but not example.com itself.
 - Adding or removing a secret updates every running machine at once, and paused ones when they
@@ -242,6 +246,41 @@ trailers and bodies, including escaped and base64 forms. WebSocket messages and 
 base64 aren't. A response the proxy can't decompress fails with 502 instead of passing unscrubbed.
 Bind a secret only to the API hosts that use it. If the proxy stops, machines' HTTPS goes straight
 out with placeholders. Bound calls fail, and nothing leaks.
+
+### GitHub (`hib connect github`, `hib status`)
+
+Connect GitHub once. Every machine can then clone your private repos, push, and use `gh`, with no
+login inside it:
+
+```bash
+hib connect github --from-gh   # copies your laptop's gh login to the host
+ssh app.hib
+  git clone https://github.com/solev/rocket   # git@github.com:solev/rocket.git works too
+  gh pr create
+hib status                     # the host, E2B, GitHub and each secret, without waking the host
+```
+
+- `--from-gh` takes the token from `gh auth token` on your laptop. The host checks it with
+  GitHub (`GET /user`) and stores it as secret `github`: variable `GH_TOKEN`, bound to
+  `github.com`, `api.github.com` and `uploads.github.com`. If GitHub refuses it, nothing is stored.
+- `hib connect github --token` takes a token you made, such as a fine-grained one limited to some
+  repos. It asks for it hidden, or reads stdin. Never pass it as an argument.
+- In the `dev` image, `/etc/gitconfig` makes gh git's credential helper for GitHub, and rewrites
+  `git@github.com:` URLs to HTTPS. gh answers with the placeholder, and the proxy swaps it.
+- Commits are yours. `hibd` sets git's `user.name` to your GitHub name, and `user.email` to your
+  noreply address (`ID+LOGIN@users.noreply.github.com`), so no email scope is needed.
+- **The `workflow` scope.** gh's token has `repo`, `read:org` and `gist`, but not `workflow`.
+  Without it, GitHub refuses pushes that change `.github/workflows/`, and `hib connect` warns.
+  To fix it: `gh auth refresh -h github.com -s workflow`, then `hib connect github --from-gh`.
+- The laptop and the host share gh's token. Logging gh in on many devices can make GitHub revoke
+  it. `hib status` then says `revoked: run hib connect github --from-gh again`.
+
+`hib status` checks secrets bound to `api.github.com` with GitHub. It can't test other keys, so
+they show as `unchecked`. It exits 1 when E2B is down or a secret is revoked or failing. If the
+host is asleep, it says so and exits 0, without waking it.
+
+Machines made before the `dev` image was rebuilt with M4 don't have gh as git's helper. Run
+`hib image build dev` and recreate them. Their git identity is set either way.
 
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,
@@ -284,6 +323,10 @@ make e2e-slow            # also reboots and deallocates the VM (~5 minutes more)
 The e2e tests reach E2B through an SSH tunnel and label their sandboxes `hib-test=e2e`. A run
 deletes labeled leftovers of earlier runs before it starts. e2e needs the VM, so it runs from your
 Mac.
+
+The GitHub tests connect your laptop's gh login and use the private fixture repo
+`solev/hibernaut-e2e`. They remove the `e2e-` branches and PRs they make, and ones that killed
+runs left. `TestWorkflowPush` skips until gh's token has the `workflow` scope.
 
 CI (`lint`, `test` and the `generate` check) is parked: GitHub Actions is off for this repo, so
 nothing runs on push. Run `make lint test` before you push. To turn it back on:

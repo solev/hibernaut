@@ -114,14 +114,14 @@ be sent to, and a **placeholder**.
 - **Swap:** the egress proxy replaces placeholders only in the `Authorization` request header,
   and only for that secret's bound sites. Basic auth is decoded before swapping and re-encoded.
   Other headers, URLs, and bodies keep the placeholder. Sent elsewhere, it is meaningless.
-- **Health:** `hib status` tests each secret against its site (for GitHub, `GET /user`) and shows
-  whether it still works.
+- **Health:** `hib status` checks each secret bound to `api.github.com` with `GET /user`, and shows
+  whether it still works. There's no general way to test other keys, so they show as unchecked.
 
 ```
 git clone https://github.com/solev/private-repo
   git ─▶ gh (credential helper) ─▶ "x-access-token : gho_hib7Qk…"   (placeholder)
   git ─▶ HTTPS to github.com ─▶ [host egress proxy]
-                                  site bound to GITHUB_TOKEN? yes
+                                  site bound to secret github? yes
                                   decode Basic auth, swap placeholder → real gho_… token
                                 ─▶ github.com   ✓ clone works, and the machine never saw the token
 ```
@@ -203,10 +203,11 @@ git clone https://github.com/solev/private-repo
 **Connecting (on the laptop):**
 
 - **First (M4): `hib connect github --from-gh`** copies the laptop's `gh auth token` into the
-  vault. Zero setup.
+  vault. Zero setup. The host checks it first with `GET /user`, which gives the account and, in
+  the `X-OAuth-Scopes` header, the scopes. If GitHub refuses it, nothing is stored.
   - It's gh's own token (`gho_…`, no expiry) with gh's scopes: `repo`, `read:org`, `gist`.
-  - Without `workflow`, agents can't push changes to `.github/workflows/`. `hib connect` checks
-    the scopes and suggests `gh auth refresh -s workflow` first.
+  - Without `workflow`, agents can't push changes to `.github/workflows/`. `hib connect` warns
+    and suggests `gh auth refresh -h github.com -s workflow`, then connecting again.
   - The laptop and the host share this token. GitHub keeps at most ten tokens per user, app and
     scope set, so logging gh in on many devices can revoke it. `hib status` shows when that
     happens, and running the command again fixes it.
@@ -217,8 +218,9 @@ git clone https://github.com/solev/private-repo
   - OAuth App tokens (`gho_…`) don't expire by default, so there's nothing to refresh.
 - Only how the token reaches the vault differs. Everything after that is one code path, covered by
   the M4 end-to-end test (§8).
-- **Narrower access:** `hib connect github --token github_pat_…` accepts a fine-grained token
-  limited to chosen repos.
+- **Narrower access:** `hib connect github --token` accepts a fine-grained token limited to chosen
+  repos. It reads the token from a hidden prompt or stdin, never an argument, which would land in
+  shell history.
 - **Later still:** a GitHub App, which limits access to selected repos and uses short-lived tokens
   that `hibd` refreshes (8 h tokens, 6-month refresh tokens).
 
@@ -226,13 +228,17 @@ git clone https://github.com/solev/private-repo
 
 - `GH_TOKEN=<placeholder>` makes `gh` work. It takes precedence over any gh config, and gh won't
   write a login to disk while it's set. The Copilot CLI reads it too (§4.4).
-- For git, the image runs `gh auth setup-git`, so `gh` is git's credential helper and answers with
-  the `GH_TOKEN` placeholder. git sends it as Basic auth, which the proxy decodes and swaps.
-- `git@github.com:` URLs are rewritten to `https://github.com/`.
+- For git, the image's `/etc/gitconfig` makes `gh` git's credential helper for GitHub, so it
+  answers as `x-access-token` with the `GH_TOKEN` placeholder. git sends it as Basic auth, which
+  the proxy decodes and swaps. It's the system file, rather than `gh auth setup-git`, so every
+  user in the machine gets it.
+- `git@github.com:` and `ssh://git@github.com/` URLs are rewritten to `https://github.com/`.
 - git `user.name` comes from your GitHub profile. `user.email` is your GitHub noreply address
   (`<id>+<login>@users.noreply.github.com`), so no email scope is needed and commits still link to
-  you.
-- Bound sites: `github.com`, `api.github.com`, `uploads.github.com`, plus Copilot's hosts (§4.4).
+  you. `hibd` writes both into each machine's `/etc/gitconfig` when it's made, and again whenever
+  they change.
+- Bound sites: `github.com`, `api.github.com` and `uploads.github.com`. Copilot's hosts join in M5
+  (§4.4).
 
 ### 4.4 AI tools
 
@@ -582,7 +588,7 @@ Key Vault through the VM's managed identity).
 - It uses the logins you connected with the normal `hib connect` commands. Browser approvals
   (Codex, and GitHub from M7) happen once by hand. Everything after that is automated.
 - GitHub tests use a private fixture repo (`solev/hibernaut-e2e`) and always clean up their
-  branches and PRs.
+  branches and PRs. A run first removes `e2e-` branches and PRs that killed runs left.
 - AI tests use one-line prompts ("reply with OK"), which cost almost nothing.
 - Slow scenarios (host reboot and deallocation, 11-minute idle SSH) run only with
   `make e2e-slow`, before a milestone closes.
