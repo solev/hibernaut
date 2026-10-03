@@ -27,7 +27,8 @@ func TestNoHostAccess(t *testing.T) {
 	gateway := mustSSHMachine(t, ctx, nil, name, "ip -4 route show default | awk '{print $3; exit}'")
 	addrs := append(hostAddrs(t, ctx), publicIP, gateway, e2bServiceAddr, "169.254.169.254", "168.63.129.16")
 	e2bPorts := e2bServicePorts(t, ctx)
-	ports := append(hostPorts(t, ctx), "22", "80", "443")
+	// 32526 is the other port of Azure's host services at 168.63.129.16.
+	ports := append(hostPorts(t, ctx), "22", "80", "443", "32526")
 	ports = append(ports, e2bPorts...)
 	slices.Sort(ports)
 	ports = slices.Compact(ports)

@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -58,6 +60,7 @@ func TestSecretSwap(t *testing.T) {
 	if issuer := certIssuer(t, ctx, name, "api.github.com"); !strings.Contains(issuer, "Hibernaut") {
 		t.Errorf("api.github.com's certificate didn't come from the proxy: %s", issuer)
 	}
+	requireNoLeaks(t, ctx, name)
 }
 
 // TestAuditLog checks that hib log shows a swap with its machine, site and secret name, and
@@ -103,6 +106,51 @@ func TestAuditLog(t *testing.T) {
 	if strings.Contains(audit, value) {
 		t.Errorf("the audit log holds the real value")
 	}
+	requireNoLeaks(t, ctx, name)
+}
+
+// TestLeakScan checks that the leak scan finds a value planted in a machine's memory and disk, and
+// that the dev image holds no real secret. requireNoLeaks scans the other tests' machines.
+func TestLeakScan(t *testing.T) {
+	ctx := testContext(t, 15*time.Minute)
+	ensureImage(t)
+	canary := leakScan(t, ctx, "-canary")
+	if !canary.MemoryFound || !canary.DiskFound {
+		t.Errorf("the canary scan missed the canary: memory %t, disk %t", canary.MemoryFound, canary.DiskFound)
+	}
+
+	addSecret(t, ctx, "postman-echo.com", fmt.Sprintf("sk-e2e-%016x%016x", rand.Uint64(), rand.Uint64()))
+	image := leakScan(t, ctx, "-image", "dev")
+	if image.SecretCount == 0 {
+		t.Error("the image scan had no secrets to look for")
+	}
+	for _, h := range image.Hits {
+		t.Errorf("the dev image holds secret %s (%s) in %s at %d", h.Secret, h.Encoding, h.Where, h.Offset)
+	}
+}
+
+// requireNoLeaks pauses machine name, and checks that its memory and disk hold no real secret.
+func requireNoLeaks(t *testing.T, ctx context.Context, name string) {
+	t.Helper()
+	r := leakScan(t, ctx, name)
+	if r.SecretCount == 0 {
+		t.Errorf("the leak scan of %s had no secrets to look for", name)
+	}
+	for _, h := range r.Hits {
+		t.Errorf("%s holds secret %s (%s) in %s at %d", name, h.Secret, h.Encoding, h.Where, h.Offset)
+	}
+}
+
+// leakScan runs sudo hibd leakscan -json on the host. It exits 1 when it finds something, so
+// only a reply without a result fails the test here.
+func leakScan(t *testing.T, ctx context.Context, args ...string) hibapi.LeakScan {
+	t.Helper()
+	out, err := vm.ssh(ctx, "sudo hibd leakscan -json "+strings.Join(args, " "))
+	var r hibapi.Response
+	if jsonErr := json.Unmarshal([]byte(out), &r); jsonErr != nil || r.LeakScan == nil {
+		t.Fatalf("hibd leakscan %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return *r.LeakScan
 }
 
 // secret is a secret a test added to the host's vault.
