@@ -1,0 +1,802 @@
+package egress
+
+import (
+	"bufio"
+	"compress/gzip"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/solev/hibernaut/internal/audit"
+	"github.com/solev/hibernaut/internal/ca"
+	"github.com/solev/hibernaut/internal/egress/swap"
+)
+
+const (
+	secretName  = "github"
+	placeholder = "gho_hib_placeholder_secret"
+	realValue   = "gho_real_proxy_secret"
+)
+
+var publicDst = netip.MustParseAddrPort("93.184.216.34:443")
+
+func TestPublicDestination(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"93.184.216.34", true},
+		{"2606:4700:4700::1111", true},
+		{"10.1.2.3", false},
+		{"100.64.0.1", false},
+		{"127.0.0.1", false},
+		{"169.254.1.1", false},
+		{"172.16.0.1", false},
+		{"192.168.0.1", false},
+		{"0.1.2.3", false},
+		{"255.255.255.255", false},
+		{"192.0.2.1", false},
+		{"198.51.100.1", false},
+		{"203.0.113.1", false},
+		{"198.18.0.1", false},
+		{"224.0.0.1", false},
+		{"::1", false},
+		{"fc00::1", false},
+		{"fe80::1", false},
+		{"2001:db8::1", false},
+		{"::ffff:10.0.0.1", false},
+		{"::ffff:93.184.216.34", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			got := PublicDestination(netip.MustParseAddr(tt.addr))
+			if got != tt.want {
+				t.Fatalf("PublicDestination(%s) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoundHTTP11SwapsAuditsAndScrubs(t *testing.T) {
+	t.Parallel()
+	upstreamSaw := make(chan *http.Request, 1)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+realValue {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.URL.Query().Get("token"); got != realValue {
+			t.Errorf("query token = %q", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), realValue) {
+			t.Errorf("body was not swapped: %q", body)
+		}
+		if r.Header.Get("Accept-Encoding") != "gzip" {
+			t.Errorf("Accept-Encoding = %q, want Go transport gzip", r.Header.Get("Accept-Encoding"))
+		}
+		upstreamSaw <- r.Clone(context.Background())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"token":"%s"}`, realValue)
+	})
+	var entries []audit.Entry
+	fx := newFixtureConfigured(t, "localhost", h, func(s *Server) {
+		s.Audit = func(e audit.Entry) error {
+			entries = append(entries, e)
+			return nil
+		}
+	})
+	defer fx.close()
+	client := fx.client(false)
+	body := strings.NewReader(`{"token":"` + placeholder + `"}`)
+	req, err := http.NewRequest(http.MethodPost, fx.url("/api?token="+url.QueryEscape(placeholder)), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+placeholder)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "identity")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Proto != "HTTP/1.1" {
+		t.Fatalf("resp.Proto = %s", resp.Proto)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if resp.ContentLength != -1 || resp.Header.Get("Content-Length") != "" {
+		t.Fatalf("scrubbed response kept Content-Length: %d %q body=%q headers=%v", resp.ContentLength, resp.Header.Get("Content-Length"), data, resp.Header)
+	}
+	if strings.Contains(string(data), realValue) || !strings.Contains(string(data), placeholder) {
+		t.Fatalf("response was not scrubbed: %q", data)
+	}
+	select {
+	case <-upstreamSaw:
+	case <-time.After(time.Second):
+		t.Fatal("upstream was not called")
+	}
+	if len(entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.Site != "localhost" || entry.Method != http.MethodPost || entry.Path != "/api" || entry.Machine != "machine" || entry.MachineID != "sbx" {
+		t.Fatalf("bad audit entry: %+v", entry)
+	}
+	if len(entry.Secrets) != 1 || entry.Secrets[0] != secretName {
+		t.Fatalf("bad audit secrets: %+v", entry.Secrets)
+	}
+}
+
+func TestHTTP2EndToEnd(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer fx.close()
+	resp, err := fx.client(true).Get(fx.url("/h2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Proto != "HTTP/2.0" {
+		t.Fatalf("resp.Proto = %s, want HTTP/2.0", resp.Proto)
+	}
+}
+
+func TestHostSNIMismatchReturns421WithoutUpstream(t *testing.T) {
+	t.Parallel()
+	var upstreamCalls atomic.Int32
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+	}))
+	defer fx.close()
+	tr := fx.transport(false)
+	tr.TLSClientConfig.ServerName = "localhost"
+	client := &http.Client{Transport: tr}
+	req, err := http.NewRequest(http.MethodGet, fx.url("/bad"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "example.com"
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMisdirectedRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("upstream was called")
+	}
+}
+
+func TestPrivateDestinationRefusedWithoutDialing(t *testing.T) {
+	t.Parallel()
+	var dials atomic.Int32
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), func(s *Server) {
+		s.OriginalDst = func(net.Conn) (netip.AddrPort, error) { return netip.MustParseAddrPort("10.0.0.1:443"), nil }
+		s.Dial = func(context.Context, string, string) (net.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("unexpected dial")
+		}
+	})
+	defer fx.close()
+	_, err := fx.client(false).Get(fx.url("/"))
+	if err == nil {
+		t.Fatal("request succeeded to private destination")
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("dialed private destination")
+	}
+}
+
+func TestAcceptFilterRejection(t *testing.T) {
+	t.Parallel()
+	var dials atomic.Int32
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), func(s *Server) {
+		s.Accept = func(net.Conn) error { return errors.New("reject") }
+		s.Dial = func(context.Context, string, string) (net.Conn, error) {
+			dials.Add(1)
+			return nil, errors.New("unexpected dial")
+		}
+	})
+	defer fx.close()
+	_, err := fx.client(false).Get(fx.url("/"))
+	if err == nil {
+		t.Fatal("request succeeded after accept rejection")
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("dialed after accept rejection")
+	}
+}
+
+func TestUnboundSitePassthroughSeesSiteCertificate(t *testing.T) {
+	t.Parallel()
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "site")
+	}), func(s *Server) { s.Swapper = func() *swap.Swapper { return nil } })
+	defer fx.close()
+	resp, err := fx.clientWithRoots(fx.siteCA.Pool(), false).Get(fx.url("/passthrough"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		t.Fatal("no peer certificate")
+	}
+	issuer := resp.TLS.PeerCertificates[0].Issuer.CommonName
+	if issuer != "site test CA" {
+		t.Fatalf("issuer = %q, want site CA", issuer)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if string(data) != "site" {
+		t.Fatalf("body = %q", data)
+	}
+}
+
+func TestNonTLSPassthrough(t *testing.T) {
+	t.Parallel()
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		_, _ = io.WriteString(conn, "echo:"+line)
+	}()
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), func(s *Server) {
+		s.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+		}
+	})
+	defer fx.close()
+	conn, err := net.Dial("tcp", fx.proxyAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = io.WriteString(conn, "hello\n")
+	got, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "echo:hello\n" {
+		t.Fatalf("got %q", got)
+	}
+	<-done
+}
+
+func TestStreamingResponseFlushesBeforeUpstreamFinishes(t *testing.T) {
+	t.Parallel()
+	clientSawFirst := make(chan struct{})
+	upstreamFinished := make(chan struct{})
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: first\n\n")
+		flusher.Flush()
+		<-clientSawFirst
+		_, _ = io.WriteString(w, "data: second\n\n")
+		close(upstreamFinished)
+	}))
+	defer fx.close()
+	resp, err := fx.client(false).Get(fx.url("/events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "data: first\n" {
+		t.Fatalf("first line = %q", line)
+	}
+	select {
+	case <-upstreamFinished:
+		t.Fatal("upstream finished before client observed first bytes")
+	default:
+	}
+	close(clientSawFirst)
+	select {
+	case <-upstreamFinished:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not finish")
+	}
+}
+
+func TestLargeResponseFlushesBeforeUpstreamFinishes(t *testing.T) {
+	t.Parallel()
+	clientSawFirst := make(chan struct{})
+	upstreamFinished := make(chan struct{})
+	first := strings.Repeat("a", 256<<10)
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, first)
+		flusher.Flush()
+		<-clientSawFirst
+		_, _ = io.WriteString(w, strings.Repeat("b", 256<<10))
+		close(upstreamFinished)
+	}))
+	defer fx.close()
+	resp, err := fx.client(false).Get(fx.url("/large"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, len(first))
+	if _, err := io.ReadFull(resp.Body, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != first {
+		t.Fatal("first large body chunk changed")
+	}
+	select {
+	case <-upstreamFinished:
+		t.Fatal("upstream finished before client observed first large body bytes")
+	default:
+	}
+	close(clientSawFirst)
+	select {
+	case <-upstreamFinished:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not finish")
+	}
+}
+
+func TestWebSocketThroughProxy(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+realValue {
+			t.Errorf("upgrade Authorization = %q", r.Header.Get("Authorization"))
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		_, data, err := conn.Read(r.Context())
+		if err != nil {
+			t.Errorf("read websocket: %v", err)
+			return
+		}
+		_ = conn.Write(r.Context(), websocket.MessageText, data)
+	}))
+	defer fx.close()
+	ctx := context.Background()
+	headers := http.Header{"Authorization": {"Bearer " + placeholder}}
+	conn, resp, err := websocket.Dial(ctx, strings.Replace(fx.url("/ws"), "https://", "wss://", 1), &websocket.DialOptions{HTTPHeader: headers, HTTPClient: fx.client(false)})
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := conn.Write(ctx, websocket.MessageText, []byte(placeholder)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != placeholder {
+		t.Fatalf("websocket frame = %q", data)
+	}
+}
+
+func TestInvalidUpstreamCertificateRefusedBeforeRequest(t *testing.T) {
+	t.Parallel()
+	var upstreamCalls atomic.Int32
+	fx := newFixtureWithSiteHost(t, "wrong.localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+	}))
+	defer fx.close()
+	req, _ := http.NewRequest(http.MethodGet, fx.url("/badcert"), nil)
+	req.Header.Set("Authorization", "Bearer "+placeholder)
+	resp, err := fx.client(false).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("upstream saw request before cert verification failed")
+	}
+}
+
+func TestAuditLogNeverContainsRealValue(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	log, err := audit.Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }), func(s *Server) { s.Audit = log.Write })
+	defer fx.close()
+	req, _ := http.NewRequest(http.MethodGet, fx.url("/audit?q="+placeholder), nil)
+	_, err = fx.client(false).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), realValue) || strings.Contains(string(data), placeholder) {
+		t.Fatalf("audit log contains a secret value: %q", data)
+	}
+}
+
+func TestNonTextResponseIsByteIdentical(t *testing.T) {
+	t.Parallel()
+	want := []byte{0, 1, 2, 'x', ' ', 'y'}
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(want)
+	}))
+	defer fx.close()
+	resp, err := fx.client(false).Get(fx.url("/binary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != string(want) {
+		t.Fatalf("body = %v, want %v", got, want)
+	}
+}
+
+func TestIdentifyCalledOnceAndOnlyOnSwap(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }), func(s *Server) {
+		s.Identify = func(net.Conn) (string, string, error) {
+			calls.Add(1)
+			return "machine", "sbx", nil
+		}
+	})
+	defer fx.close()
+	client := fx.client(false)
+	if _, err := client.Get(fx.url("/no-swap")); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("identify called without swap")
+	}
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodGet, fx.url(fmt.Sprintf("/swap-%d", i)), nil)
+		req.Header.Set("Authorization", "Bearer "+placeholder)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("identify calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestAuditFailClosed(t *testing.T) {
+	t.Parallel()
+	var upstreamCalls atomic.Int32
+	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { upstreamCalls.Add(1) }), func(s *Server) {
+		s.Audit = func(audit.Entry) error { return errors.New("disk full") }
+	})
+	defer fx.close()
+	req, _ := http.NewRequest(http.MethodGet, fx.url("/fail"), nil)
+	req.Header.Set("Authorization", "Bearer "+placeholder)
+	resp, err := fx.client(false).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("upstream was called after audit failure")
+	}
+}
+
+func TestGzipUpstreamResponseIsScrubbed(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept-Encoding") != "gzip" {
+			t.Errorf("Accept-Encoding = %q, want Go transport gzip", r.Header.Get("Accept-Encoding"))
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte("secret=" + realValue))
+		_ = gz.Close()
+	}))
+	defer fx.close()
+	resp, err := fx.client(false).Get(fx.url("/gzip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(data), realValue) || !strings.Contains(string(data), placeholder) {
+		t.Fatalf("gzip response not scrubbed: %q", data)
+	}
+}
+
+func TestRealCurlClient(t *testing.T) {
+	t.Parallel()
+	requireBinary(t, "curl")
+	got := make(chan string, 1)
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer fx.close()
+	cmd := exec.Command("curl", "--silent", "--show-error", "--fail", "--cacert", fx.hibCertPath, "-H", "Authorization: Bearer "+placeholder, fx.url("/curl"))
+	cmd.Env = append(os.Environ(), "HTTPS_PROXY=", "https_proxy=")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("curl failed: %v: %s", err, out)
+	}
+	if auth := <-got; auth != "Bearer "+realValue {
+		t.Fatalf("curl auth = %q", auth)
+	}
+}
+
+func TestRealGitClient(t *testing.T) {
+	t.Parallel()
+	requireBinary(t, "git")
+	got := make(chan string, 1)
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+			http.Error(w, "auth required", http.StatusUnauthorized)
+			return
+		}
+		got <- auth
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		_, _ = io.WriteString(w, "001e# service=git-upload-pack\n00000000")
+	}))
+	defer fx.close()
+	raw := "https://x-access-token:" + placeholder + "@" + strings.TrimPrefix(fx.url("/repo.git"), "https://")
+	cmd := exec.Command("git", "-c", "http.sslCAInfo="+fx.hibCertPath, "ls-remote", raw)
+	cmd.Env = append(os.Environ(), "HTTPS_PROXY=", "https_proxy=")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git failed: %v: %s", err, out)
+	}
+	auth := <-got
+	if !strings.HasPrefix(auth, "Basic ") {
+		t.Fatalf("git auth = %q", auth)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decoded), realValue) {
+		t.Fatalf("git basic auth was not swapped: %q", decoded)
+	}
+}
+
+func TestRealNodeClient(t *testing.T) {
+	t.Parallel()
+	requireBinary(t, "node")
+	got := make(chan string, 1)
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got <- r.URL.Query().Get("token") + "\n" + string(body)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer fx.close()
+	script := `
+const res = await fetch(process.env.URL + '?token=' + encodeURIComponent(process.env.PLACEHOLDER), {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({token: process.env.PLACEHOLDER}),
+});
+if (!res.ok) throw new Error('status ' + res.status);
+`
+	cmd := exec.Command("node", "--input-type=module", "--eval", script)
+	cmd.Env = append(os.Environ(), "NODE_EXTRA_CA_CERTS="+fx.hibCertPath, "URL="+fx.url("/node"), "PLACEHOLDER="+placeholder, "HTTPS_PROXY=", "https_proxy=")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node failed: %v: %s", err, out)
+	}
+	seen := <-got
+	if !strings.Contains(seen, realValue) || strings.Contains(seen, placeholder) {
+		t.Fatalf("node did not swap query/body: %q", seen)
+	}
+}
+
+func TestRealGHClient(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "darwin" {
+		t.Skip("gh on darwin uses the platform verifier and ignores SSL_CERT_FILE, so it cannot trust the test CA")
+	}
+	requireBinary(t, "gh")
+	got := make(chan string, 1)
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.URL.Path + "\n" + r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"login":"hibernaut-test"}`)
+	}))
+	defer fx.close()
+	_, port, err := net.SplitHostPort(fx.proxyAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "localhost:" + port
+	cmd := exec.Command("gh", "api", "user", "--hostname", host)
+	cmd.Env = append(os.Environ(), "SSL_CERT_FILE="+fx.hibCertPath, "GH_ENTERPRISE_TOKEN="+placeholder, "GH_HOST="+host, "HTTPS_PROXY=", "https_proxy=")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("gh failed: %v: %s", err, out)
+	}
+	seen := <-got
+	if !strings.Contains(seen, "/api/v3/user") || !strings.Contains(seen, "Bearer "+realValue) {
+		t.Fatalf("gh request was not swapped: %q", seen)
+	}
+}
+
+func requireBinary(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("%s is not installed", name)
+	}
+}
+
+type fixture struct {
+	proxy       net.Listener
+	upstream    *httptest.Server
+	server      *Server
+	cancel      context.CancelFunc
+	done        chan error
+	hibCA       *ca.CA
+	siteCA      *ca.CA
+	hibCertPath string
+}
+
+func newFixture(t *testing.T, h http.Handler) *fixture {
+	t.Helper()
+	return newFixtureConfigured(t, "localhost", h, nil)
+}
+
+func newFixtureWithSiteHost(t *testing.T, siteHost string, h http.Handler) *fixture {
+	t.Helper()
+	return newFixtureConfigured(t, siteHost, h, nil)
+}
+
+func newFixtureConfigured(t *testing.T, siteHost string, h http.Handler, configure func(*Server)) *fixture {
+	t.Helper()
+	hibCA := newTestCA(t, "hibernaut test CA")
+	siteCA := newTestCA(t, "site test CA")
+	up := httptest.NewUnstartedServer(h)
+	cert, err := siteCA.Leaf(siteHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.TLS = &tls.Config{Certificates: []tls.Certificate{*cert}, NextProtos: []string{"h2", "http/1.1"}, MinVersion: tls.VersionTLS12}
+	up.EnableHTTP2 = true
+	up.StartTLS()
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := swap.New([]swap.Secret{{Name: secretName, Placeholder: placeholder, Value: realValue, Sites: []string{"localhost"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &Server{
+		Swapper:     func() *swap.Swapper { return sw },
+		Leaf:        hibCA.Leaf,
+		OriginalDst: func(net.Conn) (netip.AddrPort, error) { return publicDst, nil },
+		Identify:    func(net.Conn) (string, string, error) { return "machine", "sbx", nil },
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, up.Listener.Addr().String())
+		},
+		RootCAs: siteCA.Pool(),
+		Audit:   func(audit.Entry) error { return nil },
+		Now:     func() time.Time { return time.Unix(123, 0).UTC() },
+		Logf:    func(string, ...any) {},
+	}
+	if configure != nil {
+		configure(server)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx, proxy) }()
+	certPath := filepath.Join(t.TempDir(), "hibernaut-ca.crt")
+	if err := os.WriteFile(certPath, hibCA.CertPEM(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return &fixture{proxy: proxy, upstream: up, server: server, cancel: cancel, done: done, hibCA: hibCA, siteCA: siteCA, hibCertPath: certPath}
+}
+
+func (f *fixture) close() {
+	f.cancel()
+	_ = f.proxy.Close()
+	select {
+	case <-f.done:
+	case <-time.After(2 * time.Second):
+	}
+	f.upstream.Close()
+}
+
+func (f *fixture) proxyAddr() string { return f.proxy.Addr().String() }
+
+func (f *fixture) url(path string) string {
+	_, port, err := net.SplitHostPort(f.proxyAddr())
+	if err != nil {
+		panic(err)
+	}
+	return "https://localhost:" + port + path
+}
+
+func (f *fixture) client(h2 bool) *http.Client { return f.clientWithRoots(f.hibCA.Pool(), h2) }
+
+func (f *fixture) clientWithRoots(roots *x509.CertPool, h2 bool) *http.Client {
+	return &http.Client{Transport: f.transportWithRoots(roots, h2)}
+}
+
+func (f *fixture) transport(h2 bool) *http.Transport { return f.transportWithRoots(f.hibCA.Pool(), h2) }
+
+func (f *fixture) transportWithRoots(roots *x509.CertPool, h2 bool) *http.Transport {
+	return &http.Transport{
+		Proxy: nil,
+		TLSClientConfig: &tls.Config{
+			RootCAs:    roots,
+			ServerName: "localhost",
+			MinVersion: tls.VersionTLS12,
+		},
+		ForceAttemptHTTP2: h2,
+	}
+}
+
+func newTestCA(t *testing.T, name string) *ca.CA {
+	t.Helper()
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	if _, err := ca.Init(certPath, keyPath, name); err != nil {
+		t.Fatal(err)
+	}
+	c, err := ca.Load(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}

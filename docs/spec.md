@@ -144,7 +144,11 @@ git clone https://github.com/solev/private-repo
     certificate.
 - **Swap locations:** headers (including decoded Basic auth), the URL query, and small text bodies
   (JSON or form data up to 1 MB). All other traffic streams through unmodified (git packs, SSE).
+  Non-TLS connections pass through when no SNI is found. The proxy strips client
+  `Accept-Encoding`, lets its upstream transport request gzip, and scrubs the decompressed body.
+  WebSocket frames after an upgrade are not scrubbed.
 - **Defense in depth:** if a response contains a real value, it's scrubbed back to the placeholder.
+  If the audit log write fails, the request fails closed before forwarding.
 - **Token endpoints:** some tools trade their login for fresh tokens: Codex refreshes, and Copilot
   may exchange (S9). The proxy handles these few endpoints itself, so a new real token never
   reaches a machine. It either answers the request with placeholders, or keeps the new real token

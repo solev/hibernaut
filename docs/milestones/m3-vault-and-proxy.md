@@ -56,7 +56,10 @@ secret is bound to that host, or there's no SNI, it dials the real destination a
 both ways. Otherwise it terminates TLS with a certificate for that host, refuses a request whose
 `Host` isn't the SNI host, swaps, connects to the real destination, verifies the site's
 certificate for the SNI host, and scrubs the response. It reloads the vault when `vault.json`
-changes.
+changes. It strips client `Accept-Encoding` before forwarding, so the upstream transport can
+request gzip and scrub plain text after decompression. If audit writing fails, the proxy returns
+502 without forwarding. Non-TLS connections pass through when they have no SNI. WebSocket
+frames after an upgrade pass through unscrubbed.
 The hardened systemd unit needs no `ReadWritePaths` for iptables on the tested host.
 
 **Leak scan:** the scan follows the snapshot's header to read memory and disk in their logical
@@ -100,13 +103,13 @@ adjacent physically can be missed. The canary checks the common case.
 - [ ] Interception port that only accepts connections arriving on machine interfaces (`veth-*`).
 - [ ] iptables hook `-I PREROUTING 1 -i veth-+ -p tcp --dport 443 -j REDIRECT`: added on start,
       checked and re-added every few seconds, removed on clean stop.
-- [ ] Real destination from `SO_ORIGINAL_DST`; hostname from SNI.
-- [ ] Unbound sites: bytes pass straight through, nothing decrypted.
-- [ ] Bound sites: terminate TLS with a per-host certificate from our CA; connect to the real site
+- [x] Real destination from `SO_ORIGINAL_DST`; hostname from SNI.
+- [x] Unbound sites: bytes pass straight through, nothing decrypted.
+- [x] Bound sites: terminate TLS with a per-host certificate from our CA; connect to the real site
       and verify its real certificate; HTTP/1.1 and HTTP/2.
-- [ ] Swap in headers, decoded Basic auth, the URL query and text bodies up to 1 MB. Everything
+- [x] Swap in headers, decoded Basic auth, the URL query and text bodies up to 1 MB. Everything
       else streams through unbuffered. WebSocket upgrades work.
-- [ ] Scrub responses: a real value is turned back into its placeholder.
+- [x] Scrub responses: a real value is turned back into its placeholder.
 - [ ] Audit log (time, machine, site, method, path, secret name) and `hib log`.
 
 **Leak scan**
@@ -128,12 +131,12 @@ Unit and fuzz:
 
 Integration (laptop and CI; fake TLS servers signed by a test CA):
 
-- [ ] Real `curl`, `git`, `gh` and Node clients through the proxy get the swapped value upstream.
-- [ ] Unbound site: identical bytes, and the client sees the site's own certificate.
-- [ ] Streaming: SSE and a large body start arriving before the upstream finishes.
-- [ ] WebSocket through the proxy.
-- [ ] An upstream with an invalid certificate is refused.
-- [ ] The audit log never contains a real value.
+- [x] Real `curl`, `git`, `gh` and Node clients through the proxy get the swapped value upstream.
+- [x] Unbound site: identical bytes, and the client sees the site's own certificate.
+- [x] Streaming: SSE and a large body start arriving before the upstream finishes.
+- [x] WebSocket through the proxy.
+- [x] An upstream with an invalid certificate is refused.
+- [x] The audit log never contains a real value.
 
 Host integration (Linux, sudo):
 
@@ -166,3 +169,5 @@ End-to-end:
 - S1 verified the design on the live host. The proxy can keep the default port 5443 and iptables
   hook. The hardened systemd unit does not need `ReadWritePaths` for iptables on this host.
 - 2026-10-03: Documented the leak scan's guest-physical memory ordering limit.
+- 2026-10-03: gh's proxy integration case runs on Linux only. Go on macOS ignores
+  `SSL_CERT_FILE`, so e2e covers gh in a machine there.
