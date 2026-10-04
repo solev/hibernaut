@@ -12,8 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,8 +222,7 @@ type host struct {
 	// engine talks to E2B through the tunnel. It's nil while the tunnel is closed.
 	engine *e2b.Engine
 
-	tunnel *exec.Cmd
-	exited chan error
+	tunnel *sshTunnel
 }
 
 func newHost(ctx context.Context) (*host, error) {
@@ -254,78 +251,26 @@ var sshOptions = []string{
 // h.engine at them once the API is healthy.
 func (h *host) openTunnel(ctx context.Context) error {
 	h.closeTunnel()
-	apiPort, err := freePort()
+	tunnel, err := startSSHTunnel(ctx, h.target, sshOptions, exec.Command)
 	if err != nil {
 		return err
 	}
-	proxyPort, err := freePort()
-	if err != nil {
-		return err
-	}
-	var stderr bytes.Buffer
-	cmd := exec.Command("ssh", append(slices.Clone(sshOptions), "-N", "-o", "ExitOnForwardFailure=yes",
-		"-L", fmt.Sprintf("%d:127.0.0.1:3000", apiPort),
-		"-L", fmt.Sprintf("%d:127.0.0.1:3002", proxyPort),
-		h.target)...)
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	h.tunnel, h.exited = cmd, make(chan error, 1)
-	go func() { h.exited <- cmd.Wait() }()
-
-	apiURL := fmt.Sprintf("http://127.0.0.1:%d", apiPort)
-	for !healthy(ctx, apiURL) {
-		select {
-		case err := <-h.exited:
-			h.tunnel = nil
-			return fmt.Errorf("SSH tunnel to %s: %v: %s", h.target, err, strings.TrimSpace(stderr.String()))
-		case <-ctx.Done():
-			h.closeTunnel()
-			return fmt.Errorf("E2B's API isn't healthy through the SSH tunnel to %s: %w", h.target, ctx.Err())
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
+	h.tunnel = tunnel
 	h.engine, err = e2b.New(e2b.Config{
-		APIURL:     apiURL,
-		SandboxURL: fmt.Sprintf("http://127.0.0.1:%d", proxyPort),
+		APIURL:     tunnel.apiURL,
+		SandboxURL: tunnel.proxyURL,
 		APIKey:     cmp.Or(os.Getenv("HIB_E2E_API_KEY"), localDevKey),
 	})
+	if err != nil {
+		h.closeTunnel()
+	}
 	return err
 }
 
 func (h *host) closeTunnel() {
 	h.engine = nil
-	if h.tunnel == nil {
-		return
-	}
-	_ = h.tunnel.Process.Kill()
-	<-h.exited
+	h.tunnel.close()
 	h.tunnel = nil
-}
-
-func healthy(ctx context.Context, url string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/health", nil)
-	if err != nil {
-		return false
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 // ssh runs a shell command on the VM and returns its trimmed stdout.
