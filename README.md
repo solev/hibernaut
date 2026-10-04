@@ -25,6 +25,8 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
   the real value only on HTTPS calls to the sites a secret is bound to.
 - **GitHub is connected once.** `hib connect github --from-gh` gives every machine your GitHub
   login: `git clone`, `git push` and `gh` work, with only a placeholder inside.
+- **So are AI tools.** `hib connect codex` logs Codex in with your ChatGPT plan, and Copilot uses
+  the GitHub connection. Both work in every machine, with only placeholders inside.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
   M1 (machines), M2 (idle and wake), M3 (vault and egress proxy) and M4 (GitHub) are done. M5
@@ -281,6 +283,44 @@ host is asleep, it says so and exits 0, without waking it.
 
 Machines made before the `dev` image was rebuilt with M4 don't have gh as git's helper. Run
 `hib image build dev` and recreate them. Their git identity is set either way.
+
+### AI tools (`hib connect codex`, Copilot)
+
+Machines made from the `dev` image have Codex and the GitHub Copilot CLI. Connect each once, and
+both work in every machine with no login and no real token inside:
+
+```bash
+hib connect codex              # Codex, with your ChatGPT plan: prints a code and a link
+hib connect github --from-gh   # Copilot uses the GitHub connection
+ssh app.hib
+  codex                        # or: codex exec "…"
+  copilot                      # or: copilot -p "…"
+hib status                     # adds a Codex line: account, plan, token expiry, health
+```
+
+- `hib connect codex` runs Codex's device login on the host. Open the link, sign in to ChatGPT,
+  and enter the code within 15 minutes. If ChatGPT refuses, turn on device code login in ChatGPT,
+  under Settings, Security. Connecting again replaces the login, even with another account.
+- The host keeps the real tokens as secrets `codex-access`, `codex-refresh` and `codex-id`.
+  Machines get `~/.codex/auth.json` with placeholders: running ones at once, paused ones when
+  they wake. The proxy swaps the access token on `chatgpt.com`, and answers Codex's refresh
+  requests itself. Only the host refreshes with OpenAI, at half the token's lifetime, or when a
+  site refuses the token. `hib secret` refuses names that start with `codex-`.
+- Codex runs with `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. The
+  machine is the sandbox.
+- If OpenAI refuses the refresh token, the login is dead. If a refresh's outcome is unknown, it's
+  stuck, and the host doesn't retry by itself, since OpenAI refuses a refresh token used twice.
+  Either way, `hib status` exits 1 and says to run `hib connect codex`. It reads the login's
+  health on the host and never calls OpenAI.
+- Copilot sends the `github` secret's placeholder, which the proxy swaps on `*.githubcopilot.com`.
+  hibd adds that site to GitHub connections made before M5. Your account needs Copilot. gh's
+  token works, and so does a fine-grained token with the Copilot Requests permission. Classic
+  tokens (`ghp_`) don't.
+- The `dev` image pins Codex 0.160.0 and Copilot CLI 1.0.91 (`images/dev/versions`), with
+  updates off. Rebuild it with `hib image build dev`, and recreate machines made before M5.
+  Codex's model stream is a WebSocket, which the proxy doesn't scrub. In the live check, Codex
+  0.160.0 sent no token in it ([research](docs/research/codex-chatgpt-auth.md), §11). Check
+  again when a pin moves.
 
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,
