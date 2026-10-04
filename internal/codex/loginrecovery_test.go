@@ -308,8 +308,7 @@ func TestCommitLoginCrashBeforePublicationKeepsOldLogin(t *testing.T) {
 	start := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
 	s, cfg := newStore(t, start)
 	initial := codextest.Tokens("first", "first@example.com", "plus", start, start.Add(time.Hour))
-	before, err := s.CommitLogin(context.Background(), initial)
-	if err != nil {
+	if _, err := s.CommitLogin(context.Background(), initial); err != nil {
 		t.Fatal(err)
 	}
 	initialServer := codextest.NewTokenServer(t, initial)
@@ -319,7 +318,7 @@ func TestCommitLoginCrashBeforePublicationKeepsOldLogin(t *testing.T) {
 	if _, err := s.EnsureFresh(context.Background(), codex.Reason{Kind: codex.Client, Rejected: swap.Fingerprint(initial.AccessToken)}); !errors.Is(err, codex.ErrUnavailable) {
 		t.Fatal("could not prepare the old login's retry and client-refresh state")
 	}
-	before, err = s.Load()
+	before, err := s.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
