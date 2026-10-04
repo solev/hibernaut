@@ -114,7 +114,8 @@ on intercepted connections, after the proxy's Host check. It reads a JSON or for
 | A body over 64 KiB, or slower than 10 seconds | 413 or 408, from the proxy |
 
 Every answer has `Cache-Control: no-store`, and nothing is forwarded. `Rejected` keeps the latest
-fingerprint for `codex-access`, in memory.
+fingerprint for `codex-access`, in memory. When Codex isn't connected there is no current
+placeholder, so every `refresh_token` grant gets the 401, without an audit entry.
 
 **The proxy** (`internal/egress`, `internal/proxy` and `hibd proxy`):
 
