@@ -58,33 +58,78 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 		return
 	}
 	warn := func(doing string, err error) {
-		fmt.Fprintf(a.Stderr, "warning: %s, but %s failed: %s\n", done, termsafe.String(doing), termsafe.String(err.Error()))
+		if err != nil {
+			fmt.Fprintf(a.Stderr, "warning: %s, but %s failed: %s\n", done, termsafe.String(doing), termsafe.String(err.Error()))
+		}
 	}
-	setup, err := loadSetup(cfg, a.codexStore(cfg, a.warnf))
+	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), a.engine, nil, warn)
+}
+
+// updateSetup shares the setup and machine selection rules. A nil written map makes an
+// immediate, sequential push. A cache makes only stale machines receive the setup, in parallel.
+func updateSetup(ctx context.Context, cfg config, store *codex.Store, open func() (engine.Engine, error), written map[string]delivered, report func(string, error)) bool {
+	setup, err := loadSetup(cfg, store)
 	if err != nil {
-		warn("loading the machine setup", err)
-		return
+		report("loading the machine setup", err)
+		return false
 	}
-	e, err := a.engine()
+	e, err := open()
 	if err != nil {
-		warn("listing machines", err)
-		return
+		report("listing machines", err)
+		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ms, err := e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
 	if err != nil {
-		warn("listing machines", err)
-		return
+		report("listing machines", err)
+		return false
 	}
+	hash := setup.Hash()
+	stale, running := setupTargets(ms, hash, written)
+	writeSetups(ctx, e, setup, stale, hash, written, report)
+	for id := range written {
+		if !running[id] {
+			delete(written, id)
+		}
+	}
+	return true
+}
+
+func setupTargets(ms []engine.Machine, hash [32]byte, written map[string]delivered) ([]engine.Machine, map[string]bool) {
+	running := map[string]bool{}
+	var stale []engine.Machine
 	for _, m := range ms {
-		name := machines.Name(m)
-		if name == "" {
+		if machines.Name(m) == "" {
 			continue
 		}
-		if err := setup.Write(ctx, e, m.ID); err != nil {
-			warn("updating "+name, err)
+		running[m.ID] = true
+		if w, ok := written[m.ID]; ok && w.hash == hash && w.started.Equal(m.StartedAt) {
+			continue
 		}
+		stale = append(stale, m)
+	}
+	return stale, running
+}
+
+func writeSetups(ctx context.Context, e engine.Engine, setup machines.Setup, ms []engine.Machine, hash [32]byte, written map[string]delivered, report func(string, error)) {
+	if written == nil {
+		for _, m := range ms {
+			report("updating "+machines.Name(m), setup.Write(ctx, e, m.ID))
+		}
+		return
+	}
+	results := make([]error, len(ms))
+	var wg sync.WaitGroup
+	for i, m := range ms {
+		wg.Go(func() { results[i] = setup.Write(ctx, e, m.ID) })
+	}
+	wg.Wait()
+	for i, m := range ms {
+		if results[i] == nil {
+			written[m.ID] = delivered{hash: hash, started: m.StartedAt}
+		}
+		report("updating "+machines.Name(m), results[i])
 	}
 }
 
@@ -92,10 +137,12 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 // date: one that resumed since its last write, one a push missed, or every machine after the
 // daemon starts.
 type setupDelivery struct {
-	engine   engine.Engine
-	cfg      config
-	codex    *codex.Store
-	logf     func(format string, args ...any)
+	engine engine.Engine
+	cfg    config
+	codex  *codex.Store
+	logf   func(format string, args ...any)
+	// looking serializes loading the setup through recording complete writes.
+	looking  chan struct{}
 	written  map[string]delivered // by machine ID
 	problems map[string]string
 }
@@ -109,55 +156,23 @@ type delivered struct {
 }
 
 func newSetupDelivery(e engine.Engine, cfg config, store *codex.Store, logf func(format string, args ...any)) *setupDelivery {
-	return &setupDelivery{engine: e, cfg: cfg, codex: store, logf: logf, written: map[string]delivered{}, problems: map[string]string{}}
+	return &setupDelivery{
+		engine: e, cfg: cfg, codex: store, logf: logf,
+		looking: make(chan struct{}, 1), written: map[string]delivered{}, problems: map[string]string{},
+	}
 }
 
 func (d *setupDelivery) look(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	setup, err := loadSetup(d.cfg, d.codex)
-	if err != nil {
-		d.report("loading the machine setup", err)
+	select {
+	case d.looking <- struct{}{}:
+		defer func() { <-d.looking }()
+	case <-ctx.Done():
 		return
 	}
-	hash := setup.Hash()
-	ms, err := d.engine.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
-	if err != nil {
-		d.report("listing machines", err)
+	if !updateSetup(ctx, d.cfg, d.codex, func() (engine.Engine, error) { return d.engine, nil }, d.written, d.report) {
 		return
-	}
-	running := map[string]bool{}
-	var stale []engine.Machine
-	var wg sync.WaitGroup
-	for _, m := range ms {
-		if machines.Name(m) == "" {
-			continue
-		}
-		running[m.ID] = true
-		if w, ok := d.written[m.ID]; ok && w.hash == hash && w.started.Equal(m.StartedAt) {
-			continue
-		}
-		stale = append(stale, m)
-	}
-	results := make([]error, len(stale))
-	for i, m := range stale {
-		wg.Go(func() {
-			results[i] = setup.Write(ctx, d.engine, m.ID)
-		})
-	}
-	wg.Wait()
-	for i, m := range stale {
-		name := machines.Name(m)
-		err := results[i]
-		if err == nil {
-			d.written[m.ID] = delivered{hash: hash, started: m.StartedAt}
-		}
-		d.report("updating "+name, err)
-	}
-	for id := range d.written {
-		if !running[id] {
-			delete(d.written, id)
-		}
 	}
 	for key := range d.problems {
 		if strings.HasPrefix(key, "updating ") {

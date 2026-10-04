@@ -90,31 +90,70 @@ type Plan struct {
 // changed in the last MinAge but removed images' and machines', and every build their headers
 // name.
 func Garbage(l Listing, now time.Time) (Plan, error) {
-	for _, b := range l.Builds {
+	return garbagePlan(l, retentionPolicy{MinAge, StuckAfter}, now)
+}
+
+type retentionPolicy struct {
+	minAge, stuckAfter time.Duration
+}
+
+func garbagePlan(l Listing, policy retentionPolicy, now time.Time) (Plan, error) {
+	if err := checkBuilds(l.Builds, policy.stuckAfter, now); err != nil {
+		return Plan{}, err
+	}
+	envs := indexEnvs(l.Envs)
+	slots, snapshotted := readySlots(l.Builds, envs)
+	order := slices.SortedFunc(maps.Keys(slots), func(a, b slot) int {
+		return cmp.Or(cmp.Compare(a.env, b.env), cmp.Compare(a.tag, b.tag))
+	})
+	roots := protection{}
+	roots.keepCurrent(slots, order, envs)
+	since := startupSince(l.Machines, snapshotted, now).Add(-policy.minAge)
+	roots.keepStartupBuilds(slots, order, envs, since)
+	for _, id := range l.Cached {
+		roots.keep(id, "E2B's layer cache points to it")
+	}
+	roots.keepRecent(l.Dirs, removedBuilds(l.Builds, envs), policy.minAge, now)
+	return plan(l.Dirs, roots)
+}
+
+func checkBuilds(builds []Build, stuckAfter time.Duration, now time.Time) error {
+	for _, b := range builds {
 		switch b.Status {
 		case "ready", "failed":
 		case "pending", "in_progress":
-			if now.Sub(b.Created) < StuckAfter {
-				return Plan{}, fmt.Errorf("%w: %s isn't done", ErrBusy, b.ID)
+			if now.Sub(b.Created) < stuckAfter {
+				return fmt.Errorf("%w: %s isn't done", ErrBusy, b.ID)
 			}
 		default:
-			return Plan{}, fmt.Errorf("build %s has status %q, which hibd doesn't know, so deleting nothing", b.ID, b.Status)
+			return fmt.Errorf("build %s has status %q, which hibd doesn't know, so deleting nothing", b.ID, b.Status)
 		}
 	}
+	return nil
+}
+
+func indexEnvs(list []Env) map[string]Env {
 	envs := map[string]Env{}
-	for _, e := range l.Envs {
+	for _, e := range list {
 		envs[e.ID] = e
 	}
-	roots := map[string]string{} // build → why it stays
-	keep := func(id, why string) {
-		if _, ok := roots[id]; !ok && id != "" {
-			roots[id] = why
-		}
+	return envs
+}
+
+// protection records the first reason a build must stay.
+type protection map[string]string
+
+func (p protection) keep(id, why string) {
+	if _, ok := p[id]; !ok && id != "" {
+		p[id] = why
 	}
+}
+
+func readySlots(builds []Build, envs map[string]Env) (map[slot][]placed, map[string]bool) {
 	// E2B starts a machine from the ready build it put in an env last, under the tag asked for.
 	slots := map[slot][]placed{}
 	snapshotted := map[string]bool{} // machines with a ready snapshot
-	for _, b := range l.Builds {
+	for _, b := range builds {
 		if b.Status != "ready" {
 			continue
 		}
@@ -126,78 +165,97 @@ func Garbage(l Listing, now time.Time) (Plan, error) {
 			}
 		}
 	}
-	order := slices.SortedFunc(maps.Keys(slots), func(a, b slot) int {
-		return cmp.Or(cmp.Compare(a.env, b.env), cmp.Compare(a.tag, b.tag))
-	})
-	keepLatest := func(ps []placed, why string) {
-		var at, fin time.Time
-		for _, p := range ps {
-			at, fin = later(at, p.at), later(fin, p.finished)
-		}
-		for _, p := range ps {
-			if p.at.Equal(at) || p.finished.Equal(fin) {
-				keep(p.build, why)
-			}
+	return slots, snapshotted
+}
+
+func (p protection) keepLatest(ps []placed, why string) {
+	var at, fin time.Time
+	for _, placed := range ps {
+		at, fin = later(at, placed.at), later(fin, placed.finished)
+	}
+	for _, placed := range ps {
+		if placed.at.Equal(at) || placed.finished.Equal(fin) {
+			p.keep(placed.build, why)
 		}
 	}
+}
+
+func (p protection) keepCurrent(slots map[slot][]placed, order []slot, envs map[string]Env) {
 	for _, s := range order {
 		e := envs[s.env] // an env E2B didn't list counts as not removed
 		if !e.Deleted.IsZero() {
 			continue
 		}
-		why := "the current build of image " + s.env
-		if s.tag != "default" {
-			why += ":" + s.tag
-		}
-		if e.Machine != "" {
-			why = "the current snapshot of machine " + e.Machine
-		}
-		keepLatest(slots[s], why)
+		p.keepLatest(slots[s], currentReason(s, e))
 	}
+}
+
+func currentReason(s slot, e Env) string {
+	if e.Machine != "" {
+		return "the current snapshot of machine " + e.Machine
+	}
+	why := "the current build of image " + s.env
+	if s.tag != "default" {
+		why += ":" + s.tag
+	}
+	return why
+}
+
+func startupSince(machines []Machine, snapshotted map[string]bool, now time.Time) time.Time {
 	// A machine needs the image build it started from until its first pause is done: only then
 	// do its snapshot's headers name it. E2B picks the build when it checks the image, and stamps
 	// the start once the machine runs, so keep every image build that was current from MinAge
 	// before the first of those machines started. E2B may not list one hibd is starting yet.
 	since := now
-	for _, m := range l.Machines {
+	for _, m := range machines {
 		if (!m.Paused || !snapshotted[m.ID]) && m.Started.Before(since) {
 			since = m.Started
 		}
 	}
-	since = since.Add(-MinAge)
+	return since
+}
+
+func (p protection) keepStartupBuilds(slots map[slot][]placed, order []slot, envs map[string]Env, since time.Time) {
 	// E2B starts machines only from images that aren't removed.
 	for _, s := range order {
 		e := envs[s.env]
 		if e.Machine != "" || !e.Deleted.IsZero() && e.Deleted.Before(since) {
 			continue
 		}
-		var before []placed // what was in the slot before since
-		for _, p := range slots[s] {
-			if p.at.Before(since) && p.finished.Before(since) {
-				before = append(before, p)
-			} else {
-				keep(p.build, "a machine may have started from it")
-			}
+		p.keepHistory(slots[s], since)
+	}
+}
+
+func (p protection) keepHistory(ps []placed, since time.Time) {
+	var before []placed // what was in the slot before since
+	for _, placed := range ps {
+		if placed.at.Before(since) && placed.finished.Before(since) {
+			before = append(before, placed)
+		} else {
+			p.keep(placed.build, "a machine may have started from it")
 		}
-		keepLatest(before, "a machine may have started from it")
 	}
-	for _, id := range l.Cached {
-		keep(id, "E2B's layer cache points to it")
-	}
+	p.keepLatest(before, "a machine may have started from it")
+}
+
+func removedBuilds(builds []Build, envs map[string]Env) map[string]bool {
 	// A build is a removed machine's, or a removed image's, once every env it's in is removed.
 	removed := map[string]bool{}
-	for _, b := range l.Builds {
+	for _, b := range builds {
 		removed[b.ID] = len(b.In) > 0
 		for _, a := range b.In {
 			removed[b.ID] = removed[b.ID] && !envs[a.Env].Deleted.IsZero()
 		}
 	}
-	for _, d := range l.Dirs {
-		if now.Sub(d.Modified) < MinAge && !removed[d.Build] {
-			keep(d.Build, "changed in the last hour")
+	return removed
+}
+
+func (p protection) keepRecent(dirs []Dir, removed map[string]bool, minAge time.Duration, now time.Time) {
+	for _, d := range dirs {
+		if now.Sub(d.Modified) < minAge && !removed[d.Build] {
+			p.keep(d.Build, "changed in the last hour")
 		}
 	}
-	return plan(l.Dirs, roots)
 }
 
 // A slot is a tag of an env: E2B starts machines from the build it put in the slot last.
@@ -240,21 +298,8 @@ func plan(dirs []Dir, roots map[string]string) (Plan, error) {
 			todo = append(todo, id)
 		}
 	}
-	for len(todo) > 0 {
-		d := byID[todo[0]]
-		todo = todo[1:]
-		if d.Err != nil {
-			return Plan{}, fmt.Errorf("can't tell which builds %s needs, so deleting none: %w", d.Build, d.Err)
-		}
-		for _, ref := range d.Refs {
-			if _, ok := byID[ref]; !ok {
-				continue
-			}
-			if _, ok := p.Keep[ref]; !ok {
-				p.Keep[ref] = d.Build + " needs it"
-				todo = append(todo, ref)
-			}
-		}
+	if err := keepReferences(byID, p.Keep, todo); err != nil {
+		return Plan{}, err
 	}
 	for _, d := range dirs {
 		if _, ok := p.Keep[d.Build]; !ok {
@@ -263,6 +308,26 @@ func plan(dirs []Dir, roots map[string]string) (Plan, error) {
 	}
 	slices.Sort(p.Delete)
 	return p, nil
+}
+
+func keepReferences(byID map[string]Dir, keep map[string]string, todo []string) error {
+	for len(todo) > 0 {
+		d := byID[todo[0]]
+		todo = todo[1:]
+		if d.Err != nil {
+			return fmt.Errorf("can't tell which builds %s needs, so deleting none: %w", d.Build, d.Err)
+		}
+		for _, ref := range d.Refs {
+			if _, ok := byID[ref]; !ok {
+				continue
+			}
+			if _, ok := keep[ref]; !ok {
+				keep[ref] = d.Build + " needs it"
+				todo = append(todo, ref)
+			}
+		}
+	}
+	return nil
 }
 
 // Headers are the files in a build directory that name the builds its data is in.
