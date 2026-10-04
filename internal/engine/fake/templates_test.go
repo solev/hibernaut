@@ -252,7 +252,6 @@ func sh(t *testing.T, e *fake.Engine, id, script string) string {
 	return string(res.Stdout)
 }
 
-// pauseAndResume gives machine id a snapshot to fall back on.
 func pauseAndResume(t *testing.T, e *fake.Engine, id string) {
 	t.Helper()
 	if err := e.Pause(t.Context(), id); err != nil {

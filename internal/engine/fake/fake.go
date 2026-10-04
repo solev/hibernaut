@@ -78,7 +78,7 @@ func WithPauseHook(h PauseHook) Option {
 // one. Template finds each, as a template of DefaultCPUs and DefaultMemoryMB whose ID is its name.
 func WithTemplates(names ...string) Option {
 	return func(e *Engine) {
-		e.onlyKnown = true
+		e.refuseUnknownTemplates = true
 		e.aliases = map[string]*template{}
 		for _, n := range names {
 			e.aliases[n] = &template{info: engine.TemplateInfo{ID: n, Alias: n, CPUs: DefaultCPUs, MemoryMB: DefaultMemoryMB}}
@@ -93,37 +93,31 @@ func WithDialer(f DialFunc) Option {
 
 // Engine is the fake. The zero value isn't usable; call New.
 type Engine struct {
-	now       func() time.Time
-	exec      ExecFunc
-	pauseHook PauseHook
-	dial      DialFunc
-	homeRoot  string
-	// onlyKnown makes Create refuse the templates not in aliases: see WithTemplates.
-	onlyKnown  bool
-	aliasCache bool
+	now                    func() time.Time
+	exec                   ExecFunc
+	pauseHook              PauseHook
+	dial                   DialFunc
+	homeRoot               string
+	refuseUnknownTemplates bool
+	aliasCache             bool
 
-	mu       sync.Mutex
-	aliases  map[string]*template
-	machines map[string]*machine
-	built    []engine.TemplateSpec
-	// saves numbers the directories SaveTemplate copies homes into, one per build.
-	saves      int
-	failSave   error
-	rejectSave error
-	saveDelay  time.Duration
-	missedAt   map[string]time.Time
-	// failCreates holds the metadata of the creates FailCreateAfterStart was armed for.
-	failCreates []map[string]string
+	mu                  sync.Mutex
+	aliases             map[string]*template
+	machines            map[string]*machine
+	built               []engine.TemplateSpec
+	buildDirs           int
+	failSave            error
+	rejectSave          error
+	saveDelay           time.Duration
+	missedAt            map[string]time.Time
+	failCreatesMatching []map[string]string
 }
 
-// machine is a machine the fake keeps, with what engine.Machine leaves out.
 type machine struct {
 	engine.Machine
-	cpus int
-	// home is the machine's home directory, with WithLocalExec.
-	home string
-	// snapshotted means the machine has a snapshot to fall back on: it was paused or saved.
-	snapshotted bool
+	cpus        int
+	home        string
+	hasSnapshot bool
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -147,7 +141,7 @@ func (e *Engine) Add(m engine.Machine) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m.Metadata = maps.Clone(m.Metadata)
-	e.machines[m.ID] = &machine{Machine: m, cpus: DefaultCPUs, snapshotted: m.State == engine.Paused}
+	e.machines[m.ID] = &machine{Machine: m, cpus: DefaultCPUs, hasSnapshot: m.State == engine.Paused}
 }
 
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
@@ -158,7 +152,7 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		return engine.Machine{}, errors.New("fake: template is required")
 	}
 	e.mu.Lock()
-	src, err := e.source(opts.Template)
+	src, err := e.resolveTemplateLocked(opts.Template)
 	failAfterStart := err == nil && e.takeCreateFailure(opts.Metadata)
 	e.mu.Unlock()
 	if err != nil {
@@ -171,12 +165,12 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return engine.Machine{}, err
 		}
-		if src.files != "" {
-			if err := os.CopyFS(dir, os.DirFS(src.files)); err != nil {
+		if src.homeCopy != "" {
+			if err := os.CopyFS(dir, os.DirFS(src.homeCopy)); err != nil {
 				return engine.Machine{}, fmt.Errorf("fake: create from %s: %w", opts.Template, err)
 			}
 		}
-		// Resolve symlinks (macOS /var → /private/var) so the path matches what `pwd` prints.
+		// On macOS, /var is a symlink to /private/var, and `pwd` prints the resolved path.
 		resolved, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			return engine.Machine{}, err
@@ -250,7 +244,7 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := e.running(id); err != nil {
+	if _, err := e.runningCopy(id); err != nil {
 		return err
 	}
 	if e.pauseHook != nil {
@@ -268,7 +262,7 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 		return fmt.Errorf("pause %s: %w", id, engine.ErrNotRunning)
 	}
 	m.State = engine.Paused
-	m.snapshotted = true
+	m.hasSnapshot = true
 	return nil
 }
 
@@ -332,7 +326,7 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 	if err := ctx.Err(); err != nil {
 		return engine.Metrics{}, err
 	}
-	m, err := e.running(id)
+	m, err := e.runningCopy(id)
 	if err != nil {
 		return engine.Metrics{}, err
 	}
@@ -350,7 +344,7 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 	if err := ctx.Err(); err != nil {
 		return engine.ExecResult{}, err
 	}
-	m, err := e.running(id)
+	m, err := e.runningCopy(id)
 	if err != nil {
 		return engine.ExecResult{}, err
 	}
@@ -453,8 +447,7 @@ func (c *capped) Write(p []byte) (int, error) {
 	return c.buf.Write(p)
 }
 
-// running returns a copy of machine id, which must be running.
-func (e *Engine) running(id string) (machine, error) {
+func (e *Engine) runningCopy(id string) (machine, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m, err := e.lookup(id)
@@ -477,7 +470,6 @@ func (e *Engine) lookup(id string) (*machine, error) {
 	return m, nil
 }
 
-// drop forgets m and removes its home directory.
 func (e *Engine) drop(m *machine) error {
 	delete(e.machines, m.ID)
 	if m.home == "" {

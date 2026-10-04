@@ -16,24 +16,18 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 )
 
-// template is a template the fake knows: built, named by WithTemplates, or saved.
 type template struct {
-	info  engine.TemplateInfo
-	saved bool
-	// broken marks an alias a failed save left behind. Template finds it, but machines can't be
-	// created from it.
-	broken bool
-	// files holds the latest build's copy of the saved machine's home directory, with
-	// WithLocalExec.
-	files string
+	info         engine.TemplateInfo
+	saved        bool
+	noReadyBuild bool
+	homeCopy     string
 }
 
-// source is what Create starts a machine from.
-type source struct {
+type resolvedTemplate struct {
 	id       string
 	cpus     int
 	memoryMB int
-	files    string
+	homeCopy string
 }
 
 // E2B's template names.
@@ -76,7 +70,7 @@ func (e *Engine) DelayNextSave(d time.Duration) {
 func (e *Engine) FailCreateAfterStart(metadata map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.failCreates = append(e.failCreates, maps.Clone(metadata))
+	e.failCreatesMatching = append(e.failCreatesMatching, maps.Clone(metadata))
 }
 
 // SaveTemplate saves machine id as template alias. With WithLocalExec, it copies the machine's
@@ -91,7 +85,7 @@ func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.Tem
 		return engine.TemplateInfo{}, fmt.Errorf("fake: bad template name %q", alias)
 	}
 	e.mu.Lock()
-	resolved := e.lookupAlias(alias)
+	resolved := e.lookupAliasLocked(alias)
 	delay := e.saveDelay
 	e.saveDelay = 0
 	e.mu.Unlock()
@@ -107,7 +101,7 @@ func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.Tem
 	if m.State != engine.Running {
 		return engine.TemplateInfo{}, fmt.Errorf("save %s: %w", id, engine.ErrNotRunning)
 	}
-	if err := e.takeEarlySaveFailure(); err != nil {
+	if err := e.takeFailureBeforeCreating(); err != nil {
 		return engine.TemplateInfo{}, fmt.Errorf("save %s as %s: %w", id, alias, err)
 	}
 	t := e.aliases[alias]
@@ -118,7 +112,7 @@ func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.Tem
 		return engine.TemplateInfo{}, fmt.Errorf("fake: save %s as %s: a built template has that name", id, alias)
 	}
 	if t == nil {
-		t = &template{info: engine.TemplateInfo{ID: NewID(), Alias: alias}, saved: true, broken: true}
+		t = &template{info: engine.TemplateInfo{ID: NewID(), Alias: alias}, saved: true, noReadyBuild: true}
 		e.aliases[alias] = t
 	}
 	if err := e.failSave; err != nil {
@@ -126,7 +120,7 @@ func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.Tem
 		err = fmt.Errorf("save %s as %s: %w", id, alias, err)
 		switch {
 		case !errors.Is(err, engine.ErrCheckpoint):
-		case m.snapshotted:
+		case m.hasSnapshot:
 			m.State = engine.Paused
 		default:
 			err = errors.Join(err, e.drop(m))
@@ -134,25 +128,20 @@ func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.Tem
 		return engine.TemplateInfo{}, err
 	}
 	if m.home != "" {
-		// Each build gets its own directory, so a Create copying an earlier one, outside the
-		// lock, never sees it change.
-		e.saves++
-		dir := filepath.Join(e.templateDir(t.info.ID), strconv.Itoa(e.saves))
+		dir := e.newBuildDir(t.info.ID)
 		if err := os.CopyFS(dir, os.DirFS(m.home)); err != nil {
 			return engine.TemplateInfo{}, fmt.Errorf("fake: save %s as %s: %w", id, alias, err)
 		}
-		t.files = dir
+		t.homeCopy = dir
 	}
 	t.info.CPUs, t.info.MemoryMB, t.info.Created = m.cpus, m.MemoryMB, e.now()
-	t.broken = false
-	m.snapshotted = true
+	t.noReadyBuild = false
+	m.hasSnapshot = true
 	delete(e.missedAt, alias)
 	return t.info, nil
 }
 
-// takeEarlySaveFailure takes the failure armed for the save, if E2B would report it before
-// creating anything.
-func (e *Engine) takeEarlySaveFailure() error {
+func (e *Engine) takeFailureBeforeCreating() error {
 	if err := e.failSave; errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrNotFound) {
 		e.failSave = nil
 		return err
@@ -184,7 +173,7 @@ func (e *Engine) Template(ctx context.Context, alias string) (engine.TemplateInf
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	t := e.lookupAlias(alias)
+	t := e.lookupAliasLocked(alias)
 	if t == nil {
 		return engine.TemplateInfo{}, fmt.Errorf("template %s: %w", alias, engine.ErrNoTemplate)
 	}
@@ -200,7 +189,7 @@ func (e *Engine) SavedTemplates(ctx context.Context) ([]engine.TemplateInfo, err
 	defer e.mu.Unlock()
 	var out []engine.TemplateInfo
 	for _, t := range e.aliases {
-		if t.saved && !t.broken {
+		if t.saved && !t.noReadyBuild {
 			out = append(out, t.info)
 		}
 	}
@@ -232,9 +221,13 @@ func (e *Engine) DeleteTemplate(ctx context.Context, id string) error {
 	return os.RemoveAll(e.templateDir(id))
 }
 
-// templateDir holds the copies SaveTemplate makes for template id, one directory per build.
 func (e *Engine) templateDir(id string) string {
 	return filepath.Join(e.homeRoot, "templates", id)
+}
+
+func (e *Engine) newBuildDir(templateID string) string {
+	e.buildDirs++
+	return filepath.Join(e.templateDir(templateID), strconv.Itoa(e.buildDirs))
 }
 
 func (e *Engine) byID(id string) *template {
@@ -246,29 +239,26 @@ func (e *Engine) byID(id string) *template {
 	return nil
 }
 
-// source resolves name for Create. The templates the fake knows are found by alias, then ID. Any
-// other name is taken as is, for a template of DefaultCPUs and DefaultMemoryMB, unless
-// WithTemplates was used or the alias cache hides it.
-func (e *Engine) source(name string) (source, error) {
-	t := e.lookupAlias(name)
+func (e *Engine) resolveTemplateLocked(name string) (resolvedTemplate, error) {
+	t := e.lookupAliasLocked(name)
 	if t == nil {
 		t = e.byID(name)
 	}
 	switch {
-	case t != nil && t.broken:
-		return source{}, fmt.Errorf("fake: create from %s: a failed save left it without a build: %w", name, engine.ErrNoTemplate)
+	case t != nil && t.noReadyBuild:
+		return resolvedTemplate{}, fmt.Errorf("fake: create from %s: a failed save left it without a build: %w", name, engine.ErrNoTemplate)
 	case t != nil:
-		return source{id: t.info.ID, cpus: t.info.CPUs, memoryMB: t.info.MemoryMB, files: t.files}, nil
-	case e.onlyKnown || e.aliases[name] != nil:
-		return source{}, fmt.Errorf("fake: create from %s: %w", name, engine.ErrNoTemplate)
+		return resolvedTemplate{id: t.info.ID, cpus: t.info.CPUs, memoryMB: t.info.MemoryMB, homeCopy: t.homeCopy}, nil
+	case e.refuseUnknownTemplates || e.aliases[name] != nil:
+		return resolvedTemplate{}, fmt.Errorf("fake: create from %s: %w", name, engine.ErrNoTemplate)
 	}
-	return source{id: name, cpus: DefaultCPUs, memoryMB: DefaultMemoryMB}, nil
+	return resolvedTemplate{id: name, cpus: DefaultCPUs, memoryMB: DefaultMemoryMB}, nil
 }
 
 func (e *Engine) takeCreateFailure(metadata map[string]string) bool {
-	for i, want := range e.failCreates {
+	for i, want := range e.failCreatesMatching {
 		if hasAll(metadata, want) {
-			e.failCreates = slices.Delete(e.failCreates, i, i+1)
+			e.failCreatesMatching = slices.Delete(e.failCreatesMatching, i, i+1)
 			return true
 		}
 	}

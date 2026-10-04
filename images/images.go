@@ -31,7 +31,6 @@ const (
 
 const lib = "/usr/lib/hibernaut"
 
-// The template namespaces: built-in images, saved images, and forks' hidden templates.
 const (
 	builtPrefix = "hib-"
 	savedPrefix = "hibimg-"
