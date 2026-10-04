@@ -96,7 +96,7 @@ and write changes to a copy-on-write layer, exposed through NBD block devices.
 ## Project layout
 
 ```
-cmd/hib/                   Laptop CLI: machines, images, secrets, GitHub, status and the audit log
+cmd/hib/                   Laptop CLI: machines, images, secrets, connections, status, the audit log
 cmd/hibd/                  Host tool and daemon, which hib runs over SSH (code in internal/hibd/)
 internal/engine/           The Engine interface; e2b/ (real), fake/ (in memory), enginetest/ (the
                            contract both must pass)
@@ -108,8 +108,12 @@ internal/vault/, envblock/ Sealed secrets and placeholders. The placeholder bloc
 internal/egress/           The HTTPS proxy; hook/ (iptables, real destination), swap/ (swap, scrub)
 internal/ca/, audit/       The Hibernaut CA. The audit log of every swap.
 internal/github/           Checks a GitHub token with GET /user. The connected account, github.json.
+internal/codex/            The Codex login: its profile, refreshing, machines' login file, and the
+                           token endpoint the proxy answers Codex's refreshes with
 internal/slots/            Finds the machine an intercepted connection comes from
 internal/leakscan/         Searches machine and image snapshots for real secret values
+images/                    Image recipes. dev/ is the dev image's steps, and dev/versions pins
+                           Codex and the Copilot CLI.
 e2e/                       End-to-end tests against the real VM (build tag e2e)
 third_party/e2b/           E2B's API spec and envd proto at the pinned commit; clients are
                            generated from them
@@ -120,14 +124,15 @@ azure/                     Runs on your Mac (needs az CLI + ssh)
   common.sh                Shared settings: RG, VM name, size, region, user. Env vars override.
   create-vm.sh             One-time: create RG, VM, identity, custom role, auto-shutdown, host setup
   up.sh                    Start VM → deploy → install E2B if needed → start E2B → wait until healthy
-  deploy.sh                Build hibd, sync vm/ and examples/, install the host pieces
+  deploy.sh                Build hibd, sync vm/, examples/ and Codex's pins, install the host pieces
   start.sh                 Start the VM and wait for SSH; starts nothing else
   down.sh                  Pause every sandbox, stop E2B, deallocate (billing for compute stops)
   ssh.sh                   SSH to the VM; extra args are passed through
   target.sh, state.sh      Print the VM's user@ip, or its power state
 
 vm/                        Runs on the VM (synced to ~/hibernaut/vm)
-  setup-host.sh            Root host setup: sshd, hibd, the CA, proxy, quiesce, guard, timers
+  setup-host.sh            Root host setup: sshd, hibd, the CA, proxy, Codex, quiesce, guard, timers
+  install-codex.sh         Installs the pinned Codex package, which hibd logs in with. CI uses it.
   install-e2b.sh           Installs E2B and its dependencies; --if-needed skips an installed version
   wait-e2b.sh              Waits until E2B is healthy; --start starts it first
   lib/quiesce              Pause every sandbox, stop E2B, flush to disk. Runs before any deallocate.

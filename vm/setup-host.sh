@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Installs key-only SSH, hibd, pinned Codex, its CA and egress proxy, the busy daemon, the pause-all guard,
-# and the nightly and idle deallocate timers.
+# Installs key-only SSH, hibd, the CA and egress proxy, the pinned Codex, the busy daemon, the
+# pause-all guard, and the nightly and idle deallocate timers.
 # `make deploy` runs it after copying the repo and the hibd binary to the VM. Safe to re-run: it
 # never stops or restarts running machines.
 set -euo pipefail

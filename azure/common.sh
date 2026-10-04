@@ -43,9 +43,12 @@ ensure_running() {
   wait_for_ssh "$VM_IP"
 }
 
-# Copies the host scripts, the examples and the Linux hibd binary to ~/hibernaut on the VM.
+# Copies the host scripts, the examples, Codex's pins and the Linux hibd binary to ~/hibernaut on
+# the VM.
 sync_to_vm() {
   local ip=$1
   rsync -az --delete "$PROJECT_ROOT/vm" "$PROJECT_ROOT/examples" "$VM_USER@$ip:hibernaut/"
+  # -R with a relative path keeps images/dev/. macOS's openrsync ignores the /./ marker.
+  (cd "$PROJECT_ROOT" && rsync -azR images/dev/versions "$VM_USER@$ip:hibernaut/")
   rsync -az "$PROJECT_ROOT/bin/linux-amd64/" "$VM_USER@$ip:hibernaut/bin/"
 }
