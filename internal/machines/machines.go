@@ -65,8 +65,10 @@ var idRE = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
 // Config configures a Manager.
 type Config struct {
 	Engine engine.Engine
-	// StateDir is where the lock and pinned host keys are kept. It must exist, belong to the
-	// user hibd runs as, and be writable by no one else. Lifecycle operations use its lock.
+	// StateDir is where the lock and pinned host keys are kept. It must exist and be writable
+	// only by its owner. Non-root callers must own it. Root may use trusted user-owned state,
+	// and keeps its owner's UID and GID on new directories, locks and pins.
+	// Lifecycle operations use its lock.
 	// Create, Fork, Remove and Dial also use its pinned host keys.
 	StateDir string
 	// AuthorizedKeys is the authorized_keys file whose keys may log in to new machines: the
@@ -91,14 +93,16 @@ type Config struct {
 // Manager manages machines. Its methods may be called concurrently, also from other
 // processes sharing its state directory.
 type Manager struct {
-	e        engine.Engine
-	dir      string
-	keysFile string
-	now      func() time.Time
-	readRoom func() (room.Host, error)
-	setup    Setup
-	durable  func(ctx context.Context, id string) error
-	awake    func() error
+	e         engine.Engine
+	dir       string
+	keysFile  string
+	now       func() time.Time
+	readRoom  func() (room.Host, error)
+	setup     Setup
+	durable   func(ctx context.Context, id string) error
+	awake     func() error
+	euid      func() int
+	chownFile func(*os.File, int, int) error
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -118,6 +122,7 @@ func New(cfg Config) *Manager {
 	return &Manager{
 		e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom,
 		setup: cfg.Setup, durable: cfg.Durable, awake: awake,
+		euid: os.Geteuid, chownFile: (*os.File).Chown,
 	}
 }
 
@@ -573,39 +578,25 @@ func (m *Manager) checkState() error {
 	if m.dir == "" {
 		return errors.New("no state directory configured")
 	}
-	if err := checkDir(m.dir); err != nil {
+	root, owner, err := m.stateRoot()
+	if err != nil {
 		return err
 	}
-	pins := filepath.Join(m.dir, "host-keys")
-	if err := os.Mkdir(pins, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
-	return checkDir(pins)
+	defer root.Close()
+	return m.ensurePins(root, owner)
 }
 
-func checkDir(dir string) error {
+func checkDir(dir string, uid int) error {
 	fi, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("state directory: %w", err)
 	}
-	if !fi.IsDir() {
-		return fmt.Errorf("state directory %s: not a directory", dir)
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("state directory %s: can't tell its owner", dir)
-	}
-	if uid := os.Geteuid(); int(st.Uid) != uid {
-		return fmt.Errorf("state directory %s: belongs to uid %d, not %d", dir, st.Uid, uid)
-	}
-	if fi.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("state directory %s: others can write to it (%v)", dir, fi.Mode().Perm())
-	}
-	return nil
+	_, err = directoryOwner(fi, dir, uid)
+	return err
 }
 
 func (m *Manager) lock(ctx context.Context) (unlock func(), err error) {
-	f, err := os.OpenFile(filepath.Join(m.dir, "hibd.lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	f, err := m.openLock()
 	if err != nil {
 		return nil, err
 	}
@@ -654,6 +645,9 @@ func (m *Manager) writePin(id string, key ssh.PublicKey) error {
 	path, err := m.pinPath(id)
 	if err != nil {
 		return err
+	}
+	if m.euid() == 0 {
+		return m.writeOwnedPin(id, []byte(hibapi.FormatHostKey(key)+"\n"))
 	}
 	return atomicfile.WriteFile(path, []byte(hibapi.FormatHostKey(key)+"\n"), 0o600)
 }
