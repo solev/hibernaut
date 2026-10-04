@@ -2,7 +2,9 @@ package ca_test
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
@@ -428,4 +430,109 @@ func TestCertPEMAndPoolHoldOnlyThePublicCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify with Pool: %v", err)
 	}
+}
+
+func TestLoadAcceptsP256KeysInSEC1AndPKCS8(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec1, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range []*pem.Block{{Type: "EC PRIVATE KEY", Bytes: sec1}, {Type: "PRIVATE KEY", Bytes: pkcs8}} {
+		t.Run(block.Type, func(t *testing.T) {
+			certPath, keyPath := caFiles(t)
+			writeKey(t, keyPath, pem.EncodeToMemory(block))
+			if created, err := ca.Init(certPath, keyPath, "Hibernaut CA tests"); err != nil || !created {
+				t.Fatalf("Init with a %s = %v, %v, want true, nil", block.Type, created, err)
+			}
+			c, err := ca.Load(certPath, keyPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Now = func() time.Time { return testNow }
+			leaf, err := c.Leaf("key.example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifyLeaf(t, c, leaf, "key.example.com", testNow)
+			certBlock, _ := pem.Decode(c.CertPEM())
+			if certBlock == nil {
+				t.Fatal("CertPEM holds no certificate")
+			}
+			cert, err := x509.ParseCertificate(certBlock.Bytes)
+			if err != nil || !key.PublicKey.Equal(cert.PublicKey) {
+				t.Fatalf("CA does not use the key on disk: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRefusesKeysItCannotUse(t *testing.T) {
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384SEC1, err := x509.MarshalECPrivateKey(p384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		key  []byte
+		want string
+	}{
+		{name: "no PEM", key: []byte("not a key\n"), want: "missing PEM block"},
+		{name: "other PEM type", key: pemBlock("RSA PRIVATE KEY", []byte("rsa")), want: `PEM block is "RSA PRIVATE KEY"`},
+		{name: "corrupt SEC1", key: pemBlock("EC PRIVATE KEY", []byte("corrupt"))},
+		{name: "SEC1 P-384", key: pemBlock("EC PRIVATE KEY", p384SEC1), want: "key is not ECDSA P-256"},
+		{name: "corrupt PKCS8", key: pemBlock("PRIVATE KEY", []byte("corrupt"))},
+		{name: "PKCS8 P-384", key: pkcs8PEM(t, p384), want: "key is not ECDSA P-256"},
+		{name: "PKCS8 Ed25519", key: pkcs8PEM(t, edKey), want: "key is ed25519.PrivateKey, want ECDSA"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			certPath, keyPath := caFiles(t)
+			writeKey(t, keyPath, tc.key)
+			_, err := ca.Load(certPath, keyPath)
+			if err == nil || !strings.HasPrefix(err.Error(), "reading CA key: ") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load = %v, want a CA key error with %q", err, tc.want)
+			}
+			if created, err := ca.Init(certPath, keyPath, "Hibernaut CA tests"); err == nil || created {
+				t.Fatalf("Init with an unusable key = %v, %v, want false and an error", created, err)
+			}
+			if _, err := os.Stat(certPath); !os.IsNotExist(err) {
+				t.Fatalf("Init wrote a certificate for an unusable key: %v", err)
+			}
+		})
+	}
+}
+
+func writeKey(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pemBlock(typ string, der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der})
+}
+
+func pkcs8PEM(t *testing.T, key crypto.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pemBlock("PRIVATE KEY", der)
 }
