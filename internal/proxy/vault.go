@@ -39,14 +39,16 @@ func (s *VaultSource) Swapper() *swap.Swapper {
 		return nil
 	}
 	if fileErr != nil || keyErr != nil {
-		s.swapper = nil
+		s.loaded, s.swapper = false, nil
 		s.logFailure("stat")
 		return nil
 	}
 	if s.loaded && sameFile(s.file, file) && sameFile(s.key, key) {
 		return s.swapper
 	}
-	s.swapper = nil
+	// Failing to open or stat the files says nothing about what's in them, so only a failure to
+	// load what was read waits for the files to change.
+	s.loaded, s.swapper = false, nil
 	vf, err := os.Open(s.Path)
 	if err != nil {
 		s.logFailure("open vault")

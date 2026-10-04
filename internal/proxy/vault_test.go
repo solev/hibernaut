@@ -249,19 +249,35 @@ func TestVaultSourcePassesThroughUntilTheFilesChangeAfterAFailedReload(t *testin
 	}
 }
 
-func TestVaultSourceWaitsForAChangeAfterATransientFailure(t *testing.T) {
-	f := newReloadFixture(t)
-	fix := replaceStateDir(t, f)
-	if f.swap(t) != "" {
-		t.Fatal("a failed stat kept the last good swapper")
+// A failure to stat or open the files says nothing about what's in them, so the next call reads
+// them again even though they didn't change.
+func TestVaultSourceRecoversFromATransientFailure(t *testing.T) {
+	cases := []struct {
+		name         string
+		needsNonRoot bool
+		breakFiles   func(t *testing.T, f *reloadFixture) (fix func())
+	}{
+		{name: "state directory replaced by a file", breakFiles: replaceStateDir},
+		{name: "vault unreadable", needsNonRoot: true,
+			breakFiles: func(t *testing.T, f *reloadFixture) func() { return chmod(t, f.path, 0, 0o644) }},
+		{name: "key unreadable", needsNonRoot: true,
+			breakFiles: func(t *testing.T, f *reloadFixture) func() { return chmod(t, f.keyPath, 0, 0o600) }},
 	}
-	fix()
-	if f.swap(t) != "" {
-		t.Fatal("restoring the same files counted as a change")
-	}
-	f.save(t, "sk-reload-fixed-value")
-	if got := f.swap(t); got != "sk-reload-fixed-value" {
-		t.Fatal("secrets did not come back after the files changed")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.needsNonRoot && os.Geteuid() == 0 {
+				t.Skip("root opens files whatever their mode")
+			}
+			f := newReloadFixture(t)
+			fix := tc.breakFiles(t, f)
+			if f.swap(t) != "" {
+				t.Fatal("a failed reload kept the last good swapper")
+			}
+			fix()
+			if got := f.swap(t); got != "sk-reload-first-value" {
+				t.Fatalf("secrets = %q after restoring the same files, want them back", got)
+			}
+		})
 	}
 }
 
