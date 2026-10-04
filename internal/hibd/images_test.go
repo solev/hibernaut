@@ -79,6 +79,20 @@ func TestImageSaveThenNewFromSavedImage(t *testing.T) {
 	}
 }
 
+func TestImageSaveOutput(t *testing.T) {
+	a, _, out, errOut := imageApp(t)
+	if code, _, err := runJSON(t, a, out, "new", "web", "-json"); code != 0 || err != nil {
+		t.Fatalf("new = %d, %v; stderr %s", code, err, errOut)
+	}
+	out.Reset()
+	if code := a.Run(t.Context(), []string{"image", "save", "web", "myimg"}); code != 0 {
+		t.Fatalf("save = %d; stderr %s", code, errOut)
+	}
+	if got, want := out.String(), "saved image myimg (512 MiB). use it with: hib new NAME -image myimg\n"; got != want {
+		t.Errorf("saved image output = %q, want %q", got, want)
+	}
+}
+
 func TestForkRunningAndPausedOrigins(t *testing.T) {
 	for _, state := range []engine.State{engine.Running, engine.Paused} {
 		t.Run(string(state), func(t *testing.T) {

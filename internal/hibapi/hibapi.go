@@ -176,7 +176,6 @@ type Room struct {
 	DiskFreeMB int64 `json:"diskFreeMB"`
 }
 
-// The kinds of Image.
 const (
 	// KindBuiltIn is an image in hibd's catalog, which hib image build builds.
 	KindBuiltIn = "built-in"

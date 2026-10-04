@@ -36,8 +36,7 @@ func (a *App) imageSave(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Image: &img})
 	}
-	fmt.Fprintf(a.Stdout, "saved image %s (%s). use it with: hib new NAME -image %s\n",
-		termsafe.String(img.Name), hibapi.FormatMB(int64(img.MemoryMB)), termsafe.String(img.Name))
+	hibapi.PrintSavedImage(a.Stdout, img)
 	return 0
 }
 
