@@ -39,6 +39,8 @@ type secretGuest struct {
 	// noGit, if set, runs the setup's git script for real, in a shell whose PATH is this empty
 	// directory, as in an image without git.
 	noGit string
+	// codexAuth is Codex's login file, as the setup wrote it.
+	codexAuth []byte
 }
 
 func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
@@ -56,6 +58,14 @@ func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req en
 	case "sh":
 		if len(req.Args) == 5 && req.Args[2] == "hibd-git" {
 			return g.setGit(req)
+		}
+		if len(req.Args) == 5 && req.Args[2] == "hibd-codex" && req.Args[3] == "/home/user/.codex" && req.User == "root" {
+			auth, err := base64.StdEncoding.DecodeString(req.Args[4])
+			if err != nil {
+				return engine.ExecResult{ExitCode: 64, Stderr: []byte(err.Error())}, nil
+			}
+			g.codexAuth = auth
+			return engine.ExecResult{}, nil
 		}
 		if len(req.Args) == 5 && req.Args[2] == "hibd-env" {
 			if got := sha256.Sum256(g.env); req.Args[3] != hexHash(got[:]) {
@@ -101,6 +111,12 @@ func (g *secretGuest) identity() *machines.GitIdentity {
 	}
 	id := *g.git
 	return &id
+}
+
+func (g *secretGuest) codexAuthFile() []byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return bytes.Clone(g.codexAuth)
 }
 
 func (g *secretGuest) envString() string {

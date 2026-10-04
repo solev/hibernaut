@@ -574,6 +574,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
+	removeLeftoverCodexLogins(cfg.stateDir, logger.Printf)
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	switch changed, err := rebindGitHub(cfg); {
 	case err != nil:

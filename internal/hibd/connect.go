@@ -14,14 +14,19 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-const connectUsage = "connect github [-source gh|token] [-json]"
+const connectGitHubUsage = "connect github [-source gh|token] [-json]"
 
 func (a *App) connect(ctx context.Context, args []string) int {
-	if len(args) == 0 || args[0] != "github" {
-		fmt.Fprintf(a.Stderr, "usage: hibd %s\n", connectUsage)
-		return 2
+	if len(args) > 0 {
+		switch args[0] {
+		case "github":
+			return a.connectGitHub(ctx, args[1:])
+		case "codex":
+			return a.connectCodex(ctx, args[1:])
+		}
 	}
-	return a.connectGitHub(ctx, args[1:])
+	fmt.Fprintf(a.Stderr, "usage: hibd %s\n       hibd %s\n", connectGitHubUsage, connectCodexUsage)
+	return 2
 }
 
 // connectGitHub stores the token on stdin as secret github once GitHub accepts it, saves the
@@ -30,7 +35,7 @@ func (a *App) connectGitHub(ctx context.Context, args []string) int {
 	fl := a.flags("connect github")
 	source := fl.String("source", hibapi.GitHubFromGH, "how the token was given: gh or token")
 	asJSON := fl.Bool("json", false, "print JSON")
-	if _, ok := a.parse(fl, args, 0, connectUsage); !ok {
+	if _, ok := a.parse(fl, args, 0, connectGitHubUsage); !ok {
 		return 2
 	}
 	if *source != hibapi.GitHubFromGH && *source != hibapi.GitHubFromToken {

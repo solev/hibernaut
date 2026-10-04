@@ -1,11 +1,35 @@
 package hibd
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
+	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
+)
+
+const (
+	connectCodexUsage = "connect codex [-json]"
+
+	// codexBinary is the host's pinned codex, which vm/setup-host.sh installs.
+	codexBinary = "/usr/local/bin/codex"
+	// codexLoginPrefix starts the name of each login directory in the state directory, so the
+	// ones a crash left can be found.
+	codexLoginPrefix = "codex-login-"
+	// codexLoginLock is held in the state directory while a login runs, so no one deletes its
+	// directory.
+	codexLoginLock = "codex-login.lock"
+	// maxCodexAuthFile bounds the login file codex login writes.
+	maxCodexAuthFile = 1 << 20
 )
 
 // codexStore returns the Store that keeps the host's Codex login, with cfg's paths and the
@@ -25,4 +49,204 @@ func (a *App) codexStore(cfg config, logf func(format string, args ...any)) *cod
 // warnf prints a warning on stderr, made safe for a terminal.
 func (a *App) warnf(format string, args ...any) {
 	fmt.Fprintf(a.Stderr, "warning: %s\n", termsafe.String(fmt.Sprintf(format, args...)))
+}
+
+func (a *App) codexBin() string {
+	if a.CodexBin != "" {
+		return a.CodexBin
+	}
+	return codexBinary
+}
+
+// connectCodex runs Codex's device login on the host, keeps the login, and writes the machine
+// setup into running machines.
+func (a *App) connectCodex(ctx context.Context, args []string) int {
+	fl := a.flags("connect codex")
+	asJSON := fl.Bool("json", false, "print JSON")
+	if _, ok := a.parse(fl, args, 0, connectCodexUsage); !ok {
+		return 2
+	}
+	if err := a.needRoot("connect codex"); err != nil {
+		return a.fail(*asJSON, "connect codex", err)
+	}
+	p, err := a.loginCodex(ctx)
+	if err != nil {
+		return a.fail(*asJSON, "connect codex", err)
+	}
+	c := p.API()
+	if *asJSON {
+		return a.reply(hibapi.Response{Codex: &c})
+	}
+	fmt.Fprintf(a.Stdout, "connected Codex as %s, on the %s plan\n", termsafe.String(c.Email), termsafe.String(c.Plan))
+	return 0
+}
+
+func (a *App) loginCodex(ctx context.Context) (codex.Profile, error) {
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		return codex.Profile{}, err
+	}
+	unlock, ok, err := lockCodexLogins(cfg.stateDir)
+	if err != nil {
+		return codex.Profile{}, err
+	}
+	if !ok {
+		return codex.Profile{}, errors.New("another hib connect codex is running: finish it, or stop it, then try again")
+	}
+	defer unlock()
+	removeCodexLogins(cfg.stateDir, a.warnf)
+	dir, err := os.MkdirTemp(cfg.stateDir, codexLoginPrefix+"*")
+	if err != nil {
+		return codex.Profile{}, fmt.Errorf("making a directory for the login: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	tokens, err := a.runCodexLogin(ctx, dir)
+	if err != nil {
+		return codex.Profile{}, err
+	}
+	p, err := a.codexStore(cfg, a.warnf).CommitLogin(ctx, tokens)
+	if err != nil {
+		return codex.Profile{}, fmt.Errorf("keeping the login failed: %w", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		a.warnf("deleting the login directory %s failed: %v", dir, err)
+	}
+	a.pushSetup(ctx, cfg, "Codex connected")
+	return p, nil
+}
+
+// runCodexLogin runs codex login in dir, with Codex's output going to stderr, and returns the
+// tokens it saved.
+func (a *App) runCodexLogin(ctx context.Context, dir string) (codex.Tokens, error) {
+	bin := a.codexBin()
+	if err := checkCodexVersion(ctx, bin, dir); err != nil {
+		return codex.Tokens{}, err
+	}
+	cmd := codexCommand(ctx, bin, dir, "login", "--device-auth", "-c", `cli_auth_credentials_store="file"`)
+	out := termsafe.NewWriter(a.Stderr)
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	_ = out.Flush()
+	if ctx.Err() != nil {
+		return codex.Tokens{}, errors.New("the codex login was cancelled. Nothing was stored")
+	}
+	if err != nil {
+		return codex.Tokens{}, fmt.Errorf("codex login failed: %v. If ChatGPT didn't offer or accept the code, "+
+			"turn on device code login in ChatGPT, under Settings, Security, then run hib connect codex again", err)
+	}
+	data, err := readCodexAuth(filepath.Join(dir, "auth.json"))
+	if err != nil {
+		return codex.Tokens{}, err
+	}
+	return codex.ParseAuthFile(data)
+}
+
+// checkCodexVersion fails unless bin is the pinned Codex. It runs bin in home, as a login does.
+func checkCodexVersion(ctx context.Context, bin, home string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := codexCommand(ctx, bin, home, "--version")
+	out := &limitedBuffer{max: 4 << 10}
+	cmd.Stdout = out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running %s --version failed: %v. Install codex-cli %s there: run make deploy", bin, err, codex.Version)
+	}
+	want := "codex-cli " + codex.Version
+	if got := string(bytes.TrimSpace(out.data)); got != want {
+		return fmt.Errorf("%s is %q, but hibd needs %s. Install it: run make deploy", bin, got, want)
+	}
+	return nil
+}
+
+// codexCommand runs codex with nothing from hibd's environment: HOME and CODEX_HOME are home.
+// It stops codex when ctx is done.
+func codexCommand(ctx context.Context, bin, home string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = []string{"HOME=" + home, "CODEX_HOME=" + home, "PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
+	cmd.Dir = home
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
+func readCodexAuth(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("codex login finished without saving a login: run hib connect codex again")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the login codex saved: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxCodexAuthFile+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading the login codex saved: %w", err)
+	}
+	if len(data) > maxCodexAuthFile {
+		return nil, errors.New("the login codex saved is too big: run hib connect codex again")
+	}
+	return data, nil
+}
+
+// lockCodexLogins takes the login lock in stateDir without waiting. ok is false if a login holds
+// it.
+func lockCodexLogins(stateDir string) (unlock func(), ok bool, err error) {
+	f, err := os.OpenFile(filepath.Join(stateDir, codexLoginLock), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, false, fmt.Errorf("opening the codex login lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("locking the codex login: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, true, nil
+}
+
+// removeCodexLogins deletes the login directories in stateDir. The caller holds the login lock.
+func removeCodexLogins(stateDir string, logf func(format string, args ...any)) {
+	found, err := filepath.Glob(filepath.Join(stateDir, codexLoginPrefix+"*"))
+	if err != nil {
+		return
+	}
+	for _, dir := range found {
+		if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			logf("deleting the codex login directory %s failed: %v", dir, err)
+		}
+	}
+}
+
+// removeLeftoverCodexLogins deletes the login directories a crash left, unless a login is
+// running.
+func removeLeftoverCodexLogins(stateDir string, logf func(format string, args ...any)) {
+	unlock, ok, err := lockCodexLogins(stateDir)
+	if err != nil {
+		logf("%v", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	defer unlock()
+	removeCodexLogins(stateDir, logf)
+}
+
+// limitedBuffer keeps the first max bytes written to it, and drops the rest.
+type limitedBuffer struct {
+	data []byte
+	max  int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := b.max - len(b.data); room > 0 {
+		b.data = append(b.data, p[:min(room, len(p))]...)
+	}
+	return len(p), nil
 }
