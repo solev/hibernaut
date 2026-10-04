@@ -50,6 +50,7 @@ func PrintStatus(w io.Writer, host string, s Status) {
 	} else {
 		fmt.Fprintln(tw, "GitHub\tnot connected: run hib connect github --from-gh")
 	}
+	printCodex(tw, s.Codex)
 	if len(s.Secrets) == 0 {
 		fmt.Fprintln(tw, "secrets\tnone")
 		tw.Flush()
@@ -64,6 +65,30 @@ func PrintStatus(w io.Writer, host string, s Status) {
 			oneLine(string(sec.State)), oneLine(sec.Detail))
 	}
 	tw.Flush()
+}
+
+// printCodex writes the Codex line, and a second line saying what's wrong unless the login is
+// ok.
+func printCodex(w io.Writer, c *Codex) {
+	if c == nil {
+		fmt.Fprintln(w, "Codex\tnot connected: run hib connect codex")
+		return
+	}
+	line := fmt.Sprintf("%s, %s plan", oneLine(c.Email), oneLine(c.Plan))
+	if !c.Expires.IsZero() {
+		line += ", token expires " + c.Expires.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	fmt.Fprintf(w, "Codex\t%s\n", line)
+	if c.Health == CodexOK {
+		return
+	}
+	fix := "run hib connect codex"
+	if c.Problem != "" && !strings.Contains(c.Problem, "hib connect codex") {
+		fix = oneLine(c.Problem) + ". Run hib connect codex"
+	} else if c.Problem != "" {
+		fix = oneLine(c.Problem)
+	}
+	fmt.Fprintf(w, "\t%s: %s\n", oneLine(string(c.Health)), fix)
 }
 
 // oneLine makes s safe for a terminal and one table cell: escapes as termsafe.String writes

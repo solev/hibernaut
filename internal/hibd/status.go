@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/vault"
@@ -23,8 +24,8 @@ const (
 	maxChecks = 8
 )
 
-// status reports hibd's version, whether E2B is up, the connected GitHub account, and each
-// secret's health. Without -json, it exits 1 if something is broken.
+// status reports hibd's version, whether E2B is up, the connected GitHub account, the Codex
+// login, and each secret's health. Without -json, it exits 1 if something is broken.
 func (a *App) status(ctx context.Context, args []string) int {
 	fl := a.flags("status")
 	asJSON := fl.Bool("json", false, "print JSON")
@@ -61,18 +62,36 @@ func (a *App) hostStatus(ctx context.Context, cfg config) (hibapi.Status, error)
 	if err != nil {
 		return hibapi.Status{}, err
 	}
+	login, err := loadCodexLogin(a.codexStore(cfg, a.warnf))
+	if err != nil {
+		return hibapi.Status{}, err
+	}
 	var e2b hibapi.Health
 	var wg sync.WaitGroup
 	wg.Go(func() { e2b = checkE2B(ctx, cfg.healthURLs) })
 	health, githubUser := a.checkSecrets(ctx, secrets, profile)
 	wg.Wait()
 
-	s := hibapi.Status{Version: version.Version, E2B: e2b, Secrets: health}
+	s := hibapi.Status{Version: version.Version, E2B: e2b, Codex: login, Secrets: health}
 	if profile != nil && slices.ContainsFunc(secrets, func(r vault.Revealed) bool { return r.Name == github.SecretName }) {
 		g := profile.Account(githubUser)
 		s.GitHub = &g
 	}
 	return s, nil
+}
+
+// loadCodexLogin returns the Codex login as hib shows it, or nil if Codex isn't connected. It
+// never calls OpenAI.
+func loadCodexLogin(store *codex.Store) (*hibapi.Codex, error) {
+	p, err := store.Load()
+	if errors.Is(err, codex.ErrNotConnected) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	login := p.API()
+	return &login, nil
 }
 
 // loadStatusSecrets returns every secret in the vault, sorted by name. Only those status checks
