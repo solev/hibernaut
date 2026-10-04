@@ -148,17 +148,8 @@ func (s *Store) public() (PublicAuth, error) {
 				return PublicAuth{}, err
 			}
 		}
-		out := PublicAuth{AccountID: p.AccountID, LastRefresh: p.Published}
-		for _, secret := range f.Secrets() {
-			switch secret.Name {
-			case AccessName:
-				out.AccessToken = secret.Placeholder
-			case RefreshName:
-				out.RefreshToken = secret.Placeholder
-			case IDName:
-				out.IDToken = secret.Placeholder
-			}
-		}
+		out := placeholderTokens(f)
+		out.AccountID, out.LastRefresh = p.AccountID, p.Published
 		if out.AccessToken == "" || out.RefreshToken == "" || out.IDToken == "" {
 			return PublicAuth{}, ErrNotConnected
 		}
@@ -176,6 +167,20 @@ func sameDiskProfile(a, b diskProfile) bool {
 	}
 	a.Attempt, b.Attempt = nil, nil
 	return a == b
+}
+
+func tokenValues(byName map[string]string) (access, id, refresh string) {
+	return byName[AccessName], byName[IDName], byName[RefreshName]
+}
+
+func placeholderTokens(f *vault.File) PublicAuth {
+	byName := make(map[string]string)
+	for _, secret := range f.Secrets() {
+		byName[secret.Name] = secret.Placeholder
+	}
+	var out PublicAuth
+	out.AccessToken, out.IDToken, out.RefreshToken = tokenValues(byName)
+	return out
 }
 
 func (s *Store) tokens() (Tokens, error) {
@@ -198,17 +203,12 @@ func (s *Store) openTokens(f *vault.File) (Tokens, error) {
 	if err != nil {
 		return Tokens{}, errors.New("opening codex tokens: restore the vault key")
 	}
-	var t Tokens
+	byName := make(map[string]string)
 	for _, v := range values {
-		switch v.Name {
-		case AccessName:
-			t.AccessToken = v.Value
-		case RefreshName:
-			t.RefreshToken = v.Value
-		case IDName:
-			t.IDToken = v.Value
-		}
+		byName[v.Name] = v.Value
 	}
+	var t Tokens
+	t.AccessToken, t.IDToken, t.RefreshToken = tokenValues(byName)
 	if t.AccessToken == "" || t.RefreshToken == "" || t.IDToken == "" {
 		return Tokens{}, ErrNotConnected
 	}
@@ -307,17 +307,8 @@ func (s *Store) placeholderGeneration() (string, error) {
 }
 
 func placeholderGeneration(f *vault.File) string {
-	values := make([]string, 3)
-	for _, secret := range f.Secrets() {
-		switch secret.Name {
-		case AccessName:
-			values[0] = secret.Placeholder
-		case IDName:
-			values[1] = secret.Placeholder
-		case RefreshName:
-			values[2] = secret.Placeholder
-		}
-	}
+	t := placeholderTokens(f)
+	values := []string{t.AccessToken, t.IDToken, t.RefreshToken}
 	if slices.Contains(values, "") {
 		return ""
 	}
