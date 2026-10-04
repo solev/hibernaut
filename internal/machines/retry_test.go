@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -37,7 +38,7 @@ func TestCreateCancellationDuringCutBackoff(t *testing.T) {
 		}
 		start := time.Now()
 		_, err := m.Create(ctx, "web", "dev", DefaultIdle)
-		if !errors.Is(err, context.Canceled) || tries != 1 || waits != 1 {
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, engine.ErrConnectionLost) || tries != 1 || waits != 1 {
 			t.Errorf("Create error=%v tries=%d waits=%d, want cancellation after one try", err, tries, waits)
 		}
 		if time.Since(start) != 0 {
@@ -83,6 +84,9 @@ func TestCreateCutTriesShareOneDeadline(t *testing.T) {
 				}
 				if time.Since(start) != elapsed {
 					t.Errorf("elapsed=%v, want %v", time.Since(start), elapsed)
+				}
+				if expire && !strings.Contains(err.Error(), "machine-init") {
+					t.Errorf("Create error %q doesn't name the step that ran out of time", err)
 				}
 			})
 		})

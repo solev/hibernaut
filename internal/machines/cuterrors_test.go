@@ -79,3 +79,20 @@ func TestCreateCutExhaustionKillsMachineAndRemovesPins(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateKeepsASetupThatFinishedAsItsContextEnded(t *testing.T) {
+	g := newCopyGuest()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	v := newEnv(t, fake.WithExec(func(c context.Context, em engine.Machine, home string, req engine.ExecRequest) (engine.ExecResult, error) {
+		res, err := g.exec(c, em, home, req)
+		cancel()
+		return res, err
+	}))
+	if _, err := v.m.Create(ctx, "web", "dev", machines.DefaultIdle); err != nil {
+		t.Fatalf("Create = %v, want the finished setup kept", err)
+	}
+	if all := v.machines(t); len(all) != 1 {
+		t.Error("Create removed a machine whose setup finished")
+	}
+}
