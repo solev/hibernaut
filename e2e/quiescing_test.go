@@ -22,7 +22,8 @@ func TestQuiescing(t *testing.T) {
 	}
 	mustSSH(t, ctx, "sudo mkdir -p /run/hibernaut && sudo touch /run/hibernaut/quiescing")
 	t.Cleanup(func() {
-		// The test's ctx is cancelled by the time cleanups run.
+		// A fresh context: the test's ctx is cancelled by the time cleanups run, and a lingering
+		// marker would make every later hib new fail.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		if _, err := vm.ssh(ctx, "sudo rm -f /run/hibernaut/quiescing"); err != nil {

@@ -189,6 +189,8 @@ func TestMachineTerminal(t *testing.T) {
 		}
 	}
 
+	// The terminal echoes the typed commands too, so the checks look for what only their output
+	// has.
 	cmd := sshMachineCmd(ctx, []string{"-tt", "-o", "SetEnv=TERM=hib-no-such-terminal"}, name, "")
 	cmd.Stdin = strings.NewReader("printf 'term=%s\\n' \"$TERM\"; tput clear >/dev/null && echo cleared''ok\nexit\n")
 	out, err := cmd.CombinedOutput()
@@ -262,6 +264,7 @@ func hostPinKey(t *testing.T, ctx context.Context, id string) string {
 	return strings.TrimSpace(out)
 }
 
+// tee keeps the file's owner and mode so hibd can still read it.
 func setHostPin(t *testing.T, ctx context.Context, id, key string) {
 	t.Helper()
 	cmd := fmt.Sprintf("echo '%s' | sudo tee /var/lib/hibernaut/host-keys/%s >/dev/null", key, id)

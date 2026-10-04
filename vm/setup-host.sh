@@ -38,7 +38,8 @@ systemctl enable -q --now idle-deallocate.timer hibernaut-nightly.timer
 systemctl enable -q hibd.service hibd-proxy.service hibd-pause-all.service
 systemctl restart hibd.service
 systemctl restart hibd-proxy.service
-# Starting the guard would start E2B through Requires=.
+# Starting the guard would start E2B through Requires=, so only start it next to a running
+# orchestrator.
 if systemctl is-active -q e2b-orchestrator.service; then
   systemctl start hibd-pause-all.service
 fi

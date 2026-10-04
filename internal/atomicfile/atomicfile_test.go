@@ -29,6 +29,7 @@ var writers = []struct {
 }
 
 func TestWriteMakesFileWithContentAndExactMode(t *testing.T) {
+	// 0666 shows the umask doesn't apply. 0400 shows a read-only mode doesn't stop the write.
 	for _, perm := range []fs.FileMode{0o600, 0o644, 0o640, 0o400, 0o666} {
 		for _, w := range writers {
 			t.Run(w.name+"/"+perm.String(), func(t *testing.T) {

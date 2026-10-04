@@ -239,7 +239,7 @@ func TestSSHSessionPattern(t *testing.T) {
 	if pattern == "" {
 		t.Fatal("can't read the default SSH_SESSION_PATTERN from the script")
 	}
-	// OpenSSH 9.6 process titles, plus OpenSSH 9.8's sshd-session.
+	// Process titles seen on the host (OpenSSH 9.6), plus OpenSSH 9.8's sshd-session.
 	for title, want := range map[string]bool{
 		"sshd: azureuser@pts/0":                                   true,
 		"sshd: azureuser@notty":                                   true,
