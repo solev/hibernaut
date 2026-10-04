@@ -43,6 +43,8 @@ a placeholder does. `ParseAuthFile` reads the real tokens from the file `codex l
 
 **The profile** comes from the tokens: the email and plan from the ID token, the account from the
 access token, and `Expires` from the access token's `exp`. It never holds a token.
+Its on-disk form also keeps a fingerprint of the placeholders. An interrupted publication uses
+that fingerprint to recover `Published`, even when claims outside the profile changed.
 
 **`codex.Store`** is the only code that changes the login or calls OpenAI. Its methods are safe in
 many goroutines and processes at once. All of them run as root.

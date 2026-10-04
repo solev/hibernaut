@@ -117,6 +117,10 @@ func tokenProfile(t Tokens) (Profile, error) {
 	if t.AccountID == "" || access.Auth.Account != t.AccountID || access.Expires <= 0 {
 		return Profile{}, errors.New("invalid codex account or expiry: run hib connect codex")
 	}
+	expires := time.Unix(access.Expires, 0).UTC()
+	if expires.Year() < 1 || expires.Year() > 9999 {
+		return Profile{}, errors.New("invalid codex expiry: run hib connect codex")
+	}
 	email := id.Email
 	if email == "" {
 		email = id.Profile.Email
@@ -130,6 +134,6 @@ func tokenProfile(t Tokens) (Profile, error) {
 	}
 	return Profile{
 		Email: termsafe.String(email), Plan: termsafe.String(id.Auth.Plan), AccountID: t.AccountID,
-		Expires: time.Unix(access.Expires, 0).UTC(), Health: HealthOK,
+		Expires: expires, Health: HealthOK,
 	}, nil
 }
