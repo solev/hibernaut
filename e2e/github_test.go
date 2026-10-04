@@ -15,15 +15,44 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/solev/hibernaut/internal/hibapi"
 )
 
 const githubFixture = "solev/hibernaut-e2e"
 
 func TestGitHubFullFlow(t *testing.T) {
 	ctx := testContext(t, 20*time.Minute)
-	token, login := connectGitHub(t, ctx)
+	token, login, email := connectGitHub(t, ctx)
+	checkGitHubFullFlow(t, ctx, login, email, token)
+}
+
+func TestDeviceFlow(t *testing.T) {
+	if os.Getenv("HIB_E2E_DEVICE_FLOW") != "1" {
+		t.Skip("approve a GitHub code by hand: HIB_E2E_DEVICE_FLOW=1 go test -tags e2e -run '^TestDeviceFlow$' -v -timeout 40m ./e2e")
+	}
+	ctx := testContext(t, 18*time.Minute)
+	stdout, stderr, code := runHibStderr(ctx, os.Stderr, "connect", "github")
+	if code != 0 {
+		t.Fatalf("hib connect github exited %d: %s%s", code, stdout, stderr)
+	}
+	prompt := false
+	for line := range strings.SplitSeq(stderr, "\n") {
+		if hibapi.IsGitHubDevicePrompt(line) {
+			prompt = true
+		}
+	}
+	if !prompt {
+		t.Fatal("hib connect github didn't show the device prompt")
+	}
+	login, email := connectedGitHubAccount(t, stdout)
+	checkGitHubFullFlow(t, ctx, login, email, "")
+}
+
+func checkGitHubFullFlow(t *testing.T, ctx context.Context, login, email, token string) {
+	t.Helper()
 	stdout, stderr, code := runHib(ctx, "status")
-	if strings.Contains(stdout+stderr, token) {
+	if token != "" && strings.Contains(stdout+stderr, token) {
 		t.Fatal("hib status exposed the real token")
 	}
 	if code != 0 {
@@ -42,15 +71,9 @@ func TestGitHubFullFlow(t *testing.T) {
 	if !foundLogin || !secretOK {
 		t.Fatalf("hib status doesn't show the GitHub login %q and secret github ok:\n%s", login, stdout)
 	}
-	idText, err := output(exec.CommandContext(ctx, "gh", "api", "--hostname", "github.com", "user", "--jq", ".id"))
-	id, parseErr := strconv.ParseInt(idText, 10, 64)
-	if err != nil || parseErr != nil || id <= 0 {
-		t.Fatalf("gh api user didn't give a positive ID: %v, %v", err, parseErr)
-	}
-	email := fmt.Sprintf("%d+%s@users.noreply.github.com", id, login)
 	name := newHibMachine(t, ctx)
 	placeholder := pollMachineEnv(t, ctx, name, "GH_TOKEN")
-	if placeholder == token {
+	if token != "" && placeholder == token {
 		t.Fatal("the machine has the real token in GH_TOKEN")
 	}
 	if got := githubScript(t, ctx, name, token, `git config user.email`); got != email {
@@ -97,7 +120,7 @@ gh pr close "$1" --repo solev/hibernaut-e2e --delete-branch`, number)
 
 func TestWorkflowPush(t *testing.T) {
 	ctx := testContext(t, 20*time.Minute)
-	token, _ := connectGitHub(t, ctx)
+	token, _, _ := connectGitHub(t, ctx)
 	response, err := output(exec.CommandContext(ctx, "gh", "api", "--hostname", "github.com", "-i", "user", "--jq", ".login"))
 	if err != nil {
 		t.Fatalf("checking the laptop's GitHub scopes: %v", err)
@@ -133,7 +156,7 @@ git push origin --delete "$1"`, branch)
 	requireNoLeaks(t, ctx, name)
 }
 
-func connectGitHub(t *testing.T, ctx context.Context) (token, login string) {
+func connectGitHub(t *testing.T, ctx context.Context) (token, login, email string) {
 	t.Helper()
 	token, login = laptopGitHub(t, ctx)
 	stdout, stderr, code := runHib(ctx, "connect", "github", "--from-gh")
@@ -143,7 +166,28 @@ func connectGitHub(t *testing.T, ctx context.Context) (token, login string) {
 	if code != 0 {
 		t.Fatalf("hib connect github --from-gh exited %d: %s%s", code, stdout, stderr)
 	}
-	return token, login
+	connectedLogin, email := connectedGitHubAccount(t, stdout)
+	if connectedLogin != login {
+		t.Fatalf("hib connected %q, want the laptop's GitHub login %q", connectedLogin, login)
+	}
+	return token, login, email
+}
+
+func connectedGitHubAccount(t *testing.T, stdout string) (login, email string) {
+	t.Helper()
+	for line := range strings.SplitSeq(stdout, "\n") {
+		account, ok := strings.CutPrefix(line, "connected GitHub as ")
+		if !ok {
+			continue
+		}
+		who, email, ok := strings.Cut(account, ". Machines commit as ")
+		fields := strings.Fields(who)
+		if ok && len(fields) > 0 && email != "" {
+			return fields[0], email
+		}
+	}
+	t.Fatal("hib connect github didn't print the connected login and commit email")
+	return "", ""
 }
 
 func githubScript(t *testing.T, ctx context.Context, name, token, script string, args ...string) string {
@@ -154,7 +198,7 @@ func githubScript(t *testing.T, ctx context.Context, name, token, script string,
 		command += " " + quote(arg)
 	}
 	stdout, stderr, err := sshResult(ctx, nil, name, command)
-	if strings.Contains(stdout+stderr, token) {
+	if token != "" && strings.Contains(stdout+stderr, token) {
 		t.Fatal("a GitHub command in the machine exposed the real token")
 	}
 	if err != nil {

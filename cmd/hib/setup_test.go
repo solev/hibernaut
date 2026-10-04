@@ -379,7 +379,7 @@ func TestSSHArgs(t *testing.T) {
 	cfg := &config{Host: testHost}
 	want := []string{"-T",
 		"-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
-		"-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none", "-o", "ConnectTimeout=15",
+		"-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none", "-o", "StdinNull=no", "-o", "ConnectTimeout=15",
 		"-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=3",
 		"-o", "BatchMode=yes", "--", testHost, "hibd", "ls", "--json"}
 	if got := cfg.sshArgs("ls", "--json"); !slices.Equal(got, want) {

@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +19,9 @@ import (
 )
 
 const (
-	connectUsage = "connect github (--from-gh | --token)\n       hib connect codex"
+	connectUsage = "connect github [--from-gh | --token]\n       hib connect codex"
+	// githubLoginTimeout lets hibd finish two minutes after GitHub's device code expires.
+	githubLoginTimeout = 17 * time.Minute
 	// codexLoginTimeout is how long hib connect codex waits for hibd: a minute longer than
 	// Codex's device code lasts.
 	codexLoginTimeout = 16 * time.Minute
@@ -49,9 +53,12 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(a.stderr, "usage: hib %s\n", connectUsage)
 		return 2
 	}
-	if *fromGH == *token {
-		fmt.Fprintf(a.stderr, "hib connect: choose exactly one of --from-gh and --token\nusage: hib %s\n", connectUsage)
+	if *fromGH && *token {
+		fmt.Fprintf(a.stderr, "hib connect: choose at most one of --from-gh and --token\nusage: hib %s\n", connectUsage)
 		return 2
+	}
+	if !*fromGH && !*token {
+		return a.connectGitHubDevice(ctx, cfg)
 	}
 	source := hibapi.GitHubFromToken
 	var value string
@@ -76,6 +83,46 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
+	return a.connectedGitHub(r)
+}
+
+func (a *app) connectGitHubDevice(ctx context.Context, cfg *config) int {
+	args := []string{"connect", "github", "--source", hibapi.GitHubFromDevice, "--json"}
+	var browser *githubBrowser
+	if a.browser != nil {
+		sshArgs, err := cfg.sudoHibdArgs(args...)
+		if err != nil {
+			return a.fail(err)
+		}
+		browser = &githubBrowser{
+			ctx: ctx, open: a.browser,
+			stderr: &lineWriter{w: a.stderr, lineStart: true},
+		}
+		connected := *a
+		connected.stderr = browser.stderr
+		ssh := a.ssh
+		connected.ssh = func(ctx context.Context, call []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+			if slices.Equal(call, sshArgs) {
+				stderr = &githubPromptWriter{w: stderr, browser: browser}
+			}
+			return ssh(ctx, call, stdin, stdout, stderr)
+		}
+		a = &connected
+	}
+	r, err := a.remoteSudoAttended(ctx, cfg, githubLoginTimeout, args...)
+	if browser != nil {
+		browser.wait()
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return a.fail(errors.New("the GitHub login was cancelled. Run hib status to see whether GitHub is connected"))
+	}
+	if err != nil {
+		return a.fail(err)
+	}
+	return a.connectedGitHub(r)
+}
+
+func (a *app) connectedGitHub(r hibapi.Response) int {
 	if r.GitHub == nil {
 		return a.fail(errors.New("hibd didn't say which account it connected"))
 	}
