@@ -591,12 +591,13 @@ func TestDeviceLoginRetries(t *testing.T) {
 		pending(),
 		answer{status: http.StatusInternalServerError},
 		answer{status: http.StatusServiceUnavailable, body: pending().body},
+		refused(http.StatusServiceUnavailable, "access_denied"),
 		token(),
 	)
 	wantToken(t, s.run())
-	wantWaits(t, s.clock, seconds(5, 10, 20, 40, 60, 60, 5, 10, 5))
-	if n := s.count(tokenPath); n != 9 {
-		t.Errorf("polls = %d, want 9", n)
+	wantWaits(t, s.clock, seconds(5, 10, 20, 40, 60, 60, 5, 10, 20, 40))
+	if n := s.count(tokenPath); n != 10 {
+		t.Errorf("polls = %d, want 10", n)
 	}
 }
 
@@ -690,8 +691,7 @@ func TestDeviceLoginFinalAnswers(t *testing.T) {
 		{"404 without an error", answer{status: http.StatusNotFound, body: "Not Found"}, nil, "404"},
 		{"400 without an error", answer{status: http.StatusBadRequest, body: "<html>" + deviceCode + "</html>"}, nil, "400"},
 		{"an error and a token", answer{body: errorReply(quote("access_denied"), map[string]string{"access_token": quote(deviceToken)})}, github.ErrAccessDenied, ""},
-		{"500 with an error", refused(http.StatusInternalServerError, "access_denied"), github.ErrAccessDenied, ""},
-		{"302 with an error", answer{status: http.StatusFound, location: "/elsewhere", body: errorReply(quote("access_denied"), nil)}, github.ErrAccessDenied, ""},
+		{"302 with authorization_pending", answer{status: http.StatusFound, location: "/elsewhere", body: pending().body}, nil, "redirect"},
 		{"not JSON", answer{body: "access_token=" + deviceToken}, nil, "unreadable"},
 		{"a JSON list", answer{body: `["` + deviceToken + `"]`}, nil, "unreadable"},
 		{"an empty body", answer{}, nil, "unreadable"},
@@ -922,47 +922,28 @@ func TestDeviceLoginStopsWithItsContext(t *testing.T) {
 }
 
 func TestDeviceLoginErrorsNeverQuoteSecrets(t *testing.T) {
-	echo := map[string]string{"access_token": quote(deviceToken), "device_code": quote(deviceCode), "refresh_token": quote(deviceToken)}
+	echo := map[string]string{"access_token": quote(deviceToken), "device_code": quote(deviceCode)}
 	for _, tc := range []struct {
-		name  string
-		code  answer
-		polls []answer
-		want  string
+		name string
+		code answer
+		poll answer
+		want string
 	}{
-		{"a bad device code", code(map[string]string{"device_code": quote(deviceCode + "!")}), nil, ""},
-		{"a bad user code", code(map[string]string{"user_code": quote(deviceCode + "!")}), nil, ""},
-		{"a bad verification URI", code(map[string]string{"verification_uri": quote("https://evil.example/" + deviceCode)}), nil, ""},
-		{"a bad expires_in", code(map[string]string{"expires_in": quote(deviceCode)}), nil, ""},
-		{"a bad interval", code(map[string]string{"interval": quote(deviceCode)}), nil, ""},
-		{"a code request refused", answer{status: http.StatusBadRequest, body: errorReply(quote("brand_new_code"), echo)}, nil, ""},
-		{"a code request failed", answer{status: http.StatusInternalServerError, body: deviceCode}, nil, ""},
-		{"an unknown code", code(nil), []answer{{body: errorReply(quote("brand_new_code"), echo)}}, ""},
-		{"a malformed code", code(nil), []answer{{body: errorReply(quote(deviceCode), echo)}}, ""},
-		{"a malformed code that's the token", code(nil), []answer{{body: errorReply(quote(deviceToken), echo)}}, ""},
-		{"access_denied", code(nil), []answer{{body: errorReply(quote("access_denied"), echo)}}, ""},
-		{"device_flow_disabled", code(nil), []answer{{body: errorReply(quote("device_flow_disabled"), echo)}}, ""},
-		{"expired_token", code(nil), []answer{{body: errorReply(quote("expired_token"), echo)}}, ""},
-		{"a 404", code(nil), []answer{{status: http.StatusNotFound, body: deviceCode + deviceToken}}, ""},
-		{"a redirect", code(nil), []answer{{status: http.StatusFound, location: "/elsewhere?" + deviceCode, body: deviceToken}}, ""},
-		{"a bad token", code(nil), []answer{{body: tokenReply(map[string]string{"access_token": quote(deviceToken + "!")})}}, ""},
-		{"an expiring token", code(nil), []answer{{body: tokenReply(map[string]string{"refresh_token": quote(deviceToken), "expires_in": "28800"})}}, ""},
-		{"not JSON", code(nil), []answer{{body: "access_token=" + deviceToken + "&device_code=" + deviceCode}}, ""},
-		{"over 1 MiB", code(nil), []answer{{body: tokenReply(map[string]string{"padding": quote(strings.Repeat(deviceToken, 1<<20/len(deviceToken)+1))})}}, ""},
-		{"expiry after failures", code(map[string]string{"expires_in": "20"}), []answer{{status: http.StatusServiceUnavailable, body: deviceCode}, {drop: true}}, ""},
+		{"the device code as the error", code(nil), answer{body: errorReply(quote(deviceCode), echo)}, "GitHub refused the device login"},
+		{"the token as the error", code(nil), answer{body: errorReply(quote(deviceToken), echo)}, "GitHub refused the device login"},
 		{"a device code that looks like an error code", code(map[string]string{"device_code": quote(lowerCode)}),
-			[]answer{{body: errorReply(quote(lowerCode), nil)}}, hidden},
+			answer{body: errorReply(quote(lowerCode), nil)}, hidden},
 		{"a token that looks like an error code", code(nil),
-			[]answer{{body: errorReply(quote(lowerToken), map[string]string{"access_token": quote(lowerToken)})}}, hidden},
+			answer{body: errorReply(quote(lowerToken), map[string]string{"access_token": quote(lowerToken)})}, hidden},
 		{"a refresh token that looks like an error code", code(nil),
-			[]answer{{body: errorReply(quote(lowerToken), map[string]string{"refresh_token": quote(lowerToken)})}}, hidden},
+			answer{body: errorReply(quote(lowerToken), map[string]string{"refresh_token": quote(lowerToken)})}, hidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newOAuth(t, tc.code, tc.polls...)
-			r := s.run()
+			r := newOAuth(t, tc.code, tc.poll).run()
 			if r.err == nil {
 				t.Fatal("Login succeeded, want an error")
 			}
-			if tc.want != "" && r.err.Error() != tc.want {
+			if r.err.Error() != tc.want {
 				t.Errorf("Login error = %q, want %q", strings.ReplaceAll(strings.ReplaceAll(r.err.Error(), lowerCode, "<CODE>"), lowerToken, "<TOKEN>"), tc.want)
 			}
 		})

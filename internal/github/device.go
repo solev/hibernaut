@@ -140,10 +140,10 @@ type deviceCode struct {
 }
 
 type oauthReply struct {
-	body     []byte
-	refused  bool
-	code     string
-	interval json.RawMessage
+	body       []byte
+	oauthError bool
+	code       string
+	interval   json.RawMessage
 }
 
 type retryError struct{ err error }
@@ -165,7 +165,7 @@ func (l *deviceLogin) askCode(ctx context.Context) (deviceCode, DevicePrompt, er
 	if err != nil {
 		return deviceCode{}, DevicePrompt{}, err
 	}
-	if r.refused {
+	if r.oauthError {
 		return deviceCode{}, DevicePrompt{}, refusal(r.code)
 	}
 	var reply struct {
@@ -228,7 +228,7 @@ func (l *deviceLogin) poll(ctx context.Context, code deviceCode) (string, error)
 		}
 		failure = nil
 		switch {
-		case !r.refused:
+		case !r.oauthError:
 			return l.token(r.body)
 		case r.code == "authorization_pending":
 		case r.code == "slow_down":
@@ -288,20 +288,22 @@ func (l *deviceLogin) post(ctx context.Context, path string, form url.Values) (o
 		AccessToken  json.RawMessage `json:"access_token"`
 		RefreshToken json.RawMessage `json:"refresh_token"`
 	}
-	// GitHub sends OAuth errors on HTTP 200 as well as 400.
-	if json.Unmarshal(body, &fields) == nil {
+	parsed := json.Unmarshal(body, &fields) == nil
+	if parsed {
 		l.remember(fields.DeviceCode, fields.AccessToken, fields.RefreshToken)
-		if present(fields.Error) {
-			return oauthReply{refused: true, code: errorCode(fields.Error), interval: fields.Interval}, nil
-		}
 	}
 	switch code := resp.StatusCode; {
 	case code >= 300 && code < 400:
 		return oauthReply{}, fmt.Errorf("GitHub answered %s, a redirect, which hibd doesn't follow", statusText(code))
 	case code >= 500 || code == http.StatusTooManyRequests:
 		return oauthReply{}, &retryError{fmt.Errorf("GitHub answered %s", statusText(code))}
-	case code != http.StatusOK:
-		return oauthReply{}, fmt.Errorf("GitHub answered %s", statusText(code))
+	}
+	// GitHub sends OAuth errors on HTTP 200 as well as 400.
+	if parsed && present(fields.Error) {
+		return oauthReply{oauthError: true, code: errorCode(fields.Error), interval: fields.Interval}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return oauthReply{}, fmt.Errorf("GitHub answered %s", statusText(resp.StatusCode))
 	}
 	return oauthReply{body: body}, nil
 }
@@ -379,7 +381,6 @@ func seconds(raw json.RawMessage, low, high int64) (time.Duration, bool) {
 	return time.Duration(n) * time.Second, true
 }
 
-// Holding GitHub's interval to an hour can't shorten a wait, because a code lasts at most an hour.
 func slowerInterval(raw json.RawMessage) time.Duration {
 	n, err := strconv.ParseInt(string(raw), 10, 64)
 	if err != nil || n < 0 {
