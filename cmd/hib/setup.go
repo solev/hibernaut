@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/version"
 )
@@ -249,10 +250,10 @@ func (c *config) save(hib string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(c.dir, "config.json"), append(data, '\n'), 0o600); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(c.dir, "config.json"), append(data, '\n'), 0o600); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(c.dir, "ssh_config"), []byte(c.sshConfig(hib)), 0o600); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(c.dir, "ssh_config"), []byte(c.sshConfig(hib)), 0o600); err != nil {
 		return err
 	}
 	known := filepath.Join(c.dir, "known_hosts")
@@ -326,7 +327,7 @@ func addInclude(path, file string) (bool, error) {
 	if len(data) > 0 {
 		head += "\n"
 	}
-	return true, writeFileAtomic(path, append([]byte(head), data...), mode)
+	return true, atomicfile.WriteFile(path, append([]byte(head), data...), mode)
 }
 
 // pin saves machine name's host key where ssh looks for it.
@@ -336,7 +337,7 @@ func (c *config) pin(name string, key ssh.PublicKey) error {
 		return err
 	}
 	line := name + ".hib " + hibapi.FormatHostKey(key) + "\n"
-	return writeFileAtomic(filepath.Join(dir, name+".hib"), []byte(line), 0o600)
+	return atomicfile.WriteFile(filepath.Join(dir, name+".hib"), []byte(line), 0o600)
 }
 
 func (c *config) unpin(name string) error {
@@ -345,27 +346,4 @@ func (c *config) unpin(name string) error {
 		return nil
 	}
 	return err
-}
-
-// writeFileAtomic replaces path with data, so readers see the old file or the new one.
-func writeFileAtomic(path string, data []byte, mode fs.FileMode) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Chmod(mode)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
 }

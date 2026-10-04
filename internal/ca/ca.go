@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/solev/hibernaut/internal/atomicfile"
 )
 
 const (
@@ -292,56 +294,10 @@ func exists(path string) (bool, error) {
 }
 
 func writeNewFile(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".hibernaut-ca-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	removeTmp := true
-	defer func() {
-		if removeTmp {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Link(tmpPath, path); err != nil {
-		return err
-	}
-	if err := os.Remove(tmpPath); err != nil {
-		return err
-	}
-	removeTmp = false
-	if err := syncDir(dir); err != nil {
-		return err
-	}
-	return nil
-}
-
-func syncDir(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
+	return atomicfile.WriteNewFile(path, data, mode)
 }
 
 func checkKeyFile(path string) error {

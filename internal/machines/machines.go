@@ -24,6 +24,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/solev/hibernaut/images"
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/room"
@@ -632,19 +633,7 @@ func (m *Manager) writePin(id string, key ssh.PublicKey) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".pin-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(hibapi.FormatHostKey(key) + "\n"); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return atomicfile.WriteFile(path, []byte(hibapi.FormatHostKey(key)+"\n"), 0o600)
 }
 
 func toAPI(em engine.Machine) hibapi.Machine {

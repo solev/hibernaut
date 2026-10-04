@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/egress/swap"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
@@ -279,34 +280,8 @@ func (s *Store) saveProfile(p Profile) error {
 	if err != nil {
 		return errors.New("encoding codex profile")
 	}
-	f, err := os.CreateTemp(s.cfg.StateDir, ".codex-*")
-	if err != nil {
-		return errors.New("creating codex profile")
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	if err := f.Chmod(0o644); err != nil {
-		return errors.New("setting codex profile mode")
-	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return errors.New("writing codex profile")
-	}
-	if err := f.Sync(); err != nil {
-		return errors.New("syncing codex profile")
-	}
-	if err := f.Close(); err != nil {
-		return errors.New("closing codex profile")
-	}
-	if err := os.Rename(f.Name(), s.path(ProfileFile)); err != nil {
+	if err := atomicfile.WriteFile(s.path(ProfileFile), append(b, '\n'), 0o644); err != nil {
 		return errors.New("publishing codex profile")
-	}
-	dir, err := os.Open(s.cfg.StateDir)
-	if err != nil {
-		return errors.New("opening codex state directory")
-	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
-		return errors.New("syncing codex state directory")
 	}
 	return nil
 }
