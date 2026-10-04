@@ -117,7 +117,63 @@ func TestMemoryMB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if free, total := h.MemoryMB(); free != 4202 || total != 6400 {
 		t.Errorf("MemoryMB() = %d, %d, want 4202, 6400", free, total)
+	}
+}
+
+func TestOperationPlans(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		plan room.Plan
+	}{
+		{"new", room.Plan{MemoryMB: 2048, Running: 1, Snapshots: 1}},
+		{"save running", room.Plan{MemoryMB: 2048, Running: 1, Snapshots: 2}},
+		{"save paused", room.Plan{MemoryMB: 2048, Running: 2, Snapshots: 2}},
+		{"fork one running", room.Plan{MemoryMB: 2048, Running: 1, Snapshots: 3}},
+		{"fork one paused", room.Plan{MemoryMB: 2048, Running: 2, Snapshots: 3}},
+		{"fork three running", room.Plan{MemoryMB: 2048, Running: 3, Snapshots: 5}},
+		{"fork three paused", room.Plan{MemoryMB: 2048, Running: 3, Snapshots: 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			running := []room.Machine{{Name: "web", MemoryMB: 2048}}
+			h := room.Host{PageSize: 2 << 20, Pages: 8192, FreePages: 1024 * int64(tc.plan.Running), DiskFree: int64(1+tc.plan.Snapshots) * 3 * gib}
+			if err := h.CheckPlan("web", tc.plan, running); err != nil {
+				t.Fatalf("exactly enough room: %v", err)
+			}
+			h.FreePages--
+			if err := h.CheckPlan("web", tc.plan, running); !errors.Is(err, room.ErrFull) {
+				t.Fatalf("one page short: %v", err)
+			}
+			h.FreePages++
+			h.DiskFree--
+			if err := h.CheckPlan("web", tc.plan, running); !errors.Is(err, room.ErrFull) {
+				t.Fatalf("one byte short: %v", err)
+			}
+		})
+	}
+}
+
+func TestPlanMessages(t *testing.T) {
+	h := room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 1024, DiskFree: 80 * gib}
+	running := []room.Machine{{Name: "web", MemoryMB: 2048}, {Name: "api", MemoryMB: 2048}}
+	p := room.Plan{MemoryMB: 2048, Running: 2, Snapshots: 4}
+	want := `no room on the host for "web": it needs 4 GiB of memory and 2 GiB is free. Running now: api, web. To free memory, pause one: hib pause NAME`
+	if err := h.CheckPlan("web", p, running); err == nil || err.Error() != want {
+		t.Fatalf("memory error = %v, want %s", err, want)
+	}
+	h.FreePages = 2048
+	h.DiskFree = 17 * gib
+	want = `no room on the host for "web": the operation and the running machines may need 18 GiB of disk to pause, and 17 GiB is free. Running now: api, web. To free disk, remove machines you don't need: hib rm NAME`
+	if err := h.CheckPlan("web", p, running); err == nil || err.Error() != want {
+		t.Fatalf("disk error = %v, want %s", err, want)
+	}
+	for _, h := range []room.Host{h, {PageSize: 2 << 20, Pages: 3200, FreePages: 0, DiskFree: 0}} {
+		a := h.Check("web", 2048, running)
+		b := h.CheckPlan("web", room.Plan{MemoryMB: 2048, Running: 1, Snapshots: 1}, running)
+		if fmt.Sprint(a) != fmt.Sprint(b) {
+			t.Errorf("Check = %v, CheckPlan = %v", a, b)
+		}
 	}
 }
