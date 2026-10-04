@@ -28,17 +28,13 @@ import (
 )
 
 type secretGuest struct {
-	mu       sync.Mutex
-	env      []byte
-	requests []engine.ExecRequest
-	hostKey  ssh.PublicKey
-
-	git *machines.GitIdentity
-
-	gitExit int
-
-	noGit string
-
+	mu        sync.Mutex
+	env       []byte
+	requests  []engine.ExecRequest
+	hostKey   ssh.PublicKey
+	git       *machines.GitIdentity
+	gitExit   int
+	noGit     string
 	codexAuth []byte
 }
 

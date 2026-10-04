@@ -43,12 +43,11 @@ func scopes(s string) *string { return &s }
 var octocat = account{login: "octocat", id: 583231, name: "The Octocat", scopes: scopes("repo, workflow, read:org")}
 
 type fakeGitHub struct {
-	srv      *httptest.Server
-	mu       sync.Mutex
-	accounts map[string]account
-	calls    int
-	problems []string
-
+	srv            *httptest.Server
+	mu             sync.Mutex
+	accounts       map[string]account
+	calls          int
+	problems       []string
 	delay          time.Duration
 	inFlight, most int
 }

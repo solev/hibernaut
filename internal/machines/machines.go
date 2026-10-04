@@ -302,7 +302,6 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	}
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
-
 		key, err = m.repin(ctx, em.ID, idle)
 	}
 	if err != nil {

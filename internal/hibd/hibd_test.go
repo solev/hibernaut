@@ -500,7 +500,6 @@ func (refusing) DialWebSocket(context.Context, string, int, time.Duration) (net.
 }
 
 func TestHostFullAfterTheCheck(t *testing.T) {
-
 	e, a, out, errOut := webAndOld(t)
 	a.NewEngine = func() (engine.Engine, error) { return refusing{e}, nil }
 
@@ -570,7 +569,6 @@ func (u unreachable) DialWebSocket(ctx context.Context, id string, port int, tim
 }
 
 func TestResumedButUnreachable(t *testing.T) {
-
 	e, a, _, errOut := webAndOld(t)
 	a.NewEngine = func() (engine.Engine, error) { return unreachable{e}, nil }
 	a.ReadRoom = readings(roomy, full)
@@ -1008,7 +1006,6 @@ func TestDaemonKeepsBusyMachinesRunningWhileItCleansUp(t *testing.T) {
 }
 
 func TestDaemonBoundsCallsToE2B(t *testing.T) {
-
 	e, a := busyApp(t)
 	logs, stop := startDaemon(t, a)
 	waitFor(t, logs, "the daemon keeps the busy machine running and looks for removed ones", func() bool {

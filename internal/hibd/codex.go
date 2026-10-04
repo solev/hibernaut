@@ -20,12 +20,9 @@ import (
 const (
 	connectCodexUsage = "connect codex [-json]"
 
-	codexBinary = "/usr/local/bin/codex"
-
+	codexBinary      = "/usr/local/bin/codex"
 	codexLoginPrefix = "codex-login-"
-
-	codexLoginLock = "codex-login.lock"
-
+	codexLoginLock   = "codex-login.lock"
 	maxCodexAuthFile = 1 << 20
 )
 

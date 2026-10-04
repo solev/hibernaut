@@ -67,7 +67,6 @@ func (h Host) Clean(ctx context.Context, now time.Time, dryRun bool, logf func(f
 		if dryRun {
 			logf("would delete %s (%s)", id, hibapi.FormatMB(used>>20))
 		} else {
-
 			if m, err := newest(path); err != nil || m.After(modified[id]) {
 				logf("left %s: it changed while cleaning up", id)
 				continue

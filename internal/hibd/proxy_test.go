@@ -169,8 +169,7 @@ func TestProxyAnswersCodexRefreshWithOneStore(t *testing.T) {
 
 type fakeHook struct {
 	ensureErr, keepErr, removeErr error
-
-	kept chan struct{}
+	kept                          chan struct{}
 
 	mu    sync.Mutex
 	calls []string

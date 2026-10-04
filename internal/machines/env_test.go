@@ -21,10 +21,8 @@ type envFileGuest struct {
 	content           []byte
 	casMismatchesLeft int
 	requests          []engine.ExecRequest
-
-	git func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
-
-	codex func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
+	git               func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
+	codex             func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
 }
 
 func (g *envFileGuest) exec(ctx context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {

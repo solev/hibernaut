@@ -89,9 +89,8 @@ func New(cfg Config) (*Watcher, error) {
 		quoted[i] = regexp.QuoteMeta(a)
 	}
 	w := &Watcher{
-		e:   cfg.Engine,
-		cpu: cfg.CPU,
-
+		e:     cfg.Engine,
+		cpu:   cfg.CPU,
 		pgrep: []string{"-f", `(^|[ /])(` + strings.Join(quoted, "|") + `)( |$)`},
 		now:   cfg.Now,
 		logf:  cfg.Logf,

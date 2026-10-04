@@ -86,7 +86,6 @@ func TestPausesMachinesThatStartMeanwhile(t *testing.T) {
 	var e *fake.Engine
 	var once sync.Once
 	e = fake.New(fake.WithPauseHook(func(ctx context.Context, id string) error {
-
 		once.Do(func() { add(e, "late", engine.Running) })
 		return nil
 	}))

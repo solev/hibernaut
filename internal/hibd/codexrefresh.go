@@ -98,9 +98,8 @@ func codexRefreshError(err error) error {
 type codexRefresher struct {
 	store *codex.Store
 	logf  func(format string, args ...any)
-
-	seen codex.Profile
-	said string
+	seen  codex.Profile
+	said  string
 }
 
 func (r *codexRefresher) run(ctx context.Context, every time.Duration, awake func() error) {

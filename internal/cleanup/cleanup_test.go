@@ -12,7 +12,6 @@ import (
 )
 
 func TestParseHeader(t *testing.T) {
-
 	header, err := os.ReadFile("testdata/memfile.header")
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +97,6 @@ func wantGarbage(t *testing.T, l cleanup.Listing, want ...string) {
 }
 
 func TestKeepsMachinesSnapshots(t *testing.T) {
-
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{
 			{ID: "img"},
@@ -123,7 +121,6 @@ func TestKeepsMachinesSnapshots(t *testing.T) {
 }
 
 func TestKeepsOnlyTheCurrentImageBuild(t *testing.T) {
-
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -156,7 +153,6 @@ func TestKeepsEachTagsBuild(t *testing.T) {
 }
 
 func TestKeepsTheBuildE2BStartsFrom(t *testing.T) {
-
 	img1 := ready("img-1", "img", ago(30*time.Hour))
 	img1.In = append(img1.In, cleanup.Assignment{Env: "img", Tag: "default", At: ago(5 * time.Hour)})
 	wantGarbage(t, cleanup.Listing{
@@ -190,7 +186,6 @@ func TestKeepsWhatChangedInTheLastHour(t *testing.T) {
 }
 
 func TestDeletesRemovedMachinesSnapshotsAtOnce(t *testing.T) {
-
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "snap-gone", Machine: "gone", Deleted: ago(time.Minute)}},
 		Builds: []cleanup.Build{
@@ -284,7 +279,6 @@ func TestKeepsImageBuildsMachinesMayHaveStartedFrom(t *testing.T) {
 }
 
 func TestKeepsTheImageBuildAMachineStartedFromAsANewOneFinished(t *testing.T) {
-
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -302,7 +296,6 @@ func TestKeepsTheImageBuildAMachineStartedFromAsANewOneFinished(t *testing.T) {
 }
 
 func TestKeepsAnImageBuildAMachineStartedFromThisHour(t *testing.T) {
-
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -319,7 +312,6 @@ func TestKeepsAnImageBuildAMachineStartedFromThisHour(t *testing.T) {
 }
 
 func TestForgetsRemovedImages(t *testing.T) {
-
 	l := cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "old", Deleted: ago(3 * time.Hour)}, {ID: "new", Deleted: ago(30 * time.Minute)}},
 		Builds: []cleanup.Build{
@@ -367,7 +359,6 @@ func TestWaitsWhileE2BWritesABuild(t *testing.T) {
 }
 
 func TestIgnoresBuildsE2BGaveUpOn(t *testing.T) {
-
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -390,7 +381,6 @@ func TestStopsOnABuildStatusItDoesntKnow(t *testing.T) {
 }
 
 func TestStopsIfItCantReadAKeptHeader(t *testing.T) {
-
 	unreadable := errors.New("header version 4 isn't supported")
 	l := cleanup.Listing{
 		Envs:   []cleanup.Env{{ID: "img"}},

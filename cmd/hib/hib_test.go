@@ -42,22 +42,16 @@ type host struct {
 	engine     *fake.Engine
 	env        map[string]string
 	machineKey ssh.PublicKey
-
 	far        chan net.Conn
 	sshVersion string
+	override   func(words []string, stdout, stderr io.Writer) (int, bool)
+	lastStdin  io.Reader
 
-	override  func(words []string, stdout, stderr io.Writer) (int, bool)
-	lastStdin io.Reader
-
-	mu    sync.Mutex
-	calls [][]string
-
-	asleep bool
-
-	booting int
-
-	states []string
-
+	mu       sync.Mutex
+	calls    [][]string
+	asleep   bool
+	booting  int
+	states   []string
 	readRoom func() (room.Host, error)
 }
 
@@ -499,7 +493,6 @@ func TestLsShowsRoomOnTheHost(t *testing.T) {
 		{"one", reading(1077), "Room for 1 more dev machine: 2.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
 		{"full", reading(53), "No room for another dev machine: 106 MiB of 6.2 GiB memory free, 79 GiB disk free. " +
 			"hib pause NAME frees memory, hib rm NAME frees disk."},
-
 		{"unreadable", func() (room.Host, error) { return room.Host{}, errors.New("no /proc/meminfo") }, ""},
 	} {
 		h.readRoom = tc.readRoom

@@ -23,7 +23,6 @@ func (s *Store) path(name string) string { return filepath.Join(s.cfg.StateDir, 
 
 type diskProfile struct {
 	Profile
-
 	Placeholders string `json:"placeholders,omitempty"`
 }
 

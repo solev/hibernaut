@@ -19,8 +19,7 @@ import (
 
 const (
 	githubAPIHost = "api.github.com"
-
-	maxChecks = 8
+	maxChecks     = 8
 )
 
 func (a *App) status(ctx context.Context, args []string) int {

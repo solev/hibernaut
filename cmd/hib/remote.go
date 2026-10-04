@@ -107,10 +107,8 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 }
 
 type callOptions struct {
-	stdin []byte
-
-	sudo bool
-
+	stdin   []byte
+	sudo    bool
 	mayWake bool
 }
 

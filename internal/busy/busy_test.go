@@ -289,7 +289,6 @@ func TestNeverShortens(t *testing.T) {
 func TestCPUCounterRestarts(t *testing.T) {
 	for name, restart := range map[string]func(v *world, id string){
 		"resumed": func(v *world, id string) {
-
 			m := v.get(id)
 			m.StartedAt = v.Now()
 			v.e.Add(m)
@@ -298,7 +297,6 @@ func TestCPUCounterRestarts(t *testing.T) {
 			v.mu.Unlock()
 		},
 		"resumed, new counter higher": func(v *world, id string) {
-
 			m := v.get(id)
 			m.StartedAt = v.Now()
 			v.e.Add(m)

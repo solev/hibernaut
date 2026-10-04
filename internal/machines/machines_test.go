@@ -34,9 +34,8 @@ type guest struct {
 	hostKeys map[string]ssh.PublicKey
 	keys     map[string]string
 	runs     map[string]int
-
-	result func() (engine.ExecResult, error)
-	delay  time.Duration
+	result   func() (engine.ExecResult, error)
+	delay    time.Duration
 }
 
 func (g *guest) exec(_ context.Context, m engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {

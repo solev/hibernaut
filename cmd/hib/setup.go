@@ -31,8 +31,7 @@ type config struct {
 	// SSHConfig is the ssh config that includes hib's, if it isn't ~/.ssh/config.
 	SSHConfig string `json:"sshConfig,omitempty"`
 
-	dir string
-
+	dir    string
 	prompt bool
 }
 
@@ -44,8 +43,7 @@ type azureVM struct {
 var (
 	hostRE  = regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$`)
 	azureRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._()-]{0,89}$`)
-
-	pathRE = regexp.MustCompile(`^/[A-Za-z0-9 ._/+,:@=~-]*$`)
+	pathRE  = regexp.MustCompile(`^/[A-Za-z0-9 ._/+,:@=~-]*$`)
 )
 
 func (c *config) validate() error {

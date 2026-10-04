@@ -237,7 +237,6 @@ func (p protection) keepHistory(ps []placed, since time.Time) {
 }
 
 func removedBuilds(builds []Build, envs map[string]Env) map[string]bool {
-
 	removed := map[string]bool{}
 	for _, b := range builds {
 		removed[b.ID] = len(b.In) > 0
@@ -260,8 +259,7 @@ func (p protection) keepRecent(dirs []Dir, removed map[string]bool, minAge time.
 type slot struct{ env, tag string }
 
 type placed struct {
-	build string
-
+	build        string
 	at, finished time.Time
 }
 

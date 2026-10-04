@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	connectUsage = "connect github (--from-gh | --token)\n       hib connect codex"
-
+	connectUsage      = "connect github (--from-gh | --token)\n       hib connect codex"
 	codexLoginTimeout = 16 * time.Minute
 )
 

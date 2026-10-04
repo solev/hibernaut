@@ -81,12 +81,11 @@ type app struct {
 	getenv         func(string) string
 	ssh            runFunc
 	gh             runFunc
-
-	execSSH    func(args []string) error
-	az         func(ctx context.Context, args ...string) ([]byte, error)
-	executable func() (string, error)
-	wakePoll   time.Duration
-	now        func() time.Time
+	execSSH        func(args []string) error
+	az             func(ctx context.Context, args ...string) ([]byte, error)
+	executable     func() (string, error)
+	wakePoll       time.Duration
+	now            func() time.Time
 }
 
 func (a *app) run(ctx context.Context, args []string) int {

@@ -126,11 +126,10 @@ func writeSetups(ctx context.Context, e engine.Engine, setup machines.Setup, ms 
 }
 
 type setupDelivery struct {
-	engine engine.Engine
-	cfg    config
-	codex  *codex.Store
-	logf   func(format string, args ...any)
-
+	engine   engine.Engine
+	cfg      config
+	codex    *codex.Store
+	logf     func(format string, args ...any)
 	looking  chan struct{}
 	written  map[string]delivered
 	problems map[string]string
