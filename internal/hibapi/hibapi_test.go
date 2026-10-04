@@ -59,6 +59,17 @@ func TestDecodeResponse(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseKeepsCopiesWhenForkFails(t *testing.T) {
+	r, err := hibapi.DecodeResponse([]byte(`{"v":1,"machines":[{"name":"web-1","id":"copy1","state":"running","forkOf":"web"}],"error":"couldn't make web-2: try again"}`))
+	var remote *hibapi.RemoteError
+	if !errors.As(err, &remote) || remote.Msg != "couldn't make web-2: try again" {
+		t.Fatalf("error = %v, want the remote error", err)
+	}
+	if len(r.Machines) != 1 || r.Machines[0].Name != "web-1" || r.Machines[0].ForkOf != "web" || r.Error != remote.Msg {
+		t.Fatalf("response = %+v, want the copy and error", r)
+	}
+}
+
 func newKey(t *testing.T) ssh.PublicKey {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
