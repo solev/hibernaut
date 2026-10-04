@@ -4,7 +4,9 @@ package swap
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,9 @@ import (
 type Secret struct {
 	Name, Placeholder, Value string
 	Sites                    []string
+	// ScrubOnly secrets are never swapped into requests. Their sites are still intercepted, and
+	// responses are still scrubbed of them.
+	ScrubOnly bool
 }
 
 // Swapper swaps placeholders in requests and scrubs real values from responses.
@@ -140,6 +145,24 @@ func normalizeHost(host string) string {
 // Bound reports whether any secret may be sent to host.
 func (sw *Swapper) Bound(host string) bool {
 	return len(sw.bound(host)) > 0
+}
+
+// Fingerprint returns a short hash of a real value, for telling values apart without keeping
+// them. It is the same for the same value in every process.
+func Fingerprint(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:16])
+}
+
+// Fingerprint returns the fingerprint of the named secret's real value, or "" if sw has no
+// such secret.
+func (sw *Swapper) Fingerprint(name string) string {
+	for _, s := range sw.secrets {
+		if s.Name == name {
+			return Fingerprint(s.Value)
+		}
+	}
+	return ""
 }
 
 func (sw *Swapper) bound(host string) []compiledSecret {

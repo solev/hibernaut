@@ -84,7 +84,9 @@ type Status struct {
 	Version string `json:"version"`
 	E2B     Health `json:"e2b"`
 	// GitHub is the connected account, or nil if GitHub isn't connected.
-	GitHub  *GitHub        `json:"github,omitempty"`
+	GitHub *GitHub `json:"github,omitempty"`
+	// Codex is the host's Codex login, or nil if Codex isn't connected. Dead or stuck isn't OK.
+	Codex   *Codex         `json:"codex,omitempty"`
 	Secrets []SecretHealth `json:"secrets"`
 }
 

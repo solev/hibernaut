@@ -43,6 +43,41 @@ type Server struct {
 	Audit       func(audit.Entry) error
 	Now         func() time.Time
 	Logf        func(format string, args ...any)
+	// Endpoints are requests the proxy answers itself, on intercepted sites only.
+	Endpoints []Endpoint
+	// Rejected is told when a site answers 401 to a request with swapped secrets: once for each
+	// secret, with the fingerprint of the value that was sent.
+	Rejected func(secret, fingerprint string)
+}
+
+const (
+	// MaxEndpointBody is the most an endpoint request's body may hold.
+	MaxEndpointBody = 64 << 10
+	// EndpointReadTimeout is how long an endpoint request's body may take to arrive.
+	EndpointReadTimeout = 10 * time.Second
+)
+
+// Endpoint is a request the proxy answers itself, without forwarding it. It matches the exact
+// site, method and path. The query isn't part of the match.
+type Endpoint struct {
+	Site, Method, Path string
+	Handle             func(ctx context.Context, r EndpointRequest) EndpointResponse
+}
+
+// EndpointRequest is what an endpoint gets. Body is read in full, up to MaxEndpointBody.
+type EndpointRequest struct {
+	Header http.Header
+	Body   []byte
+	// Audit logs the request as using secret, with the machine that sent it. The handler calls
+	// it before acting, and fails closed if it fails.
+	Audit func(secret string) error
+}
+
+// EndpointResponse is an endpoint's answer. The proxy scrubs it before sending it.
+type EndpointResponse struct {
+	Status int
+	Header http.Header
+	Body   []byte
 }
 
 // Serve accepts connections from l until ctx ends or l fails.

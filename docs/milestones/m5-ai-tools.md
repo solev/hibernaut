@@ -6,6 +6,184 @@ both answered
 **Goal:** `codex` and `copilot` work in every machine with no login, and no real ChatGPT or GitHub
 token ever enters a machine.
 
+## Design
+
+The M5 code is built against this section. Code that has to differ updates it in the same commit.
+
+**Files on the host:**
+
+| Path | Owner, mode | Holds |
+| --- | --- | --- |
+| `/var/lib/hibernaut/vault.json` | root, 0644 | Adds `codex-access`, bound to `chatgpt.com`, and `codex-refresh` and `codex-id`, scrub-only and bound to `auth.openai.com`. None has an environment variable. The `github` secret gains `*.githubcopilot.com`. |
+| `/var/lib/hibernaut/codex.json` | root, 0644 | The Codex profile: account, plan, expiry, health, and the refresh in progress. No token. Written atomically. |
+| `/var/lib/hibernaut/codex-retired.json` | root, 0644 | Replaced real values that the leak scan still looks for, in the vault's format and sealed with its key. |
+| `/var/lib/hibernaut/codex.lock` | root, 0600 | Held for any refresh or login change, and always taken before the vault's lock. |
+| `/usr/local/bin/codex` | root, 0755 | The pinned Codex, used only by `hibd connect codex`. |
+
+**Packages:**
+
+- `internal/codex` (new): the login, its profile, refreshing, the login file machines get, and the
+  token endpoint. `codex.go` holds the contract: names, sites, types and errors.
+- `internal/vault`: a secret's environment variable is optional. `CheckSecret`, which `hib secret`
+  uses, still requires one. `Put` checks that variables are unique only when there is one. `rt.`
+  joins the known prefixes, so a refresh token's placeholder keeps it.
+- `internal/egress/swap`: `Secret.ScrubOnly`, and `Fingerprint`: the first 32 hex digits of a
+  value's SHA-256, which tells values apart without keeping them.
+- `internal/egress`: `Server.Endpoints`, the requests the proxy answers itself, and
+  `Server.Rejected`, which hears about 401s.
+- `internal/hibapi`: `Codex`, `CodexHealth`, `Response.Codex`, `Status.Codex` and
+  `LeakScan.Secrets`. All are optional, so the protocol stays at version 1.
+- `internal/machines`: `Setup.CodexAuth`.
+
+**The login file** (`codex.RenderAuthFile`) is pretty JSON with Codex's keys in Codex's order:
+`auth_mode` `"chatgpt"`, `OPENAI_API_KEY` null, `tokens` (`id_token`, `access_token`,
+`refresh_token` and `account_id`) and `last_refresh`. The tokens are the vault's placeholders, and
+the account ID is real. `last_refresh` is the profile's `Published`, so the file changes only when
+a placeholder does. `ParseAuthFile` reads the real tokens from the file `codex login` writes.
+
+**The profile** comes from the tokens: the email and plan from the ID token, the account from the
+access token, and `Expires` from the access token's `exp`. It never holds a token.
+
+**`codex.Store`** is the only code that changes the login or calls OpenAI. Its methods are safe in
+many goroutines and processes at once. All of them run as root.
+
+- `Load` returns the profile, or `ErrNotConnected`. It never waits and never writes. An attempt
+  left in the profile is in progress while another process holds the lock. Otherwise it shows as
+  published if the vault's refresh token is no longer the one the attempt sent, and as stuck if it
+  still is. The next holder of the lock records the same verdict.
+- `Public` returns the placeholders and the account, for the login file. It needs no lock and no
+  key.
+- `EnsureFresh(ctx, reason)` refreshes if the reason calls for it, then returns `Public`.
+- `CommitLogin(ctx, tokens)` replaces the login under the lock: it retires the old values, puts the
+  new ones, and starts a new profile. Another account is fine.
+- `Retired` returns the replaced values under their original names, for the leak scan.
+
+**When `EnsureFresh` refreshes:**
+
+| Reason | Refreshes when | Otherwise |
+| --- | --- | --- |
+| `Background`: the daemon, each minute | Half the access token's lifetime (`iat` to `exp`) has passed. Never while dead or stuck, or before `RetryAt`. | Returns the placeholders. |
+| `Client`: a machine's refresh request | A site answered 401 to the current real access token (`Rejected` is its fingerprint), or it expires within 5 minutes. At most one in 10 minutes (`ClientRefreshAt`). Past that, `ErrUnavailable`. | Returns the placeholders, whatever the health. |
+| `Force`: `hibd codex refresh -force` | Always, even when stuck. | |
+
+A refresh that's due fails with `ErrDead` while the login is dead, and with `ErrStuck` while it's
+stuck, except for `Force`.
+
+**A refresh:**
+
+1. Wait for `codex.lock`, in a way the caller can cancel. Then check again that a refresh is due,
+   because another process may have just made one.
+2. Write the attempt into the profile, with the fingerprint of the refresh token it sends, and
+   fsync it.
+3. `POST` the JSON `{"client_id", "grant_type": "refresh_token", "refresh_token"}` to the token
+   URL, with no redirects, a 30 second limit, and at most 1 MiB read. `httptrace`'s `WroteRequest`
+   tells whether the request went out.
+4. The outcome sets the health:
+
+| Outcome | Health | Then |
+| --- | --- | --- |
+| Not sent, or 429 | Unchanged | The attempt is cleared. The next waits 1 minute, doubling up to 60, or as long as `Retry-After` says, up to 60. |
+| 401, or 400 with `invalid_grant`, `refresh_token_expired`, `refresh_token_reused` or `refresh_token_invalidated` | Dead | Nothing more until `hib connect codex`. |
+| Any other 4xx | Unchanged | As for 429. |
+| 200 with an `access_token` for the same account | OK | Publishing, below. A missing ID or refresh token keeps the old one. |
+| Any other 200, a 5xx, or an error after the request went out | Stuck | Never retried by itself. |
+
+**Publishing** runs to the end even if the caller gives up (`context.WithoutCancel`, with its own
+limit):
+
+1. Add the values being replaced to `codex-retired.json`. JWTs stay until their `exp`, and refresh
+   tokens for 30 days. It holds at most 100, dropping the oldest. Each is named after its secret
+   and the Unix second it's dropped, such as `codex-refresh-1793000000`, with `-2` added if that's
+   taken. This file never creates the vault's key.
+2. Put all three secrets in one `vault.Update`, with no variable and each one's sites.
+3. Update the profile: the new `Expires` and `LastRefresh`, `Published` set to now if a placeholder
+   changed, health OK, and no attempt, failures or retry time.
+
+**The token endpoint** (`codex.Endpoint`, in the proxy) matches `POST auth.openai.com/oauth/token`
+on intercepted connections, after the proxy's Host check. It reads a JSON or form body.
+
+| Request | Answer |
+| --- | --- |
+| `grant_type` `refresh_token` with the current placeholder | First `Audit("codex-refresh")`, and 503 if that fails. Then `EnsureFresh` with `Client` and the last rejected fingerprint, and 200 with the placeholders it returns as `id_token`, `access_token` and `refresh_token`. |
+| The same, but `ErrDead`, `ErrStuck` or `ErrNotConnected` | 401 `{"error": {"code": "refresh_token_invalidated", "message": "…"}}`. The message says to run `hib connect codex`. Codex may show its own text instead. |
+| The same, but `ErrUnavailable` or another error | 503 `{"error": "temporarily_unavailable"}` |
+| A body that doesn't parse, or no `grant_type` | 400 `{"error": "invalid_request"}` |
+| Any other grant or refresh token | 403 `{"error": "access_denied", "error_description": "…"}` |
+| A body over 64 KiB, or slower than 10 seconds | 413 or 408, from the proxy |
+
+Every answer has `Cache-Control: no-store`, and nothing is forwarded. `Rejected` keeps the latest
+fingerprint for `codex-access`, in memory.
+
+**The proxy** (`internal/egress`, `internal/proxy` and `hibd proxy`):
+
+- A site is intercepted when any secret is bound to it, scrub-only or not. Only secrets that aren't
+  scrub-only are swapped. Responses are scrubbed of every secret, as before.
+- An endpoint matches the exact site, method and path, but not the query. The proxy reads the
+  body within `MaxEndpointBody` and `EndpointReadTimeout`, and gives the handler an `Audit` that
+  logs the request with its machine. It scrubs the answer with the vault as it is after the
+  handler, or answers 503 if it can't load the vault.
+- On a 401, including one to a WebSocket upgrade, `Rejected` hears about each secret the request
+  swapped, with the fingerprint of the value it sent.
+- `VaultSource` marks the secrets that `codex.ScrubOnly` names. `hibd proxy` makes one `Store` and
+  one `Endpoint`, and sets `Endpoints` to `ep.Egress()` and `Rejected` to `ep.Rejected`.
+
+**Who runs what:**
+
+- `hib connect codex` runs `sudo -n hibd connect codex -json`, and gives up after 16 minutes. It
+  shows hibd's stderr as it comes (the code and the link), without terminal escapes, then the
+  account and plan.
+- `hibd connect codex` needs root. It checks that `codex --version` is `codex.Version`, then runs
+  `codex login --device-auth -c 'cli_auth_credentials_store="file"'` in a new 0700 directory under
+  the state directory. The environment is exactly `HOME` and `CODEX_HOME`, both that directory,
+  `PATH=/usr/bin:/bin` and `LANG=C.UTF-8`. Codex's output goes to hibd's stderr. Then hibd parses
+  `auth.json`, calls `CommitLogin`, deletes the directory whatever happened, writes the setup into
+  running machines, and replies with the profile.
+  - A failed login adds a hint: turn on device code login in ChatGPT, under Settings, Security.
+  - Login directories left by a crash are deleted when the next login starts, and when the daemon
+    starts.
+  - The binary's path, the token URL and the HTTP client are `App` fields for tests, never
+    settings.
+- `hibd codex refresh [-force] [-json]` needs root. It calls `EnsureFresh` with `Background`, or
+  with `Force`. It writes the setup into running machines if a placeholder changed, and replies
+  with the profile.
+- `hibd daemon` calls `EnsureFresh` with `Background` every minute, one call at a time, and logs
+  each change of health once. Machines get a changed login file through the setup delivery the
+  daemon already runs, because the file is part of `Setup.Hash`. At start, if GitHub is connected,
+  it puts the `github` secret again with `github.Sites()` and the same value, which keeps its
+  placeholder.
+- `hibd status` and `hib status` show a Codex line from the profile, without calling OpenAI. Dead
+  or stuck isn't OK, and says to run `hib connect codex`.
+- `hibd secret add` and `rm` refuse names that start with `codex-`.
+
+**Machines and the leak scan:**
+
+- `Setup.CodexAuth` is nil while Codex isn't connected, and nil leaves the file alone. Otherwise
+  it's written to `/home/user/.codex/auth.json` through a temporary file and a rename, owned by
+  `user`, with the directory 0700 and the file 0600. It's part of `Setup.Hash`.
+- The environment block skips secrets without a variable.
+- The leak scan looks for the vault's values and the retired ones, under their original names. It
+  lists the names it covered in `LeakScan.Secrets`.
+
+**Pins and the image:**
+
+- `images/dev/versions` sets `CODEX_VERSION=0.160.0`, `CODEX_SHA256` (the x86_64 musl tarball),
+  `COPILOT_VERSION=1.0.91` and `COPILOT_SHA256`. The image's `tools` step, `vm/setup-host.sh` and
+  CI read it. A test checks that `CODEX_VERSION` is `codex.Version`.
+- The `tools` step comes after `packages`. It installs both into `/usr/local/bin`, and writes
+  `/home/user/.codex/config.toml`, owned by `user`: `approval_policy = "never"`,
+  `sandbox_mode = "danger-full-access"`, `check_for_update_on_startup = false`,
+  `[analytics] enabled = false` and `cli_auth_credentials_store = "file"`. Copilot's settings turn
+  off the banner and updates, with key names checked against `copilot help config`.
+  `COPILOT_AUTO_UPDATE=false` goes into `/etc/environment` outside hibd's block, the way `trust-ca`
+  adds its variables.
+- `hibd.service` and `hibd-proxy.service` get `ReadWritePaths=/var/lib/hibernaut`, so both can
+  refresh.
+
+**Tests that need Codex:** the integration test runs the pinned Codex from `$HIB_CODEX`, or from
+`PATH`, with a temporary `HOME` and `CODEX_HOME`. Without it, the test skips, unless
+`HIB_REQUIRE_CODEX=1`, which CI sets. The end-to-end Codex tests skip loudly while Codex isn't
+connected. No test reads or changes a real `~/.codex`.
+
 ## Tasks
 
 **Spike first (S9)**
@@ -59,6 +237,7 @@ token ever enters a machine.
 - [ ] `hib status`: the account, the plan, the expiry, and whether the login is dead or stuck,
       with "run `hib connect codex`".
 - [ ] `hib secret` refuses names that start with `codex-`.
+- [ ] `hibd.service` and `hibd-proxy.service` may write `/var/lib/hibernaut`, so both can refresh.
 
 **Copilot CLI**
 

@@ -108,6 +108,8 @@ type Response struct {
 	LeakScan *LeakScan `json:"leakScan,omitempty"`
 	// GitHub is the account connect github stored.
 	GitHub *GitHub `json:"github,omitempty"`
+	// Codex is the login connect codex stored, or the one codex refresh left.
+	Codex *Codex `json:"codex,omitempty"`
 	// Status is the host's health, from status.
 	Status *Status `json:"status,omitempty"`
 }
@@ -117,9 +119,11 @@ type LeakScan struct {
 	Target      LeakScanTarget `json:"target"`
 	BuildID     string         `json:"buildId,omitempty"`
 	SecretCount int            `json:"secretCount"`
-	Hits        []LeakScanHit  `json:"hits"`
-	MemoryFound bool           `json:"memoryFound,omitempty"`
-	DiskFound   bool           `json:"diskFound,omitempty"`
+	// Secrets are the names the scan looked for. Replaced values count under the name they had.
+	Secrets     []string      `json:"secrets,omitempty"`
+	Hits        []LeakScanHit `json:"hits"`
+	MemoryFound bool          `json:"memoryFound,omitempty"`
+	DiskFound   bool          `json:"diskFound,omitempty"`
 }
 
 // LeakScanTarget is what was scanned.

@@ -10,13 +10,16 @@ import (
 )
 
 // Setup is what hibd writes into each machine after machine-init, and again whenever it
-// changes: the managed /etc/environment block and git's identity.
+// changes: the managed /etc/environment block, git's identity and Codex's login file.
 type Setup struct {
 	// EnvBlock is the managed /etc/environment block. It holds placeholders only. Empty removes
 	// the block.
 	EnvBlock []byte
 	// Git is git's system-wide identity. Nil leaves git's configuration alone.
 	Git *GitIdentity
+	// CodexAuth is Codex's login file, /home/user/.codex/auth.json, with placeholders only. Nil
+	// leaves the file alone.
+	CodexAuth []byte
 }
 
 // GitIdentity is the name and email git signs commits with.

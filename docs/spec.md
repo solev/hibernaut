@@ -296,8 +296,8 @@ come later.
     the current placeholders. First it refreshes for real, but only if a site answered 401 to the
     current real access token, or the token expires within 5 minutes. That's at most once every
     10 minutes. Past that it answers 503, and Codex tries again later.
-  - The login is dead or stuck: 401 with an error that names `hib connect codex`. Codex stops and
-    shows it.
+  - A refresh is due, but the login is dead or stuck: 401 with an error that names
+    `hib connect codex`. Codex stops and shows it.
   - Any other grant, such as a login inside the machine or another refresh token: 403. While Codex
     is connected, machines can't log in to ChatGPT themselves.
 - **Later: Business/Enterprise workspaces** could use a Codex access token instead
