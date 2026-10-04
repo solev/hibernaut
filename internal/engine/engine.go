@@ -110,6 +110,18 @@ type BuildStep struct {
 	User string
 }
 
+// TemplateInfo is a template machines can be created from, built or saved.
+type TemplateInfo struct {
+	ID string
+	// Alias is the template's name, without a namespace or tag.
+	Alias string
+	// CPUs and MemoryMB are what each machine created from the template gets.
+	CPUs     int
+	MemoryMB int
+	// Created is when the template's newest build finished.
+	Created time.Time
+}
+
 // MaxExecOutput bounds what Exec keeps of each of a command's stdout and stderr. A command that
 // writes more fails Exec with an error, and may be left running.
 const MaxExecOutput = 8 << 20
@@ -157,11 +169,30 @@ type Engine interface {
 	// BuildTemplate builds spec, or rebuilds the template of that name, copying build logs to
 	// logs as they arrive. It returns the template's ID once machines can be created from it.
 	BuildTemplate(ctx context.Context, spec TemplateSpec, logs io.Writer) (string, error)
+	// SaveTemplate saves running machine id, memory included, as template alias, which machines
+	// can then be created from with only the metadata their own CreateOptions give them. The
+	// machine keeps running. Saving to an alias that exists adds a build to that template. It
+	// returns ErrNotRunning for a paused machine. An error wrapping ErrCheckpoint means the
+	// engine stopped the machine while saving: it's paused then, at its last snapshot. A failed
+	// save may leave alias behind, unusable.
+	SaveTemplate(ctx context.Context, id, alias string) (TemplateInfo, error)
+	// Template returns the template called alias, built or saved, or an error wrapping
+	// ErrNoTemplate. It also finds an alias a failed save left behind.
+	Template(ctx context.Context, alias string) (TemplateInfo, error)
+	// SavedTemplates returns the templates SaveTemplate made, sorted by alias. Aliases a failed
+	// save left behind may be missing.
+	SavedTemplates(ctx context.Context) ([]TemplateInfo, error)
+	// DeleteTemplate deletes template id. It returns an error wrapping ErrTemplateInUse while a
+	// machine, running or paused, was created from it, and one wrapping ErrNoTemplate if there's
+	// no such template.
+	DeleteTemplate(ctx context.Context, id string) error
 }
 
 var (
-	ErrNotFound   = errors.New("machine not found")
-	ErrNotRunning = errors.New("machine not running")
-	ErrNoMetrics  = errors.New("no metrics yet")
-	ErrNoTemplate = errors.New("template not found")
+	ErrNotFound      = errors.New("machine not found")
+	ErrNotRunning    = errors.New("machine not running")
+	ErrNoMetrics     = errors.New("no metrics yet")
+	ErrNoTemplate    = errors.New("template not found")
+	ErrCheckpoint    = errors.New("checkpoint failed")
+	ErrTemplateInUse = errors.New("template in use")
 )

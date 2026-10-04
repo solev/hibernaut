@@ -30,6 +30,9 @@ const DefaultTimeout = 300 * time.Second
 // DefaultMemoryMB is the RAM of the machines Create makes: E2B's default.
 const DefaultMemoryMB = 512
 
+// DefaultCPUs is how many CPUs every machine has: E2B's default.
+const DefaultCPUs = 2
+
 // ExecFunc runs a command for Exec. It's called only for running machines. home is the
 // machine's home directory, or "" without WithLocalExec.
 type ExecFunc func(ctx context.Context, m engine.Machine, home string, req engine.ExecRequest) (engine.ExecResult, error)
@@ -69,13 +72,15 @@ func WithPauseHook(h PauseHook) Option {
 	return func(e *Engine) { e.pauseHook = h }
 }
 
-// WithTemplates makes Create accept only these templates, and those BuildTemplate builds.
-// Without it, Create accepts any.
+// WithTemplates makes Create accept only these templates, and those BuildTemplate builds or
+// SaveTemplate saves. Without it, Create accepts any. Template finds each, as a template of
+// DefaultCPUs and DefaultMemoryMB whose ID is its name.
 func WithTemplates(names ...string) Option {
 	return func(e *Engine) {
 		e.templates = map[string]bool{}
 		for _, n := range names {
 			e.templates[n] = true
+			e.aliases[n] = &template{info: engine.TemplateInfo{ID: n, Alias: n, CPUs: DefaultCPUs, MemoryMB: DefaultMemoryMB}}
 		}
 	}
 }
@@ -95,9 +100,13 @@ type Engine struct {
 
 	mu        sync.Mutex
 	templates map[string]bool
+	aliases   map[string]*template
 	machines  map[string]*engine.Machine
 	homes     map[string]string
 	built     []engine.TemplateSpec
+	failSave  error
+	// failCreates holds the metadata of the creates FailCreateAfterStart was armed for.
+	failCreates []map[string]string
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -106,6 +115,7 @@ var _ engine.Engine = (*Engine)(nil)
 func New(opts ...Option) *Engine {
 	e := &Engine{
 		now:      time.Now,
+		aliases:  map[string]*template{},
 		machines: map[string]*engine.Machine{},
 		homes:    map[string]string{},
 	}
@@ -131,10 +141,11 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		return engine.Machine{}, errors.New("fake: template is required")
 	}
 	e.mu.Lock()
-	known := e.templates == nil || e.templates[opts.Template]
+	src, err := e.source(opts.Template)
+	failAfterStart := err == nil && e.takeCreateFailure(opts.Metadata)
 	e.mu.Unlock()
-	if !known {
-		return engine.Machine{}, fmt.Errorf("fake: create from %s: %w", opts.Template, engine.ErrNoTemplate)
+	if err != nil {
+		return engine.Machine{}, err
 	}
 	id := NewID()
 	var home string
@@ -142,6 +153,11 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		dir := filepath.Join(e.homeRoot, id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return engine.Machine{}, err
+		}
+		if src.files != "" {
+			if err := os.CopyFS(dir, os.DirFS(src.files)); err != nil {
+				return engine.Machine{}, fmt.Errorf("fake: create from %s: %w", opts.Template, err)
+			}
 		}
 		// Resolve symlinks (macOS /var → /private/var) so the path matches what `pwd` prints.
 		resolved, err := filepath.EvalSymlinks(dir)
@@ -154,11 +170,11 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 	now := e.now()
 	m := &engine.Machine{
 		ID:        id,
-		Template:  opts.Template,
+		Template:  src.id,
 		State:     engine.Running,
 		StartedAt: now,
 		EndAt:     now.Add(orDefault(opts.Timeout)),
-		MemoryMB:  DefaultMemoryMB,
+		MemoryMB:  src.memoryMB,
 		Metadata:  maps.Clone(opts.Metadata),
 	}
 	e.mu.Lock()
@@ -166,6 +182,9 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 	e.machines[id] = m
 	if home != "" {
 		e.homes[id] = home
+	}
+	if failAfterStart {
+		return engine.Machine{}, fmt.Errorf("fake: create from %s: the machine started, then reading it failed", opts.Template)
 	}
 	return clone(m), nil
 }
@@ -303,7 +322,7 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 	}
 	return engine.Metrics{
 		At:        e.now(),
-		CPUCount:  2,
+		CPUCount:  DefaultCPUs,
 		MemTotal:  512 << 20,
 		MemUsed:   128 << 20,
 		DiskTotal: 1 << 30,
@@ -355,6 +374,7 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 	id := "tmpl-" + spec.Name
 	e.mu.Lock()
 	e.built = append(e.built, spec)
+	e.aliases[spec.Name] = &template{info: engine.TemplateInfo{ID: id, Alias: spec.Name, CPUs: spec.CPUs, MemoryMB: spec.MemoryMB, Created: e.now()}}
 	if e.templates != nil {
 		e.templates[spec.Name] = true
 		e.templates[id] = true

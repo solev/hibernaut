@@ -141,6 +141,24 @@ func (h Host) Check(name string, memoryMB int, running []Machine) error {
 	return nil
 }
 
+// Plan is what an operation adds to the host at its peak, in machines of one size.
+type Plan struct {
+	// MemoryMB is the RAM of each machine.
+	MemoryMB int
+	// Running is how many more machines run at once.
+	Running int
+	// Snapshots is how many more snapshots the operation may write, each up to MemoryMB and
+	// DiskMargin, its machines' future pauses included.
+	Snapshots int
+}
+
+// CheckPlan returns nil if plan p, for the operation on machine name, fits next to the running
+// machines. Otherwise it returns an error wrapping ErrFull that says what to do. Check(name,
+// memoryMB, running) is CheckPlan with Plan{MemoryMB: memoryMB, Running: 1, Snapshots: 1}.
+func (h Host) CheckPlan(name string, p Plan, running []Machine) error {
+	return errors.ErrUnsupported
+}
+
 func (h Host) pages(memoryMB int) int64 {
 	if h.PageSize <= 0 {
 		return h.FreePages + 1

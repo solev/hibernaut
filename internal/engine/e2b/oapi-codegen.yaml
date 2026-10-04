@@ -7,4 +7,5 @@ generate:
 output-options:
   include-tags:
     - sandboxes
+    - snapshots
     - templates

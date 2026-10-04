@@ -181,12 +181,14 @@ meanwhile.
 - `internal/engine`: `TemplateInfo`, and `Engine` gains `SaveTemplate`, `Template`,
   `SavedTemplates` and `DeleteTemplate`, with `ErrCheckpoint` and `ErrTemplateInUse`. The e2b
   client gains `GET /snapshots` (the `snapshots` tag).
-- `internal/engine/fake`: saves, copies and deletes as E2B does, plus `FailNextSave` and
-  `FailNextCreateAfterStart`.
-- `images`: `Template(name)`.
+- `internal/engine/fake`: saves, copies and deletes as E2B does, plus `FailNextSave(err)` and
+  `FailCreateAfterStart(metadata)`.
+- `images`: `Template(name)` resolves a name. `IsBuiltIn`, `SavedTemplate`, `SavedName`,
+  `ForkTemplate` and `IsForkTemplate` name and read the namespaces.
 - `internal/room`: `Plan` and `Host.CheckPlan`.
 - `internal/machines`: `Manager.SaveImage`, `Images`, `RemoveImage`, `Fork` and `SweepForks`,
-  and `Config.Durable`. `Create` and room checks accept saved images.
+  `MaxCopies`, `ErrBusy`, `Config.Durable` and `Config.Awake`, which `hibd` wires to its check
+  for going to sleep. `Create` and room checks accept saved images.
 - `internal/hibapi`: `Image`, `Response.Image`, `Response.Images` and `Machine.ForkOf`. All are
   optional, so the protocol stays at version 1.
 
@@ -201,8 +203,8 @@ meanwhile.
 
 **Contract**
 
-- [ ] Design, spec §2, §5 and §9, and the research doc.
-- [ ] The engine's types and stubs, the fake engine, the resolver, the room and Manager stubs, and
+- [x] Design, spec §2, §5 and §9, and the research doc.
+- [x] The engine's types and stubs, the fake engine, the resolver, the room and Manager stubs, and
       the hibapi types.
 
 **Engine**

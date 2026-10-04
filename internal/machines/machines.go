@@ -53,6 +53,9 @@ var (
 	ErrNoMachine = errors.New("no machine")
 	// ErrExists is returned when creating a machine whose name is taken.
 	ErrExists = errors.New("there is already a machine")
+	// ErrBusy is wrapped by SweepForks' error when another call holds the state lock, such as a
+	// fork still making its copies. Try again later.
+	ErrBusy = errors.New("the state lock is held")
 )
 
 var idRE = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
@@ -74,6 +77,12 @@ type Config struct {
 	ReadRoom func() (room.Host, error)
 	// Setup is written into each new machine after machine-init. An empty Setup writes nothing.
 	Setup Setup
+	// Durable returns once machine id's newest snapshot is on disk. SaveImage and Fork call it
+	// on the machine they save, before saving, and refuse to run without it.
+	Durable func(ctx context.Context, id string) error
+	// Awake returns why, if the host is going to sleep. SaveImage and Fork call it when they
+	// start, before they save, and before each copy. Default: always awake.
+	Awake func() error
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -85,6 +94,8 @@ type Manager struct {
 	now      func() time.Time
 	readRoom func() (room.Host, error)
 	setup    Setup
+	durable  func(ctx context.Context, id string) error
+	awake    func() error
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -97,7 +108,14 @@ func New(cfg Config) *Manager {
 	if readRoom == nil {
 		readRoom = room.Read
 	}
-	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom, setup: cfg.Setup}
+	awake := cfg.Awake
+	if awake == nil {
+		awake = func() error { return nil }
+	}
+	return &Manager{
+		e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom,
+		setup: cfg.Setup, durable: cfg.Durable, awake: awake,
+	}
 }
 
 // Name returns the name of machine em, or "" if hibd didn't make it.
