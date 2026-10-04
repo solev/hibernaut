@@ -2,7 +2,6 @@ package egress
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -13,12 +12,10 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/solev/hibernaut/internal/egress/swap"
 )
@@ -243,17 +240,13 @@ fi
 
 func runGitHubGit(t *testing.T, dir string, env []string, args ...string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	config := []string{
 		"-c", "user.name=Hibernaut Test",
 		"-c", "user.email=1+hibernaut-test@users.noreply.github.com",
 		"-c", "commit.gpgSign=false",
-		"-c", "init.templateDir=",
 	}
-	cmd := exec.CommandContext(ctx, "git", append(config, args...)...)
+	cmd := isolatedGit(t, env, append(config, args...)...)
 	cmd.Dir = dir
-	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

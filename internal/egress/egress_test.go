@@ -822,8 +822,9 @@ func TestRealGitClient(t *testing.T) {
 	}))
 	defer fx.close()
 	raw := "https://x-access-token:" + placeholder + "@" + strings.TrimPrefix(fx.url("/repo.git"), "https://")
-	cmd := exec.Command("git", "-c", "http.sslCAInfo="+fx.hibCertPath, "ls-remote", raw)
-	cmd.Env = append(os.Environ(), "HTTPS_PROXY=", "https_proxy=")
+	cmd := isolatedGit(t, []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + os.Getenv("TMPDIR"),
+		"HTTPS_PROXY=", "https_proxy="},
+		"-c", "http.sslCAInfo="+fx.hibCertPath, "ls-remote", raw)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git failed: %v: %s", err, out)
 	}
@@ -888,9 +889,15 @@ func TestRealGHClient(t *testing.T) {
 	}
 	host := "localhost:" + port
 	// gh's --hostname refuses a port, but GH_HOST doesn't.
-	cmd := exec.Command("gh", "api", "user")
-	cmd.Env = append(os.Environ(), "SSL_CERT_FILE="+fx.hibCertPath, "GH_ENTERPRISE_TOKEN="+placeholder, "GH_HOST="+host,
-		"GH_CONFIG_DIR="+t.TempDir(), "HTTPS_PROXY=", "https_proxy=")
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "api", "user")
+	cmd.WaitDelay = time.Second
+	home := t.TempDir()
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + os.Getenv("TMPDIR"),
+		"SSL_CERT_FILE=" + fx.hibCertPath, "GH_ENTERPRISE_TOKEN=" + placeholder, "GH_HOST=" + host,
+		"HOME=" + home, "XDG_CONFIG_HOME=" + home, "GH_CONFIG_DIR=" + home,
+		"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "HTTPS_PROXY=", "https_proxy="}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("gh failed: %v: %s", err, out)
 	}
@@ -899,6 +906,27 @@ func TestRealGHClient(t *testing.T) {
 	if want := "/api/v3/user\ntoken " + realValue; seen != want {
 		t.Fatalf("gh request was not swapped: got %q, want %q", seen, want)
 	}
+}
+
+func isolatedGit(t *testing.T, env []string, args ...string) *exec.Cmd {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	home := t.TempDir()
+	config := []string{
+		"-c", "credential.helper=",
+		"-c", "core.hooksPath=" + os.DevNull,
+		"-c", "init.templateDir=",
+	}
+	cmd := exec.CommandContext(ctx, "git", append(config, args...)...)
+	cmd.Dir = home
+	cmd.WaitDelay = time.Second
+	cmd.Env = append(append([]string{}, env...),
+		"HOME="+home, "XDG_CONFIG_HOME="+home,
+		"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_COUNT=0", "GIT_CONFIG_PARAMETERS=", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never",
+		"GIT_ASKPASS=", "SSH_ASKPASS=")
+	return cmd
 }
 
 func requireBinary(t *testing.T, name string) {

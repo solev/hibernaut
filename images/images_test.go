@@ -3,6 +3,7 @@ package images
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/ca"
 	"github.com/solev/hibernaut/internal/codex"
@@ -145,10 +147,21 @@ func TestGitHubGitConfig(t *testing.T) {
 		{"other host", []string{"ls-remote", "--get-url", "git@example.com:owner/repo.git"}, "git@example.com:owner/repo.git\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command("git", tc.args...)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			home := t.TempDir()
+			cmd := exec.CommandContext(ctx, "git", append([]string{
+				"-c", "include.path=" + configPath,
+				"-c", "credential.helper=",
+				"-c", "core.hooksPath=" + os.DevNull,
+			}, tc.args...)...)
+			cmd.WaitDelay = time.Second
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GIT_CONFIG_SYSTEM="+configPath, "GIT_CONFIG_GLOBAL="+os.DevNull,
-				"GIT_CONFIG_NOSYSTEM=0", "GIT_CEILING_DIRECTORIES="+root)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + os.Getenv("TMPDIR"),
+				"HOME=" + home, "XDG_CONFIG_HOME=" + home,
+				"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_SYSTEM=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1",
+				"GIT_CONFIG_COUNT=0", "GIT_CONFIG_PARAMETERS=", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never",
+				"GIT_ASKPASS=", "SSH_ASKPASS=", "GIT_CEILING_DIRECTORIES=" + root}
 			out, err := cmd.CombinedOutput()
 			if err != nil || string(out) != tc.want {
 				t.Fatalf("git %v = %q, %v, want %q", tc.args, out, err, tc.want)
@@ -324,27 +337,47 @@ func TestInstallScript(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for range 2 {
-				if out, err := exec.Command("bash", "-c", script).CombinedOutput(); err != nil {
-					t.Fatalf("%s step %d: %v: %s", name, i, err, out)
-				}
-			}
-			for _, f := range s.files {
-				dest := filepath.Join(root, f.dest)
-				got, err := os.ReadFile(dest)
+			for run := range 2 {
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+				out, err := exec.CommandContext(ctx, "bash", "-c", script).CombinedOutput()
+				cancel()
 				if err != nil {
-					t.Fatal(err)
+					t.Fatalf("%s step %d, run %d: %v: %s", name, i, run+1, err, out)
 				}
-				want, _ := files.ReadFile(path.Join(name, f.name))
-				if !bytes.Equal(got, want) {
-					t.Errorf("%s differs from %s", dest, f.name)
-				}
-				info, _ := os.Stat(dest)
-				if info.Mode().Perm() != f.mode {
-					t.Errorf("%s has mode %v, want %v", dest, info.Mode().Perm(), f.mode)
-				}
-				if _, err := os.Stat(dest + ".tmp"); err == nil {
-					t.Errorf("%s.tmp left behind", dest)
+				for _, f := range s.files {
+					dest := filepath.Join(root, f.dest)
+					got, err := os.ReadFile(dest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want, err := files.ReadFile(path.Join(name, f.name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(got, want) {
+						t.Errorf("run %d: %s differs from %s", run+1, dest, f.name)
+					}
+					info, err := os.Stat(dest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if info.Mode().Perm() != f.mode {
+						t.Errorf("run %d: %s has mode %v, want %v", run+1, dest, info.Mode().Perm(), f.mode)
+					}
+					if _, err := os.Stat(dest + ".tmp"); !os.IsNotExist(err) {
+						t.Errorf("run %d: %s.tmp remains: %v", run+1, dest, err)
+					}
+					if run == 0 {
+						if err := os.WriteFile(dest, []byte("corrupt installed file"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Chmod(dest, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(dest+".tmp", []byte("interrupted install"), 0o777); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 			}
 		}
@@ -357,18 +390,32 @@ func TestInstallScriptQuotesPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := `set -euo pipefail; umask 022; put() { install -d -m 755 "$(dirname "$1")"; printf %s "$3" | base64 -d >"$1.tmp"; chmod "$2" "$1.tmp"; mv -f "$1.tmp" "$1"; }; `
-	if !strings.HasPrefix(script, wantPrefix) {
-		t.Fatalf("installScript prefix changed:\n%s", script)
-	}
 	if strings.Contains(script, "HIBERNAUT_IMAGE_ROOT") || strings.Contains(script, "runtime_root") {
 		t.Fatalf("installScript has a shipped runtime root seam:\n%s", script)
 	}
-	if out, err := exec.Command("bash", "-c", script).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "bash", "-c", script).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	if _, err := os.Stat(filepath.Join(root, "x", "ready")); err != nil {
+	dest := filepath.Join(root, "x", "ready")
+	got, err := os.ReadFile(dest)
+	if err != nil {
 		t.Fatal(err)
+	}
+	want, err := files.ReadFile("dev/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("awkward path changed the installed file's contents")
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("mode = %v, want 0700", info.Mode().Perm())
 	}
 }
 

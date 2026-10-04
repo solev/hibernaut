@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -271,26 +272,34 @@ func TestCreateKillsAMachineWhoseSetupFails(t *testing.T) {
 }
 
 // codexHome runs the script that writes Codex's login file for real, in a temporary directory
-// that plays /home/user. A chown in bin logs its arguments, each ending in a NUL byte, to the
-// file log, and fails for paths matching failOn.
+// that plays /home/user. A fake chown records ownership by inode so it survives a rename.
 type codexHome struct {
 	root, bin, log string
+	failOn         string
 }
 
 func newCodexHome(t *testing.T, failOn string) codexHome {
 	t.Helper()
 	dir := t.TempDir()
-	h := codexHome{root: filepath.Join(dir, "home", "user"), bin: filepath.Join(dir, "bin"), log: filepath.Join(dir, "chown.log")}
+	h := codexHome{
+		root: filepath.Join(dir, "home", "user"), bin: filepath.Join(dir, "bin"),
+		log: filepath.Join(dir, "chown.log"), failOn: failOn,
+	}
 	for _, d := range []string{h.root, h.bin} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> \"$CHOWN_LOG\"\nprintf '\\n' >> \"$CHOWN_LOG\"\n" +
-		"case \"$2\" in " + failOn + ") exit 1;; esac\n"
-	if failOn == "" {
-		script = strings.Replace(script, "case \"$2\" in ) exit 1;; esac\n", "", 1)
-	}
+	script := `#!/bin/sh
+set -eu
+owner=$1
+shift
+for path do
+	case "$path" in $CHOWN_FAIL_ON) exit 1;; esac
+	inode=$(ls -id "$path" | awk '{print $1}')
+	printf '%s\0%s\0\n' "$owner" "$inode" >> "$CHOWN_LOG"
+done
+`
 	if err := os.WriteFile(filepath.Join(h.bin, "chown"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +315,7 @@ func (h codexHome) run(ctx context.Context, req engine.ExecRequest) (engine.Exec
 	args := slices.Clone(req.Args)
 	args[3] = h.dir()
 	cmd := exec.CommandContext(ctx, "/bin/sh", args...)
-	cmd.Env = []string{"PATH=" + h.bin + ":/usr/bin:/bin", "CHOWN_LOG=" + h.log}
+	cmd.Env = []string{"PATH=" + h.bin + ":/usr/bin:/bin", "CHOWN_LOG=" + h.log, "CHOWN_FAIL_ON=" + h.failOn}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -316,9 +325,20 @@ func (h codexHome) run(ctx context.Context, req engine.ExecRequest) (engine.Exec
 	return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
 }
 
-func (h codexHome) chowns(t *testing.T) [][]string {
+func (h codexHome) owner(t *testing.T, path string) string {
 	t.Helper()
-	return readCalls(t, h.log)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inode := strconv.FormatUint(info.Sys().(*syscall.Stat_t).Ino, 10)
+	var owner string
+	for _, call := range readCalls(t, h.log) {
+		if len(call) == 2 && call[1] == inode {
+			owner = call[0]
+		}
+	}
+	return owner
 }
 
 func readCalls(t *testing.T, path string) [][]string {
@@ -375,10 +395,10 @@ func TestSetupWriteWritesCodexLoginFile(t *testing.T) {
 	if entries, _ := os.ReadDir(home.dir()); len(entries) != 1 {
 		t.Errorf("~/.codex holds %v, want only auth.json", entries)
 	}
-	chowns := home.chowns(t)
-	if len(chowns) != 2 || !slices.Equal(chowns[0], []string{"user:user", home.dir()}) || chowns[1][0] != "user:user" ||
-		filepath.Dir(chowns[1][1]) != home.dir() || filepath.Base(chowns[1][1]) == "auth.json" {
-		t.Errorf("chown calls = %q, want the directory, then a temporary file beside auth.json", chowns)
+	for _, path := range []string{home.dir(), filepath.Join(home.dir(), "auth.json")} {
+		if got := home.owner(t, path); got != "user:user" {
+			t.Errorf("%s owner = %q, want user:user", filepath.Base(path), got)
+		}
 	}
 	reqs := codexRequests(guest)
 	if len(reqs) != 1 || reqs[0].Cmd != "sh" || reqs[0].User != "root" || len(reqs[0].Args) != 5 || reqs[0].Args[0] != "-c" {

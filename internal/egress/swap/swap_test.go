@@ -57,6 +57,7 @@ func TestBoundMatchesSites(t *testing.T) {
 	for _, tc := range []struct {
 		name, site, host string
 		want             bool
+		secrets          []swap.Secret
 	}{
 		{name: "exact", site: "api.github.com", host: "api.github.com", want: true},
 		{name: "exact ignores case and trailing dot", site: "api.github.com", host: "API.GITHUB.COM.", want: true},
@@ -65,14 +66,17 @@ func TestBoundMatchesSites(t *testing.T) {
 		{name: "wildcard deep subdomain", site: "*.github.com", host: "x.y.github.com", want: true},
 		{name: "wildcard refuses root", site: "*.github.com", host: "github.com"},
 		{name: "wildcard refuses suffix trick", site: "*.github.com", host: "evilgithub.com"},
+		{name: "combined bindings", host: "API.GITHUB.COM.", want: true, secrets: testSecrets()},
+		{name: "combined bindings refuse other host", host: "example.com", secrets: testSecrets()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sw := newSwapper(t, []swap.Secret{{
-				Name:        "TOKEN",
-				Placeholder: "placeholder",
-				Value:       "value",
-				Sites:       []string{tc.site},
-			}})
+			secrets := tc.secrets
+			if secrets == nil {
+				secrets = []swap.Secret{{
+					Name: "TOKEN", Placeholder: "placeholder", Value: "value", Sites: []string{tc.site},
+				}}
+			}
+			sw := newSwapper(t, secrets)
 			if got := sw.Bound(tc.host); got != tc.want {
 				t.Errorf("Bound(%q) with site %q = %v, want %v", tc.host, tc.site, got, tc.want)
 			}
@@ -97,16 +101,6 @@ func TestNewValidatesWithoutLeakingSecrets(t *testing.T) {
 	}
 	if !strings.Contains(msg, "A") || !strings.Contains(msg, "B") {
 		t.Errorf("New error = %q, want secret names", msg)
-	}
-}
-
-func TestBound(t *testing.T) {
-	sw := newSwapper(t, testSecrets())
-	if !sw.Bound("API.GITHUB.COM.") {
-		t.Fatal("github host should be bound")
-	}
-	if sw.Bound("example.com") {
-		t.Fatal("example.com should not be bound")
 	}
 }
 
