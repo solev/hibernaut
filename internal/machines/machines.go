@@ -103,6 +103,7 @@ type Manager struct {
 	awake     func() error
 	euid      func() int
 	chownFile func(*os.File, int, int) error
+	waitCut   func(context.Context, time.Duration) error
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -123,6 +124,7 @@ func New(cfg Config) *Manager {
 		e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom,
 		setup: cfg.Setup, durable: cfg.Durable, awake: awake,
 		euid: os.Geteuid, chownFile: (*os.File).Chown,
+		waitCut: waitCut,
 	}
 }
 
@@ -215,13 +217,15 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 }
 
 func (m *Manager) setupMachine(ctx context.Context, id string, keys []byte) error {
-	if _, err := m.initMachine(ctx, id, keys); err != nil {
-		return err
-	}
-	if m.setup.empty() {
-		return nil
-	}
-	return m.setup.Write(ctx, m.e, id)
+	return m.retryCut(ctx, func(ctx context.Context) error {
+		if _, err := m.initMachine(ctx, id, keys); err != nil {
+			return err
+		}
+		if m.setup.empty() {
+			return nil
+		}
+		return m.setup.Write(ctx, m.e, id)
+	})
 }
 
 func (m *Manager) killFailedSetup(ctx context.Context, name, id string, err error) error {
@@ -434,7 +438,13 @@ func (m *Manager) repin(ctx context.Context, id string, idle time.Duration) (ssh
 	if _, err := m.e.Resume(ctx, id, timeoutFor(idle)); err != nil {
 		return nil, err
 	}
-	return m.initMachine(ctx, id, keys)
+	var key ssh.PublicKey
+	err = m.retryCut(ctx, func(ctx context.Context) error {
+		var err error
+		key, err = m.initMachine(ctx, id, keys)
+		return err
+	})
+	return key, err
 }
 
 func (m *Manager) keepalive(ctx context.Context, id string, idle time.Duration, done chan<- struct{}) {
@@ -509,8 +519,6 @@ func (m *Manager) initMachine(ctx context.Context, id string, keys []byte) (ssh.
 	if _, err := m.pinPath(id); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, initTimeout)
-	defer cancel()
 	res, err := m.e.Exec(ctx, id, engine.ExecRequest{
 		Cmd:  images.MachineInit,
 		Args: []string{base64.StdEncoding.EncodeToString(keys)},

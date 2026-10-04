@@ -91,7 +91,13 @@ func writeGitIdentity(ctx context.Context, e engine.Engine, id string, g GitIden
 	return nil
 }
 
+const setupLockScript = `if command -v flock >/dev/null 2>&1; then
+	exec 9>>"${3:-/run/hibernaut-setup.lock}"
+	flock 9
+fi`
+
 const gitScript = `set -eu
+` + setupLockScript + `
 command -v git >/dev/null 2>&1 || exit 0
 git config --system --replace-all user.name "$1"
 git config --system --replace-all user.email "$2"`

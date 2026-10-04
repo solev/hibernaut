@@ -11,22 +11,15 @@ import (
 )
 
 func (m *Manager) setupCopy(ctx context.Context, id string, keys []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, initTimeout)
-	defer cancel()
-	res, err := m.e.Exec(ctx, id, engine.ExecRequest{
-		Cmd: "rm", User: "root",
-		Args: []string{"-f", "/etc/hibernaut/ssh/ssh_host_ed25519_key", "/etc/hibernaut/ssh/ssh_host_ed25519_key.pub"},
+	return m.retryCut(ctx, func(ctx context.Context) error {
+		if err := m.resetHostKey(ctx, id); err != nil {
+			return err
+		}
+		if _, err := m.initMachine(ctx, id, keys); err != nil {
+			return err
+		}
+		return safeError(m.setup.Write(ctx, m.e, id))
 	})
-	if err != nil {
-		return fmt.Errorf("removing the copied host key: %w", safeError(err))
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("removing the copied host key exited %d: %q", res.ExitCode, tail(res.Stderr, 1024))
-	}
-	if _, err := m.initMachine(ctx, id, keys); err != nil {
-		return err
-	}
-	return safeError(m.setup.Write(ctx, m.e, id))
 }
 
 func (m *Manager) failedCreate(ctx context.Context, name string, cause error) error {

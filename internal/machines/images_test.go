@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -117,10 +116,11 @@ type copyGuest struct {
 	env      map[string][]byte
 	requests map[string][]engine.ExecRequest
 	fail     func(engine.ExecRequest) error
+	reset    map[string]string
 }
 
 func newCopyGuest() *copyGuest {
-	return &copyGuest{key: newKey(), keys: map[string]ssh.PublicKey{}, env: map[string][]byte{}, requests: map[string][]engine.ExecRequest{}}
+	return &copyGuest{key: newKey(), keys: map[string]ssh.PublicKey{}, env: map[string][]byte{}, requests: map[string][]engine.ExecRequest{}, reset: map[string]string{}}
 }
 
 func (g *copyGuest) exec(_ context.Context, em engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
@@ -136,12 +136,6 @@ func (g *copyGuest) exec(_ context.Context, em engine.Machine, _ string, req eng
 		return engine.ExecResult{}, errors.New("command wasn't root")
 	}
 	switch req.Cmd {
-	case "rm":
-		if !slices.Equal(req.Args, []string{"-f", "/etc/hibernaut/ssh/ssh_host_ed25519_key", "/etc/hibernaut/ssh/ssh_host_ed25519_key.pub"}) {
-			return engine.ExecResult{}, errors.New("wrong re-key arguments")
-		}
-		g.keys[em.ID] = newKey()
-		return engine.ExecResult{}, nil
 	case images.MachineInit:
 		key := g.keys[em.ID]
 		if key == nil {
@@ -156,6 +150,16 @@ func (g *copyGuest) exec(_ context.Context, em engine.Machine, _ string, req eng
 		}
 		return engine.ExecResult{Stdout: file}, nil
 	case "sh":
+		if len(req.Args) == 5 && req.Args[2] == "hibd-reset" {
+			if req.Args[3] != "/etc/hibernaut/ssh" || req.Args[4] != em.ID {
+				return engine.ExecResult{}, errors.New("wrong re-key arguments")
+			}
+			if g.reset[em.ID] != em.ID {
+				g.keys[em.ID] = newKey()
+				g.reset[em.ID] = em.ID
+			}
+			return engine.ExecResult{}, nil
+		}
 		if len(req.Args) == 5 && req.Args[2] == "hibd-env" {
 			next, err := base64.StdEncoding.DecodeString(req.Args[4])
 			g.env[em.ID] = next
@@ -197,7 +201,7 @@ func TestCreateFromSavedImage(t *testing.T) {
 	if got.Template != tmpl.ID || got.MemoryMB != 4096 || got.Metadata["hib.image"] != "myimg" {
 		t.Errorf("copy = %+v", got)
 	}
-	if reqs := g.requests[copy.ID]; len(reqs) != 4 || reqs[0].Cmd != "rm" || reqs[1].Cmd != images.MachineInit || reqs[2].Cmd != "cat" {
+	if reqs := g.requests[copy.ID]; len(reqs) != 4 || reqs[0].Cmd != "sh" || reqs[0].Args[2] != "hibd-reset" || reqs[1].Cmd != images.MachineInit || reqs[2].Cmd != "cat" {
 		t.Errorf("copy setup requests = %+v", reqs)
 	}
 	if got := string(g.env[copy.ID]); got != "KEEP=yes\n" {
