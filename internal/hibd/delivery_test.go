@@ -1,11 +1,14 @@
 package hibd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +18,146 @@ import (
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/machines"
 )
+
+// testClock is a clock that moves only when told to.
+type testClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *testClock) add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// change edits the machine's files, as someone working in it might.
+func (g *secretGuest) change(edit func(g *secretGuest)) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	edit(g)
+}
+
+// newTestDelivery returns the daemon's setup delivery for a and e. Any problem it logs fails
+// the test.
+func newTestDelivery(t *testing.T, a *App, e engine.Engine) *setupDelivery {
+	t.Helper()
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newSetupDelivery(e, cfg, a.codexStore(cfg, nil), func(format string, args ...any) {
+		t.Errorf("setup: "+format, args...)
+	})
+}
+
+func TestSetupDeliveryWritesTheSetupAgainAfterAResume(t *testing.T) {
+	ctx := t.Context()
+	clock := &testClock{now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	e := fake.New(fake.WithClock(clock.Now), fake.WithExec(guest.exec))
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: clock.Now(), EndAt: clock.Now().Add(time.Hour),
+		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev", "hib.idle": "10m0s"}})
+	a, _, _ := newApp(t, e)
+	withSecretConfig(t, a)
+	secret := storeTestSecret(t, a, "github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890")
+	saveTestProfile(t, a, "The Octocat")
+	d := newTestDelivery(t, a, e)
+	d.look(ctx)
+	env, id := guest.envString(), guest.identity()
+	if !strings.Contains(env, secret.Placeholder) || id == nil {
+		t.Fatalf("the first look wrote /etc/environment %q and git's identity %+v, want the setup", env, id)
+	}
+
+	// Someone in the machine removes hibd's block and git's identity.
+	guest.change(func(g *secretGuest) {
+		g.env = []byte("PATH=/usr/bin\n")
+		g.git = nil
+	})
+	requests := len(guest.allRequests())
+	d.look(ctx)
+	// Extending a running machine's timeout isn't a resume.
+	clock.add(time.Minute)
+	if err := e.SetTimeout(ctx, "app1", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Resume(ctx, "app1", 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	d.look(ctx)
+	if n := len(guest.allRequests()) - requests; n != 0 {
+		t.Errorf("looks without a resume ran %d commands in the machine, want none", n)
+	}
+
+	// A pause and a resume between two looks.
+	clock.add(time.Minute)
+	if err := e.Pause(ctx, "app1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Resume(ctx, "app1", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	d.look(ctx)
+	if got := guest.envString(); got != env {
+		t.Errorf("/etc/environment after a resume = %q, want %q", got, env)
+	}
+	if got := guest.identity(); got == nil || *got != *id {
+		t.Errorf("git's identity after a resume = %+v, want %+v", got, id)
+	}
+	requests = len(guest.allRequests())
+	d.look(ctx)
+	if n := len(guest.allRequests()) - requests; n != 0 {
+		t.Errorf("the look after the one that caught up with the resume ran %d commands in the machine, want none", n)
+	}
+}
+
+func TestCodexLoginFileComesBackAfterLogoutAndAResume(t *testing.T) {
+	ctx := t.Context()
+	clock := &testClock{now: time.Now()}
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n"), hostKey: newKey(t)}
+	e := fake.New(fake.WithClock(clock.Now), fake.WithTemplates(images.Template("dev")), fake.WithExec(guest.exec),
+		fake.WithDialer(func(context.Context, engine.Machine, int) (net.Conn, error) {
+			c, _ := net.Pipe()
+			return c, nil
+		}))
+	a, _, errOut := newApp(t, e)
+	withSecretConfig(t, a)
+	connectTestCodex(t, a, testCodexTokens())
+	run := func(args ...string) {
+		t.Helper()
+		if code := a.Run(ctx, args); code != 0 {
+			t.Fatalf("hibd %s exit %d: %s", strings.Join(args, " "), code, errOut)
+		}
+	}
+	run("new", "app")
+	d := newTestDelivery(t, a, e)
+	d.look(ctx)
+	want := codexLoginFile(t, a)
+	if got := guest.codexAuthFile(); !bytes.Equal(got, want) {
+		t.Fatalf("auth.json = %q, want the placeholder login file", got)
+	}
+
+	// codex logout in the machine deletes the file. It stays deleted while the machine runs.
+	guest.change(func(g *secretGuest) { g.codexAuth = nil })
+	d.look(ctx)
+	if got := guest.codexAuthFile(); got != nil {
+		t.Fatal("the daemon wrote auth.json again without a resume")
+	}
+
+	clock.add(time.Minute)
+	run("pause", "app")
+	run("bridge", "app")
+	d.look(ctx)
+	if got := guest.codexAuthFile(); !bytes.Equal(got, want) {
+		t.Errorf("auth.json after a pause and a resume = %q, want the placeholder login file", got)
+	}
+}
 
 func TestSetupDeliveryManyRunningMachinesRace(t *testing.T) {
 	guests := map[string]*secretGuest{}

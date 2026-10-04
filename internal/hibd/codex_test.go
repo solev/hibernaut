@@ -41,10 +41,10 @@ const (
 )
 
 type fakeCodexCall struct {
-	Args    []string `json:"args"`
-	Env     []string `json:"env"`
-	Dir     string   `json:"dir"`
-	HomeDir string   `json:"homeDir"` // $CODEX_HOME's mode
+	Args          []string `json:"args"`
+	Env           []string `json:"env"`
+	Dir           string   `json:"dir"`
+	CodexHomeMode string   `json:"codexHomeMode"` // $CODEX_HOME's permissions in octal, such as 0700
 }
 
 func fakeCodex() int {
@@ -53,7 +53,7 @@ func fakeCodex() int {
 	call := fakeCodexCall{Args: os.Args[1:], Env: os.Environ()}
 	call.Dir, _ = os.Getwd()
 	if info, err := os.Stat(os.Getenv("CODEX_HOME")); err == nil && info.IsDir() {
-		call.HomeDir = fmt.Sprintf("%#o", info.Mode().Perm())
+		call.CodexHomeMode = fmt.Sprintf("%#o", info.Mode().Perm())
 	}
 	line, _ := json.Marshal(call)
 	f, err := os.OpenFile(filepath.Join(here, fakeCodexCalls), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
@@ -253,8 +253,8 @@ func TestConnectCodex(t *testing.T) {
 		if env := slices.Sorted(slices.Values(c.Env)); !slices.Equal(env, wantEnv) {
 			t.Errorf("codex call %d environment = %q, want exactly %q", i, env, wantEnv)
 		}
-		if c.Dir != realHome || c.HomeDir != "0700" {
-			t.Errorf("codex call %d ran in %s, CODEX_HOME mode %s; want %s, 0700", i, c.Dir, c.HomeDir, realHome)
+		if c.Dir != realHome || c.CodexHomeMode != "0700" {
+			t.Errorf("codex call %d ran in %s, CODEX_HOME mode %s; want %s, 0700", i, c.Dir, c.CodexHomeMode, realHome)
 		}
 	}
 	if logins := codexLogins(t, a); len(logins) != 0 {

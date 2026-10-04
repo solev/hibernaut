@@ -162,6 +162,7 @@ func (s *suite) lifecycle(t *testing.T) {
 	s.wantListed(t, ctx, labels, []engine.State{engine.Running}, m.ID)
 	s.wantListed(t, ctx, labels, []engine.State{engine.Paused})
 	s.wantListed(t, ctx, labels, nil, m.ID)
+	started := s.startedAt(t, ctx, labels, m.ID)
 
 	s.mustExec(t, ctx, m.ID, "echo persisted > marker")
 
@@ -199,6 +200,10 @@ func (s *suite) lifecycle(t *testing.T) {
 	if endAt := s.get(t, ctx, m.ID).EndAt; endAt.Before(shorter.Add(9 * time.Minute)) {
 		t.Errorf("Resume(running, 15m) moved EndAt from %v to %v, want about 10m later", shorter, endAt)
 	}
+	// Only a start moves StartedAt: hibd tells a resume by it.
+	if st := s.startedAt(t, ctx, labels, m.ID); !st.Equal(started) {
+		t.Errorf("StartedAt after SetTimeout and Resume(running) = %v, want it still %v", st, started)
+	}
 
 	if err := e.Pause(ctx, m.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -235,6 +240,9 @@ func (s *suite) lifecycle(t *testing.T) {
 	}
 	if st := s.get(t, ctx, m.ID).State; st != engine.Running {
 		t.Errorf("Get after Resume state = %s, want running", st)
+	}
+	if st := s.startedAt(t, ctx, labels, m.ID); !st.After(started) {
+		t.Errorf("StartedAt after Pause and Resume = %v, want later than %v", st, started)
 	}
 	if out := s.mustExec(t, ctx, m.ID, "cat marker"); out != "persisted\n" {
 		t.Errorf("marker after pause and resume = %q, want %q", out, "persisted\n")
@@ -348,6 +356,25 @@ func (s *suite) get(t *testing.T, ctx context.Context, id string) engine.Machine
 		t.Fatalf("Get(%s): %v", id, err)
 	}
 	return m
+}
+
+// startedAt returns when running machine id started, as Get says, and checks that List, which
+// hibd's setup delivery reads, says the same.
+func (s *suite) startedAt(t *testing.T, ctx context.Context, labels map[string]string, id string) time.Time {
+	t.Helper()
+	started := s.get(t, ctx, id).StartedAt
+	ms, err := s.cfg.Engine.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}, Metadata: labels})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	i := slices.IndexFunc(ms, func(m engine.Machine) bool { return m.ID == id })
+	switch {
+	case i < 0:
+		t.Errorf("List(running) doesn't have %s", id)
+	case !ms[i].StartedAt.Equal(started):
+		t.Errorf("List says %s started at %v, Get says %v", id, ms[i].StartedAt, started)
+	}
+	return started
 }
 
 // mustExec runs script with sh -c and returns its stdout. It fails the test unless the script
