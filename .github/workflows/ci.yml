@@ -35,6 +35,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: 1.26.x
+      - name: Install SQLite
+        run: command -v sqlite3 || { sudo apt-get update -q && sudo apt-get install -yq sqlite3; }
       - name: Install pinned Codex
         run: sudo vm/install-codex.sh "$PWD/images/dev/versions"
       - run: make test

@@ -15,10 +15,10 @@ done.
 | --- | --- | --- | --- |
 | M0 | [Foundations](m0-foundations.md) | done | `TestEngineContract`, `TestPauseAll`, `TestSurvivesHostRestart` |
 | M1 | [Machines](m1-machines.md) | done | `TestMachine`, `TestMachineSecurity`, `TestMachineNetwork`, `TestMachineTerminal`, `TestQuiescing`, `TestWakeOnSSH` |
-| M2 | [Idle and wake](m2-idle-and-wake.md) | done | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestWakeOnExec`, `TestHostFull`, `TestSnapshotCleanup`, `TestPauseCycles` |
+| M2 | [Idle and wake](m2-idle-and-wake.md) | done | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestBusyPastAnHour`, `TestMachine/exec_wakes_a_paused_machine`, `TestHostFull`, `TestSnapshotCleanup`, `TestPauseCycles` |
 | M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | done | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
 | M4 | [GitHub](m4-github.md) | done | `TestGitHubFullFlow`, `TestWorkflowPush` |
-| M5 | [AI tools](m5-ai-tools.md) | in progress | `TestCodex`, `TestCodexRefresh`, `TestCopilot` |
+| M5 | [AI tools](m5-ai-tools.md) | in progress | `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | not started | `TestImageAndFork`, `TestImageLeakScan` |
 | M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
 | M8 | [Machine sizes](m8-machine-sizes.md) | not started | `TestSizes` |
@@ -51,3 +51,5 @@ M10 needs nothing, so it can be pulled forward any time.
 - Multi-user: per-machine identity, SSH keys written at create time, SSH host certificates.
 - A domain (hibernaut.dev), public HTTPS URLs per machine, a web console.
 - Per-machine egress allowlists.
+- The nightly shutdown pauses busy machines too, so a long agent run stops at 20:00 UTC and its
+  connections drop. Put the shutdown off while a machine is busy, up to a limit.

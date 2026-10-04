@@ -52,6 +52,9 @@ A local check of `hib` at `af11404` (2026-10-04) found:
       tests and docs pass `--yes`.
 - [ ] Ctrl-C says what was left behind, e.g. "stopped waiting. The host may still be making app:
       check hib ls".
+- [ ] `hib disconnect codex|github` removes a login from the host and stops delivering it to
+      machines. Today a Codex login can only be replaced: `hib secret rm` refuses the `codex-`
+      secrets. GitHub's is the `github` secret, which `hib secret rm github` removes.
 
 **Feedback**
 

@@ -93,8 +93,9 @@ End-to-end:
       the same, and the counter is moving again. Logs the resume time.
 - [x] `TestBusyStaysAwake`: three machines with `--idle 1m`, each kept busy one way (open SSH
       session, CPU loop, a process named `codex`), are all still running after 3 minutes.
-- [x] `TestWakeOnExec`: `hib exec` on a paused machine works on the first try.
-- [x] A busy machine stays running past E2B's default 1-hour cap (slow).
+- [x] `TestMachine/exec_wakes_a_paused_machine` (was `TestWakeOnExec`): `hib exec` on a paused
+      machine works on the first try.
+- [x] `TestBusyPastAnHour` (slow): a busy machine stays running past E2B's default 1-hour cap.
 - [x] `TestHostFull`: pause one machine, then start machines until no more fit. One more
       `hib new`, and `ssh` to the paused machine, are both refused with the room message, taking
       at most a second longer than `hib ls`, and the running machines are untouched. Once one of

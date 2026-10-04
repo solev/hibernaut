@@ -1,8 +1,8 @@
 # M5 AI tools
 
 Status: **in progress** · Spec: §4.1, §4.2 (Token endpoints), §4.3, §4.4 · Spikes: S6 and S9,
-both answered · Left: `TestCodex`, `TestCodexRefresh` and the leak scan after them, which need a
-live `hib connect codex`
+both answered · Left: `TestCodexRefresh` and its leak scan, which need a live
+`hib connect codex`
 
 **Goal:** `codex` and `copilot` work in every machine with no login, and no real ChatGPT or GitHub
 token ever enters a machine.
@@ -315,13 +315,13 @@ Integration (fake `chatgpt.com` and `auth.openai.com`, signed by the test CA, an
 
 End-to-end:
 
-- [ ] `TestCodex`: in a fresh machine, `codex exec --skip-git-repo-check "Reply with exactly OK."`
-      prints OK with no login prompt.
-- [ ] `TestCodexRefresh`: `sudo hibd codex refresh -force` makes a real refresh. Codex still works
-      in an existing machine and in a new one.
+- [ ] `TestCodexRefresh`: in a fresh machine,
+      `codex exec --skip-git-repo-check "Reply with exactly OK."` prints OK with no login prompt.
+      Then `sudo hibd codex refresh -force` makes a real refresh, and Codex still works in that
+      machine and in a new one.
 - [x] `TestCopilot`: in a fresh machine,
       `copilot -p "Reply with exactly OK." -s --allow-all-tools --no-ask-user` prints OK.
-- [ ] The leak scan after all three covers `github`, `codex-access`, `codex-refresh` and
+- [ ] The leak scan after both covers `github`, `codex-access`, `codex-refresh` and
       `codex-id`, old values included, and finds nothing.
 
 ## Done when
@@ -364,3 +364,9 @@ End-to-end:
   account switch recovers as the old login or the new one, never a mix of the two, and `Public`
   reads one generation. `Public` refuses a profile that doesn't match the vault without an
   attempt to explain it.
+- 2026-10-04: A test audit after M5 merged e2e tests that checked the same thing. `TestCodex` is
+  now the start of `TestCodexRefresh`. M2's `TestWakeOnExec` is `TestMachine`'s
+  `exec wakes a paused machine` case. The nightly deallocate moved from
+  `TestSurvivesHostRestart` into `TestWakeOnSSH`, where ssh wakes the VM. `TestHibInit` became
+  the `cmd/hib` unit tests `TestInit` and `TestInitVersion`. Still above CRAP 30: enginetest's
+  `exec` (99) and `lifecycle` (89). Linux-only code isn't scored, since the audit ran on a Mac.
