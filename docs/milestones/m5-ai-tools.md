@@ -43,6 +43,8 @@ a placeholder does. `ParseAuthFile` reads the real tokens from the file `codex l
 
 **The profile** comes from the tokens: the email and plan from the ID token, the account from the
 access token, and `Expires` from the access token's `exp`. It never holds a token.
+Its on-disk form also keeps a fingerprint of the placeholders. An interrupted publication uses
+that fingerprint to recover `Published`, even when claims outside the profile changed.
 
 **`codex.Store`** is the only code that changes the login or calls OpenAI. Its methods are safe in
 many goroutines and processes at once. All of them run as root.
@@ -147,10 +149,10 @@ fingerprint for `codex-access`, in memory.
   with `Force`. It writes the setup into running machines if a placeholder changed, and replies
   with the profile.
 - `hibd daemon` calls `EnsureFresh` with `Background` every minute, one call at a time, and logs
-  each change of health once. Machines get a changed login file through the setup delivery the
-  daemon already runs, because the file is part of `Setup.Hash`. At start, if GitHub is connected,
-  it puts the `github` secret again with `github.Sites()` and the same value, which keeps its
-  placeholder.
+  each change of health once. It doesn't while the host is going to sleep, as it leaves machines
+  alone then. Machines get a changed login file through the setup delivery the daemon already
+  runs, because the file is part of `Setup.Hash`. At start, if GitHub is connected, it puts the
+  `github` secret again with `github.Sites()` and the same value, which keeps its placeholder.
 - `hibd status` and `hib status` show a Codex line from the profile, without calling OpenAI. Dead
   or stuck isn't OK, and says to run `hib connect codex`.
 - `hibd secret add` and `rm` refuse names that start with `codex-`.

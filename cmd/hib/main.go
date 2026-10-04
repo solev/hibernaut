@@ -33,7 +33,9 @@ commands:
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
   connect github    give machines your GitHub login (--from-gh, or --token on stdin)
-  status            show the host's, E2B's and each secret's health; never wakes the host
+  connect codex     give machines your Codex login on a ChatGPT plan, with a device code
+  status            show the health of the host, E2B, each secret and the Codex login; never
+                    wakes the host
   secret add NAME   store a bound secret (-env VAR -bind SITE[,SITE...])
   secret ls         list bound secrets
   secret rm NAME    remove a bound secret

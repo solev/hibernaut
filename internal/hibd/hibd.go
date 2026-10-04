@@ -5,6 +5,7 @@ package hibd
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,7 +52,11 @@ commands:
   log               show secret swap audit entries (-n, default 50)
   connect github    store a GitHub token from stdin as secret github, after GitHub accepts it,
                     and give machines git's identity, as root (-source gh|token)
-  status            check E2B and every secret, as root
+  connect codex     log in to Codex on a ChatGPT plan with a device code, keep the login, and
+                    give machines a login file of placeholders, as root
+  codex refresh     refresh the Codex login once half its token's lifetime has passed, as root
+                    (-force refreshes now, even when a refresh is stuck)
+  status            check E2B, every secret and the Codex login, as root
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image (-force rebuilds every step)
@@ -61,11 +66,13 @@ commands:
                     are paused first and stay paused (-image NAME, -canary, -json)
   cleanup           delete the build directories nothing needs any more, as root (-n only
                     says which, and why it keeps the others)
-  daemon            keep busy machines running (-every), and clean up when a machine is
-                    removed and hourly; systemd runs it as root
+  daemon            keep busy machines running (-every), clean up when a machine is
+                    removed and hourly, and keep the Codex login fresh; systemd runs it as
+                    root
   version           print the version
 
-new, ls, rm, pause, image build, connect github, status and version print JSON with -json.
+new, ls, rm, pause, image build, connect github, connect codex, codex refresh, status and version
+print JSON with -json.
 
 hibd reads its settings from ` + defaultConfig + ` ($HIBD_CONFIG overrides the path).
 Environment variables of the same names override the file:
@@ -83,8 +90,8 @@ Environment variables of the same names override the file:
   HIBD_CA_KEY           CA private key, default /etc/hibernaut/ca.key
   HIBD_PROXY_PORT       interception port, default 5443
   HIBD_QUIESCING        new, bridge and image build refuse while it exists, and daemon leaves
-                        machines alone; default /run/hibernaut/quiescing, which quiesce makes
-                        before pausing everything
+                        machines and the Codex login alone; default /run/hibernaut/quiescing,
+                        which quiesce makes before pausing everything
   HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
                         default codex copilot claude
   HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
@@ -132,6 +139,10 @@ type App struct {
 	// codex.Store's own.
 	CodexTokenURL string
 	CodexClient   *http.Client
+
+	// codexEvery is how often the daemon looks at the Codex login, for tests only. If it's 0,
+	// the daemon looks every minute.
+	codexEvery time.Duration
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -157,6 +168,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.secret(ctx, args)
 	case "connect":
 		return a.connect(ctx, args)
+	case "codex":
+		return a.runCodex(ctx, args)
 	case "status":
 		return a.status(ctx, args)
 	case "log":
@@ -207,7 +220,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
-	setup, err := loadSetup(cfg)
+	setup, err := loadSetup(cfg, a.codexStore(cfg, a.warnf))
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
@@ -546,7 +559,8 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	s.problem = problem
 }
 
-// daemon keeps busy machines running, and cleans up, until ctx is done.
+// daemon keeps busy machines running, cleans up, and keeps the Codex login fresh, until ctx is
+// done.
 func (a *App) daemon(ctx context.Context, args []string) int {
 	fl := a.flags("daemon")
 	every := fl.Duration("every", 15*time.Second, "how often to look at the machines")
@@ -572,12 +586,22 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	}
 	s := &sweeper{engine: e, logf: func(format string, args ...any) { logger.Printf("cleanup: "+format, args...) }}
 	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
-	delivery := newSetupDelivery(e, cfg, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
+	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
+	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
+	removeLeftoverCodexLogins(cfg.stateDir, logger.Printf)
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
+	switch changed, err := rebindGitHub(cfg); {
+	case err != nil:
+		logger.Printf("github: binding secret github to the Copilot CLI's sites failed: %v. Run hib connect github again", err)
+	case changed:
+		logger.Printf("github: bound secret github to %s, so the Copilot CLI works too", strings.Join(github.Sites(), ", "))
+	}
 	t := time.NewTicker(*every)
 	defer t.Stop()
 	sweeping := make(chan struct{}, 1)
 	var wg sync.WaitGroup
+	refresher := &codexRefresher{store: a.codexStore(cfg, nil), logf: func(format string, args ...any) { logger.Printf("codex: "+format, args...) }}
+	wg.Go(func() { refresher.run(ctx, cmp.Or(a.codexEvery, time.Minute), a.awake) })
 	problem := "" // what kept the last look from happening, as logged
 	for {
 		now := ""

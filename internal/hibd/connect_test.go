@@ -225,8 +225,8 @@ func TestConnectGitHub(t *testing.T) {
 
 	secrets := loadVault(t, a)
 	if len(secrets) != 1 || secrets[0].Name != "github" || secrets[0].Env != "GH_TOKEN" ||
-		!slices.Equal(secrets[0].Sites, []string{"api.github.com", "github.com", "uploads.github.com"}) {
-		t.Fatalf("vault = %+v, want secret github, GH_TOKEN, bound to GitHub's three sites", secrets)
+		!slices.Equal(secrets[0].Sites, []string{"*.githubcopilot.com", "api.github.com", "github.com", "uploads.github.com"}) {
+		t.Fatalf("vault = %+v, want secret github, GH_TOKEN, bound to GitHub's sites and Copilot's", secrets)
 	}
 
 	fi, err := os.Stat(profilePath(a))
@@ -516,5 +516,74 @@ func TestConnectGitHubLeavesMachinesAloneWhileQuiescing(t *testing.T) {
 	}
 	if n := len(guest.allRequests()); n != 0 {
 		t.Errorf("machines got %d exec requests while the host goes to sleep", n)
+	}
+}
+
+// storeOldGitHub stores secret github as a connection made before M5 left it: bound to git, the
+// API and uploads, but not Copilot.
+func storeOldGitHub(t *testing.T, a *App, token string) vault.Secret {
+	t.Helper()
+	var saved vault.Secret
+	err := vault.Update(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "vault.json"), a.Getenv("HIBD_VAULT_KEY"), func(f *vault.File, key vault.Key) error {
+		var err error
+		saved, err = f.Put(key, github.SecretName, github.Env, []string{"github.com", "api.github.com", "uploads.github.com"}, token)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return saved
+}
+
+func TestDaemonBindsAnOldGitHubConnectionToCopilot(t *testing.T) {
+	a, _, _ := newApp(t, fake.New())
+	withSecretConfig(t, a)
+	old := storeOldGitHub(t, a, testToken)
+	saveTestProfile(t, a, "The Octocat")
+	logs, stop := startDaemon(t, a)
+	waitFor(t, logs, "the daemon binds secret github to Copilot", func() bool {
+		s := loadVault(t, a)
+		return len(s) == 1 && slices.Contains(s[0].Sites, "*.githubcopilot.com")
+	})
+	stop()
+	secrets := loadVault(t, a)
+	want := []string{"*.githubcopilot.com", "api.github.com", "github.com", "uploads.github.com"}
+	if s := secrets[0]; s.Name != github.SecretName || s.Env != github.Env || s.Placeholder != old.Placeholder || !slices.Equal(s.Sites, want) {
+		t.Errorf("vault = %+v, want github with the same variable and placeholder, bound to %q", secrets, want)
+	}
+	if revealed := openVault(t, a); len(revealed) != 1 || revealed[0].Value != testToken {
+		t.Error("the vault doesn't hold the same token")
+	}
+	if n := strings.Count(logs.String(), "*.githubcopilot.com"); n != 1 {
+		t.Errorf("the log mentions Copilot's sites %d times, want once:\n%s", n, logs)
+	}
+
+	// Once bound, the daemon leaves the vault alone.
+	fi, err := os.Stat(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "vault.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, stop = startDaemon(t, a)
+	waitFor(t, logs, "the daemon starts", func() bool { return strings.Contains(logs.String(), "keeping busy machines running") })
+	stop()
+	again, err := os.Stat(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "vault.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.ModTime().Equal(fi.ModTime()) || strings.Contains(logs.String(), "githubcopilot") {
+		t.Errorf("the daemon rewrote a vault that was already right; log:\n%s", logs)
+	}
+	wantNoToken(t, nil, logs.String())
+}
+
+func TestDaemonLeavesAGitHubSecretWithoutAConnectionAlone(t *testing.T) {
+	a, _, _ := newApp(t, fake.New())
+	withSecretConfig(t, a)
+	storeOldGitHub(t, a, testToken)
+	logs, stop := startDaemon(t, a)
+	waitFor(t, logs, "the daemon starts", func() bool { return strings.Contains(logs.String(), "keeping busy machines running") })
+	stop()
+	if s := loadVault(t, a); slices.Contains(s[0].Sites, "*.githubcopilot.com") {
+		t.Errorf("vault = %+v: hib secret add github isn't a GitHub connection", s)
 	}
 }

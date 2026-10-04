@@ -427,3 +427,71 @@ func dirEntries(t *testing.T, dir string) []string {
 	slices.Sort(names)
 	return names
 }
+
+func TestLeakscanLooksForRetiredCodexValuesUnderTheirNames(t *testing.T) {
+	a, out, errOut, cfg := newLeakscanApp(t, fake.New())
+	store := a.codexStore(cfg, nil)
+	old := testCodexTokens()
+	if _, err := store.CommitLogin(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	current := testCodexTokens()
+	if _, err := store.CommitLogin(t.Context(), current); err != nil {
+		t.Fatal(err)
+	}
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", "secret-value-123456789")
+	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("mem "+old.RefreshToken), []byte("disk "+old.AccessToken))
+	a.Query = oneBuildQuery(leakBuildA)
+
+	code := a.Run(t.Context(), []string{"leakscan", "-json", "-image", "dev"})
+	if code != 1 {
+		t.Fatalf("code = %d, want hits exit 1; stderr %q", code, errOut)
+	}
+	wantNoCodexToken(t, old, out.Bytes(), errOut.Bytes())
+	wantNoCodexToken(t, current, out.Bytes(), errOut.Bytes())
+	var r hibapi.Response
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	wantNames := []string{"codex-access", "codex-id", "codex-refresh", "github"}
+	if r.LeakScan == nil || !slices.Equal(r.LeakScan.Secrets, wantNames) || r.LeakScan.SecretCount != 7 {
+		t.Fatalf("leakScan = %+v, want secrets %q and 7 values: 4 in the vault and 3 retired", r.LeakScan, wantNames)
+	}
+	var hit []string
+	for _, h := range r.LeakScan.Hits {
+		if h.Where == "memory" || h.Where == "disk" {
+			hit = append(hit, h.Secret+" "+h.Where)
+		}
+	}
+	slices.Sort(hit)
+	if want := []string{"codex-access disk", "codex-refresh memory"}; !slices.Equal(hit, want) {
+		t.Errorf("hits = %q, want %q", hit, want)
+	}
+
+	out.Reset()
+	if code := a.Run(t.Context(), []string{"leakscan", "-image", "dev"}); code != 1 {
+		t.Fatalf("code = %d, want hits exit 1", code)
+	}
+	wantNoCodexToken(t, old, out.Bytes(), errOut.Bytes())
+	if !strings.Contains(out.String(), "codex-refresh raw memory 4") {
+		t.Errorf("stdout = %q, want the retired refresh token's hit under codex-refresh", out)
+	}
+}
+
+func TestLeakscanListsTheNamesItCovered(t *testing.T) {
+	a, out, errOut, cfg := newLeakscanApp(t, fake.New())
+	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("clean memory"), []byte("clean disk"))
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "openai", "secret-value-123456789")
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", "secret-value-987654321")
+	a.Query = oneBuildQuery(leakBuildA)
+	if code := a.Run(t.Context(), []string{"leakscan", "-json", "-image", "dev"}); code != 0 {
+		t.Fatalf("code = %d, want clean exit 0; stderr %q", code, errOut)
+	}
+	var r hibapi.Response
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.LeakScan == nil || !slices.Equal(r.LeakScan.Secrets, []string{"github", "openai"}) || r.LeakScan.SecretCount != 2 {
+		t.Errorf("leakScan = %+v, want secrets github and openai", r.LeakScan)
+	}
+}

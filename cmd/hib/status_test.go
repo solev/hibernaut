@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 )
@@ -26,6 +27,8 @@ func TestStatusRunningHost(t *testing.T) {
 		return writeTestResponse(stdout, hibapi.Response{Status: &hibapi.Status{
 			Version: "v-test", E2B: hibapi.Health{OK: true},
 			GitHub: &hibapi.GitHub{Login: "octocat", Email: "1+octocat@users.noreply.github.com"},
+			Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "plus", AccountID: "acct-1", Health: hibapi.CodexOK,
+				Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)},
 			Secrets: []hibapi.SecretHealth{{
 				Name: "github", Sites: []string{"api.github.com"}, State: hibapi.SecretOK,
 			}},
@@ -37,7 +40,8 @@ func TestStatusRunningHost(t *testing.T) {
 	want := "host    " + testHost + "\n" +
 		"hibd    v-test\n" +
 		"E2B     ok\n" +
-		"GitHub  octocat, commits as 1+octocat@users.noreply.github.com\n\n" +
+		"GitHub  octocat, commits as 1+octocat@users.noreply.github.com\n" +
+		"Codex   octo@example.com, plus plan, token expires 2026-10-14 06:30 UTC\n\n" +
 		"SECRET  SITES           STATE  DETAIL\n" +
 		"github  api.github.com  ok     -\n"
 	if c.out.String() != want || c.errOut.Len() != 0 {
@@ -113,6 +117,13 @@ func TestStatusReportsHealthAndProtocolFailures(t *testing.T) {
 				Name: "custom", State: hibapi.SecretUnchecked, Detail: "no check for this site",
 			}},
 		}}, 0, "no check for this site"},
+		{"stuck Codex", hibapi.Response{Status: &hibapi.Status{
+			E2B: hibapi.Health{OK: true}, Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "plus", Health: hibapi.CodexStuck,
+				Problem: "a refresh was interrupted: run hib connect codex"},
+		}}, 1, "stuck: a refresh was interrupted: run hib connect codex"},
+		{"dead Codex", hibapi.Response{Status: &hibapi.Status{
+			E2B: hibapi.Health{OK: true}, Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "plus", Health: hibapi.CodexDead},
+		}}, 1, "dead: run hib connect codex"},
 		{"missing status", hibapi.Response{}, 1, "hibd didn't report a status"},
 		{"hibd error", hibapi.Response{Error: "repair the vault\x1b[31m"}, 1, "repair the vault\\x1b[31m"},
 	} {

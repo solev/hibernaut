@@ -9,13 +9,19 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-const connectUsage = "connect github (--from-gh | --token)"
+const (
+	connectUsage = "connect github (--from-gh | --token)\n       hib connect codex"
+	// codexLoginTimeout is how long hib connect codex waits for hibd: a minute longer than
+	// Codex's device code lasts.
+	codexLoginTimeout = 16 * time.Minute
+)
 
 func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	if err := checkConnectArgs(args); err != nil {
@@ -30,8 +36,16 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	if !ok {
 		return 2
 	}
-	if providers[0] != "github" {
-		a.fail(errors.New("only GitHub is supported: run hib connect github"))
+	switch providers[0] {
+	case "github":
+	case "codex":
+		if fl.NFlag() > 0 {
+			fmt.Fprintf(a.stderr, "hib connect: hib connect codex takes no flags\nusage: hib %s\n", connectUsage)
+			return 2
+		}
+		return a.connectCodex(ctx, cfg)
+	default:
+		a.fail(errors.New("only GitHub and Codex are supported: run hib connect github or hib connect codex"))
 		fmt.Fprintf(a.stderr, "usage: hib %s\n", connectUsage)
 		return 2
 	}
@@ -70,6 +84,20 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	if warning := g.ScopeWarning(); warning != "" {
 		fmt.Fprintf(a.stderr, "hib: warning: %s\n", termsafe.String(warning))
 	}
+	return 0
+}
+
+// connectCodex has hibd log in to Codex with a device code, and prints the account. hibd's
+// stderr shows the code and the link as they come.
+func (a *app) connectCodex(ctx context.Context, cfg *config) int {
+	r, err := a.remoteSudo(ctx, cfg, codexLoginTimeout, nil, "connect", "codex", "--json")
+	if err != nil {
+		return a.fail(err)
+	}
+	if r.Codex == nil {
+		return a.fail(errors.New("hibd didn't say which account it connected"))
+	}
+	fmt.Fprintf(a.stdout, "connected Codex as %s, on the %s plan\n", termsafe.String(r.Codex.Email), termsafe.String(r.Codex.Plan))
 	return 0
 }
 

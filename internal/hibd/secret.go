@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/vault"
@@ -38,6 +39,9 @@ func (a *App) secretAdd(ctx context.Context, args []string) int {
 	names, ok := a.parse(fl, args, 1, "secret add NAME -env VAR -bind SITE[,SITE...] [-json]")
 	if !ok {
 		return 2
+	}
+	if codex.Managed(names[0]) {
+		return a.fail(*asJSON, "secret add", fmt.Errorf("names that start with %s are for Codex's login, which hib connect codex manages: choose another name", codex.NamePrefix))
 	}
 	sites := vault.SplitSites(*bind)
 	if err := vault.CheckSecret(names[0], *env, sites); err != nil {
@@ -75,6 +79,9 @@ func (a *App) secretRM(ctx context.Context, args []string) int {
 	names, ok := a.parse(fl, args, 1, "secret rm NAME [-json]")
 	if !ok {
 		return 2
+	}
+	if codex.Managed(names[0]) {
+		return a.fail(*asJSON, "secret rm", fmt.Errorf("secret %s is part of Codex's login, which hib connect codex manages", names[0]))
 	}
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {

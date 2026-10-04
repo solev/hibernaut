@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 )
@@ -100,6 +101,10 @@ func TestStatusOK(t *testing.T) {
 		{name: "revoked", status: hibapi.Status{E2B: up, Secrets: []hibapi.SecretHealth{{Name: "a", State: hibapi.SecretRevoked}}}},
 		{name: "failed", status: hibapi.Status{E2B: up, Secrets: []hibapi.SecretHealth{{Name: "a", State: hibapi.SecretFailed}}}},
 		{name: "unknown state", status: hibapi.Status{E2B: up, Secrets: []hibapi.SecretHealth{{Name: "a", State: "odd"}}}},
+		{name: "codex ok", status: hibapi.Status{E2B: up, Codex: &hibapi.Codex{Health: hibapi.CodexOK}}, want: true},
+		{name: "codex dead", status: hibapi.Status{E2B: up, Codex: &hibapi.Codex{Health: hibapi.CodexDead}}},
+		{name: "codex stuck", status: hibapi.Status{E2B: up, Codex: &hibapi.Codex{Health: hibapi.CodexStuck}}},
+		{name: "codex unknown health", status: hibapi.Status{E2B: up, Codex: &hibapi.Codex{Health: "odd"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.status.OK(); got != tc.want {
@@ -124,6 +129,8 @@ func TestPrintStatus(t *testing.T) {
 				E2B:     hibapi.Health{OK: true},
 				GitHub: &hibapi.GitHub{Login: "octo", ID: 42, Name: "Octo Cat", Email: "42+octo@users.noreply.github.com",
 					Source: hibapi.GitHubFromGH, Scopes: []string{"repo"}, ScopesKnown: true},
+				Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "plus", AccountID: "acct-1", Health: hibapi.CodexOK,
+					Expires: time.Date(2026, 10, 14, 9, 30, 0, 0, time.FixedZone("EEST", 3*3600))},
 				Secrets: []hibapi.SecretHealth{
 					{Name: "github", Sites: []string{"github.com", "api.github.com"}, State: hibapi.SecretOK},
 					{Name: "openai", Sites: []string{"api.openai.com"}, State: hibapi.SecretUnchecked, Detail: "no check for these sites"},
@@ -135,6 +142,7 @@ func TestPrintStatus(t *testing.T) {
 				"GitHub  octo (Octo Cat), commits as 42+octo@users.noreply.github.com\n" +
 				"        warning: the token has no workflow scope, so machines can't push changes under .github/workflows. " +
 				"To fix it, run gh auth refresh -h github.com -s workflow, then hib connect github --from-gh again.\n" +
+				"Codex   octo@example.com, plus plan, token expires 2026-10-14 06:30 UTC\n" +
 				"\n" +
 				"SECRET  SITES                      STATE      DETAIL\n" +
 				"github  github.com,api.github.com  ok         -\n" +
@@ -151,6 +159,7 @@ func TestPrintStatus(t *testing.T) {
 			want: "hibd    -\n" +
 				"E2B     down: http://127.0.0.1:3000/health: 502 Bad Gateway\n" +
 				"GitHub  not connected: run hib connect github --from-gh\n" +
+				"Codex   not connected: run hib connect codex\n" +
 				"\n" +
 				"SECRET  SITES           STATE    DETAIL\n" +
 				"gh      api.github.com  revoked  revoked: run hib secret add gh again\n",
@@ -165,6 +174,51 @@ func TestPrintStatus(t *testing.T) {
 			want: "hibd     0.4.0\n" +
 				"E2B      ok\n" +
 				"GitHub   octo, commits as 42+octo@users.noreply.github.com\n" +
+				"Codex    not connected: run hib connect codex\n" +
+				"secrets  none\n",
+		},
+		{
+			name: "codex stuck",
+			status: hibapi.Status{
+				Version: "0.5.0",
+				E2B:     hibapi.Health{OK: true},
+				Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "pro", Health: hibapi.CodexStuck,
+					Problem: "a refresh was interrupted: run hib connect codex", Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)},
+			},
+			want: "hibd     0.5.0\n" +
+				"E2B      ok\n" +
+				"GitHub   not connected: run hib connect github --from-gh\n" +
+				"Codex    octo@example.com, pro plan, token expires 2026-10-14 06:30 UTC\n" +
+				"         stuck: a refresh was interrupted: run hib connect codex\n" +
+				"secrets  none\n",
+		},
+		{
+			name: "codex dead, without a fix in the problem",
+			status: hibapi.Status{
+				Version: "0.5.0",
+				E2B:     hibapi.Health{OK: true},
+				Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "pro", Health: hibapi.CodexDead,
+					Problem: "OpenAI refused the refresh token", Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)},
+			},
+			want: "hibd     0.5.0\n" +
+				"E2B      ok\n" +
+				"GitHub   not connected: run hib connect github --from-gh\n" +
+				"Codex    octo@example.com, pro plan, token expires 2026-10-14 06:30 UTC\n" +
+				"         dead: OpenAI refused the refresh token. Run hib connect codex\n" +
+				"secrets  none\n",
+		},
+		{
+			name: "codex dead, without a problem",
+			status: hibapi.Status{
+				Version: "0.5.0",
+				E2B:     hibapi.Health{OK: true},
+				Codex:   &hibapi.Codex{Email: "octo@example.com", Plan: "pro", Health: hibapi.CodexDead, Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)},
+			},
+			want: "hibd     0.5.0\n" +
+				"E2B      ok\n" +
+				"GitHub   not connected: run hib connect github --from-gh\n" +
+				"Codex    octo@example.com, pro plan, token expires 2026-10-14 06:30 UTC\n" +
+				"         dead: run hib connect codex\n" +
 				"secrets  none\n",
 		},
 		{
@@ -173,6 +227,8 @@ func TestPrintStatus(t *testing.T) {
 				Version: "0.4\x1b[2J",
 				E2B:     hibapi.Health{Detail: "line one\nline\ttwo\r"},
 				GitHub:  &hibapi.GitHub{Login: "octo", ID: 42, Name: "Evil\x07Name", Email: "42+octo@users.noreply.github.com"},
+				Codex: &hibapi.Codex{Email: "a@b\x1b]0;x\x07", Plan: "pl\nus", Health: "odd\x1b", Problem: "line\none",
+					Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)},
 				Secrets: []hibapi.SecretHealth{
 					{Name: "x\x1b", Sites: []string{"a.co\n"}, State: "odd\x00", Detail: "bad\tdetail\nhere"},
 				},
@@ -180,6 +236,8 @@ func TestPrintStatus(t *testing.T) {
 			want: "hibd    0.4\\x1b[2J\n" +
 				"E2B     down: line one line two\n" +
 				"GitHub  octo (Evil\\x07Name), commits as 42+octo@users.noreply.github.com\n" +
+				"Codex   a@b\\x1b]0;x\\x07, pl us plan, token expires 2026-10-14 06:30 UTC\n" +
+				"        odd\\x1b: line one. Run hib connect codex\n" +
 				"\n" +
 				"SECRET  SITES  STATE    DETAIL\n" +
 				"x\\x1b   a.co   odd\\x00  bad detail here\n",
@@ -192,6 +250,17 @@ func TestPrintStatus(t *testing.T) {
 				t.Errorf("PrintStatus =\n%s\nwant\n%s\n(%q)", got, tc.want, got)
 			}
 		})
+	}
+}
+
+func TestPrintCodex(t *testing.T) {
+	var out bytes.Buffer
+	hibapi.PrintCodex(&out, hibapi.Codex{Email: "octo@example.com", Plan: "pro", Health: hibapi.CodexStuck,
+		Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)})
+	want := "Codex  octo@example.com, pro plan, token expires 2026-10-14 06:30 UTC\n" +
+		"       stuck: run hib connect codex\n"
+	if out.String() != want {
+		t.Errorf("PrintCodex = %q, want %q", out.String(), want)
 	}
 }
 
