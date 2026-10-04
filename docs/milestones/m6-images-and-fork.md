@@ -65,14 +65,26 @@ what it did since the save began, and `hibd` never claims a state it hasn't read
    `leakscan.WaitBuild`, with a 2 minute limit.
 6. Resume it, and renew its timeout so E2B's idle pause can't land mid-save.
 7. Check again that the host isn't going to sleep, then save into the new alias.
-8. On failure, delete the new alias if it exists, and never retry automatically.
+8. On failure, put the origin back first, running or paused as it was. Then look the new alias
+   up and delete it by ID if found. E2B caches missing aliases, so a failed save's alias may be
+   hidden. Poll every 5 s for up to 90 s from the start of cleanup. A missing alias after
+   `ErrNotRunning` or `ErrNotFound` needs no wait, because E2B created nothing. Other errors also
+   poll while the alias is missing, including unknown outcomes and saves rejected before
+   creating anything. If the window ends, report removal as unconfirmed, never as success.
+   Never retry automatically.
    - `ErrCheckpoint`: the origin is paused at the snapshot from step 5. If it was running,
      resume it, and say "E2B couldn't save web (its checkpoint failed). web is running again as
      it was when the save began. Nothing was saved. Try again."
+   - `ErrNotRunning` or `ErrNotFound`: say nothing was saved. Report the origin's state as read.
    - Any other error: the outcome is unknown. Read the origin's state and report it as read.
+   - Unconfirmed image removal: the template may still exist, hidden by E2B for a few minutes.
+     Tell the user to wait a few minutes, remove it with `hib image rm NAME`, then try again.
+   - Unconfirmed fork removal: name the template and say it may be left. Nothing in `hib` can
+     list it, and the sweeper cannot see it without a ready build.
 
-   Cleanup and restore run on `context.WithoutCancel` with a timeout, so Ctrl-C can't strand the
-   origin.
+   Restore and cleanup use separate `context.WithoutCancel` deadlines, so Ctrl-C can't strand
+   the origin. Cleanup gets the 90 s window plus a bounded delete. These timings cover E2B's
+   one-minute cache refresh in ordinary cases. They are operational defaults, not guarantees.
 9. Put the origin back. If it was paused, pause it again. A forked origin is paused again before
    the copies start.
 
@@ -202,6 +214,12 @@ Pins and locks get their owner before they are published, so ordinary user comma
 
 - If `hibd` dies between creating an alias and finishing, the alias may never show in
   `GET /snapshots`, so nothing removes it.
+- E2B can hide a failed save's alias past the cleanup window if a refresh is skipped or fails.
+  An image's alias can be removed later with `hib image rm NAME`. A hidden fork alias stays.
+- A save rejected before creating anything with an error other than 404 or 409 waits the whole
+  window and reports removal as unconfirmed. `hibd` cannot tell it from a hidden alias.
+- The state lock stays held during cleanup. Create, Pause and Remove can wait behind a failed
+  save for about 90 s longer. Dial and List do not take that lock.
 - Nightly `pause-all` doesn't take the state lock. A save or fork that began before the quiesce
   may see its machines paused, and fails honestly. `hib new` has the same gap.
 
@@ -255,6 +273,13 @@ Integration (the fake engine, through Manager and through `hibd`):
 - [ ] Save, then `new --image`.
 - [ ] Fork 2 from a running origin, and from a paused one, which is paused again afterwards.
 - [ ] A failed save: the origin is running again, the message is honest, and no alias is left.
+- [ ] Failed saves hidden by E2B's alias cache are found after refresh. The origin is restored
+      while cleanup waits. A long save needs at most two polls, and early 404 or 409 errors
+      skip the wait.
+- [ ] Unknown save outcomes are cleaned up. A rejected save or a cache that never refreshes
+      reaches the 90 s window and reports removal as unconfirmed, with recovery instructions.
+- [ ] Failed fork aliases are removed after refresh. A hidden one that outlasts the window is
+      named honestly, without promising the sweeper will remove it.
 - [ ] A fork failing on copy 2 of 3: copy 1 is kept, copy 2 is killed, and the exit is non-zero.
 - [ ] `image rm` while copies use the image, then after they're gone.
 - [ ] `hib pause` waits for a fork.
