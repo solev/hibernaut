@@ -13,6 +13,15 @@ import (
 	"testing"
 )
 
+func TestInstallCodexMissingPins(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("bash", "install-codex.sh", filepath.Join(dir, "missing-versions"), filepath.Join(dir, "bin"))
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "deploy images/dev/versions") {
+		t.Fatal("missing release pins must explain how to fix the deployment")
+	}
+}
+
 func TestInstallCodex(t *testing.T) {
 	dir := t.TempDir()
 	archive := filepath.Join(dir, "codex.tar.gz")

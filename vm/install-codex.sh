@@ -5,6 +5,10 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 versions="${1:-$here/../images/dev/versions}"
 bin_dir="${2:-/usr/local/bin}"
+[[ -r "$versions" ]] || {
+	echo "missing codex release pins: deploy images/dev/versions with vm, then run make deploy again" >&2
+	exit 1
+}
 # shellcheck source=/dev/null
 source "$versions"
 
