@@ -1,6 +1,7 @@
-// Package github is what hibd knows about GitHub: the secret that holds the token, the one API
-// call that checks a token and says whose it is, the checks on what GitHub says, and the
-// connected account's profile file. It never puts a token in an error.
+// Package github is what hibd knows about GitHub: the secret that holds the token, the device
+// flow that gets a token, the one API call that checks a token and says whose it is, the checks
+// on what GitHub says, and the connected account's profile file. It never puts a token or a
+// device code in an error.
 package github
 
 import (

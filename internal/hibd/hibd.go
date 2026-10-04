@@ -137,6 +137,9 @@ type App struct {
 	// GitHubClient is the HTTP client for GitHub's API, for tests only. If it's nil, App uses
 	// github.NewClient().
 	GitHubClient *http.Client
+	// GitHubDeviceFlow runs hibd connect github -source device, for tests only. If it's nil, App
+	// uses a DeviceFlow with github.ClientID and the rest of its defaults.
+	GitHubDeviceFlow *github.DeviceFlow
 	// CodexBin is the codex that hibd connect codex runs, for tests only. If it's "", App uses
 	// /usr/local/bin/codex.
 	CodexBin string
