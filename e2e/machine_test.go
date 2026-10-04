@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,6 +51,15 @@ func TestMachine(t *testing.T) {
 	}
 
 	t.Run("state survives pause", func(t *testing.T) { survivesPause(t, ctx, name) })
+
+	t.Run("exec wakes a paused machine", func(t *testing.T) {
+		hib(t, ctx, "pause", name)
+		start := time.Now()
+		if out := hib(t, ctx, "exec", name, "--", "echo", "woke"); strings.TrimSpace(out) != "woke" {
+			t.Errorf("hib exec on a paused machine printed %q, want woke", out)
+		}
+		t.Logf("hib exec on a paused machine took %v", time.Since(start).Round(time.Millisecond))
+	})
 
 	// rm deletes the machine for good: it leaves hib ls and the engine, and ssh to it fails.
 	hib(t, ctx, "rm", name)
@@ -262,6 +272,15 @@ func laptopPinKey(t *testing.T, name string) string {
 		t.Fatalf("the pin for %s isn't a known_hosts line: %q", name, f)
 	}
 	return f[1] + " " + f[2]
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return string(data)
 }
 
 // hostPinKey returns the host key the host pinned for machine id, read as root.

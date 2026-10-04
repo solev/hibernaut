@@ -17,21 +17,12 @@ import (
 const codexSmoke = `codex exec --skip-git-repo-check "Reply with exactly OK."`
 const copilotSmoke = `copilot -p "Reply with exactly OK." -s --allow-all-tools --no-ask-user`
 
-func TestCodex(t *testing.T) {
-	ctx := testContext(t, 20*time.Minute)
-	status := toolStatus(t, ctx)
-	requireCodexConnected(t, status)
-	name := newHibMachine(t, ctx)
-	requireCodexPackage(t, ctx, name)
-	requireToolOK(t, ctx, name, codexSmoke)
-	requireNoLeaks(t, ctx, name, toolSecrets(status)...)
-}
-
 func TestCodexRefresh(t *testing.T) {
 	ctx := testContext(t, 25*time.Minute)
 	status := toolStatus(t, ctx)
 	requireCodexConnected(t, status)
 	existing := newHibMachine(t, ctx)
+	requireCodexPackage(t, ctx, existing)
 	requireToolOK(t, ctx, existing, codexSmoke)
 
 	out, err := vm.ssh(ctx, "sudo -n hibd codex refresh -force -json")

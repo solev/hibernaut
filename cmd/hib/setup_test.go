@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/version"
 )
 
@@ -76,6 +77,7 @@ func TestInit(t *testing.T) {
 		"  UpdateHostKeys no\n",
 		"  ConnectTimeout 600\n",
 		"  ForwardAgent no\n",
+		"  ForwardX11 no\n",
 		"  IdentityFile \"" + identity + "\"\n",
 		"  IdentitiesOnly yes\n",
 	} {
@@ -100,6 +102,46 @@ func TestInit(t *testing.T) {
 	}
 	if cfg, err := loadConfig(c.dir); err != nil || cfg.Azure != nil {
 		t.Errorf("second init should replace the settings: %+v, %v", cfg, err)
+	}
+}
+
+func TestInitVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		host    string
+		warning bool
+	}{
+		{"matching", version.Version, false},
+		{"different", "older-host-build", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+				if !slices.Equal(words, []string{"version", "--json"}) {
+					return 0, false
+				}
+				if err := json.NewEncoder(stdout).Encode(hibapi.Response{V: hibapi.Version, Version: tc.host}); err != nil {
+					t.Fatal(err)
+				}
+				return 0, true
+			}
+			c := newClient(t, h)
+			if code := c.hib("version"); code != 0 || c.out.String() != "hib "+version.Version+"\n" {
+				t.Fatalf("version: exit %d, stdout %q", code, c.out)
+			}
+			if code := c.hib("init", "-host", testHost); code != 0 {
+				t.Fatalf("init exit %d: %s", code, c.errOut)
+			}
+			if want := testHost + " runs hibd " + tc.host + "\n"; !strings.HasPrefix(c.out.String(), want) {
+				t.Errorf("init printed %q, want the host's version %q", c.out, want)
+			}
+			if warned := strings.Contains(c.out.String(), "note:"); warned != tc.warning {
+				t.Errorf("init warned %v, want %v: %s", warned, tc.warning, c.out)
+			}
+			if tc.warning && !strings.Contains(c.out.String(), "this is hib "+version.Version+"; deploy the same release to the host") {
+				t.Errorf("init didn't say which release to deploy: %s", c.out)
+			}
+		})
 	}
 }
 

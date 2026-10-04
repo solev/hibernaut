@@ -103,18 +103,6 @@ func TestBusyStaysAwake(t *testing.T) {
 	}
 }
 
-// TestWakeOnExec checks that hib exec wakes a paused machine on the first try.
-func TestWakeOnExec(t *testing.T) {
-	ctx := testContext(t, 10*time.Minute)
-	name := newHibMachine(t, ctx)
-	hib(t, ctx, "pause", name)
-	start := time.Now()
-	if out := hib(t, ctx, "exec", name, "--", "echo", "woke"); strings.TrimSpace(out) != "woke" {
-		t.Errorf("hib exec on a paused machine printed %q, want woke", out)
-	}
-	t.Logf("hib exec on a paused machine took %v", time.Since(start).Round(time.Millisecond))
-}
-
 // TestBusyPastAnHour checks that a busy machine keeps running, without a pause, past E2B's default
 // 1-hour cap, which install-e2b.sh lifts.
 func TestBusyPastAnHour(t *testing.T) {
