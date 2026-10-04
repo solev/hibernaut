@@ -65,12 +65,13 @@ func (m *Manager) saveOrigin(ctx context.Context, em engine.Machine, alias strin
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		if err := m.e.Pause(rctx, em.ID); err != nil && !errors.Is(err, engine.ErrNotRunning) {
-			cleanup := m.cleanAlias(ctx, alias)
+			cleanup := m.cleanAlias(ctx, alias, nil)
 			state := m.readOriginState(ctx, em, true)
 			if cleanup == nil {
 				return engine.TemplateInfo{}, describe(err, fmt.Sprintf("couldn't pause %s again: %v. %s Nothing was saved.", Name(em), err, state))
 			}
-			return tmpl, describe(errors.Join(err, cleanup), fmt.Sprintf("saved %s, but couldn't pause %s again: %v. %s Also couldn't remove template %s: %v.", alias, Name(em), err, state, alias, cleanup))
+			message := fmt.Sprintf("saved %s, but couldn't pause %s again: %v. %s", alias, Name(em), err, state)
+			return tmpl, describe(errors.Join(err, cleanup), message+aliasRemovalMessage(alias, cleanup))
 		}
 	}
 	return tmpl, nil
@@ -119,56 +120,6 @@ func (m *Manager) restoreAfterFailure(ctx context.Context, em engine.Machine, ca
 		return describe(errors.Join(cause, err), fmt.Sprintf("%v Couldn't pause %s again: %v. %s", cause, Name(em), err, m.readOriginState(rctx, em, safeSnapshot)))
 	}
 	return cause
-}
-
-func (m *Manager) failedSave(ctx context.Context, em engine.Machine, alias string, cause error) error {
-	cleanup := m.cleanAlias(ctx, alias)
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-	defer cancel()
-	name := Name(em)
-	outcome := "Nothing was saved."
-	if cleanup != nil {
-		outcome = "The new template may still exist."
-	}
-	var message string
-	if errors.Is(cause, engine.ErrCheckpoint) {
-		if em.State == engine.Running {
-			if _, err := m.e.Resume(rctx, em.ID, m.saveTimeout(em)); err != nil {
-				cause = errors.Join(cause, err)
-				message = fmt.Sprintf("E2B couldn't save %s (its checkpoint failed). Couldn't resume %s: %v. %s %s Try again.", name, name, err, m.readOriginState(rctx, em, true), outcome)
-			} else {
-				message = fmt.Sprintf("E2B couldn't save %s (its checkpoint failed). %s is running again as it was when the save began. %s Try again.", name, name, outcome)
-			}
-		} else {
-			cause = m.restoreAfterFailure(rctx, em, cause, true)
-			message = fmt.Sprintf("E2B couldn't save %s (its checkpoint failed): %v. %s %s Try again.", name, cause, m.readOriginState(rctx, em, true), outcome)
-		}
-	} else {
-		if em.State == engine.Paused {
-			cause = m.restoreAfterFailure(rctx, em, cause, true)
-		}
-		message = fmt.Sprintf("E2B couldn't confirm the save of %s: %v. %s Check it with: hib ls. Don't retry until you've checked.", name, cause, m.readOriginState(rctx, em, true))
-	}
-	if cleanup != nil {
-		cause = errors.Join(cause, cleanup)
-		message += fmt.Sprintf(" Also couldn't remove template %s: %v.", alias, cleanup)
-	}
-	return describe(cause, message)
-}
-
-func (m *Manager) deleteAlias(ctx context.Context, alias string) error {
-	tmpl, err := m.e.Template(ctx, alias)
-	if errors.Is(err, engine.ErrNoTemplate) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	err = m.e.DeleteTemplate(ctx, tmpl.ID)
-	if errors.Is(err, engine.ErrNoTemplate) {
-		return nil
-	}
-	return err
 }
 
 func (m *Manager) readOriginState(ctx context.Context, em engine.Machine, safeSnapshot bool) string {

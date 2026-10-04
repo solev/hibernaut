@@ -18,6 +18,8 @@ const MaxCopies = 10
 // k. Each copy gets a fresh host key, Config.Setup, and machine's idle time and image. Fork
 // stops at the first copy it can't make, and returns the copies made with the error. machine
 // is saved as SaveImage saves, and left running or paused as it was.
+// A failed save can take about 90 s longer while hibd removes what E2B left. The state lock stays
+// held during that wait, so Create, Pause and Remove wait behind it. Dial and List don't take it.
 func (m *Manager) Fork(ctx context.Context, machine string, count int) ([]hibapi.Machine, error) {
 	if err := hibapi.CheckName(machine); err != nil {
 		return nil, err
