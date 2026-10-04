@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/solev/hibernaut/internal/github"
@@ -13,14 +14,19 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-const connectUsage = "connect github [-source gh|token] [-json]"
+const connectGitHubUsage = "connect github [-source gh|token] [-json]"
 
 func (a *App) connect(ctx context.Context, args []string) int {
-	if len(args) == 0 || args[0] != "github" {
-		fmt.Fprintf(a.Stderr, "usage: hibd %s\n", connectUsage)
-		return 2
+	if len(args) > 0 {
+		switch args[0] {
+		case "github":
+			return a.connectGitHub(ctx, args[1:])
+		case "codex":
+			return a.connectCodex(ctx, args[1:])
+		}
 	}
-	return a.connectGitHub(ctx, args[1:])
+	fmt.Fprintf(a.Stderr, "usage: hibd %s\n       hibd %s\n", connectGitHubUsage, connectCodexUsage)
+	return 2
 }
 
 // connectGitHub stores the token on stdin as secret github once GitHub accepts it, saves the
@@ -29,7 +35,7 @@ func (a *App) connectGitHub(ctx context.Context, args []string) int {
 	fl := a.flags("connect github")
 	source := fl.String("source", hibapi.GitHubFromGH, "how the token was given: gh or token")
 	asJSON := fl.Bool("json", false, "print JSON")
-	if _, ok := a.parse(fl, args, 0, connectUsage); !ok {
+	if _, ok := a.parse(fl, args, 0, connectGitHubUsage); !ok {
 		return 2
 	}
 	if *source != hibapi.GitHubFromGH && *source != hibapi.GitHubFromToken {
@@ -135,4 +141,45 @@ func (a *App) githubClient() *http.Client {
 		return a.GitHubClient
 	}
 	return github.NewClient()
+}
+
+// rebindGitHub puts secret github again with github.Sites() and the same value, which keeps its
+// placeholder, if GitHub is connected and the secret's sites are others. A connection made
+// before the Copilot CLI's sites joined then covers them. It reports whether it changed the
+// vault.
+func rebindGitHub(cfg config) (bool, error) {
+	p, err := github.LoadProfile(cfg.githubProfile)
+	if err != nil || p == nil {
+		return false, err
+	}
+	f, err := vault.Load(cfg.vaultPath)
+	if err != nil || !githubSitesOutdated(f) {
+		return false, err
+	}
+	changed := false
+	err = vault.Update(cfg.vaultPath, cfg.vaultKeyPath, func(f *vault.File, key vault.Key) error {
+		if !githubSitesOutdated(f) {
+			return nil
+		}
+		revealed, err := f.Open(key)
+		if err != nil {
+			return err
+		}
+		i := slices.IndexFunc(revealed, func(r vault.Revealed) bool { return r.Name == github.SecretName })
+		s := revealed[i]
+		if _, err := f.Put(key, s.Name, s.Env, github.Sites(), s.Value); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
+// githubSitesOutdated reports whether f has secret github, bound to sites other than
+// github.Sites().
+func githubSitesOutdated(f *vault.File) bool {
+	secrets := f.Secrets()
+	i := slices.IndexFunc(secrets, func(s vault.Secret) bool { return s.Name == github.SecretName })
+	return i >= 0 && !slices.Equal(secrets[i].Sites, slices.Sorted(slices.Values(github.Sites())))
 }

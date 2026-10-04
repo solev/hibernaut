@@ -39,6 +39,8 @@ type secretGuest struct {
 	// noGit, if set, runs the setup's git script for real, in a shell whose PATH is this empty
 	// directory, as in an image without git.
 	noGit string
+	// codexAuth is Codex's login file, as the setup wrote it.
+	codexAuth []byte
 }
 
 func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
@@ -56,6 +58,14 @@ func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req en
 	case "sh":
 		if len(req.Args) == 5 && req.Args[2] == "hibd-git" {
 			return g.setGit(req)
+		}
+		if len(req.Args) == 5 && req.Args[2] == "hibd-codex" && req.Args[3] == "/home/user/.codex" && req.User == "root" {
+			auth, err := base64.StdEncoding.DecodeString(req.Args[4])
+			if err != nil {
+				return engine.ExecResult{ExitCode: 64, Stderr: []byte(err.Error())}, nil
+			}
+			g.codexAuth = auth
+			return engine.ExecResult{}, nil
 		}
 		if len(req.Args) == 5 && req.Args[2] == "hibd-env" {
 			if got := sha256.Sum256(g.env); req.Args[3] != hexHash(got[:]) {
@@ -101,6 +111,12 @@ func (g *secretGuest) identity() *machines.GitIdentity {
 	}
 	id := *g.git
 	return &id
+}
+
+func (g *secretGuest) codexAuthFile() []byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return bytes.Clone(g.codexAuth)
 }
 
 func (g *secretGuest) envString() string {
@@ -291,3 +307,28 @@ func TestRootOwnedVaultFilesDoNotBreakStateDirChecks(t *testing.T) {
 }
 
 var _ = hibapi.Secret{}
+
+func TestSecretAddAndRmRefuseCodexNames(t *testing.T) {
+	a, out, errOut := newApp(t, fake.New())
+	withSecretConfig(t, a)
+	vaultPath := filepath.Join(a.Getenv("HIBD_STATE_DIR"), "vault.json")
+	for _, name := range []string{"codex-access", "codex-refresh", "codex-mine"} {
+		a.Stdin = strings.NewReader("sk-realSecretValue1234567890")
+		code, r, err := runJSON(t, a, out, "secret", "add", name, "-env", "MY_TOKEN", "-bind", "example.com", "-json")
+		var remote *hibapi.RemoteError
+		if code != 1 || !errors.As(err, &remote) || !strings.Contains(remote.Msg, "hib connect codex") {
+			t.Errorf("secret add %s: exit %d, reply %+v, %v; want 1 and an error naming hib connect codex", name, code, r, err)
+		}
+		if _, err := os.Stat(vaultPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("secret add %s touched the vault: %v", name, err)
+		}
+	}
+	storeTestSecret(t, a, "codex-access", "CODEX_TEST", "chatgpt.com", "sk-realSecretValue1234567890")
+	errOut.Reset()
+	if code := a.Run(t.Context(), []string{"secret", "rm", "codex-access"}); code != 1 || !strings.Contains(errOut.String(), "hib connect codex") {
+		t.Errorf("secret rm codex-access: exit %d, stderr %q; want 1 and an error naming hib connect codex", code, errOut)
+	}
+	if s := loadVault(t, a); len(s) != 1 {
+		t.Errorf("vault = %+v, want codex-access kept", s)
+	}
+}

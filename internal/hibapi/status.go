@@ -90,7 +90,8 @@ type Status struct {
 	Secrets []SecretHealth `json:"secrets"`
 }
 
-// OK reports whether s shows nothing broken: E2B is up, and every secret is fine or has no check.
+// OK reports whether s shows nothing broken: E2B is up, every secret is fine or has no check, and
+// Codex, if connected, is ok.
 func (s Status) OK() bool {
 	if !s.E2B.OK {
 		return false
@@ -100,7 +101,7 @@ func (s Status) OK() bool {
 			return false
 		}
 	}
-	return true
+	return s.Codex == nil || s.Codex.Health == CodexOK
 }
 
 // Health is whether something works, and if not, why.

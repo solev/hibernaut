@@ -2,15 +2,19 @@ package hibd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/codex"
+	"github.com/solev/hibernaut/internal/codex/codextest"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -264,5 +268,113 @@ func TestStatusChecksAtMostEightAtOnce(t *testing.T) {
 	}
 	if most := gh.mostAtOnce(); most > 8 || most < 2 {
 		t.Errorf("GitHub got %d calls at once, want 2 to 8", most)
+	}
+}
+
+// connectTestCodex commits tokens to a's Codex store, as hib connect codex would, and returns
+// the token server, which status must never call.
+func connectTestCodex(t *testing.T, a *App, tokens codex.Tokens) *codextest.TokenServer {
+	t.Helper()
+	server := codextest.NewTokenServer(t, tokens)
+	a.CodexTokenURL, a.CodexClient = server.URL, server.Client
+	if _, err := codexStoreFor(a).CommitLogin(t.Context(), tokens); err != nil {
+		t.Fatal(err)
+	}
+	return server
+}
+
+// setCodexHealth rewrites a's Codex profile with health and problem.
+func setCodexHealth(t *testing.T, a *App, health hibapi.CodexHealth, problem string) {
+	t.Helper()
+	path := filepath.Join(a.Getenv("HIBD_STATE_DIR"), codex.ProfileFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p codex.Profile
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Health, p.Problem = health, problem
+	if data, err = json.Marshal(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusShowsCodex(t *testing.T) {
+	a, out, errOut, _ := newStatusApp(t)
+	tokens := testCodexTokens()
+	server := connectTestCodex(t, a, tokens)
+
+	s := runStatus(t, a, out)
+	wantNoCodexToken(t, tokens, out.Bytes())
+	if s.Codex == nil || s.Codex.Email != "dev@example.com" || s.Codex.Plan != "plus" || s.Codex.AccountID != "acct-1234" ||
+		s.Codex.Health != hibapi.CodexOK || s.Codex.Expires.IsZero() {
+		t.Fatalf("Codex = %+v, want dev@example.com on plus, ok, with an expiry", s.Codex)
+	}
+	if !s.OK() {
+		t.Errorf("status = %+v, want OK", s)
+	}
+	if code := runStatusText(t, a, out, s); code != 0 {
+		t.Errorf("status exit %d, want 0; stderr %q", code, errOut)
+	}
+	if !strings.Contains(out.String(), "Codex   dev@example.com, plus plan, token expires ") {
+		t.Errorf("status printed\n%s\nwant a Codex line", out)
+	}
+	wantNoCodexToken(t, tokens, out.Bytes(), errOut.Bytes())
+	if n := server.Requests(); n != 0 {
+		t.Errorf("status made %d requests to OpenAI, want none", n)
+	}
+}
+
+func TestStatusCodexDeadOrStuck(t *testing.T) {
+	for _, health := range []hibapi.CodexHealth{hibapi.CodexDead, hibapi.CodexStuck} {
+		t.Run(string(health), func(t *testing.T) {
+			a, out, _, _ := newStatusApp(t)
+			server := connectTestCodex(t, a, testCodexTokens())
+			setCodexHealth(t, a, health, "OpenAI refused the refresh token")
+			s := runStatus(t, a, out)
+			if s.Codex == nil || s.Codex.Health != health || s.OK() {
+				t.Fatalf("Codex = %+v, OK %v; want %s and not OK", s.Codex, s.OK(), health)
+			}
+			if code := runStatusText(t, a, out, s); code != 1 {
+				t.Errorf("status exit %d, want 1", code)
+			}
+			if !strings.Contains(out.String(), string(health)+": OpenAI refused the refresh token. Run hib connect codex") {
+				t.Errorf("status printed\n%s\nwant it to say to run hib connect codex", out)
+			}
+			if n := server.Requests(); n != 0 {
+				t.Errorf("status made %d requests to OpenAI, want none", n)
+			}
+		})
+	}
+}
+
+func TestStatusWithoutCodex(t *testing.T) {
+	a, out, _, _ := newStatusApp(t)
+	s := runStatus(t, a, out)
+	if s.Codex != nil || !s.OK() {
+		t.Errorf("status = %+v, want no Codex and OK", s)
+	}
+	if strings.Contains(out.String(), `"codex"`) {
+		t.Errorf("status -json printed %q, want no codex", out)
+	}
+	if code := runStatusText(t, a, out, s); code != 0 || !strings.Contains(out.String(), "Codex    not connected: run hib connect codex") {
+		t.Errorf("status exit %d, printed\n%s\nwant 0 and a line saying how to connect Codex", code, out)
+	}
+}
+
+func TestStatusBrokenCodexProfile(t *testing.T) {
+	a, out, _, _ := newStatusApp(t)
+	path := filepath.Join(a.Getenv("HIBD_STATE_DIR"), codex.ProfileFile)
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, r := runJSONReply(t, a, out, "status", "-json")
+	if code != 1 || !strings.Contains(r.Error, "hib connect codex") {
+		t.Errorf("exit %d, %+v; want 1 and an error saying to run hib connect codex", code, r)
 	}
 }
