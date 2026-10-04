@@ -88,13 +88,14 @@ func TestSaveRestoresPausedOriginAfterCheckpointWakeRace(t *testing.T) {
 }
 
 func TestForkKillsCopiesFailingEachSetupStep(t *testing.T) {
-	for _, step := range []string{"rm", images.MachineInit, "cat", "sh"} {
+	for _, step := range []string{"reset", images.MachineInit, "cat", "env CAS"} {
 		t.Run(step, func(t *testing.T) {
 			g := newCopyGuest()
 			v := newEnv(t, fake.WithExec(g.exec))
 			v.create(t, "web")
 			g.fail = func(req engine.ExecRequest) error {
-				if req.Cmd == step {
+				if req.Cmd == step || req.Cmd == "sh" && len(req.Args) >= 3 &&
+					(step == "reset" && req.Args[2] == "hibd-reset" || step == "env CAS" && req.Args[2] == "hibd-env") {
 					return errors.New("setup failed")
 				}
 				return nil

@@ -43,7 +43,7 @@ func TestFork(t *testing.T) {
 				if got := em.EndAt.Sub(em.StartedAt); got != 45*time.Minute {
 					t.Errorf("copy timeout = %v", got)
 				}
-				if g.requests[copy.ID][0].Cmd != "rm" || string(g.env[copy.ID]) != "KEEP=yes\n" {
+				if req := g.requests[copy.ID][0]; req.Cmd != "sh" || req.Args[2] != "hibd-reset" || string(g.env[copy.ID]) != "KEEP=yes\n" {
 					t.Errorf("copy wasn't re-keyed and given the empty setup")
 				}
 				c, err := m.Dial(t.Context(), copy.Name)
