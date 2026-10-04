@@ -31,10 +31,10 @@ const (
 	Timeout = 10 * time.Second
 )
 
-// Sites returns the sites the token is bound to: git, the API and uploads. Each call returns a
-// new slice.
+// Sites returns the sites the token is bound to: git, the API, uploads, and the Copilot CLI's
+// API hosts, which take the token itself. Each call returns a new slice.
 func Sites() []string {
-	return []string{"github.com", "api.github.com", "uploads.github.com"}
+	return []string{"github.com", "api.github.com", "uploads.github.com", "*.githubcopilot.com"}
 }
 
 // maxBody bounds an answer from GitHub's API.

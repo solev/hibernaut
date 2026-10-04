@@ -575,6 +575,12 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
+	switch changed, err := rebindGitHub(cfg); {
+	case err != nil:
+		logger.Printf("github: binding secret github to the Copilot CLI's sites failed: %v. Run hib connect github again", err)
+	case changed:
+		logger.Printf("github: bound secret github to %s, so the Copilot CLI works too", strings.Join(github.Sites(), ", "))
+	}
 	t := time.NewTicker(*every)
 	defer t.Stop()
 	sweeping := make(chan struct{}, 1)

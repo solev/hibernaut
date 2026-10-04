@@ -19,7 +19,7 @@ import (
 const testToken = "gho_testTokenValue0123456789abcdefABCDEF"
 
 func TestSitesIsAFreshCopy(t *testing.T) {
-	want := []string{"github.com", "api.github.com", "uploads.github.com"}
+	want := []string{"github.com", "api.github.com", "uploads.github.com", "*.githubcopilot.com"}
 	sites := github.Sites()
 	if !slices.Equal(sites, want) {
 		t.Fatalf("Sites() = %q, want %q", sites, want)

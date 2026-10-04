@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/solev/hibernaut/internal/github"
@@ -135,4 +136,45 @@ func (a *App) githubClient() *http.Client {
 		return a.GitHubClient
 	}
 	return github.NewClient()
+}
+
+// rebindGitHub puts secret github again with github.Sites() and the same value, which keeps its
+// placeholder, if GitHub is connected and the secret's sites are others. A connection made
+// before the Copilot CLI's sites joined then covers them. It reports whether it changed the
+// vault.
+func rebindGitHub(cfg config) (bool, error) {
+	p, err := github.LoadProfile(cfg.githubProfile)
+	if err != nil || p == nil {
+		return false, err
+	}
+	f, err := vault.Load(cfg.vaultPath)
+	if err != nil || !githubSitesOutdated(f) {
+		return false, err
+	}
+	changed := false
+	err = vault.Update(cfg.vaultPath, cfg.vaultKeyPath, func(f *vault.File, key vault.Key) error {
+		if !githubSitesOutdated(f) {
+			return nil
+		}
+		revealed, err := f.Open(key)
+		if err != nil {
+			return err
+		}
+		i := slices.IndexFunc(revealed, func(r vault.Revealed) bool { return r.Name == github.SecretName })
+		s := revealed[i]
+		if _, err := f.Put(key, s.Name, s.Env, github.Sites(), s.Value); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
+// githubSitesOutdated reports whether f has secret github, bound to sites other than
+// github.Sites().
+func githubSitesOutdated(f *vault.File) bool {
+	secrets := f.Secrets()
+	i := slices.IndexFunc(secrets, func(s vault.Secret) bool { return s.Name == github.SecretName })
+	return i >= 0 && !slices.Equal(secrets[i].Sites, slices.Sorted(slices.Values(github.Sites())))
 }
