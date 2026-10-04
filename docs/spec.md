@@ -536,9 +536,10 @@ and refuses a paused machine, so Hibernaut doesn't use it
   That's fine, because a machine set up through `hib` holds only placeholders and your public
   key. A secret you typed into the machine yourself goes into the copy too.
 - **Each copy gets its own identity:** its name and labels, a new SSH host key that `hibd` pins,
-  the host's current env block, git identity and Codex login file, and the idle policy. Copies
-  share `boot_id` and `/etc/machine-id`. The kernel reseeds its RNG when a copy starts
-  (vmgenid), so they don't share randomness.
+  the host's current env block, and the idle policy. The host's git identity and Codex login file
+  replace the origin's when the host has them. Otherwise the origin's stay. Copies share
+  `boot_id` and `/etc/machine-id`. The kernel reseeds its RNG when a copy starts (vmgenid), so
+  they don't share randomness.
 - **E2B's checkpoint can fail** (1 in about 21 saves on our host). It returns 500 and leaves the
   machine paused at its last good snapshot, losing what it did since. So `hibd` first pauses the
   machine, waits until that snapshot is on disk, and resumes it. A failed save then costs at most

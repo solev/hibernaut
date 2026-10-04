@@ -236,6 +236,8 @@ resume it. SSH sessions into it may drop. A paused origin is put back to sleep a
 They need extra memory and disk for the checkpoint and copies. If there isn't room, `hib` says
 what to pause or remove. A large save can take minutes. If E2B's checkpoint fails, `hib` reports the
 origin's state and keeps a safe snapshot from when the save began. It never retries automatically.
+E2B can hide a failed save's template for a few minutes. If `hib` can't confirm it's gone, it
+says so, and for an image it says how to remove it.
 
 Copies get fresh SSH host keys, the current placeholder setup and your authorized public keys.
 Forks keep the origin's image and idle policy. Their names use the lowest free suffix, starting at

@@ -140,8 +140,8 @@ meanwhile.
 - Each copy is whole or gone: create, re-key, machine-init, setup. If a step fails, kill that
   copy.
 - Keep the copies made. Stop at the first failure and report "made web-1 and web-2 from web.
-  couldn't make web-3: ..." with a non-zero exit. `--json` returns the made machines and the
-  error.
+  couldn't make web-3: ..." with a non-zero exit. `hibd fork --json` returns the made machines
+  and the error, so `hib` reports both. `hib fork --json` comes with M10.
 - Labels: `hib.name`, the origin's `hib.idle` and `hib.image`, and `hib.forkof` with the origin's
   name, so `hib ls` can show where a copy came from in a FROM column.
 - Output: "made web-1, web-2, web-3 from web. connect with: ssh web-1.hib".
