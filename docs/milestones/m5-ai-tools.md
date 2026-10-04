@@ -63,8 +63,8 @@ many goroutines and processes at once. All of them run as root.
   snapshot as the placeholders, even while the publisher holds the lock. It never writes.
   It checks that the profile stayed the same while reading the vault, and tries again if not.
   After three changing reads it returns an error asking the caller to try again.
-  An unmarked profile whose account or recorded placeholder fingerprint disagrees with the vault
-  is refused with a hint to run `hib connect codex`.
+  A profile without an attempt whose account or placeholder fingerprint disagrees with the vault
+  is refused, with a hint to run `hib connect codex`.
 - `EnsureFresh(ctx, reason)` refreshes if the reason calls for it, then returns `Public`.
 - `CommitLogin(ctx, tokens)` replaces the login under the lock: it retires the old values, puts the
   new ones, and starts a new profile. Another account is fine. It recovers any previous attempt
@@ -356,4 +356,8 @@ End-to-end:
   16 minutes for hibd start once the host is awake. The daemon writes the setup again at its
   first look after each resume, which it tells by the machine's new `StartedAt`. So a pause and
   resume between two looks restores Codex's login file and the rest of the setup. The engine
-  contract checks that a resume moves `StartedAt` and extending a timeout doesn't.
+  contract checks that a resume moves `StartedAt` and extending a timeout doesn't. A login that
+  replaces another records an attempt before publishing, as a refresh does. So an interrupted
+  account switch recovers as the old login or the new one, never a mix of the two, and `Public`
+  reads one generation. `Public` refuses a profile that doesn't match the vault without an
+  attempt to explain it.
