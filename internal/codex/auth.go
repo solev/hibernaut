@@ -54,7 +54,26 @@ func renderAuthFile(p PublicAuth) ([]byte, error) {
 	if err := encoder.Encode(f); err != nil {
 		return nil, errors.New("rendering codex login file")
 	}
-	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
+	// Go escapes these two runes for JavaScript. serde_json writes them as UTF-8.
+	data := bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+	var rendered bytes.Buffer
+	for len(data) != 0 {
+		switch {
+		case bytes.HasPrefix(data, []byte(`\\`)):
+			rendered.Write(data[:2])
+			data = data[2:]
+		case bytes.HasPrefix(data, []byte(`\u2028`)):
+			rendered.WriteRune('\u2028')
+			data = data[6:]
+		case bytes.HasPrefix(data, []byte(`\u2029`)):
+			rendered.WriteRune('\u2029')
+			data = data[6:]
+		default:
+			rendered.WriteByte(data[0])
+			data = data[1:]
+		}
+	}
+	return rendered.Bytes(), nil
 }
 
 func parseAuthFile(data []byte) (Tokens, error) {
