@@ -66,7 +66,10 @@ func (m *Manager) openLock() (*os.File, error) {
 			}
 		}
 	} else {
-		f, err = root.OpenFile("hibd.lock", os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+		f, err = root.OpenFile("hibd.lock", os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			f, err = root.OpenFile("hibd.lock", os.O_RDWR|syscall.O_NOFOLLOW, 0)
+		}
 	}
 	if err != nil {
 		return nil, err
