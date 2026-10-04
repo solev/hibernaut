@@ -26,7 +26,8 @@ type Profile struct {
 	ID    int64  `json:"id"`
 	// Name is the profile's name, cleaned by CleanName.
 	Name string `json:"name"`
-	// Source is how the token reached hibd: hibapi.GitHubFromGH or hibapi.GitHubFromToken.
+	// Source is how the token reached hibd: hibapi.GitHubFromGH, hibapi.GitHubFromToken or
+	// hibapi.GitHubFromDevice.
 	Source string `json:"source"`
 }
 
@@ -57,8 +58,8 @@ func (p Profile) check() error {
 	if p.ID <= 0 {
 		return fmt.Errorf("bad GitHub ID %d", p.ID)
 	}
-	if p.Source != hibapi.GitHubFromGH && p.Source != hibapi.GitHubFromToken {
-		return fmt.Errorf("bad source %q: want %s or %s", p.Source, hibapi.GitHubFromGH, hibapi.GitHubFromToken)
+	if p.Source != hibapi.GitHubFromGH && p.Source != hibapi.GitHubFromToken && p.Source != hibapi.GitHubFromDevice {
+		return fmt.Errorf("bad source %q: want %s, %s or %s", p.Source, hibapi.GitHubFromGH, hibapi.GitHubFromToken, hibapi.GitHubFromDevice)
 	}
 	return nil
 }
