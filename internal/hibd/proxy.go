@@ -13,6 +13,7 @@ import (
 
 	"github.com/solev/hibernaut/internal/audit"
 	capkg "github.com/solev/hibernaut/internal/ca"
+	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/egress"
 	"github.com/solev/hibernaut/internal/egress/hook"
 	proxypkg "github.com/solev/hibernaut/internal/proxy"
@@ -102,6 +103,7 @@ func (a *App) proxy(ctx context.Context, args []string) int {
 		Swapper: source.Swapper, Leaf: ca.Leaf, Accept: hook.OnVeth, OriginalDst: hook.OriginalDst,
 		Identify: identifier.Identify, Dial: dialer.DialContext, Audit: writer.Write, Now: time.Now, Logf: logf,
 	}
+	a.serveCodex(server, cfg, logf)
 	service := &proxypkg.Service{
 		Server: server, Rule: proxyRule{hook.Rule{Port: port}}, Audit: writer, Logf: logf,
 	}
@@ -109,6 +111,14 @@ func (a *App) proxy(ctx context.Context, args []string) int {
 		return a.fail(false, "proxy", err)
 	}
 	return 0
+}
+
+// serveCodex makes server answer Codex's refresh requests, with one Store and one Endpoint for
+// the proxy's life.
+func (a *App) serveCodex(server *egress.Server, cfg config, logf func(format string, args ...any)) {
+	ep := codex.NewEndpoint(a.codexStore(cfg, logf), logf)
+	server.Endpoints = []egress.Endpoint{ep.Egress()}
+	server.Rejected = ep.Rejected
 }
 
 type proxyRule struct{ hook.Rule }

@@ -7,11 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/egress/swap"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-// VaultSource reloads host secrets when the vault or key changes.
+// VaultSource reloads host secrets when the vault or key changes. The secrets codex.ScrubOnly
+// names are scrub-only.
 // Its configuration must not change after the first call to Swapper.
 type VaultSource struct {
 	Path, KeyPath string
@@ -83,6 +85,7 @@ func (s *VaultSource) Swapper() *swap.Swapper {
 	for i, value := range values {
 		secrets[i] = swap.Secret{
 			Name: value.Name, Placeholder: value.Placeholder, Value: value.Value, Sites: value.Sites,
+			ScrubOnly: codex.ScrubOnly(value.Name),
 		}
 	}
 	sw, err := swap.New(secrets)
