@@ -117,30 +117,30 @@ code expires, holding its lock. The same stdin watch would stop it.
 - [ ] Create the "Hibernaut" GitHub OAuth App by hand, with Device Flow enabled. Its client ID
       goes into `hibd`, as `github.ClientID`. It isn't secret, and the device flow needs no
       client secret.
-- [ ] `hibd` runs the flow, and `hib` shows the code and opens `github.com/login/device`. The
+- [x] `hibd` runs the flow, and `hib` shows the code and opens `github.com/login/device`. The
       token goes straight into the vault and never touches the laptop.
-- [ ] Scopes `repo`, `read:org`, `workflow`.
-- [ ] Handle every response: `authorization_pending` (keep polling), `slow_down` (+5 s to the
+- [x] Scopes `repo`, `read:org`, `workflow`.
+- [x] Handle every response: `authorization_pending` (keep polling), `slow_down` (+5 s to the
       interval), `expired_token` (codes last 15 minutes: start over), `access_denied`,
       `incorrect_device_code`, `device_flow_disabled`.
-- [ ] `hib connect github` defaults to the device flow. `--from-gh` and `--token` stay.
-- [ ] Ctrl-C in `hib` stops `hibd`, and one GitHub login runs at a time, for every source.
-- [ ] README: how to revoke (github.com/settings/applications), and org approval.
+- [x] `hib connect github` defaults to the device flow. `--from-gh` and `--token` stay.
+- [x] Ctrl-C in `hib` stops `hibd`, and one GitHub login runs at a time, for every source.
+- [x] README: how to revoke (github.com/settings/applications), and org approval.
 
 ## Tests
 
 Unit (fake clock):
 
-- [ ] The polling loop for every response above, including interval changes.
-- [ ] Bad answers from GitHub, redirects, retries up to the deadline, and errors that never
+- [x] The polling loop for every response above, including interval changes.
+- [x] Bad answers from GitHub, redirects, retries up to the deadline, and errors that never
       quote the device code or the token.
-- [ ] `hibd`: the lock, the end of stdin, each message, and the token stored with the source
+- [x] `hibd`: the lock, the end of stdin, each message, and the token stored with the source
       `device`.
-- [ ] `hib`: the flags, the held stdin, `StdinNull`, and the browser opening once.
+- [x] `hib`: the flags, the held stdin, `StdinNull`, and the browser opening once.
 
 Integration:
 
-- [ ] `hib connect github` end to end against a fake GitHub OAuth server.
+- [x] `hib connect github` end to end against a fake GitHub OAuth server.
 
 End-to-end:
 
@@ -151,8 +151,8 @@ End-to-end:
 
 - [ ] `make lint test`, `make test-host-remote`, a clean `make generate` and `make e2e` are green,
       plus one manual `TestDeviceFlow` run. CI is parked, so `make lint test` stands in for it.
-- [ ] Spec: §4.3 matches the code.
-- [ ] README: connecting GitHub with the device flow.
+- [x] Spec: §4.3 matches the code.
+- [x] README: connecting GitHub with the device flow.
 
 ## Changes
 
@@ -161,3 +161,8 @@ End-to-end:
   holds hibd's stdin open so Ctrl-C stops the login, one GitHub login runs at a time, and hib
   opens only the one device URL. The client ID lives in `hibd`, not `hib`, since `hibd` runs the
   flow.
+- 2026-10-04: Built. A review moved the GitHub lock and the vault check ahead of reading a
+  pasted token, so a busy lock no longer waits for stdin to end. It also made the HTTP status
+  decide before an OAuth error: a redirect is final, and a 5xx or 429 is retried whatever the body
+  says. The login locks refuse a symlink or anything that isn't a regular file, because Go's
+  `os.Root` follows a symlink inside the root even with `O_NOFOLLOW`.
