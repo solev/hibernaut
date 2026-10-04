@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const codexRefreshUsage = "codex refresh [-force] [-json]"
@@ -98,4 +100,83 @@ func codexRefreshError(err error) error {
 		return fmt.Errorf("%w: try again in a few minutes", codex.ErrUnavailable)
 	}
 	return err
+}
+
+// codexRefresher keeps the host's Codex login fresh for the daemon, and logs each change in the
+// login once.
+type codexRefresher struct {
+	store *codex.Store
+	logf  func(format string, args ...any)
+	// seen is the login as the last look found it, and said what the last look logged about
+	// its health.
+	seen codex.Profile
+	said string
+}
+
+// run looks now, and then every interval until ctx is done. It leaves the login alone while
+// awake says the host is going to sleep.
+func (r *codexRefresher) run(ctx context.Context, every time.Duration, awake func() error) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		if awake() == nil {
+			r.look(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// look refreshes the login if it's due, and logs what changed since the last look.
+func (r *codexRefresher) look(ctx context.Context) {
+	_, refreshErr := r.store.EnsureFresh(ctx, codex.Reason{Kind: codex.Background})
+	if ctx.Err() != nil {
+		return
+	}
+	p, err := r.store.Load()
+	if err == nil {
+		r.logChanges(p)
+	}
+	if now := codexHealthLine(p, err, refreshErr); now != r.said {
+		if now != "" {
+			r.logf("%s", now)
+		}
+		r.said = now
+	}
+}
+
+// logChanges logs a new login, or new tokens for the same one.
+func (r *codexRefresher) logChanges(p codex.Profile) {
+	if !p.ConnectedAt.Equal(r.seen.ConnectedAt) {
+		r.logf("connected as %s, on the %s plan", termsafe.String(p.Email), termsafe.String(p.Plan))
+	}
+	if !p.LastRefresh.Equal(r.seen.LastRefresh) && p.LastRefresh.After(p.ConnectedAt) {
+		r.logf("refreshed the login. The token expires at %s", p.Expires.UTC().Format(time.RFC3339))
+	}
+	r.seen = p
+}
+
+// codexHealthLine says how the login is, from Load's p and err and EnsureFresh's refreshErr.
+// It's "" if Codex isn't connected.
+func codexHealthLine(p codex.Profile, err, refreshErr error) string {
+	switch {
+	case errors.Is(err, codex.ErrNotConnected):
+		return ""
+	case err != nil:
+		return "reading the login failed: " + termsafe.String(err.Error())
+	case p.Health != codex.HealthOK:
+		problem := p.Problem
+		if problem == "" {
+			problem = "run hib connect codex"
+		}
+		return fmt.Sprintf("the login is %s: %s", p.Health, termsafe.String(problem))
+	case p.Failures > 0:
+		return "refreshing failed. Trying again after " + p.RetryAt.UTC().Format(time.RFC3339)
+	case refreshErr != nil:
+		return "refreshing failed: " + termsafe.String(refreshErr.Error())
+	}
+	return "the login is ok"
 }

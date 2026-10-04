@@ -2,9 +2,13 @@ package hibd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,5 +185,164 @@ func TestCodexUsage(t *testing.T) {
 		if code := a.Run(t.Context(), args); code != 2 || !strings.Contains(errOut.String(), "codex refresh [-force] [-json]") {
 			t.Errorf("hibd %q exit %d, stderr %q; want 2 and the usage", args, code, errOut)
 		}
+	}
+}
+
+// lineLog keeps the lines a logf wrote.
+type lineLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *lineLog) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+// take returns the lines written since the last take.
+func (l *lineLog) take() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lines := l.lines
+	l.lines = nil
+	return lines
+}
+
+func TestCodexRefresherLogsEachChangeOnce(t *testing.T) {
+	a, _, _, _ := newCodexApp(t, nil, testCodexTokens())
+	var log lineLog
+	r := &codexRefresher{store: codexStoreFor(a), logf: log.logf}
+	look := func(want ...string) {
+		t.Helper()
+		r.look(t.Context())
+		if got := log.take(); !slices.Equal(got, want) {
+			t.Errorf("logged %q, want %q", got, want)
+		}
+	}
+	// connect connects tokens, as hib connect codex would, and points r at a token server for
+	// them.
+	connect := func(tokens codex.Tokens) *codextest.TokenServer {
+		t.Helper()
+		server := connectTestCodex(t, a, tokens)
+		r.store = codexStoreFor(a)
+		return server
+	}
+	const connected = "connected as dev@example.com, on the plus plan"
+
+	look()
+	look()
+
+	server := connect(testCodexTokens())
+	look(connected, "the login is ok")
+	look()
+	if n := server.Requests(); n != 0 {
+		t.Errorf("OpenAI got %d refresh requests for a fresh login, want none", n)
+	}
+
+	// Another process, such as the proxy, refreshes.
+	if _, err := codexStoreFor(a).EnsureFresh(t.Context(), codex.Reason{Kind: codex.Force}); err != nil {
+		t.Fatal(err)
+	}
+	look("refreshed the login. The token expires at " + codexExpiry(t, r.store))
+	look()
+
+	server = connect(halfSpentCodexTokens())
+	r.look(t.Context())
+	if got, want := log.take(), []string{connected, "refreshed the login. The token expires at " + codexExpiry(t, r.store)}; !slices.Equal(got, want) {
+		t.Errorf("logged %q, want %q", got, want)
+	}
+	if n := server.Requests(); n != 1 {
+		t.Errorf("OpenAI got %d refresh requests, want 1 once half the lifetime has passed", n)
+	}
+	look()
+
+	server = connect(halfSpentCodexTokens())
+	server.Queue(http.StatusTooManyRequests, `{}`)
+	r.look(t.Context())
+	got := log.take()
+	if len(got) != 2 || got[0] != connected || !strings.HasPrefix(got[1], "refreshing failed. Trying again after ") {
+		t.Errorf("logged %q, want the new login, then that refreshing failed and when it tries again", got)
+	}
+	look()
+
+	server = connect(halfSpentCodexTokens())
+	server.Queue(http.StatusUnauthorized, `{"error":"invalid_grant"}`)
+	look(connected, "the login is dead: invalid_grant: run hib connect codex")
+	look()
+	look()
+	if n := server.Requests(); n != 1 {
+		t.Errorf("OpenAI got %d refresh requests, want 1: a dead login isn't refreshed again", n)
+	}
+}
+
+// codexExpiry returns when store's token expires, as the refresher logs it.
+func codexExpiry(t *testing.T, store *codex.Store) string {
+	t.Helper()
+	p, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.Expires.UTC().Format(time.RFC3339)
+}
+
+func TestDaemonRefreshesCodexAndUpdatesMachines(t *testing.T) {
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	tokens := halfSpentCodexTokens()
+	a, _, _, _ := newCodexApp(t, guest, tokens)
+	server := connectTestCodex(t, a, tokens)
+	now := time.Now()
+	upgraded := codextest.Tokens("acct-1234", "dev@example.com", "pro", now, now.Add(time.Hour))
+	queueCodexTokens(t, server, upgraded)
+	a.codexEvery = 10 * time.Millisecond
+
+	before := codexLoginFile(t, a)
+
+	logs, stop := startDaemon(t, a)
+	waitFor(t, logs, "the running machine gets the new login file", func() bool {
+		now := codexLoginFile(t, a)
+		return !bytes.Equal(now, before) && bytes.Equal(guest.codexAuthFile(), now)
+	})
+	waitFor(t, logs, "the daemon logs the refresh", func() bool { return strings.Contains(logs.String(), "codex: refreshed the login") })
+	stop()
+	if n := strings.Count(logs.String(), "codex: the login is ok"); n != 1 {
+		t.Errorf("the daemon logged the login's health %d times, want once:\n%s", n, logs)
+	}
+	if n := server.Requests(); n != 1 {
+		t.Errorf("OpenAI got %d refresh requests, want 1: the new token is fresh", n)
+	}
+	wantNoCodexToken(t, tokens, []byte(logs.String()), guest.codexAuthFile())
+	wantNoCodexToken(t, upgraded, []byte(logs.String()), guest.codexAuthFile())
+}
+
+func TestCodexRefresherLeavesCodexAloneWhileQuiescing(t *testing.T) {
+	tokens := halfSpentCodexTokens()
+	a, _, _, _ := newCodexApp(t, nil, tokens)
+	server := connectTestCodex(t, a, tokens)
+	var log lineLog
+	r := &codexRefresher{store: codexStoreFor(a), logf: log.logf}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls, whileAsleep := 0, -1
+	// awake says the host is going to sleep for three looks, lets the fourth happen, and then
+	// stops the refresher.
+	awake := func() error {
+		calls++
+		switch {
+		case calls <= 3:
+			return errQuiescing
+		case calls == 4:
+			whileAsleep = server.Requests()
+			return nil
+		}
+		cancel()
+		return errQuiescing
+	}
+	r.run(ctx, time.Millisecond, awake)
+	if whileAsleep != 0 {
+		t.Errorf("OpenAI got %d refresh requests while the host was going to sleep, want none", whileAsleep)
+	}
+	if n := server.Requests(); n != 1 {
+		t.Errorf("OpenAI got %d refresh requests once the host was awake, want 1", n)
 	}
 }

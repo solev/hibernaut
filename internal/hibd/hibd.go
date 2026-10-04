@@ -5,6 +5,7 @@ package hibd
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,8 +66,9 @@ commands:
                     are paused first and stay paused (-image NAME, -canary, -json)
   cleanup           delete the build directories nothing needs any more, as root (-n only
                     says which, and why it keeps the others)
-  daemon            keep busy machines running (-every), and clean up when a machine is
-                    removed and hourly; systemd runs it as root
+  daemon            keep busy machines running (-every), clean up when a machine is
+                    removed and hourly, and keep the Codex login fresh; systemd runs it as
+                    root
   version           print the version
 
 new, ls, rm, pause, image build, connect github, connect codex, codex refresh, status and version
@@ -88,8 +90,8 @@ Environment variables of the same names override the file:
   HIBD_CA_KEY           CA private key, default /etc/hibernaut/ca.key
   HIBD_PROXY_PORT       interception port, default 5443
   HIBD_QUIESCING        new, bridge and image build refuse while it exists, and daemon leaves
-                        machines alone; default /run/hibernaut/quiescing, which quiesce makes
-                        before pausing everything
+                        machines and the Codex login alone; default /run/hibernaut/quiescing,
+                        which quiesce makes before pausing everything
   HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
                         default codex copilot claude
   HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
@@ -137,6 +139,10 @@ type App struct {
 	// codex.Store's own.
 	CodexTokenURL string
 	CodexClient   *http.Client
+
+	// codexEvery is how often the daemon looks at the Codex login, for tests only. If it's 0,
+	// the daemon looks every minute.
+	codexEvery time.Duration
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -553,7 +559,8 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	s.problem = problem
 }
 
-// daemon keeps busy machines running, and cleans up, until ctx is done.
+// daemon keeps busy machines running, cleans up, and keeps the Codex login fresh, until ctx is
+// done.
 func (a *App) daemon(ctx context.Context, args []string) int {
 	fl := a.flags("daemon")
 	every := fl.Duration("every", 15*time.Second, "how often to look at the machines")
@@ -593,6 +600,8 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	defer t.Stop()
 	sweeping := make(chan struct{}, 1)
 	var wg sync.WaitGroup
+	refresher := &codexRefresher{store: a.codexStore(cfg, nil), logf: func(format string, args ...any) { logger.Printf("codex: "+format, args...) }}
+	wg.Go(func() { refresher.run(ctx, cmp.Or(a.codexEvery, time.Minute), a.awake) })
 	problem := "" // what kept the last look from happening, as logged
 	for {
 		now := ""
