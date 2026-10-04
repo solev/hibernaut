@@ -20,18 +20,19 @@ import (
 const refreshTimeout = 30 * time.Second
 
 func (s *Store) ensureFresh(ctx context.Context, reason Reason) (PublicAuth, error) {
-	p, err := s.Load()
+	p, err := s.readProfile()
 	if err != nil {
 		return PublicAuth{}, err
 	}
-	t, err := s.tokens()
-	if err != nil {
-		return PublicAuth{}, err
-	}
-	// An active attempt has already recorded ClientRefreshAt but still has the old expiry.
-	// Wait for its holder before applying the client throttle to that mixed generation.
-	due := p.Attempt != nil && p.Health == HealthOK
+	// Record an interrupted attempt before deciding whether another refresh is due.
+	// An active attempt must finish before applying the client throttle to its old expiry.
+	due := p.Attempt != nil
+	var t Tokens
 	if !due {
+		t, err = s.tokens()
+		if err != nil {
+			return PublicAuth{}, err
+		}
 		due, err = s.refreshDue(p, t, reason)
 		if err != nil {
 			return PublicAuth{}, err
@@ -45,12 +46,13 @@ func (s *Store) ensureFresh(ctx context.Context, reason Reason) (PublicAuth, err
 		return PublicAuth{}, err
 	}
 	defer unlock(lock)
-	p, err = s.readProfile()
+	record, err := s.readDiskProfile()
+	p = record.Profile
 	if err != nil {
 		return PublicAuth{}, err
 	}
 	if p.Attempt != nil {
-		p, err = s.recoverProfile(p)
+		p, err = s.recoverProfile(record)
 		if err != nil {
 			return PublicAuth{}, err
 		}

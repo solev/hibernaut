@@ -124,7 +124,7 @@ type Profile struct {
 	Health    Health    `json:"health"`
 	// Problem says why the login is dead or stuck. It's safe to show.
 	Problem string `json:"problem,omitempty"`
-	// Attempt is the refresh in progress. It's written before the request goes out.
+	// Attempt is a refresh or login in progress. It's written before sending or publishing.
 	Attempt *Attempt `json:"attempt,omitempty"`
 	// RetryAt is when Background may try again after a transient failure.
 	RetryAt  time.Time `json:"retryAt,omitzero"`
@@ -133,11 +133,13 @@ type Profile struct {
 	ClientRefreshAt time.Time `json:"clientRefreshAt,omitzero"`
 }
 
-// Attempt is a refresh that started.
+// Attempt is a refresh or replacement login that started.
 type Attempt struct {
-	// Generation is the fingerprint of the refresh token the attempt sends.
+	// Generation is the fingerprint of the refresh token being sent or replaced.
 	Generation string    `json:"generation"`
 	Started    time.Time `json:"started"`
+	// Login means a device login is replacing the profile, not refreshing it.
+	Login bool `json:"login,omitempty"`
 }
 
 // API returns the login as hib shows it.
@@ -209,7 +211,7 @@ func NewStore(cfg Config) *Store {
 }
 
 // Load returns the profile, or ErrNotConnected. It never waits for the lock and never writes.
-// An interrupted attempt shows as published or stuck.
+// An interrupted refresh shows as published or stuck. An unpublished login keeps the old profile.
 func (s *Store) Load() (Profile, error) { return s.load() }
 
 // Public returns what the login file holds, or ErrNotConnected. It needs no lock.

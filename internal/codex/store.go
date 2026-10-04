@@ -46,13 +46,14 @@ func (s *Store) readProfile() (Profile, error) {
 }
 
 func (s *Store) load() (Profile, error) {
-	p, err := s.readProfile()
+	record, err := s.readDiskProfile()
+	p := record.Profile
 	if err != nil || p.Attempt == nil {
 		return p, err
 	}
 	lock, err := os.OpenFile(s.path(LockFile), os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
-		return s.recoverProfile(p)
+		return s.recoverProfile(record)
 	}
 	if err != nil {
 		return Profile{}, errors.New("checking codex refresh lock")
@@ -66,19 +67,37 @@ func (s *Store) load() (Profile, error) {
 		return Profile{}, errors.New("checking codex refresh lock")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	p, err = s.readProfile()
+	record, err = s.readDiskProfile()
+	p = record.Profile
 	if err != nil || p.Attempt == nil {
 		return p, err
 	}
-	return s.recoverProfile(p)
+	return s.recoverProfile(record)
 }
 
-func (s *Store) recoverProfile(p Profile) (Profile, error) {
-	t, err := s.tokens()
+func (s *Store) recoverProfile(record diskProfile) (Profile, error) {
+	f, err := vault.Load(s.cfg.VaultPath)
 	if err != nil {
+		return Profile{}, errors.New("reading codex vault")
+	}
+	return s.recoverProfileFrom(record, f)
+}
+
+func (s *Store) recoverProfileFrom(record diskProfile, f *vault.File) (Profile, error) {
+	p := record.Profile
+	t, err := s.openTokens(f)
+	if err != nil && !(p.Attempt.Login && errors.Is(err, ErrNotConnected)) {
 		return Profile{}, err
 	}
-	if swap.Fingerprint(t.RefreshToken) == p.Attempt.Generation {
+	generation := ""
+	if err == nil {
+		generation = swap.Fingerprint(t.RefreshToken)
+	}
+	if generation == p.Attempt.Generation {
+		if p.Attempt.Login {
+			p.Attempt = nil
+			return p, nil
+		}
 		p.Health = HealthStuck
 		if p.Problem == "" {
 			p.Problem = "a refresh was interrupted: run hib connect codex"
@@ -89,17 +108,15 @@ func (s *Store) recoverProfile(p Profile) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	record, err := s.readDiskProfile()
-	if err != nil {
-		return Profile{}, err
-	}
-	generation, err := s.placeholderGeneration()
-	if err != nil {
-		return Profile{}, err
-	}
-	changed := record.Placeholders != "" && record.Placeholders != generation
+	generation = placeholderGeneration(f)
+	changed := record.Placeholders != generation && (record.Placeholders != "" || p.Attempt.Login)
 	if changed || p.Email != updated.Email || p.Plan != updated.Plan || p.AccountID != updated.AccountID {
 		p.Published = p.Attempt.Started
+	}
+	if p.Attempt.Login {
+		updated.ConnectedAt, updated.LastRefresh = p.Attempt.Started, p.Attempt.Started
+		updated.Published = p.Published
+		return updated, nil
 	}
 	p.Email, p.Plan, p.AccountID, p.Expires = updated.Email, updated.Plan, updated.AccountID, updated.Expires
 	p.LastRefresh, p.Health, p.Problem = p.Attempt.Started, HealthOK, ""
@@ -108,29 +125,57 @@ func (s *Store) recoverProfile(p Profile) (Profile, error) {
 }
 
 func (s *Store) public() (PublicAuth, error) {
-	p, err := s.readProfile()
-	if err != nil {
-		return PublicAuth{}, err
-	}
-	f, err := vault.Load(s.cfg.VaultPath)
-	if err != nil {
-		return PublicAuth{}, errors.New("reading codex placeholders")
-	}
-	out := PublicAuth{AccountID: p.AccountID, LastRefresh: p.Published}
-	for _, secret := range f.Secrets() {
-		switch secret.Name {
-		case AccessName:
-			out.AccessToken = secret.Placeholder
-		case RefreshName:
-			out.RefreshToken = secret.Placeholder
-		case IDName:
-			out.IDToken = secret.Placeholder
+	for range 3 {
+		record, err := s.readDiskProfile()
+		if err != nil {
+			return PublicAuth{}, err
 		}
+		f, err := vault.Load(s.cfg.VaultPath)
+		if err != nil {
+			return PublicAuth{}, errors.New("reading codex placeholders")
+		}
+		current, err := s.readDiskProfile()
+		if err != nil {
+			return PublicAuth{}, err
+		}
+		if !sameDiskProfile(record, current) {
+			continue
+		}
+		p := record.Profile
+		if p.Attempt != nil {
+			p, err = s.recoverProfileFrom(record, f)
+			if err != nil {
+				return PublicAuth{}, err
+			}
+		}
+		out := PublicAuth{AccountID: p.AccountID, LastRefresh: p.Published}
+		for _, secret := range f.Secrets() {
+			switch secret.Name {
+			case AccessName:
+				out.AccessToken = secret.Placeholder
+			case RefreshName:
+				out.RefreshToken = secret.Placeholder
+			case IDName:
+				out.IDToken = secret.Placeholder
+			}
+		}
+		if out.AccessToken == "" || out.RefreshToken == "" || out.IDToken == "" {
+			return PublicAuth{}, ErrNotConnected
+		}
+		return out, nil
 	}
-	if out.AccessToken == "" || out.RefreshToken == "" || out.IDToken == "" {
-		return PublicAuth{}, ErrNotConnected
+	return PublicAuth{}, errors.New("codex login changed while reading: try again")
+}
+
+func sameDiskProfile(a, b diskProfile) bool {
+	if (a.Attempt == nil) != (b.Attempt == nil) {
+		return false
 	}
-	return out, nil
+	if a.Attempt != nil && *a.Attempt != *b.Attempt {
+		return false
+	}
+	a.Attempt, b.Attempt = nil, nil
+	return a == b
 }
 
 func (s *Store) tokens() (Tokens, error) {
@@ -138,6 +183,10 @@ func (s *Store) tokens() (Tokens, error) {
 	if err != nil {
 		return Tokens{}, errors.New("reading codex vault")
 	}
+	return s.openTokens(f)
+}
+
+func (s *Store) openTokens(f *vault.File) (Tokens, error) {
 	if len(f.Secrets()) == 0 {
 		return Tokens{}, ErrNotConnected
 	}
@@ -254,6 +303,10 @@ func (s *Store) placeholderGeneration() (string, error) {
 	if err != nil {
 		return "", errors.New("reading codex placeholder generation")
 	}
+	return placeholderGeneration(f), nil
+}
+
+func placeholderGeneration(f *vault.File) string {
 	values := make([]string, 3)
 	for _, secret := range f.Secrets() {
 		switch secret.Name {
@@ -266,9 +319,9 @@ func (s *Store) placeholderGeneration() (string, error) {
 		}
 	}
 	if slices.Contains(values, "") {
-		return "", nil
+		return ""
 	}
-	return swap.Fingerprint(strings.Join(values, "\x00")), nil
+	return swap.Fingerprint(strings.Join(values, "\x00"))
 }
 
 func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
@@ -283,9 +336,32 @@ func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	defer unlock(lock)
 	now := s.cfg.Now().UTC()
 	p.ConnectedAt, p.LastRefresh, p.Published = now, now, now
-	previous, err := s.public()
+	previous, err := s.readDiskProfile()
 	if err != nil && !errors.Is(err, ErrNotConnected) {
 		return Profile{}, err
+	}
+	if err == nil {
+		if previous.Attempt != nil {
+			previous.Profile, err = s.recoverProfile(previous)
+			if err != nil {
+				return Profile{}, err
+			}
+			if err := s.saveProfile(previous.Profile); err != nil {
+				return Profile{}, err
+			}
+		}
+		old, err := s.tokens()
+		if err != nil && !errors.Is(err, ErrNotConnected) {
+			return Profile{}, err
+		}
+		generation := ""
+		if err == nil {
+			generation = swap.Fingerprint(old.RefreshToken)
+		}
+		previous.Attempt = &Attempt{Generation: generation, Started: now, Login: true}
+		if err := s.saveProfile(previous.Profile); err != nil {
+			return Profile{}, err
+		}
 	}
 	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
@@ -293,8 +369,8 @@ func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	if !changed && err == nil && !previous.LastRefresh.IsZero() {
-		p.Published = previous.LastRefresh
+	if !changed && !previous.Published.IsZero() {
+		p.Published = previous.Published
 	}
 	if err := s.saveProfile(p); err != nil {
 		return Profile{}, err
