@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -720,70 +721,76 @@ func (c *clock) Add(d time.Duration) {
 }
 
 func TestKeepalive(t *testing.T) {
-	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
-	const timeout = 200 * time.Millisecond // so it ticks every 50ms
-	v := newEnvAt(t, clk.Now)
-	app := v.createIdle(t, "app", timeout)
-	c, err := v.m.Dial(t.Context(), "app")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	endAt := func() time.Time {
-		em, err := v.e.Get(t.Context(), app.ID)
+	synctest.Test(t, func(t *testing.T) {
+		clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+		const timeout = 200 * time.Millisecond
+		v := newEnvAt(t, clk.Now)
+		app := v.createIdle(t, "app", timeout)
+		c, err := v.m.Dial(t.Context(), "app")
 		if err != nil {
 			t.Fatal(err)
 		}
-		return em.EndAt
-	}
-	clk.Add(time.Hour)
-	want := clk.Now().Add(timeout)
-	deadline := time.Now().Add(5 * time.Second)
-	for !endAt().Equal(want) {
-		if time.Now().After(deadline) {
-			t.Fatalf("EndAt = %v, want it kept at %v while connected", endAt(), want)
+		defer c.Close()
+		synctest.Wait()
+
+		endAt := func() time.Time {
+			em, err := v.e.Get(t.Context(), app.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return em.EndAt
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		clk.Add(time.Hour)
+		want := clk.Now().Add(timeout)
+		<-time.NewTimer(timeout / 4).C
+		synctest.Wait()
+		if got := endAt(); !got.Equal(want) {
+			t.Fatalf("EndAt = %v, want it kept at %v while connected", got, want)
+		}
 
-	// Paused on purpose: the keepalive must not start it again.
-	if err := v.m.Pause(t.Context(), "app"); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-	if em, _ := v.e.Get(t.Context(), app.ID); em.State != engine.Paused {
-		t.Errorf("state = %s, want it left paused", em.State)
-	}
+		// Paused on purpose: the keepalive must not start it again.
+		if err := v.m.Pause(t.Context(), "app"); err != nil {
+			t.Fatal(err)
+		}
+		<-time.NewTimer(timeout / 4).C
+		synctest.Wait()
+		if em, _ := v.e.Get(t.Context(), app.ID); em.State != engine.Paused {
+			t.Errorf("state = %s, want it left paused", em.State)
+		}
 
-	done := make(chan struct{})
-	go func() { c.Close(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close hangs")
-	}
-	if em, _ := v.e.Get(t.Context(), app.ID); em.State != engine.Paused {
-		t.Errorf("state after Close = %s, want it left paused", em.State)
-	}
+		done := make(chan struct{})
+		go func() { c.Close(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close hangs")
+		}
+		if em, _ := v.e.Get(t.Context(), app.ID); em.State != engine.Paused {
+			t.Errorf("state after Close = %s, want it left paused", em.State)
+		}
+	})
 }
 
 func TestKeepaliveStopsOnClose(t *testing.T) {
-	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
-	const timeout = 200 * time.Millisecond
-	v := newEnvAt(t, clk.Now)
-	app := v.createIdle(t, "app", timeout)
-	c, err := v.m.Dial(t.Context(), "app")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Close()
-	before, _ := v.e.Get(t.Context(), app.ID)
-	clk.Add(time.Hour)
-	time.Sleep(200 * time.Millisecond)
-	if after, _ := v.e.Get(t.Context(), app.ID); !after.EndAt.Equal(before.EndAt) {
-		t.Errorf("EndAt moved from %v to %v after Close", before.EndAt, after.EndAt)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+		const timeout = 200 * time.Millisecond
+		v := newEnvAt(t, clk.Now)
+		app := v.createIdle(t, "app", timeout)
+		c, err := v.m.Dial(t.Context(), "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		c.Close()
+		before, _ := v.e.Get(t.Context(), app.ID)
+		clk.Add(time.Hour)
+		<-time.NewTimer(timeout).C
+		synctest.Wait()
+		if after, _ := v.e.Get(t.Context(), app.ID); !after.EndAt.Equal(before.EndAt) {
+			t.Errorf("EndAt moved from %v to %v after Close", before.EndAt, after.EndAt)
+		}
+	})
 }
 
 func TestCloseStartsIdleClock(t *testing.T) {

@@ -12,36 +12,44 @@ import (
 )
 
 func TestScrubBase64AtEveryAlignmentAndEnding(t *testing.T) {
-	for _, encoding := range []struct {
-		name string
-		enc  *base64.Encoding
+	for _, token := range []struct {
+		name, value, placeholder, padding string
+		suffixes                          []string
 	}{
-		{"standard padded", base64.StdEncoding},
-		{"standard raw", base64.RawStdEncoding},
-		{"url padded", base64.URLEncoding},
-		{"url raw", base64.RawURLEncoding},
+		{"binary", "\xfb\xff-token-REAL-secret", "\xfb\xff-token-FAKE-secret", "z", []string{"", "!tail"}},
+		{"partial groups", "token-real-secret", "token-fake-masked", "a", []string{""}},
 	} {
-		for _, prefix := range []string{"", "x", "xy"} {
-			for _, suffix := range []string{"", "!tail"} {
-				for extra := range 3 {
-					t.Run(fmt.Sprintf("%s/prefix=%d/suffix=%d/length=%d", encoding.name, len(prefix), len(suffix), extra), func(t *testing.T) {
-						value := "\xfb\xff-token-REAL-secret" + strings.Repeat("z", extra)
-						placeholder := "\xfb\xff-token-FAKE-secret" + strings.Repeat("z", extra)
-						sw := newSwapper(t, []swap.Secret{{
-							Name: "token", Value: value, Placeholder: placeholder, Sites: []string{"example.com"},
-						}})
-						in := encoding.enc.EncodeToString([]byte(prefix + value + suffix))
-						want := encoding.enc.EncodeToString([]byte(prefix + placeholder + suffix))
-						header := http.Header{"X-Echo": {"before " + in + " after"}}
-						sw.ScrubHeader(header)
-						if got := header.Get("X-Echo"); got != "before "+want+" after" {
-							t.Fatalf("header = %q, want %q", got, "before "+want+" after")
-						}
-						got, err := io.ReadAll(sw.ScrubBody(oneByteReadCloser{r: strings.NewReader(in)}))
-						if err != nil || string(got) != want {
-							t.Fatalf("body = %q, %v, want %q", got, err, want)
-						}
-					})
+		for _, encoding := range []struct {
+			name string
+			enc  *base64.Encoding
+		}{
+			{"standard padded", base64.StdEncoding},
+			{"standard raw", base64.RawStdEncoding},
+			{"url padded", base64.URLEncoding},
+			{"url raw", base64.RawURLEncoding},
+		} {
+			for _, prefix := range []string{"", "x", "xy"} {
+				for _, suffix := range token.suffixes {
+					for extra := range 3 {
+						t.Run(fmt.Sprintf("%s/%s/prefix=%d/suffix=%d/length=%d", token.name, encoding.name, len(prefix), len(suffix), extra), func(t *testing.T) {
+							value := token.value + strings.Repeat("z", extra)
+							placeholder := token.placeholder + strings.Repeat(token.padding, extra)
+							sw := newSwapper(t, []swap.Secret{{
+								Name: "token", Value: value, Placeholder: placeholder, Sites: []string{"example.com"},
+							}})
+							in := encoding.enc.EncodeToString([]byte(prefix + value + suffix))
+							want := encoding.enc.EncodeToString([]byte(prefix + placeholder + suffix))
+							header := http.Header{"X-Echo": {"before " + in + " after"}}
+							sw.ScrubHeader(header)
+							if got := header.Get("X-Echo"); got != "before "+want+" after" {
+								t.Fatalf("header = %q, want %q", got, "before "+want+" after")
+							}
+							got, err := io.ReadAll(sw.ScrubBody(oneByteReadCloser{r: strings.NewReader(in)}))
+							if err != nil || string(got) != want {
+								t.Fatalf("body = %q, %v, want %q", got, err, want)
+							}
+						})
+					}
 				}
 			}
 		}
@@ -68,24 +76,6 @@ func TestScrubDoesNotReplaceTinyBase64Patterns(t *testing.T) {
 	got, err := io.ReadAll(sw.ScrubBody(io.NopCloser(strings.NewReader("ok b2s= b2s plain"))))
 	if err != nil || string(got) != "placeholder b2s= b2s plain" {
 		t.Fatalf("body = %q, %v", got, err)
-	}
-}
-
-func TestScrubBase64EndReplacesPartialGroups(t *testing.T) {
-	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		for _, prefix := range []string{"", "x", "xy"} {
-			for extra := range 3 {
-				value := "token-real-secret" + strings.Repeat("z", extra)
-				placeholder := "token-fake-masked" + strings.Repeat("a", extra)
-				sw := newSwapper(t, []swap.Secret{{Name: "token", Value: value, Placeholder: placeholder, Sites: []string{"example.com"}}})
-				in := enc.EncodeToString([]byte(prefix + value))
-				want := enc.EncodeToString([]byte(prefix + placeholder))
-				got, err := io.ReadAll(sw.ScrubBody(oneByteReadCloser{r: strings.NewReader(in)}))
-				if err != nil || string(got) != want {
-					t.Fatalf("scrub %q = %q, %v, want %q", in, got, err, want)
-				}
-			}
-		}
 	}
 }
 

@@ -407,6 +407,7 @@ func TestConnectCodex(t *testing.T) {
 	}
 	start := time.Now()
 	code := c.hib("connect", "codex")
+	end := time.Now()
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, c.errOut)
 	}
@@ -419,8 +420,8 @@ func TestConnectCodex(t *testing.T) {
 	if strings.Contains(c.errOut.String(), "\x1b") {
 		t.Error("hib passed hibd's terminal escapes through")
 	}
-	if wait := deadline.Sub(start); wait < 16*time.Minute-time.Second || wait > 16*time.Minute+time.Second {
-		t.Errorf("hib waits %v for hibd, want 16m, a minute more than the code lasts", wait)
+	if deadline.Before(start.Add(16*time.Minute)) || deadline.After(end.Add(16*time.Minute)) {
+		t.Errorf("hibd deadline = %v, want 16m from a time between %v and %v", deadline, start, end)
 	}
 }
 

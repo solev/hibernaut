@@ -6,15 +6,18 @@ import (
 	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	mrand "math/rand"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/leakscan"
 	"github.com/solev/hibernaut/internal/leakscan/leakscantest"
@@ -304,22 +307,70 @@ func TestBuildLookup(t *testing.T) {
 func TestBuildLookupSelectsNewestEvenWhenItIsNotReady(t *testing.T) {
 	for _, status := range []string{"pending", "in_progress", "failed", "ready"} {
 		t.Run(status, func(t *testing.T) {
-			query := func(_ context.Context, sql string) ([][]string, error) {
-				id := buildB
-				if strings.Contains(sql, "b.status_group = 'ready'") && status != "ready" ||
-					strings.Contains(sql, "coalesce(b.finished_at, b.created_at)") {
-					id = buildA
-				}
-				return [][]string{{id}}, nil
-			}
-			if got, err := leakscan.SnapshotBuild(t.Context(), query, "sandbox123"); err != nil || got != buildB {
-				t.Fatalf("SnapshotBuild = %q, %v, want newest build %s", got, err, buildB)
-			}
-			if got, err := leakscan.TemplateBuild(t.Context(), query, "hib-dev"); err != nil || got != buildB {
-				t.Fatalf("TemplateBuild = %q, %v, want newest build %s", got, err, buildB)
+			for _, tc := range []struct {
+				name, first, second                                        string
+				createdFirst, createdSecond, assignedFirst, assignedSecond string
+			}{
+				{"creation time wins over assignment finish and ID", buildB, buildA, "2026-01-01", "2026-01-02", "2026-01-04", "2026-01-02"},
+				{"assignment breaks creation tie", buildA, buildB, "2026-01-02", "2026-01-02", "2026-01-01", "2026-01-03"},
+				{"build ID breaks both ties", buildA, buildB, "2026-01-02", "2026-01-02", "2026-01-02", "2026-01-02"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					query := buildDatabase(t, fmt.Sprintf(`
+CREATE TABLE snapshots (sandbox_id TEXT, env_id TEXT);
+CREATE TABLE env_aliases (alias TEXT, env_id TEXT);
+CREATE TABLE env_build_assignments (env_id TEXT, build_id TEXT, created_at TEXT);
+CREATE TABLE env_builds (id TEXT, created_at TEXT, finished_at TEXT, status_group TEXT);
+INSERT INTO snapshots VALUES ('sandbox123', 'env');
+INSERT INTO env_aliases VALUES ('hib-dev', 'env');
+INSERT INTO env_builds VALUES ('%s', '%s', '2026-01-05', 'ready'), ('%s', '%s', NULL, '%s');
+INSERT INTO env_build_assignments VALUES ('env', '%s', '%s'), ('env', '%s', '%s');
+`, tc.first, tc.createdFirst, tc.second, tc.createdSecond, status, tc.first, tc.assignedFirst, tc.second, tc.assignedSecond))
+					if got, err := leakscan.SnapshotBuild(t.Context(), query, "sandbox123"); err != nil || got != tc.second {
+						t.Errorf("SnapshotBuild = %q, %v, want newest build %s", got, err, tc.second)
+					}
+					if got, err := leakscan.TemplateBuild(t.Context(), query, "hib-dev"); err != nil || got != tc.second {
+						t.Errorf("TemplateBuild = %q, %v, want newest build %s", got, err, tc.second)
+					}
+				})
 			}
 		})
 	}
+}
+
+func buildDatabase(t *testing.T, setup string) leakscan.Query {
+	t.Helper()
+	binary, err := exec.LookPath("sqlite3")
+	if errors.Is(err, exec.ErrNotFound) {
+		t.Skip("sqlite3 is required to exercise build selection against a real database")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	path := filepath.Join(home, "builds.db")
+	query := func(ctx context.Context, sql string) ([][]string, error) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary, "-batch", "-bail", "-init", os.DevNull, "-noheader", "-separator", "\t", path)
+		cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+home)
+		cmd.Stdin = strings.NewReader(sql)
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, err
+		}
+		var rows [][]string
+		for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
+			if line != "" {
+				rows = append(rows, strings.Split(line, "\t"))
+			}
+		}
+		return rows, nil
+	}
+	if _, err := query(t.Context(), setup); err != nil {
+		t.Fatal(err)
+	}
+	return query
 }
 
 func TestBuildLookupRejectsBadInputAndRows(t *testing.T) {
@@ -350,6 +401,41 @@ func TestBuildLookupRejectsBadInputAndRows(t *testing.T) {
 func TestScanBuildRejectsBadBuildID(t *testing.T) {
 	if _, err := leakscan.ScanBuild(t.TempDir(), "../bad", nil); err == nil {
 		t.Fatal("ScanBuild accepted a bad build ID")
+	}
+}
+
+func TestScanBuildRejectsInvalidNeedles(t *testing.T) {
+	storage := t.TempDir()
+	leakscantest.WriteBuild(t, storage, buildA, []byte("memory"), []byte("disk"))
+	for _, size := range []int{1, (1 << 20) + 1} {
+		if _, err := leakscan.ScanBuild(storage, buildA,
+			[]leakscan.Needle{{Secret: "token", Encoding: "raw", Pattern: make([]byte, size)}}); err == nil {
+			t.Errorf("ScanBuild accepted a %d-byte needle", size)
+		}
+	}
+}
+
+func TestScanBuildRejectsUnreadableRawArtifacts(t *testing.T) {
+	for _, target := range []string{"missing", "directory"} {
+		t.Run(target, func(t *testing.T) {
+			storage := t.TempDir()
+			leakscantest.WriteBuild(t, storage, buildA, []byte("memory"), []byte("disk"))
+			link := filepath.Join(storage, buildA, "extra")
+			dest := filepath.Join(storage, target)
+			if target == "directory" {
+				if err := os.Mkdir(dest, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(dest, link); err != nil {
+				t.Fatal(err)
+			}
+			_, err := leakscan.ScanBuild(storage, buildA,
+				[]leakscan.Needle{{Secret: "token", Encoding: "raw", Pattern: []byte("secret-value")}})
+			if err == nil || !strings.Contains(err.Error(), link) {
+				t.Fatalf("ScanBuild = %v, want unreadable raw artifact path", err)
+			}
+		})
 	}
 }
 

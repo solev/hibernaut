@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/solev/hibernaut/internal/leakscan"
@@ -161,9 +162,135 @@ func TestWaitBuildFailsForTerminalFailureAndCancellation(t *testing.T) {
 		!strings.Contains(err.Error(), buildB) || !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("failed build: %v", err)
 	}
+
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := leakscan.WaitBuild(ctx, query, t.TempDir(), buildB, leakscan.WaitOptions{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled wait = %v, want context canceled", err)
+	}
+}
+
+func TestWaitBuildReportsQueryAndSleepErrors(t *testing.T) {
+	for _, stage := range []string{"query", "sleep"} {
+		t.Run(stage, func(t *testing.T) {
+			cause := errors.New("fixture unavailable")
+			query := func(_ context.Context, _ string) ([][]string, error) {
+				if stage == "query" {
+					return nil, cause
+				}
+				return [][]string{{"pending"}}, nil
+			}
+			err := leakscan.WaitBuild(t.Context(), query, t.TempDir(), buildB, leakscan.WaitOptions{
+				Sleep: func(context.Context, time.Duration) error { return cause },
+			})
+			if !errors.Is(err, cause) || !strings.Contains(err.Error(), buildB) {
+				t.Fatalf("WaitBuild = %v, want %s error for selected build", err, stage)
+			}
+		})
+	}
+}
+
+func TestWaitBuildRejectsInvalidOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name, build string
+		opts        leakscan.WaitOptions
+	}{
+		{name: "bad build ID", build: "../bad"},
+		{name: "negative timeout", build: buildB, opts: leakscan.WaitOptions{Timeout: -time.Second}},
+		{name: "negative interval", build: buildB, opts: leakscan.WaitOptions{Interval: -time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := func(context.Context, string) ([][]string, error) {
+				t.Error("queried with invalid options")
+				return nil, nil
+			}
+			if err := leakscan.WaitBuild(t.Context(), query, t.TempDir(), tc.build, tc.opts); err == nil {
+				t.Fatal("WaitBuild accepted invalid options")
+			}
+		})
+	}
+}
+
+func TestWaitBuildRejectsMalformedOrUnknownStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows [][]string
+	}{
+		{"no rows", nil},
+		{"no columns", [][]string{{}}},
+		{"extra rows", [][]string{{"ready"}, {"ready"}}},
+		{"extra columns", [][]string{{"ready", "unexpected"}}},
+		{"unknown status", [][]string{{"unknown"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := func(context.Context, string) ([][]string, error) { return tc.rows, nil }
+			err := leakscan.WaitBuild(t.Context(), query, t.TempDir(), buildB, leakscan.WaitOptions{})
+			if err == nil || !strings.Contains(err.Error(), buildB) {
+				t.Fatalf("WaitBuild = %v, want selected build's status error", err)
+			}
+		})
+	}
+}
+
+func TestWaitBuildRejectsInvalidArtifactsWithoutPolling(t *testing.T) {
+	storage := t.TempDir()
+	leakscantest.WriteBuild(t, storage, buildB, []byte("memory"), []byte("disk"))
+	leakscantest.WriteBuildFile(t, storage, buildB, "metadata.json", []byte("{"))
+	query := func(context.Context, string) ([][]string, error) { return [][]string{{"ready"}}, nil }
+	err := leakscan.WaitBuild(t.Context(), query, storage, buildB, leakscan.WaitOptions{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Error("polled after invalid artifacts")
+			return errors.New("unexpected poll")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot be scanned") || !strings.Contains(err.Error(), buildB) {
+		t.Fatalf("WaitBuild = %v, want invalid artifact error for selected build", err)
+	}
+}
+
+func TestWaitBuildCancellationDuringQueryOrSleep(t *testing.T) {
+	for _, stage := range []string{"query", "sleep"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			query := func(ctx context.Context, _ string) ([][]string, error) {
+				if stage == "query" {
+					cancel()
+					return nil, ctx.Err()
+				}
+				return [][]string{{"pending"}}, nil
+			}
+			err := leakscan.WaitBuild(ctx, query, t.TempDir(), buildB, leakscan.WaitOptions{
+				Sleep: func(ctx context.Context, _ time.Duration) error {
+					cancel()
+					return ctx.Err()
+				},
+			})
+			if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), buildB) {
+				t.Fatalf("WaitBuild = %v, want cancellation for selected build", err)
+			}
+		})
+	}
+}
+
+func TestWaitBuildDeadlineDuringQueryOrSleep(t *testing.T) {
+	for _, stage := range []string{"query", "sleep"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				query := func(ctx context.Context, _ string) ([][]string, error) {
+					if stage == "query" {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					return [][]string{{"pending"}}, nil
+				}
+				err := leakscan.WaitBuild(t.Context(), query, t.TempDir(), buildB, leakscan.WaitOptions{
+					Timeout: time.Second,
+				})
+				if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), buildB) {
+					t.Fatalf("WaitBuild = %v, want deadline for selected build", err)
+				}
+			})
+		})
 	}
 }
