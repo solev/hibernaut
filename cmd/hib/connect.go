@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	connectUsage = "connect github [--from-gh | --token]\n       hib connect codex"
-	// githubLoginTimeout lets hibd finish two minutes after GitHub's device code expires.
-	githubLoginTimeout = 17 * time.Minute
+	connectUsage       = "connect github [--from-gh | --token]\n       hib connect codex"
+	githubCodeLifetime = 15 * time.Minute
+	githubLoginTimeout = githubCodeLifetime + 2*time.Minute
 	// codexLoginTimeout is how long hib connect codex waits for hibd: a minute longer than
 	// Codex's device code lasts.
 	codexLoginTimeout = 16 * time.Minute
@@ -79,7 +79,7 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	connected := *a
 	connected.stdout, connected.stderr = stdout, stderr
 	a = &connected
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, []byte(value), "connect", "github", "--source", source, "--json")
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "connect", "github", "--source", source, "--json")
 	if err != nil {
 		return a.fail(err)
 	}
@@ -109,7 +109,7 @@ func (a *app) connectGitHubDevice(ctx context.Context, cfg *config) int {
 		}
 		a = &connected
 	}
-	r, err := a.remoteSudoAttended(ctx, cfg, githubLoginTimeout, args...)
+	r, err := a.remoteSudo(ctx, cfg, githubLoginTimeout, callOptions{holdStdin: true}, args...)
 	if browser != nil {
 		browser.wait()
 	}
@@ -135,7 +135,7 @@ func (a *app) connectedGitHub(r hibapi.Response) int {
 }
 
 func (a *app) connectCodex(ctx context.Context, cfg *config) int {
-	r, err := a.remoteSudo(ctx, cfg, codexLoginTimeout, nil, "connect", "codex", "--json")
+	r, err := a.remoteSudo(ctx, cfg, codexLoginTimeout, callOptions{}, "connect", "codex", "--json")
 	if err != nil {
 		return a.fail(err)
 	}

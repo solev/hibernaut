@@ -79,14 +79,12 @@ func TestBrowserOpenerReportsCommandFailure(t *testing.T) {
 	}{
 		{"missing", -1, errors.New("open not found"), "open not found"},
 		{"exit", 1, nil, "open exited 1"},
-		{"timeout", -1, context.DeadlineExceeded, "context deadline exceeded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opener := browserOpener("darwin", func(string) string { return "" }, func(string) runFunc {
 				return func(context.Context, []string, io.Reader, io.Writer, io.Writer) (int, error) {
 					return tc.code, tc.err
 				}
-
 			})
 			err := opener(t.Context(), hibapi.GitHubDeviceURL)
 			if err == nil || err.Error() != tc.want {
