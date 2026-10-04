@@ -124,6 +124,14 @@ type App struct {
 	// GitHubClient is the HTTP client for GitHub's API, for tests only. If it's nil, App uses
 	// github.NewClient().
 	GitHubClient *http.Client
+	// CodexBin is the codex that hibd connect codex runs, for tests only. If it's "", App uses
+	// /usr/local/bin/codex.
+	CodexBin string
+	// CodexTokenURL is OpenAI's token endpoint, and CodexClient the HTTP client for it, for tests
+	// only. They're never settings, so no config can send a token elsewhere. Empty means the
+	// codex.Store's own.
+	CodexTokenURL string
+	CodexClient   *http.Client
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
