@@ -241,76 +241,76 @@ connected. No test reads or changes a real `~/.codex`.
 
 **Image**
 
-- [ ] `images/dev/versions` pins Codex 0.160.0 and the Copilot CLI 1.0.91 by version and SHA-256.
+- [x] `images/dev/versions` pins Codex 0.160.0 and the Copilot CLI 1.0.91 by version and SHA-256.
       The host reads the same file.
-- [ ] Codex's canonical package, with code-mode-host, installed under
+- [x] Codex's canonical package, with code-mode-host, installed under
       `/usr/local/lib/codex-0.160.0`, with `/usr/local/bin/codex` linked to its `bin/codex`.
       Copilot installed from its release tarball into `/usr/local/bin`.
-- [ ] Builds download from `github.com` only after `trust-ca`, since the proxy intercepts it.
+- [x] Builds download from `github.com` only after `trust-ca`, since the proxy intercepts it.
       websocat's download moves there too.
-- [ ] `~/.codex/config.toml`: `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`,
+- [x] `~/.codex/config.toml`: `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`,
       `check_for_update_on_startup = false`, analytics off, and
       `cli_auth_credentials_store = "file"`.
-- [ ] `COPILOT_AUTO_UPDATE=false`, and Copilot's settings without the banner.
+- [x] `COPILOT_AUTO_UPDATE=false`, and Copilot's settings without the banner.
 
 **Proxy**
 
-- [ ] Scrub-only secrets: their sites are intercepted and responses are scrubbed of them, but they
+- [x] Scrub-only secrets: their sites are intercepted and responses are scrubbed of them, but they
       are never swapped. Codex's refresh and ID tokens are scrub-only.
-- [ ] Token endpoints: the proxy answers a few requests itself. It reads their bodies, capped, and
+- [x] Token endpoints: the proxy answers a few requests itself. It reads their bodies, capped, and
       audits them. Codex's refresh is the only one.
-- [ ] A site's 401 to a swapped token is reported, so a refresh happens only when it's needed.
+- [x] A site's 401 to a swapped token is reported, so a refresh happens only when it's needed.
 
 **Codex (ChatGPT plan)**
 
-- [ ] The pinned Codex installed on the host, used only for the device login.
-- [ ] `hib connect codex`: `hibd` runs `codex login --device-auth` with a throwaway `CODEX_HOME`
+- [x] The pinned Codex installed on the host, used only for the device login.
+- [x] `hib connect codex`: `hibd` runs `codex login --device-auth` with a throwaway `CODEX_HOME`
       and a clean environment, and `hib` shows its output (the code and link) as it comes. The
       tokens go into the vault as `codex-access`, `codex-refresh` and `codex-id`, then the
       directory is deleted. Connecting again replaces the login. A clear hint if device login
       isn't turned on in ChatGPT's security settings.
-- [ ] Placeholder login file: the real claims, a far-future `exp` and fake signatures, and a
+- [x] Placeholder login file: the real claims, a far-future `exp` and fake signatures, and a
       placeholder refresh token. `hibd` writes it to `~/.codex/auth.json` (mode 0600, owned by
       `user`) on create, on resume, and when the placeholders change.
-- [ ] `codex-access` is swapped on `chatgpt.com`. `codex-refresh` and `codex-id` are scrub-only,
+- [x] `codex-access` is swapped on `chatgpt.com`. `codex-refresh` and `codex-id` are scrub-only,
       bound to `auth.openai.com`.
-- [ ] Refresher in `hibd daemon`: at half the token's lifetime, one refresh at a time across
+- [x] Refresher in `hibd daemon`: at half the token's lifetime, one refresh at a time across
       processes. The new tokens are in the vault before anything uses them, and old values stay in
       the leak scan. A refresh with an unknown outcome is never retried by itself.
-- [ ] Token endpoint: the proxy answers `POST auth.openai.com/oauth/token` itself, as §4.4 says.
+- [x] Token endpoint: the proxy answers `POST auth.openai.com/oauth/token` itself, as §4.4 says.
       It never goes to OpenAI.
-- [ ] `hibd codex refresh [-force]`, so tests can make a real refresh.
-- [ ] `hib status`: the account, the plan, the expiry, and whether the login is dead or stuck,
+- [x] `hibd codex refresh [-force]`, so tests can make a real refresh.
+- [x] `hib status`: the account, the plan, the expiry, and whether the login is dead or stuck,
       with "run `hib connect codex`".
-- [ ] `hib secret` refuses names that start with `codex-`.
-- [ ] `hibd.service` and `hibd-proxy.service` may write `/var/lib/hibernaut`, so both can refresh.
+- [x] `hib secret` refuses names that start with `codex-`.
+- [x] `hibd.service` and `hibd-proxy.service` may write `/var/lib/hibernaut`, so both can refresh.
 
 **Copilot CLI**
 
-- [ ] `*.githubcopilot.com` joins the GitHub secret's sites.
-- [ ] `hibd daemon` adds it to a GitHub connection made before M5.
+- [x] `*.githubcopilot.com` joins the GitHub secret's sites.
+- [x] `hibd daemon` adds it to a GitHub connection made before M5.
 
 ## Tests
 
 Unit (fake clock):
 
-- [ ] The placeholder login file has the layout Codex writes. Its JWTs decode the way Codex
+- [x] The placeholder login file has the layout Codex writes. Its JWTs decode the way Codex
       decodes them (payload only), with the real claims and a far-future `exp`.
-- [ ] Refresher: rotates and saves, keeps placeholders that still fit, and retires old values.
+- [x] Refresher: rotates and saves, keeps placeholders that still fit, and retires old values.
       Many concurrent refreshes cause one upstream refresh. Each outcome (not sent, 200, 401, 400
       `invalid_grant`, 429, 5xx, no answer, a malformed answer, a crash mid-refresh) leaves the
       right health and retry time.
-- [ ] Token endpoint: each answer in §4.4, audited first, scrubbed, and never forwarded.
-- [ ] Scrub-only secrets are scrubbed but never swapped.
+- [x] Token endpoint: each answer in §4.4, audited first, scrubbed, and never forwarded.
+- [x] Scrub-only secrets are scrubbed but never swapped.
 
 Integration (fake `chatgpt.com` and `auth.openai.com`, signed by the test CA, and the pinned
 `codex`. CI installs it. Locally these skip without it.):
 
-- [ ] Real `codex exec` through the proxy: the fake backend sees the real access token, the
+- [x] Real `codex exec` through the proxy: the fake backend sees the real access token, the
       client only placeholders.
-- [ ] The fake backend answers 401. Codex refreshes, the proxy answers locally, and the retry
+- [x] The fake backend answers 401. Codex refreshes, the proxy answers locally, and the retry
       succeeds. The fake auth server sees exactly one refresh, from `hibd`.
-- [ ] Ten clients refreshing at once cause one upstream refresh.
+- [x] Ten clients refreshing at once cause one upstream refresh.
 
 End-to-end:
 
@@ -318,7 +318,7 @@ End-to-end:
       prints OK with no login prompt.
 - [ ] `TestCodexRefresh`: `sudo hibd codex refresh -force` makes a real refresh. Codex still works
       in an existing machine and in a new one.
-- [ ] `TestCopilot`: in a fresh machine,
+- [x] `TestCopilot`: in a fresh machine,
       `copilot -p "Reply with exactly OK." -s --allow-all-tools --no-ask-user` prints OK.
 - [ ] The leak scan after all three covers `github`, `codex-access`, `codex-refresh` and
       `codex-id`, old values included, and finds nothing.
@@ -327,7 +327,7 @@ End-to-end:
 
 - [ ] `make lint test`, `make test-host-remote`, CI and `make e2e` are green.
 - [x] Spec: S6 and S9 marked answered, and bound sites updated.
-- [ ] README: `hib connect codex`, and Copilot working through the GitHub connection.
+- [x] README: `hib connect codex`, and Copilot working through the GitHub connection.
 
 ## Changes
 
