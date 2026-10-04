@@ -62,16 +62,6 @@ func (a *App) connectGitHub(ctx context.Context, args []string) int {
 }
 
 func (a *App) loginGitHub(ctx context.Context, source string) (hibapi.GitHub, error) {
-	var token string
-	if source != hibapi.GitHubFromDevice {
-		var err error
-		if token, err = vault.ReadValue(a.Stdin); err != nil {
-			return hibapi.GitHub{}, err
-		}
-		if err := github.CheckToken(token); err != nil {
-			return hibapi.GitHub{}, err
-		}
-	}
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
 		return hibapi.GitHub{}, err
@@ -91,12 +81,25 @@ func (a *App) loginGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 	if err := checkGHTokenFree(f); err != nil {
 		return hibapi.GitHub{}, err
 	}
-	if source == hibapi.GitHubFromDevice {
-		if token, err = a.githubDeviceLogin(ctx); err != nil {
-			return hibapi.GitHub{}, err
-		}
+	token, err := a.githubToken(ctx, source)
+	if err != nil {
+		return hibapi.GitHub{}, err
 	}
 	return a.storeGitHub(ctx, cfg, source, token)
+}
+
+func (a *App) githubToken(ctx context.Context, source string) (string, error) {
+	if source == hibapi.GitHubFromDevice {
+		return a.githubDeviceLogin(ctx)
+	}
+	token, err := vault.ReadValue(a.Stdin)
+	if err != nil {
+		return "", err
+	}
+	if err := github.CheckToken(token); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func lockGitHubLogins(stateDir string) (unlock func(), ok bool, err error) {
@@ -106,13 +109,7 @@ func lockGitHubLogins(stateDir string) (unlock func(), ok bool, err error) {
 func (a *App) githubDeviceLogin(ctx context.Context) (string, error) {
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if stdin := a.Stdin; stdin != nil {
-		// Nothing waits for this: hib ends stdin only after hibd exits.
-		go func() {
-			_, _ = io.Copy(io.Discard, stdin)
-			cancel()
-		}()
-	}
+	go cancelAtEOF(a.Stdin, cancel)
 	flow := a.GitHubDeviceFlow
 	if flow == nil {
 		flow = &github.DeviceFlow{ClientID: github.ClientID}
@@ -139,6 +136,11 @@ func (a *App) githubDeviceLogin(ctx context.Context) (string, error) {
 			"then run hib connect github again", github.ErrExpiringToken)
 	}
 	return "", fmt.Errorf("the GitHub login failed: %w. Nothing was stored", err)
+}
+
+func cancelAtEOF(r io.Reader, cancel context.CancelFunc) {
+	_, _ = io.Copy(io.Discard, r)
+	cancel()
 }
 
 func (a *App) storeGitHub(ctx context.Context, cfg config, source, token string) (hibapi.GitHub, error) {
