@@ -353,9 +353,6 @@ func TestConnectGitHubDeviceIntegrationPipeEOF(t *testing.T) {
 	if code := <-done; code != 1 {
 		t.Errorf("disconnected hib exited %d, want 1", code)
 	}
-	if t.Context().Err() != nil {
-		t.Error("the EOF case also cancelled hib's context")
-	}
 	if c.out.Len() != 0 || !strings.Contains(c.errOut.String(), "couldn't reach "+testHost) ||
 		strings.Contains(c.errOut.String(), "the GitHub login was cancelled") {
 		t.Error("hib didn't report the independent SSH disconnect")
