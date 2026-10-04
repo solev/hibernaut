@@ -11,11 +11,15 @@ WEBSOCAT_VERSION=1.14.1
 WEBSOCAT_SHA256=66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514
 
 root="${1:-}"
-stage="$here/.tools-$$-${RANDOM}-${RANDOM}"
+bin_dir="${root}/usr/local/bin"
+lib_dir="${root}/usr/local/lib"
+install -d -m 755 "$bin_dir" "$lib_dir" "${root}/usr/lib/hibernaut"
+stage="$lib_dir/.tools-$$-${RANDOM}-${RANDOM}"
+codex_link="$bin_dir/.codex-link-$$-${RANDOM}-${RANDOM}"
 env_file="${root}/etc/environment"
 env_tmp="${env_file}.hibernaut-$$-${RANDOM}-${RANDOM}"
 mkdir -m 700 "$stage"
-trap 'rm -rf "$stage"; rm -f "$env_tmp"' EXIT
+trap 'rm -rf "$stage"; rm -f "$env_tmp" "$codex_link"' EXIT
 trap 'exit 1' HUP INT TERM
 
 fetch() { # url sha256 dest
@@ -23,17 +27,33 @@ fetch() { # url sha256 dest
 	printf '%s  %s\n' "$2" "$3" | sha256sum -c -
 }
 
-fetch "https://github.com/openai/codex/releases/download/rust-v$CODEX_VERSION/codex-x86_64-unknown-linux-musl.tar.gz" \
+fetch "https://github.com/openai/codex/releases/download/rust-v$CODEX_VERSION/codex-package-x86_64-unknown-linux-musl.tar.gz" \
 	"$CODEX_SHA256" "$stage/codex.tar.gz"
 fetch "https://github.com/github/copilot-cli/releases/download/v$COPILOT_VERSION/copilot-linux-x64.tar.gz" \
 	"$COPILOT_SHA256" "$stage/copilot.tar.gz"
 fetch "https://github.com/vi/websocat/releases/download/v$WEBSOCAT_VERSION/websocat.x86_64-unknown-linux-musl" \
 	"$WEBSOCAT_SHA256" "$stage/websocat"
-tar -xzf "$stage/codex.tar.gz" -C "$stage" --no-same-owner codex-x86_64-unknown-linux-musl
+mkdir -m 755 "$stage/codex"
+tar -xzf "$stage/codex.tar.gz" -C "$stage/codex" --no-same-owner
 tar -xzf "$stage/copilot.tar.gz" -C "$stage" --no-same-owner copilot
-install -d -m 755 "${root}/usr/local/bin" "${root}/usr/lib/hibernaut"
-install -m 755 "$stage/codex-x86_64-unknown-linux-musl" "${root}/usr/local/bin/codex"
-install -m 755 "$stage/copilot" "${root}/usr/local/bin/copilot"
+[[ -x "$stage/codex/bin/codex" && -x "$stage/codex/bin/codex-code-mode-host" &&
+	-f "$stage/codex/codex-package.json" ]] || {
+	echo "incomplete codex package: download the pinned canonical package" >&2
+	exit 1
+}
+codex_dir="$lib_dir/codex-$CODEX_VERSION"
+if [[ -e "$codex_dir" || -L "$codex_dir" ]]; then
+	mv -T "$codex_dir" "$stage/previous-codex"
+fi
+mv -T "$stage/codex" "$codex_dir"
+ln -s "$codex_dir/bin/codex" "$codex_link"
+mv -T "$codex_link" "$bin_dir/codex"
+for old in "$lib_dir"/codex-*; do
+	if [[ "$old" != "$codex_dir" && -d "$old" ]]; then
+		rm -rf -- "$old"
+	fi
+done
+install -m 755 "$stage/copilot" "$bin_dir/copilot"
 install -m 755 "$stage/websocat" "${root}/usr/lib/hibernaut/websocat"
 
 install -d -m 700 -o user -g user "${root}/home/user/.codex" "${root}/home/user/.copilot"

@@ -22,6 +22,7 @@ func TestCodex(t *testing.T) {
 	status := toolStatus(t, ctx)
 	requireCodexConnected(t, status)
 	name := newHibMachine(t, ctx)
+	requireCodexPackage(t, ctx, name)
 	requireToolOK(t, ctx, name, codexSmoke)
 	requireNoLeaks(t, ctx, name, toolSecrets(status)...)
 }
@@ -92,6 +93,23 @@ func requireCodexConnected(t *testing.T, status hibapi.Status) {
 	}
 	if status.Codex.Health != hibapi.CodexOK {
 		t.Fatal("the Codex login isn't healthy. Run hib connect codex, then run the end-to-end tests again")
+	}
+}
+
+func requireCodexPackage(t *testing.T, ctx context.Context, name string) {
+	t.Helper()
+	_, _, err := sshResult(ctx, nil, name, `set -eu
+entry=$(readlink /usr/local/bin/codex)
+case "$entry" in /usr/local/lib/codex-*/bin/codex) ;; *) exit 1 ;; esac
+test -x "$entry"
+package=$(dirname "$(dirname "$entry")")
+test -x "$package/bin/codex-code-mode-host"
+test -f "$package/codex-package.json"
+unowned=$(find "$package" \( ! -user root -o ! -group root \) -print -quit)
+test -z "$unowned"
+test "$(stat -c '%U:%G' /usr/local/bin/codex)" = root:root`)
+	if err != nil {
+		t.Fatal("the machine must have a root-owned Codex package with code mode. Rebuild the dev image")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -18,6 +19,14 @@ import (
 
 func TestToolsInstall(t *testing.T) {
 	run, root, calls := toolInstallFixture(t)
+	old := filepath.Join(root, "usr/local/lib/codex-0.159.0")
+	writeToolFile(t, filepath.Join(old, "bin/codex"), []byte("old codex"), 0o755)
+	if err := os.MkdirAll(filepath.Join(root, "usr/local/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(old, "bin/codex"), filepath.Join(root, "usr/local/bin/codex")); err != nil {
+		t.Fatal(err)
+	}
 	block, err := envblock.Render([]envblock.Var{{Name: "GH_TOKEN", Value: "gho_placeholder"}})
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +47,20 @@ func TestToolsInstall(t *testing.T) {
 			t.Fatalf("%s wasn't installed correctly: %v", name, err)
 		}
 		requireToolMode(t, filepath.Join(root, name), 0o755)
+	}
+	packageDir := filepath.Join(root, "usr/local/lib/codex-0.160.0")
+	target, err := os.Readlink(filepath.Join(root, "usr/local/bin/codex"))
+	if err != nil || target != filepath.Join(packageDir, "bin/codex") {
+		t.Fatalf("Codex must link to the canonical package entrypoint: %v", err)
+	}
+	for _, file := range []string{
+		"bin/codex-code-mode-host", "codex-path/rg", "codex-resources/bwrap", "codex-resources/zsh/bin/zsh",
+	} {
+		requireToolMode(t, filepath.Join(packageDir, file), 0o755)
+	}
+	requireToolMode(t, filepath.Join(packageDir, "codex-package.json"), 0o644)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("the old Codex package directory wasn't removed")
 	}
 	config, err := os.ReadFile(filepath.Join(root, "home/user/.codex/config.toml"))
 	const wantCodex = `approval_policy = "never"
@@ -122,7 +145,7 @@ func TestToolsRejectCorruptDownloads(t *testing.T) {
 					t.Errorf("checksum failure installed %s", name)
 				}
 			}
-			entries, err := os.ReadDir(filepath.Join(root, "usr/lib/hibernaut"))
+			entries, err := os.ReadDir(filepath.Join(root, "usr/local/lib"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,7 +158,38 @@ func TestToolsRejectCorruptDownloads(t *testing.T) {
 	}
 }
 
-func toolInstallFixture(t *testing.T) (func(string) ([]byte, error), string, string) {
+func TestToolsRejectIncompleteCodexPackage(t *testing.T) {
+	for _, missing := range []string{"bin/codex", "bin/codex-code-mode-host", "codex-package.json"} {
+		t.Run(missing, func(t *testing.T) {
+			run, root, _ := toolInstallFixture(t, missing)
+			old := filepath.Join(root, "usr/local/lib/codex-0.159.0/bin/codex")
+			writeToolFile(t, old, []byte("old codex"), 0o755)
+			dest := filepath.Join(root, "usr/local/bin/codex")
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(old, dest); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := run(""); err == nil {
+				t.Fatalf("an incomplete Codex package was accepted: %s", out)
+			}
+			target, err := os.Readlink(dest)
+			if err != nil || target != old {
+				t.Fatalf("the incomplete package changed the current symlink: %v", err)
+			}
+			data, err := os.ReadFile(old)
+			if err != nil || string(data) != "old codex" {
+				t.Fatalf("the incomplete package removed the older version: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "usr/local/lib/codex-0.160.0")); !os.IsNotExist(err) {
+				t.Error("the incomplete package was published")
+			}
+		})
+	}
+}
+
+func toolInstallFixture(t *testing.T, missing ...string) (func(string) ([]byte, error), string, string) {
 	t.Helper()
 	root := t.TempDir()
 	spec, err := Spec(Default, testCAPEM(t))
@@ -153,8 +207,19 @@ func toolInstallFixture(t *testing.T) (func(string) ([]byte, error), string, str
 		t.Fatalf("install the tools step's files: %v: %s", err, out)
 	}
 	archives := t.TempDir()
-	codexSum := toolArchive(t, filepath.Join(archives, "codex.tar.gz"), "codex-x86_64-unknown-linux-musl", "fixture codex\n")
-	copilotSum := toolArchive(t, filepath.Join(archives, "copilot.tar.gz"), "copilot", "fixture copilot\n")
+	packageFiles := map[string]string{
+		"bin/codex":                   "fixture codex\n",
+		"bin/codex-code-mode-host":    "fixture code mode host\n",
+		"codex-package.json":          "{\"version\":\"0.160.0\"}\n",
+		"codex-path/rg":               "fixture rg\n",
+		"codex-resources/bwrap":       "fixture bwrap\n",
+		"codex-resources/zsh/bin/zsh": "fixture zsh\n",
+	}
+	for _, entry := range missing {
+		delete(packageFiles, entry)
+	}
+	codexSum := toolArchive(t, filepath.Join(archives, "codex.tar.gz"), packageFiles)
+	copilotSum := toolArchive(t, filepath.Join(archives, "copilot.tar.gz"), map[string]string{"copilot": "fixture copilot\n"})
 	writeToolFile(t, filepath.Join(archives, "websocat"), []byte("fixture websocat\n"), 0o600)
 	pins := fmt.Sprintf("CODEX_VERSION=0.160.0\nCODEX_SHA256=%x\nCOPILOT_VERSION=1.0.91\nCOPILOT_SHA256=%x\n",
 		codexSum, copilotSum)
@@ -169,18 +234,33 @@ func toolInstallFixture(t *testing.T) (func(string) ([]byte, error), string, str
 		realSHA = filepath.Join(fakes, "real-sha256sum")
 		writeToolFile(t, realSHA, []byte("#!/bin/sh\nexec shasum -a 256 \"$@\"\n"), 0o755)
 	}
+	if runtime.GOOS == "darwin" {
+		writeToolFile(t, filepath.Join(fakes, "mv"), []byte(`#!/bin/sh
+set -eu
+if [ "$1" = -T ]; then
+	shift
+	exec /bin/mv -h "$@"
+fi
+exec /bin/mv "$@"
+`), 0o755)
+	}
 	for name, script := range map[string]string{
 		"curl": `#!/bin/sh
 set -eu
 dest=
+url=
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	-o) dest=$2; shift 2 ;;
+	https://*) url=$1; shift ;;
 	*) shift ;;
 	esac
 done
 [ -n "$dest" ]
 name=$(basename "$dest")
+if [ "$name" = codex.tar.gz ]; then
+	[ "$url" = https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-package-x86_64-unknown-linux-musl.tar.gz ]
+fi
 if [ "$name" = "$CORRUPT" ]; then
 	printf 'corrupt download' >"$dest"
 else
@@ -225,7 +305,7 @@ exec "$REAL_INSTALL" "${args[@]}"
 	return run, root, calls
 }
 
-func toolArchive(t *testing.T, name, entry, contents string) [32]byte {
+func toolArchive(t *testing.T, name string, entries map[string]string) [32]byte {
 	t.Helper()
 	file, err := os.Create(name)
 	if err != nil {
@@ -233,11 +313,17 @@ func toolArchive(t *testing.T, name, entry, contents string) [32]byte {
 	}
 	zip := gzip.NewWriter(file)
 	archive := tar.NewWriter(zip)
-	if err := archive.WriteHeader(&tar.Header{Name: entry, Mode: 0o755, Size: int64(len(contents))}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := archive.Write([]byte(contents)); err != nil {
-		t.Fatal(err)
+	for entry, contents := range entries {
+		mode := int64(0o755)
+		if strings.HasSuffix(entry, ".json") {
+			mode = 0o644
+		}
+		if err := archive.WriteHeader(&tar.Header{Name: entry, Mode: mode, Size: int64(len(contents))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := archive.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, closer := range []io.Closer{archive, zip, file} {
 		if err := closer.Close(); err != nil {
