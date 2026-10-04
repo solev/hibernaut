@@ -145,6 +145,10 @@ func (a *App) checkSecrets(ctx context.Context, secrets []vault.Revealed, profil
 	sem := make(chan struct{}, maxChecks)
 	for i, s := range secrets {
 		health[i] = hibapi.SecretHealth{Name: s.Name, Sites: slices.Clone(s.Sites)}
+		if codex.Managed(s.Name) {
+			health[i].State, health[i].Detail = hibapi.SecretUnchecked, "part of the Codex login above"
+			continue
+		}
 		if !checked(s.Secret) {
 			health[i].State, health[i].Detail = hibapi.SecretUnchecked, "no check for these sites"
 			continue

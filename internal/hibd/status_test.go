@@ -319,6 +319,18 @@ func TestStatusShowsCodex(t *testing.T) {
 	if !s.OK() {
 		t.Errorf("status = %+v, want OK", s)
 	}
+	var codexRows int
+	for _, sec := range s.Secrets {
+		if codex.Managed(sec.Name) {
+			codexRows++
+			if sec.State != hibapi.SecretUnchecked || sec.Detail != "part of the Codex login above" {
+				t.Errorf("secret %s = %s, %q; want unchecked, pointing at the Codex login", sec.Name, sec.State, sec.Detail)
+			}
+		}
+	}
+	if codexRows != 3 {
+		t.Errorf("status listed %d Codex secrets, want 3", codexRows)
+	}
 	if code := runStatusText(t, a, out, s); code != 0 {
 		t.Errorf("status exit %d, want 0; stderr %q", code, errOut)
 	}
