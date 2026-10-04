@@ -31,8 +31,8 @@ func TestDeviceFlow(t *testing.T) {
 	if os.Getenv("HIB_E2E_DEVICE_FLOW") != "1" {
 		t.Skip("approve a GitHub code by hand: HIB_E2E_DEVICE_FLOW=1 go test -tags e2e -run '^TestDeviceFlow$' -v -timeout 40m ./e2e")
 	}
-	ctx := testContext(t, 18*time.Minute)
-	stdout, stderr, code := runHibStderr(ctx, os.Stderr, "connect", "github")
+	connectCtx := testContext(t, 17*time.Minute)
+	stdout, stderr, code := runHibStderr(connectCtx, os.Stderr, "connect", "github")
 	if code != 0 {
 		t.Fatalf("hib connect github exited %d: %s%s", code, stdout, stderr)
 	}
@@ -46,7 +46,8 @@ func TestDeviceFlow(t *testing.T) {
 		t.Fatal("hib connect github didn't show the device prompt")
 	}
 	login, email := connectedGitHubAccount(t, stdout)
-	checkGitHubFullFlow(t, ctx, login, email, "")
+	flowCtx := testContext(t, 20*time.Minute)
+	checkGitHubFullFlow(t, flowCtx, login, email, "")
 }
 
 func checkGitHubFullFlow(t *testing.T, ctx context.Context, login, email, token string) {

@@ -228,7 +228,6 @@ func newHost(ctx context.Context) (*host, error) {
 
 var sshOptions = []string{
 	"-o", "BatchMode=yes",
-	"-o", "StdinNull=no",
 	"-o", "ConnectTimeout=10",
 	"-o", "StrictHostKeyChecking=accept-new",
 	"-o", "ServerAliveInterval=10",
