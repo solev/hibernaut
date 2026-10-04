@@ -2,21 +2,30 @@ package hibd
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/ca"
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/codex/codextest"
 	"github.com/solev/hibernaut/internal/egress"
 	"github.com/solev/hibernaut/internal/egress/swap"
+	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/engine/fake"
 )
 
 func TestCAInit(t *testing.T) {
@@ -155,5 +164,307 @@ func TestProxyAnswersCodexRefreshWithOneStore(t *testing.T) {
 	}
 	if bytes.Contains(logs.Bytes(), []byte(tokens.AccessToken)) || bytes.Contains(logs.Bytes(), []byte(tokens.RefreshToken)) {
 		t.Fatal("a real codex token reached the logs")
+	}
+}
+
+// fakeHook stands in for the iptables rule and records its calls.
+type fakeHook struct {
+	ensureErr, keepErr, removeErr error
+	// kept is closed when Keep starts keeping the hook.
+	kept chan struct{}
+
+	mu    sync.Mutex
+	calls []string
+}
+
+func newFakeHook() *fakeHook { return &fakeHook{kept: make(chan struct{})} }
+
+func (h *fakeHook) Ensure(context.Context) (bool, error) {
+	h.record("ensure")
+	return true, h.ensureErr
+}
+
+func (h *fakeHook) Keep(ctx context.Context, _ time.Duration, _ func(string, ...any)) error {
+	h.record("keep")
+	if h.keepErr != nil {
+		return h.keepErr
+	}
+	close(h.kept)
+	<-ctx.Done()
+	return nil
+}
+
+func (h *fakeHook) Remove(ctx context.Context) error {
+	if ctx.Err() != nil {
+		h.record("remove with an ended context")
+	} else {
+		h.record("remove")
+	}
+	return h.removeErr
+}
+
+func (h *fakeHook) record(call string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, call)
+}
+
+func (h *fakeHook) Calls() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.calls)
+}
+
+// testListener is a loopback listener that records Close, and fails Accept with acceptErr if
+// it's set.
+type testListener struct {
+	net.Listener
+	acceptErr error
+	closed    atomic.Bool
+}
+
+func (l *testListener) Accept() (net.Conn, error) {
+	if l.acceptErr != nil {
+		return nil, l.acceptErr
+	}
+	return l.Listener.Accept()
+}
+
+func (l *testListener) Close() error {
+	l.closed.Store(true)
+	return l.Listener.Close()
+}
+
+// proxyApp returns an App, run as root, whose hibd proxy has a fresh CA and state directory, an
+// empty fake engine, hook as its hook, and listener as its port. env is the App's environment,
+// for tests to change. listen records the address hibd proxy asked for.
+func proxyApp(t *testing.T, hook *fakeHook) (a *App, env map[string]string, listener *testListener, listen *[]string) {
+	t.Helper()
+	dir := t.TempDir()
+	env = map[string]string{
+		"HIBD_CONFIG":     filepath.Join(dir, "absent.env"),
+		"E2B_API_KEY":     "test",
+		"HIBD_STATE_DIR":  dir,
+		"HIBD_VAULT_KEY":  filepath.Join(dir, "vault.key"),
+		"HIBD_CA_CERT":    filepath.Join(dir, "ca.crt"),
+		"HIBD_CA_KEY":     filepath.Join(dir, "ca.key"),
+		"HIBD_AUDIT_LOG":  filepath.Join(dir, "log", "audit.jsonl"),
+		"HIBD_PROXY_PORT": "5443",
+	}
+	if _, err := ca.Init(env["HIBD_CA_CERT"], env["HIBD_CA_KEY"], "Hibernaut CA"); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener = &testListener{Listener: l}
+	t.Cleanup(func() { l.Close() })
+	listen = new([]string)
+	a = &App{
+		Stdout: &bytes.Buffer{}, Stderr: &syncBuffer{}, Getenv: func(k string) string { return env[k] },
+		EUID:      func() int { return 0 },
+		NewEngine: func() (engine.Engine, error) { return fake.New(), nil },
+		ProxyHook: hook,
+		ProxyListen: func(network, address string) (net.Listener, error) {
+			*listen = append(*listen, network+" "+address)
+			return listener, nil
+		},
+	}
+	return a, env, listener, listen
+}
+
+func TestProxyStartupFailuresLeaveTheHookAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, a *App, env map[string]string)
+		want  string
+	}{
+		{name: "no E2B key", want: "E2B_API_KEY is not set", setup: func(_ *testing.T, _ *App, env map[string]string) {
+			delete(env, "E2B_API_KEY")
+		}},
+		{name: "bad config file", want: "want KEY=VALUE", setup: func(t *testing.T, _ *App, env map[string]string) {
+			writeProxyFile(t, env["HIBD_CONFIG"], "not a setting\n")
+		}},
+		{name: "missing CA key", want: "CA is missing. Run sudo hibd ca init", setup: func(t *testing.T, _ *App, env map[string]string) {
+			removeProxyFile(t, env["HIBD_CA_KEY"])
+		}},
+		{name: "unreadable CA cert", want: "reading CA cert", setup: func(t *testing.T, _ *App, env map[string]string) {
+			writeProxyFile(t, env["HIBD_CA_CERT"], "not a certificate\n")
+		}},
+		{name: "port not a number", want: "HIBD_PROXY_PORT must be a port from 1 to 65535", setup: setProxyEnv("HIBD_PROXY_PORT", "https")},
+		{name: "port zero", want: "HIBD_PROXY_PORT must be a port from 1 to 65535", setup: setProxyEnv("HIBD_PROXY_PORT", "0")},
+		{name: "port too big", want: "HIBD_PROXY_PORT must be a port from 1 to 65535", setup: setProxyEnv("HIBD_PROXY_PORT", "65536")},
+		{name: "engine", want: "engine unavailable", setup: func(_ *testing.T, a *App, _ map[string]string) {
+			a.NewEngine = func() (engine.Engine, error) { return nil, errors.New("engine unavailable") }
+		}},
+		{name: "audit directory", want: "not a directory", setup: func(t *testing.T, _ *App, env map[string]string) {
+			file := filepath.Join(env["HIBD_STATE_DIR"], "file")
+			writeProxyFile(t, file, "")
+			env["HIBD_AUDIT_LOG"] = filepath.Join(file, "log", "audit.jsonl")
+		}},
+		{name: "audit log", want: "is a directory", setup: func(t *testing.T, _ *App, env map[string]string) {
+			if err := os.MkdirAll(env["HIBD_AUDIT_LOG"], 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "port taken", want: "address already in use", setup: func(_ *testing.T, a *App, _ map[string]string) {
+			a.ProxyListen = func(string, string) (net.Listener, error) { return nil, errors.New("address already in use") }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := newFakeHook()
+			a, env, _, _ := proxyApp(t, hook)
+			tc.setup(t, a, env)
+			if code := a.Run(t.Context(), []string{"proxy"}); code != 1 {
+				t.Fatalf("exit %d, want 1: %s", code, a.Stderr)
+			}
+			if logs := fmt.Sprint(a.Stderr); !strings.Contains(logs, "hibd proxy: ") || !strings.Contains(logs, tc.want) {
+				t.Fatalf("stderr = %q, want %q", logs, tc.want)
+			}
+			if calls := hook.Calls(); len(calls) > 0 {
+				t.Fatalf("a failed start touched the hook: %q", calls)
+			}
+		})
+	}
+}
+
+func TestProxyListensOnPortsAtTheBoundaries(t *testing.T) {
+	for _, port := range []string{"1", "65535"} {
+		hook := newFakeHook()
+		a, env, _, listen := proxyApp(t, hook)
+		env["HIBD_PROXY_PORT"] = port
+		a.ProxyListen = func(network, address string) (net.Listener, error) {
+			*listen = append(*listen, network+" "+address)
+			return nil, errors.New("not listening in tests")
+		}
+		if code := a.Run(t.Context(), []string{"proxy"}); code != 1 || !strings.Contains(fmt.Sprint(a.Stderr), "not listening in tests") {
+			t.Fatalf("port %s: exit %d: %s", port, code, a.Stderr)
+		}
+		if want := []string{"tcp :" + port}; !slices.Equal(*listen, want) {
+			t.Fatalf("port %s: listened on %q, want %q", port, *listen, want)
+		}
+	}
+}
+
+func TestProxyServesUntilCancelledAndUnhooksOnEveryExit(t *testing.T) {
+	ensureErr := errors.New("iptables refused the rule")
+	keepErr := errors.New("iptables went away")
+	acceptErr := errors.New("accept failed")
+	removeErr := errors.New("iptables is locked")
+	hooked := []string{"ensure", "keep", "remove"}
+	for _, tc := range []struct {
+		name                          string
+		ensureErr, keepErr, removeErr error
+		acceptErr                     error
+		cancel                        bool
+		want                          string
+		calls                         []string
+	}{
+		{name: "context ends", cancel: true, calls: hooked},
+		{name: "hooking fails", ensureErr: ensureErr, want: "installing proxy hook: " + ensureErr.Error(), calls: []string{"ensure", "remove"}},
+		{name: "keeping the hook fails", keepErr: keepErr, want: keepErr.Error(), calls: hooked},
+		{name: "serving fails", acceptErr: acceptErr, want: acceptErr.Error(), calls: hooked},
+		{name: "unhooking fails", cancel: true, removeErr: removeErr, want: "removing proxy hook: " + removeErr.Error(), calls: hooked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := newFakeHook()
+			hook.ensureErr, hook.keepErr, hook.removeErr = tc.ensureErr, tc.keepErr, tc.removeErr
+			a, env, listener, listen := proxyApp(t, hook)
+			listener.acceptErr = tc.acceptErr
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan int, 1)
+			go func() { done <- a.Run(ctx, []string{"proxy"}) }()
+			if tc.cancel {
+				select {
+				case <-hook.kept:
+				case <-time.After(5 * time.Second):
+					t.Fatal("proxy did not keep the hook")
+				}
+				assertServes(t, listener.Addr().String())
+				cancel()
+			}
+			var code int
+			select {
+			case code = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("proxy did not stop")
+			}
+			wantCode := 0
+			if tc.want != "" {
+				wantCode = 1
+			}
+			if code != wantCode || !strings.Contains(fmt.Sprint(a.Stderr), tc.want) {
+				t.Fatalf("exit %d, want %d and %q: %s", code, wantCode, tc.want, a.Stderr)
+			}
+			if calls := hook.Calls(); !slices.Equal(calls, tc.calls) {
+				t.Fatalf("hook calls = %q, want %q", calls, tc.calls)
+			}
+			if want := []string{"tcp :5443"}; !slices.Equal(*listen, want) {
+				t.Fatalf("listened on %q, want %q", *listen, want)
+			}
+			if !listener.closed.Load() {
+				t.Fatal("proxy left its port open")
+			}
+			if _, err := os.Stat(env["HIBD_AUDIT_LOG"]); err != nil {
+				t.Fatalf("audit log: %v", err)
+			}
+		})
+	}
+}
+
+func TestProxyUnhookRemovesTheHookWithoutConfiguration(t *testing.T) {
+	hook := newFakeHook()
+	a, env, _, listen := proxyApp(t, hook)
+	clear(env)
+	if code := a.Run(t.Context(), []string{"proxy", "-unhook"}); code != 0 {
+		t.Fatalf("unhook exit %d: %s", code, a.Stderr)
+	}
+	if calls := hook.Calls(); !slices.Equal(calls, []string{"remove"}) {
+		t.Fatalf("hook calls = %q, want one remove", calls)
+	}
+	hook.removeErr = errors.New("iptables is locked")
+	if code := a.Run(t.Context(), []string{"proxy", "-unhook"}); code != 1 ||
+		!strings.Contains(fmt.Sprint(a.Stderr), "hibd proxy: iptables is locked") {
+		t.Fatalf("failed unhook: exit %d: %s", code, a.Stderr)
+	}
+	if len(*listen) > 0 {
+		t.Fatalf("unhook listened on %q", *listen)
+	}
+}
+
+// assertServes checks that the proxy accepts connections on addr. The proxy closes this one,
+// because it doesn't come from a machine.
+func assertServes(t *testing.T, addr string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("proxy did not answer a non-machine connection: read %d, %v", n, err)
+	}
+}
+
+func setProxyEnv(key, value string) func(*testing.T, *App, map[string]string) {
+	return func(_ *testing.T, _ *App, env map[string]string) { env[key] = value }
+}
+
+func writeProxyFile(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeProxyFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/pauseall"
+	proxypkg "github.com/solev/hibernaut/internal/proxy"
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/version"
@@ -139,6 +141,11 @@ type App struct {
 	// codex.Store's own.
 	CodexTokenURL string
 	CodexClient   *http.Client
+	// ProxyHook sends machines' HTTPS traffic to hibd proxy, for tests only. If it's nil, App
+	// uses the iptables rule for the proxy's port.
+	ProxyHook proxypkg.Rule
+	// ProxyListen opens hibd proxy's port, for tests only. If it's nil, App uses net.Listen.
+	ProxyListen func(network, address string) (net.Listener, error)
 
 	// codexEvery is how often the daemon looks at the Codex login, for tests only. If it's 0,
 	// the daemon looks every minute.
