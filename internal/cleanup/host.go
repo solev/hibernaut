@@ -171,7 +171,7 @@ func (h Host) query(ctx context.Context, fields int, sql string) ([][]string, er
 	return rows, nil
 }
 
-// Postgres keeps times to the microsecond.
+// micros parses microseconds since 1970: Postgres keeps times to the microsecond.
 func micros(s string) (time.Time, error) {
 	us, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
@@ -180,6 +180,7 @@ func micros(s string) (time.Time, error) {
 	return time.UnixMicro(us), nil
 }
 
+// buildName matches the names of build directories, which are UUIDs.
 var buildName = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func readDirs(storage string) ([]Dir, error) {
