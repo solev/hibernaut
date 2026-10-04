@@ -153,6 +153,8 @@ func TestKeepsEachTagsBuild(t *testing.T) {
 }
 
 func TestKeepsTheBuildE2BStartsFrom(t *testing.T) {
+	// img-1 was put back in img 5 hours ago, so E2B starts machines from it again, though img-3
+	// is newer.
 	img1 := ready("img-1", "img", ago(30*time.Hour))
 	img1.In = append(img1.In, cleanup.Assignment{Env: "img", Tag: "default", At: ago(5 * time.Hour)})
 	wantGarbage(t, cleanup.Listing{
@@ -279,6 +281,7 @@ func TestKeepsImageBuildsMachinesMayHaveStartedFrom(t *testing.T) {
 }
 
 func TestKeepsTheImageBuildAMachineStartedFromAsANewOneFinished(t *testing.T) {
+	// E2B picked img-1 for web, then img-2 finished before E2B stamped web's start.
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{

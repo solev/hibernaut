@@ -17,7 +17,9 @@ import (
 )
 
 const (
-	connectUsage      = "connect github (--from-gh | --token)\n       hib connect codex"
+	connectUsage = "connect github (--from-gh | --token)\n       hib connect codex"
+	// codexLoginTimeout is how long hib connect codex waits for hibd: a minute longer than
+	// Codex's device code lasts.
 	codexLoginTimeout = 16 * time.Minute
 )
 
@@ -141,7 +143,7 @@ func (w *cappedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// flag's errors quote invalid values.
+// checkConnectArgs keeps a pasted token out of flag's errors, which quote invalid values.
 func checkConnectArgs(args []string) error {
 	const tokenArgument = "pass the token at the prompt or on stdin, not as an argument: arguments end up in shell history"
 	positional := 0

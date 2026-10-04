@@ -257,7 +257,7 @@ func (s *Store) backoff(p Profile, retryAfter string) error {
 
 func (s *Store) dead(p Profile, code string) error {
 	why := "the token endpoint refused the refresh token"
-
+	// An unknown code could echo a credential.
 	if deadCode(code) {
 		why = termsafe.String(code)
 	}

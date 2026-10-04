@@ -302,6 +302,7 @@ func (f *connectFront) refusedHosts() map[string]int {
 	return out
 }
 
+// Its reader holds anything read past the CONNECT request.
 type tunnelConn struct {
 	net.Conn
 	reader *bufio.Reader
@@ -411,6 +412,8 @@ func (f *fakeChatGPT) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// serveAccounts says the account has no workspace routing of its own, so Codex keeps
+// chatgpt.com.
 func (f *fakeChatGPT) serveAccounts(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]string{{
