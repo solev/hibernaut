@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	// E2B's fixed local-development API key (vm/lib/e2b.sh).
+	// localDevKey is E2B's fixed local-development API key (vm/lib/e2b.sh). E2B is only
+	// reachable through SSH.
 	localDevKey = "e2b_53ae1fed82754c17ad8077fbc8bcdd90"
 	template    = "base"
 )

@@ -463,6 +463,7 @@ func TestTermFallback(t *testing.T) {
 		{"hib-no-such-terminal", "TERM=xterm-256color"},
 		{"", ""},
 	} {
+		// env is a child process, so it shows TERM as programs started from the shell see it.
 		cmd := exec.Command("sh", "-c", string(script)+"\nenv")
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		if c.term != "" {
@@ -484,6 +485,7 @@ func TestTermFallback(t *testing.T) {
 	}
 }
 
+// E2B's own sshd settings allow root and empty passwords, so nothing may be included.
 func TestSSHDConfigHardened(t *testing.T) {
 	data, err := files.ReadFile("dev/sshd_config")
 	if err != nil {

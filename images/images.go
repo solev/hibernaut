@@ -51,6 +51,7 @@ type image struct {
 	readyCmd      string
 }
 
+// Build caches each step until it, or one before it, changes: put what is slow to build first.
 type step struct {
 	files []file
 	ca    bool
@@ -103,6 +104,7 @@ var catalog = map[string]image{
 				run: lib + "/tools",
 			},
 		},
+		// The start command runs as the template's default user, which has passwordless sudo.
 		startCmd: "sudo -n " + lib + "/start",
 		readyCmd: lib + "/ready",
 	},
