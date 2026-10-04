@@ -216,7 +216,19 @@ codex exec --skip-git-repo-check --sandbox danger-full-access "Reply with exactl
     call. Codex caches the failure for the rest of the process, prints its canned "refresh token
     was already used" message, and leaves `auth.json` alone.
   - A refresh answered 503: not cached. One run sent 13 refresh calls.
+- **Seen in M5's integration test** — the real codex 0.160.0 against Hibernaut's fake OpenAI:
+  - At startup Codex calls `GET chatgpt.com/backend-api/wham/accounts/check`. The answer is an
+    `accounts` list. Each account has an `id`, with `workspace_backend_origin` and
+    `account_routing_override` set to `NO_CONSTRAINT`. A 401 there makes Codex refresh.
+  - The first WebSocket frame Codex sends is about 60 KB, so anything that reads its frames needs
+    a large read limit.
+  - The bare binary in a release's `codex-<target>.tar.gz` warns that `codex-code-mode-host` is
+    missing. The release's `codex-package-<target>.tar.gz` has it, with `bin/codex`,
+    `codex-package.json`, `codex-path/rg`, `codex-resources/bwrap` and `codex-resources/zsh`.
+    Codex canonicalizes its own path to find the package, so a symlink to `bin/codex` works.
+    OpenAI's install.sh installs it that way.
 - **Implications for Hibernaut:**
+  - Install Codex's package, not the bare binary, so code mode works.
   - Bind the access token to `chatgpt.com` only. Intercept `auth.openai.com` only to answer the
     refresh. Never swap the refresh or ID token: neither is sent in normal use.
   - The token endpoint must not pass every refresh call on to OpenAI: a 503 brings a dozen more.
