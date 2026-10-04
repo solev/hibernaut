@@ -76,6 +76,8 @@ var (
 	ErrUnavailable = errors.New("codex can't refresh right now")
 )
 
+// errNotImplemented marks the contract's stubs. Until the Store is built, it acts as if Codex
+// isn't connected.
 var errNotImplemented = errors.New("not implemented yet")
 
 // Tokens are a login's real tokens. They never print their values.
@@ -194,14 +196,14 @@ func NewStore(cfg Config) *Store { return &Store{cfg: cfg} }
 
 // Load returns the profile, or ErrNotConnected. It never waits for the lock and never writes.
 // An interrupted attempt shows as published or stuck.
-func (s *Store) Load() (Profile, error) { return Profile{}, errNotImplemented }
+func (s *Store) Load() (Profile, error) { return Profile{}, ErrNotConnected }
 
 // Public returns what the login file holds, or ErrNotConnected. It needs no lock.
-func (s *Store) Public() (PublicAuth, error) { return PublicAuth{}, errNotImplemented }
+func (s *Store) Public() (PublicAuth, error) { return PublicAuth{}, ErrNotConnected }
 
 // EnsureFresh refreshes the real login if reason calls for it, then returns Public.
 func (s *Store) EnsureFresh(ctx context.Context, reason Reason) (PublicAuth, error) {
-	return PublicAuth{}, errNotImplemented
+	return PublicAuth{}, ErrNotConnected
 }
 
 // CommitLogin replaces the login with a new device login's tokens. It may be another account.
@@ -231,4 +233,4 @@ func (OldValue) MarshalJSON() ([]byte, error) {
 }
 
 // Retired returns the replaced values kept for the leak scan.
-func (s *Store) Retired() ([]OldValue, error) { return nil, errNotImplemented }
+func (s *Store) Retired() ([]OldValue, error) { return nil, nil }

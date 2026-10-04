@@ -169,13 +169,15 @@ fingerprint for `codex-access`, in memory.
 - `images/dev/versions` sets `CODEX_VERSION=0.160.0`, `CODEX_SHA256` (the x86_64 musl tarball),
   `COPILOT_VERSION=1.0.91` and `COPILOT_SHA256`. The image's `tools` step, `vm/setup-host.sh` and
   CI read it. A test checks that `CODEX_VERSION` is `codex.Version`.
-- The `tools` step comes after `packages`. It installs both into `/usr/local/bin`, and writes
-  `/home/user/.codex/config.toml`, owned by `user`: `approval_policy = "never"`,
-  `sandbox_mode = "danger-full-access"`, `check_for_update_on_startup = false`,
-  `[analytics] enabled = false` and `cli_auth_credentials_store = "file"`. Copilot's settings turn
-  off the banner and updates, with key names checked against `copilot help config`.
-  `COPILOT_AUTO_UPDATE=false` goes into `/etc/environment` outside hibd's block, the way `trust-ca`
-  adds its variables.
+- The `tools` step is the last one. Builds reach `github.com` through the proxy, which intercepts
+  it while GitHub is connected, so every download from there comes after `trust-ca`. websocat's
+  download moves from `packages` into this step for the same reason. The step installs Codex and
+  Copilot into `/usr/local/bin`, and writes `/home/user/.codex/config.toml`, owned by `user`:
+  `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`,
+  `check_for_update_on_startup = false`, `[analytics] enabled = false` and
+  `cli_auth_credentials_store = "file"`. Copilot's settings turn off the banner and updates, with
+  key names checked against `copilot help config`. `COPILOT_AUTO_UPDATE=false` goes into
+  `/etc/environment` outside hibd's block, the way `trust-ca` adds its variables.
 - `hibd.service` and `hibd-proxy.service` get `ReadWritePaths=/var/lib/hibernaut`, so both can
   refresh.
 
@@ -202,6 +204,8 @@ connected. No test reads or changes a real `~/.codex`.
 - [ ] `images/dev/versions` pins Codex 0.160.0 and the Copilot CLI 1.0.91 by version and SHA-256.
       The host reads the same file.
 - [ ] Both installed from their release tarballs into `/usr/local/bin`.
+- [ ] Builds download from `github.com` only after `trust-ca`, since the proxy intercepts it.
+      websocat's download moves there too.
 - [ ] `~/.codex/config.toml`: `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`,
       `check_for_update_on_startup = false`, analytics off, and
       `cli_auth_credentials_store = "file"`.
