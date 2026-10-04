@@ -21,9 +21,9 @@ type envFileGuest struct {
 	content           []byte
 	casMismatchesLeft int
 	requests          []engine.ExecRequest
-	// git runs the script that sets git's identity. Nil answers as if sh were missing.
+
 	git func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
-	// codex runs the script that writes Codex's login file. Nil answers as if sh were missing.
+
 	codex func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
 }
 

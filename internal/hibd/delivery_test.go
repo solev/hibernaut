@@ -19,7 +19,6 @@ import (
 	"github.com/solev/hibernaut/internal/machines"
 )
 
-// testClock is a clock that moves only when told to.
 type testClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -37,15 +36,12 @@ func (c *testClock) add(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-// change edits the machine's files, as someone working in it might.
 func (g *secretGuest) change(edit func(g *secretGuest)) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	edit(g)
 }
 
-// newTestDelivery returns the daemon's setup delivery for a and e. Any problem it logs fails
-// the test.
 func newTestDelivery(t *testing.T, a *App, e engine.Engine) *setupDelivery {
 	t.Helper()
 	cfg, err := loadConfig(a.Getenv)
@@ -75,14 +71,13 @@ func TestSetupDeliveryWritesTheSetupAgainAfterAResume(t *testing.T) {
 		t.Fatalf("the first look wrote /etc/environment %q and git's identity %+v, want the setup", env, id)
 	}
 
-	// Someone in the machine removes hibd's block and git's identity.
 	guest.change(func(g *secretGuest) {
 		g.env = []byte("PATH=/usr/bin\n")
 		g.git = nil
 	})
 	requests := len(guest.allRequests())
 	d.look(ctx)
-	// Extending a running machine's timeout isn't a resume.
+
 	clock.add(time.Minute)
 	if err := e.SetTimeout(ctx, "app1", time.Hour); err != nil {
 		t.Fatal(err)
@@ -95,7 +90,6 @@ func TestSetupDeliveryWritesTheSetupAgainAfterAResume(t *testing.T) {
 		t.Errorf("looks without a resume ran %d commands in the machine, want none", n)
 	}
 
-	// A pause and a resume between two looks.
 	clock.add(time.Minute)
 	if err := e.Pause(ctx, "app1"); err != nil {
 		t.Fatal(err)
@@ -143,7 +137,7 @@ func TestCodexLoginFileComesBackAfterLogoutAndAResume(t *testing.T) {
 		t.Fatalf("auth.json = %q, want the placeholder login file", got)
 	}
 
-	// codex logout in the machine deletes the file. It stays deleted while the machine runs.
+	// codex logout in the machine deletes the file.
 	guest.change(func(g *secretGuest) { g.codexAuth = nil })
 	d.look(ctx)
 	if got := guest.codexAuthFile(); got != nil {

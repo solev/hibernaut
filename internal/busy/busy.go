@@ -1,6 +1,4 @@
-// Package busy keeps busy machines running. A machine pauses when its timeout runs out; a
-// Watcher renews the timeout of each machine that's using its CPU or running a coding agent, so
-// that only idle machines pause.
+// Package busy keeps busy machines running.
 package busy
 
 import (
@@ -25,7 +23,6 @@ const (
 	// busy.
 	CPUBusy = 0.10
 
-	// callTimeout bounds each call to E2B: a stuck one mustn't stop the watcher for good.
 	callTimeout = 10 * time.Second
 )
 
@@ -37,12 +34,10 @@ var (
 	idRE    = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
 )
 
-// Config configures a Watcher. A Watcher looks at its machines at the same time, so it calls
-// CPU, Now and Logf concurrently.
+// Config configures a Watcher. CPU, Now and Logf may be called concurrently.
 type Config struct {
 	Engine engine.Engine
-	// CPU returns how much CPU time machine id has used since it last started or resumed. On
-	// the host, that's CgroupCPU.
+	// CPU returns how much CPU time machine id has used. On the host, that's CgroupCPU.
 	CPU func(id string) (time.Duration, error)
 	// Agents are the programs that keep a machine busy while they run, by the name they run as.
 	// Default DefaultAgents.
@@ -63,7 +58,6 @@ type Watcher struct {
 	seen  map[string]*seen
 }
 
-// seen is what a Watcher remembers about a running machine between looks.
 type seen struct {
 	name     string
 	last     reading
@@ -71,10 +65,9 @@ type seen struct {
 	problems map[string]string
 }
 
-// reading is a reading of a machine's CPU counter.
 type reading struct {
 	ok        bool
-	startedAt time.Time // of the run whose CPU time the counter counts
+	startedAt time.Time
 	used      time.Duration
 	at        time.Time
 }
@@ -98,8 +91,7 @@ func New(cfg Config) (*Watcher, error) {
 	w := &Watcher{
 		e:   cfg.Engine,
 		cpu: cfg.CPU,
-		// A process runs an agent if the agent's name is a word of its command line, or the
-		// last part of a path that is. The pattern can't match pgrep's own command line.
+
 		pgrep: []string{"-f", `(^|[ /])(` + strings.Join(quoted, "|") + `)( |$)`},
 		now:   cfg.Now,
 		logf:  cfg.Logf,
@@ -172,13 +164,11 @@ func (w *Watcher) look(ctx context.Context, m engine.Machine, s *seen, idle time
 	defer cancel()
 	err := machines.Renew(ctx, w.e, m, idle, w.now())
 	if errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrNotFound) {
-		err = nil // It paused or went away since it was listed: leave it be.
+		err = nil
 	}
 	w.report(s, "keeping it running", err)
 }
 
-// cpuShare returns the share of a CPU machine m used since the last look, if both looks read
-// the same counter.
 func (w *Watcher) cpuShare(m engine.Machine, s *seen) (float64, bool) {
 	used, err := w.cpu(m.ID)
 	w.report(s, "reading its CPU time", err)
@@ -194,7 +184,6 @@ func (w *Watcher) cpuShare(m engine.Machine, s *seen) (float64, bool) {
 	return float64(used-prev.used) / float64(s.last.at.Sub(prev.at)), true
 }
 
-// agentRunning returns whether a coding agent is running in machine m.
 func (w *Watcher) agentRunning(ctx context.Context, m engine.Machine, s *seen) bool {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
@@ -209,8 +198,6 @@ func (w *Watcher) agentRunning(ctx context.Context, m engine.Machine, s *seen) b
 	return err == nil && res.ExitCode == 0
 }
 
-// report logs err, a problem with machine s while doing something, unless it's what went wrong
-// doing that last time. A nil err means nothing went wrong.
 func (w *Watcher) report(s *seen, doing string, err error) {
 	msg := ""
 	if err != nil {
@@ -242,7 +229,7 @@ func CgroupCPU(root string) func(id string) (time.Duration, error) {
 		for _, dir := range dirs {
 			used, err := usage(filepath.Join(dir, "cpu.stat"))
 			if errors.Is(err, fs.ErrNotExist) {
-				continue // The run ended and its cgroup went away.
+				continue
 			}
 			if err != nil {
 				return 0, err
@@ -257,7 +244,6 @@ func CgroupCPU(root string) func(id string) (time.Duration, error) {
 	}
 }
 
-// usage returns the CPU time in a cgroup's cpu.stat file.
 func usage(path string) (time.Duration, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

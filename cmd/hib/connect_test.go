@@ -453,7 +453,7 @@ func TestConnectCodexWaitsTheFullTimeAfterWakingHost(t *testing.T) {
 	if code != 0 || len(deadlines) != 2 || !strings.Contains(c.errOut.String(), "the host is up after") {
 		t.Fatalf("exit %d, connect attempts %d, expected a wake and retry: %s", code, len(deadlines), c.errOut)
 	}
-	// hibd starts the login only once the host is up, so waking it mustn't eat into the code's time.
+
 	if !deadlines[1].After(deadlines[0]) {
 		t.Error("hib's 16 minutes for hibd started before the host woke, want them to start after")
 	}

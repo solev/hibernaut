@@ -23,9 +23,6 @@ const (
 	orphanB     = "55555555-5555-4555-8555-555555555555"
 )
 
-// newHost returns E2B on a host whose storage has a directory per build. imageBuild is the
-// current build of image img, the layer cache points to cachedBuild, freshBuild changed just
-// now, and nothing uses orphanA or orphanB. All but freshBuild last changed two hours ago.
 func newHost(t *testing.T, now time.Time) cleanup.Host {
 	t.Helper()
 	header, err := os.ReadFile("testdata/memfile.header")
@@ -73,7 +70,6 @@ func newHost(t *testing.T, now time.Time) cleanup.Host {
 	return cleanup.Host{Storage: storage, Cache: cache, Query: query, Engine: fake.New()}
 }
 
-// touch sets when dir and the files in it last changed.
 func touch(t *testing.T, dir string, at time.Time) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -183,9 +179,6 @@ func TestHostDeletesNothingIfTheCacheMakesNoSense(t *testing.T) {
 	wantDirs(t, h, imageBuild, cachedBuild, freshBuild, orphanA, orphanB)
 }
 
-// fakeDocker puts a docker on PATH that lists the containers in ps, and answers docker exec
-// with psqlOut, or fails with psqlErr on stderr. It returns the file where it writes the
-// arguments of each docker exec, one per line.
 func fakeDocker(t *testing.T, ps, psqlOut, psqlErr string) string {
 	t.Helper()
 	dir := t.TempDir()

@@ -14,7 +14,6 @@ import (
 
 const codexRefreshUsage = "codex refresh [-force] [-json]"
 
-// runCodex runs hibd codex's subcommands.
 func (a *App) runCodex(ctx context.Context, args []string) int {
 	if len(args) > 0 && args[0] == "refresh" {
 		return a.codexRefresh(ctx, args[1:])
@@ -23,8 +22,6 @@ func (a *App) runCodex(ctx context.Context, args []string) int {
 	return 2
 }
 
-// codexRefresh refreshes the host's Codex login if it's due, or with -force anyway, writes the
-// machine setup into running machines if the login file changed, and reports the login.
 func (a *App) codexRefresh(ctx context.Context, args []string) int {
 	fl := a.flags("codex refresh")
 	force := fl.Bool("force", false, "refresh even if it isn't due, or the login is stuck")
@@ -58,8 +55,6 @@ func (a *App) codexRefresh(ctx context.Context, args []string) int {
 	return 0
 }
 
-// refreshCodex calls EnsureFresh for reason, writes the setup into running machines if the
-// login file changed, even if the refresh then failed, and returns the profile.
 func (a *App) refreshCodex(ctx context.Context, cfg config, reason codex.Reason) (codex.Profile, error) {
 	store := a.codexStore(cfg, a.notef)
 	before, err := codexLoginFileOf(store)
@@ -80,7 +75,6 @@ func (a *App) refreshCodex(ctx context.Context, cfg config, reason codex.Reason)
 	return p, nil
 }
 
-// codexLoginFileOf returns the placeholder login file machines get from store.
 func codexLoginFileOf(store *codex.Store) ([]byte, error) {
 	pub, err := store.Public()
 	if err != nil {
@@ -89,7 +83,6 @@ func codexLoginFileOf(store *codex.Store) ([]byte, error) {
 	return codex.RenderAuthFile(pub)
 }
 
-// codexRefreshError says what to do about err from the Store.
 func codexRefreshError(err error) error {
 	for _, known := range []error{codex.ErrNotConnected, codex.ErrDead, codex.ErrStuck} {
 		if errors.Is(err, known) {
@@ -102,19 +95,14 @@ func codexRefreshError(err error) error {
 	return err
 }
 
-// codexRefresher keeps the host's Codex login fresh for the daemon, and logs each change in the
-// login once.
 type codexRefresher struct {
 	store *codex.Store
 	logf  func(format string, args ...any)
-	// seen is the login as the last look found it, and said what the last look logged about
-	// its health.
+
 	seen codex.Profile
 	said string
 }
 
-// run looks now, and then every interval until ctx is done. It leaves the login alone while
-// awake says the host is going to sleep.
 func (r *codexRefresher) run(ctx context.Context, every time.Duration, awake func() error) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -130,7 +118,6 @@ func (r *codexRefresher) run(ctx context.Context, every time.Duration, awake fun
 	}
 }
 
-// look refreshes the login if it's due, and logs what changed since the last look.
 func (r *codexRefresher) look(ctx context.Context) {
 	_, refreshErr := r.store.EnsureFresh(ctx, codex.Reason{Kind: codex.Background})
 	if ctx.Err() != nil {
@@ -148,7 +135,6 @@ func (r *codexRefresher) look(ctx context.Context) {
 	}
 }
 
-// logChanges logs a new login, or new tokens for the same one.
 func (r *codexRefresher) logChanges(p codex.Profile) {
 	if !p.ConnectedAt.Equal(r.seen.ConnectedAt) {
 		r.logf("connected as %s, on the %s plan", termsafe.String(p.Email), termsafe.String(p.Plan))
@@ -159,8 +145,6 @@ func (r *codexRefresher) logChanges(p codex.Profile) {
 	r.seen = p
 }
 
-// codexHealthLine says how the login is, from Load's p and err and EnsureFresh's refreshErr.
-// It's "" if Codex isn't connected.
 func codexHealthLine(p codex.Profile, err, refreshErr error) string {
 	switch {
 	case errors.Is(err, codex.ErrNotConnected):

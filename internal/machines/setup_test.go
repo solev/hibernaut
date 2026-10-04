@@ -35,8 +35,6 @@ func testBlock(t *testing.T) []byte {
 	return block
 }
 
-// shell runs the git identity script for real, with only bin on PATH. A git in bin plays git:
-// it writes its arguments, each ending in a NUL byte, to the file log, and exits with code.
 type shell struct {
 	bin, log string
 }
@@ -71,7 +69,6 @@ func (s shell) run(ctx context.Context, req engine.ExecRequest) (engine.ExecResu
 	return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
 }
 
-// calls returns the argument lists git was called with.
 func (s shell) calls(t *testing.T) [][]string {
 	t.Helper()
 	return readCalls(t, s.log)
@@ -271,8 +268,6 @@ func TestCreateKillsAMachineWhoseSetupFails(t *testing.T) {
 	}
 }
 
-// codexHome runs the script that writes Codex's login file for real, in a temporary directory
-// that plays /home/user. A fake chown records ownership by inode so it survives a rename.
 type codexHome struct {
 	root, bin, log string
 	failOn         string

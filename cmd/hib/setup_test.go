@@ -39,7 +39,6 @@ func TestInit(t *testing.T) {
 		t.Errorf("printed %q", c.out)
 	}
 
-	// The first connection may ask about the host's key; the rest mustn't ask anything.
 	calls := h.takeCalls()
 	if len(calls) != 2 || !slices.Equal(calls[0], []string{"-V"}) || slices.Contains(calls[1], "BatchMode=yes") {
 		t.Errorf("init ran ssh %q, want ssh -V and then hibd version without BatchMode", calls)
@@ -92,7 +91,6 @@ func TestInit(t *testing.T) {
 		t.Errorf("~/.ssh/config =\n%s", data)
 	}
 
-	// Again: same settings, no second Include.
 	if code := c.hib("init", "-host", testHost, "-identity", identity); code != 0 {
 		t.Fatalf("second init exit %d: %s", code, c.errOut)
 	}
@@ -202,7 +200,6 @@ func TestInitRejects(t *testing.T) {
 		t.Errorf("rejected inits ran ssh: %q", calls)
 	}
 
-	// Paths that go into the ProxyCommand.
 	c := newClient(t, h)
 	c.executable = func() (string, error) { return "/Users/x/bin/hib'$(id)'", nil }
 	if code := c.hib("init", "-host", testHost); code != 1 || !strings.Contains(c.errOut.String(), "can't use") {
@@ -316,7 +313,6 @@ func TestAddInclude(t *testing.T) {
 		}
 	}
 
-	// Already there, however it's indented.
 	existing := filepath.Join(dir, "existing")
 	body := "Host a\n  User b\n   " + line + "  \n"
 	if err := os.WriteFile(existing, []byte(body), 0o640); err != nil {
@@ -326,7 +322,6 @@ func TestAddInclude(t *testing.T) {
 		t.Errorf("already included: %v, %v", added, err)
 	}
 
-	// Through a symlink, as in a dotfiles repo.
 	target := filepath.Join(dir, "dotfiles", "ssh_config")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)

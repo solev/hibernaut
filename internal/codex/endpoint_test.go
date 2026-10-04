@@ -19,8 +19,6 @@ var endpointPlaceholders = codex.PublicAuth{
 	IDToken: "id-placeholder", AccessToken: "access-placeholder", RefreshToken: "refresh-placeholder", AccountID: "account",
 }
 
-// fakeRefresher is a Refresher that records what the endpoint asks of it, in order with the
-// audit entries the endpoint writes.
 type fakeRefresher struct {
 	mu        sync.Mutex
 	events    []string

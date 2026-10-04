@@ -4,7 +4,7 @@
 // starts or resumes. A paused machine holds none. E2B refuses a start the pool can't hold, but
 // says only "500 Failed to place sandbox … please retry". Disk matters too: pausing a machine
 // writes a snapshot, and a pause that can't be written still stops the machine, losing what was
-// running in it. So every running machine must have room to pause.
+// running in it.
 package room
 
 import (
@@ -23,7 +23,7 @@ import (
 const SnapshotDir = "/var/lib/e2b"
 
 // DiskMargin is what a pause may write beyond a machine's RAM: the changes to its own disk
-// since its last pause. 120 to 370 MB were seen.
+// since its last pause.
 const DiskMargin = 1 << 30
 
 // ErrFull is wrapped by the errors of Check.
@@ -141,15 +141,13 @@ func (h Host) Check(name string, memoryMB int, running []Machine) error {
 	return nil
 }
 
-// pages returns how many huge pages a machine with memoryMB of RAM holds: at least one.
 func (h Host) pages(memoryMB int) int64 {
 	if h.PageSize <= 0 {
-		return h.FreePages + 1 // An unknown page size fits nothing.
+		return h.FreePages + 1
 	}
 	return max((int64(memoryMB)<<20+h.PageSize-1)/h.PageSize, 1)
 }
 
-// pauseDisk returns the disk that pausing every one of machines may take, in bytes.
 func pauseDisk(machines ...Machine) int64 {
 	var n int64
 	for _, m := range machines {

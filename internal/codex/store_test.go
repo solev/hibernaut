@@ -91,7 +91,7 @@ func TestStoreCommitsAndPublishesLogin(t *testing.T) {
 			t.Fatal("managed Codex secrets must not have environment variables")
 		}
 	}
-	// Public needs no access to the vault key.
+
 	if err := os.Chmod(cfg.KeyPath, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestLoadInterpretsInterruptedRefreshWithoutWriting(t *testing.T) {
 	if _, err := s.CommitLogin(context.Background(), renewed); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a crash after the vault's atomic publish but before the profile's.
+
 	if err := os.WriteFile(path, before, 0o644); err != nil {
 		t.Fatal(err)
 	}

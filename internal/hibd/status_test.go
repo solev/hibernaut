@@ -26,7 +26,6 @@ const (
 	flakyToken = "ghp_flakyTokenDDDDDDDDDDDDDDDDDDDDDDDDDD"
 )
 
-// withEnv makes a see the variables in kv.
 func withEnv(a *App, kv map[string]string) {
 	old := a.Getenv
 	a.Getenv = func(k string) string {
@@ -37,7 +36,6 @@ func withEnv(a *App, kv map[string]string) {
 	}
 }
 
-// e2bHealth serves E2B's health URLs. Paths starting with /down answer 503.
 func e2bHealth(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +47,6 @@ func e2bHealth(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// newStatusApp returns an App like newGitHubApp's, with E2B up.
 func newStatusApp(t *testing.T) (*App, *bytes.Buffer, *bytes.Buffer, *fakeGitHub) {
 	t.Helper()
 	a, out, errOut, gh := newGitHubApp(t, fake.New())
@@ -67,7 +64,6 @@ func runStatus(t *testing.T, a *App, out *bytes.Buffer) hibapi.Status {
 	return *r.Status
 }
 
-// runStatusText runs status without -json, and checks it prints s as PrintStatus does.
 func runStatusText(t *testing.T, a *App, out *bytes.Buffer, s hibapi.Status) int {
 	t.Helper()
 	out.Reset()
@@ -271,8 +267,6 @@ func TestStatusChecksAtMostEightAtOnce(t *testing.T) {
 	}
 }
 
-// connectTestCodex commits tokens to a's Codex store, as hib connect codex would, and returns
-// the token server, which status must never call.
 func connectTestCodex(t *testing.T, a *App, tokens codex.Tokens) *codextest.TokenServer {
 	t.Helper()
 	server := codextest.NewTokenServer(t, tokens)
@@ -283,7 +277,6 @@ func connectTestCodex(t *testing.T, a *App, tokens codex.Tokens) *codextest.Toke
 	return server
 }
 
-// setCodexHealth rewrites a's Codex profile with health and problem.
 func setCodexHealth(t *testing.T, a *App, health hibapi.CodexHealth, problem string) {
 	t.Helper()
 	path := filepath.Join(a.Getenv("HIBD_STATE_DIR"), codex.ProfileFile)
@@ -291,7 +284,7 @@ func setCodexHealth(t *testing.T, a *App, health hibapi.CodexHealth, problem str
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A map keeps the fields the Store writes that Profile doesn't have.
+
 	var p map[string]any
 	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatal(err)

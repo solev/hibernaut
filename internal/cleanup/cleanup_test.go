@@ -12,9 +12,7 @@ import (
 )
 
 func TestParseHeader(t *testing.T) {
-	// The memory header of a machine paused five times, copied from the host on 2026-10-02 and
-	// decoded there by a separate script. Its memory is spread over its own build, three older
-	// ones and the image's; the image's is also its base.
+
 	header, err := os.ReadFile("testdata/memfile.header")
 	if err != nil {
 		t.Fatal(err)
@@ -64,23 +62,19 @@ var now = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
 func ago(d time.Duration) time.Time { return now.Add(-d) }
 
-// ready is a build E2B started in env, and finished a minute later, at finished.
 func ready(id, env string, finished time.Time) cleanup.Build {
 	created := finished.Add(-time.Minute)
 	return cleanup.Build{ID: id, Status: "ready", Created: created, Finished: finished, In: in(env, created)}
 }
 
-// in says E2B put a build in env at at, under the default tag.
 func in(env string, at time.Time) []cleanup.Assignment {
 	return []cleanup.Assignment{{Env: env, Tag: "default", At: at}}
 }
 
-// dir is a build's directory, last changed at modified, whose headers name refs.
 func dir(id string, modified time.Time, refs ...string) cleanup.Dir {
 	return cleanup.Dir{Build: id, Modified: modified, Refs: refs}
 }
 
-// garbage returns the directories Garbage deletes, and checks that it keeps all the others.
 func garbage(t *testing.T, l cleanup.Listing) []string {
 	t.Helper()
 	plan, err := cleanup.Garbage(l, now)
@@ -104,8 +98,7 @@ func wantGarbage(t *testing.T, l cleanup.Listing, want ...string) {
 }
 
 func TestKeepsMachinesSnapshots(t *testing.T) {
-	// web was paused three times. Its latest snapshot holds ranges of its first one and of the
-	// image build it started from, but none of its second.
+
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{
 			{ID: "img"},
@@ -130,7 +123,7 @@ func TestKeepsMachinesSnapshots(t *testing.T) {
 }
 
 func TestKeepsOnlyTheCurrentImageBuild(t *testing.T) {
-	// img was built twice, and failed to build a third time.
+
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -148,7 +141,7 @@ func TestKeepsOnlyTheCurrentImageBuild(t *testing.T) {
 
 func TestKeepsEachTagsBuild(t *testing.T) {
 	// Each tag of an image names a build of its own: the ready one E2B put in the image last
-	// under that tag. img-1 is tagged stable as well.
+	// under that tag.
 	img1 := ready("img-1", "img", ago(30*time.Hour))
 	img1.In = append(img1.In, cleanup.Assignment{Env: "img", Tag: "stable", At: ago(25 * time.Hour)})
 	wantGarbage(t, cleanup.Listing{
@@ -163,8 +156,7 @@ func TestKeepsEachTagsBuild(t *testing.T) {
 }
 
 func TestKeepsTheBuildE2BStartsFrom(t *testing.T) {
-	// img-1 was put back in img 5 hours ago, so E2B starts machines from it again, though img-3
-	// is newer. img-3 stays too, in case a later E2B goes by when builds finished.
+
 	img1 := ready("img-1", "img", ago(30*time.Hour))
 	img1.In = append(img1.In, cleanup.Assignment{Env: "img", Tag: "default", At: ago(5 * time.Hour)})
 	wantGarbage(t, cleanup.Listing{
@@ -198,7 +190,7 @@ func TestKeepsWhatChangedInTheLastHour(t *testing.T) {
 }
 
 func TestDeletesRemovedMachinesSnapshotsAtOnce(t *testing.T) {
-	// hib rm frees the disk a machine's snapshots took as soon as hibd notices.
+
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "snap-gone", Machine: "gone", Deleted: ago(time.Minute)}},
 		Builds: []cleanup.Build{
@@ -239,7 +231,6 @@ func TestKeepsBuildsAnotherEnvUses(t *testing.T) {
 func TestKeepsImageBuildsMachinesMayHaveStartedFrom(t *testing.T) {
 	// A machine that started from an image build needs it until its first pause is done: only
 	// then do its snapshot's headers name it. E2B lists a machine it's still pausing as paused.
-	// img was built 10, 5 and 2 hours ago.
 	builds := []cleanup.Build{
 		ready("img-1", "img", ago(10*time.Hour)),
 		ready("img-2", "img", ago(5*time.Hour)),
@@ -293,7 +284,7 @@ func TestKeepsImageBuildsMachinesMayHaveStartedFrom(t *testing.T) {
 }
 
 func TestKeepsTheImageBuildAMachineStartedFromAsANewOneFinished(t *testing.T) {
-	// E2B picked img-1 for web, then img-2 finished before E2B stamped web's start.
+
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -311,8 +302,7 @@ func TestKeepsTheImageBuildAMachineStartedFromAsANewOneFinished(t *testing.T) {
 }
 
 func TestKeepsAnImageBuildAMachineStartedFromThisHour(t *testing.T) {
-	// img was rebuilt 30 minutes ago. hibd may have started a machine from the build before it
-	// just before that, and may not list that machine yet.
+
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -329,9 +319,7 @@ func TestKeepsAnImageBuildAMachineStartedFromThisHour(t *testing.T) {
 }
 
 func TestForgetsRemovedImages(t *testing.T) {
-	// A removed image starts no more machines, so its builds go once no machine may have started
-	// from them. old was removed 3 hours ago, and new half an hour ago: hibd may have started a
-	// machine from it just before.
+
 	l := cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "old", Deleted: ago(3 * time.Hour)}, {ID: "new", Deleted: ago(30 * time.Minute)}},
 		Builds: []cleanup.Build{
@@ -342,7 +330,6 @@ func TestForgetsRemovedImages(t *testing.T) {
 	}
 	wantGarbage(t, l, "old-1")
 
-	// A machine that has run for 4 hours may have started from old.
 	l.Machines = []cleanup.Machine{{ID: "web", Started: ago(4 * time.Hour)}}
 	wantGarbage(t, l)
 
@@ -380,7 +367,7 @@ func TestWaitsWhileE2BWritesABuild(t *testing.T) {
 }
 
 func TestIgnoresBuildsE2BGaveUpOn(t *testing.T) {
-	// E2B stopped while building img-2, which is still in progress 7 hours later.
+
 	wantGarbage(t, cleanup.Listing{
 		Envs: []cleanup.Env{{ID: "img"}},
 		Builds: []cleanup.Build{
@@ -403,7 +390,7 @@ func TestStopsOnABuildStatusItDoesntKnow(t *testing.T) {
 }
 
 func TestStopsIfItCantReadAKeptHeader(t *testing.T) {
-	// Not knowing which builds img-2 needs, any other directory may be one of them.
+
 	unreadable := errors.New("header version 4 isn't supported")
 	l := cleanup.Listing{
 		Envs:   []cleanup.Env{{ID: "img"}},
@@ -417,7 +404,6 @@ func TestStopsIfItCantReadAKeptHeader(t *testing.T) {
 		t.Errorf("Garbage error = %v, want %v", err, unreadable)
 	}
 
-	// Which builds a directory that goes needs doesn't matter.
 	l.Dirs = []cleanup.Dir{
 		{Build: "img-1", Modified: ago(30 * time.Hour), Err: unreadable},
 		dir("img-2", ago(20*time.Hour), "img-2"),

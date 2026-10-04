@@ -19,8 +19,6 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-// Block retirement at the filesystem boundary, then fail the final profile rename.
-// Restoring the pending profile leaves the same state as a crash after vault publication.
 func failLoginProfileSave(t *testing.T, s *codex.Store, cfg codex.Config, tokens codex.Tokens) []byte {
 	t.Helper()
 	retiredPath := filepath.Join(cfg.StateDir, codex.RetiredFile)

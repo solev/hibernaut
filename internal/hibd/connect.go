@@ -29,8 +29,6 @@ func (a *App) connect(ctx context.Context, args []string) int {
 	return 2
 }
 
-// connectGitHub stores the token on stdin as secret github once GitHub accepts it, saves the
-// account, and writes the machine setup into running machines.
 func (a *App) connectGitHub(ctx context.Context, args []string) int {
 	fl := a.flags("connect github")
 	source := fl.String("source", hibapi.GitHubFromGH, "how the token was given: gh or token")
@@ -86,8 +84,7 @@ func (a *App) storeGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 		return hibapi.GitHub{}, fmt.Errorf("checking the token with GitHub: %w. Nothing was stored", err)
 	}
 	p := github.Profile{Login: user.Login, ID: user.ID, Name: user.Name, Source: source}
-	// The account is saved under the vault's lock, so two connects can't leave one's token with
-	// the other's account.
+
 	err = vault.Update(cfg.vaultPath, cfg.vaultKeyPath, func(f *vault.File, key vault.Key) error {
 		if err := checkGHTokenFree(f); err != nil {
 			return err
@@ -107,7 +104,6 @@ func (a *App) storeGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 	return p.Account(&user), nil
 }
 
-// checkGHTokenFree fails if a secret other than github sets GH_TOKEN in machines.
 func checkGHTokenFree(f *vault.File) error {
 	for _, s := range f.Secrets() {
 		if s.Name != github.SecretName && strings.EqualFold(s.Env, github.Env) {
@@ -118,7 +114,6 @@ func checkGHTokenFree(f *vault.File) error {
 	return nil
 }
 
-// refusedToken says GitHub refused a token from source, and how to get one that works.
 func refusedToken(source string) error {
 	reconnect := hibapi.GitHub{Source: source}.Reconnect()
 	if source == hibapi.GitHubFromToken {
@@ -143,10 +138,6 @@ func (a *App) githubClient() *http.Client {
 	return github.NewClient()
 }
 
-// rebindGitHub puts secret github again with github.Sites() and the same value, which keeps its
-// placeholder, if GitHub is connected and the secret's sites are others. A connection made
-// before the Copilot CLI's sites joined then covers them. It reports whether it changed the
-// vault.
 func rebindGitHub(cfg config) (bool, error) {
 	p, err := github.LoadProfile(cfg.githubProfile)
 	if err != nil || p == nil {
@@ -176,8 +167,6 @@ func rebindGitHub(cfg config) (bool, error) {
 	return changed, err
 }
 
-// githubSitesOutdated reports whether f has secret github, bound to sites other than
-// github.Sites().
 func githubSitesOutdated(f *vault.File) bool {
 	secrets := f.Secrets()
 	i := slices.IndexFunc(secrets, func(s vault.Secret) bool { return s.Name == github.SecretName })

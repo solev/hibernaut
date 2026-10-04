@@ -16,8 +16,6 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-// loadSetup loads what hibd writes into machines: the vault's placeholders, git's identity
-// once GitHub is connected, and Codex's login file once Codex is.
 func loadSetup(cfg config, store *codex.Store) (machines.Setup, error) {
 	block, err := loadSecretBlock(cfg.vaultPath)
 	if err != nil {
@@ -38,7 +36,6 @@ func loadSetup(cfg config, store *codex.Store) (machines.Setup, error) {
 	return s, nil
 }
 
-// codexAuthFile returns the login file machines get, or nil while Codex isn't connected.
 func codexAuthFile(store *codex.Store) ([]byte, error) {
 	pub, err := store.Public()
 	if errors.Is(err, codex.ErrNotConnected) {
@@ -50,9 +47,6 @@ func codexAuthFile(store *codex.Store) ([]byte, error) {
 	return codex.RenderAuthFile(pub)
 }
 
-// pushSetup writes the machine setup into every running machine hibd made, after done, such
-// as "secrets saved". It leaves machines alone while the host goes to sleep. Failures are
-// warnings: the daemon tries again.
 func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 	if _, err := os.Stat(cfg.quiescing); err == nil {
 		return
@@ -65,8 +59,6 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), a.engine, nil, warn)
 }
 
-// updateSetup shares the setup and machine selection rules. A nil written map makes an
-// immediate, sequential push. A cache makes only stale machines receive the setup, in parallel.
 func updateSetup(ctx context.Context, cfg config, store *codex.Store, open func() (engine.Engine, error), written map[string]delivered, report func(string, error)) bool {
 	setup, err := loadSetup(cfg, store)
 	if err != nil {
@@ -133,23 +125,17 @@ func writeSetups(ctx context.Context, e engine.Engine, setup machines.Setup, ms 
 	}
 }
 
-// setupDelivery writes the machine setup into each running machine whose copy may be out of
-// date: one that resumed since its last write, one a push missed, or every machine after the
-// daemon starts.
 type setupDelivery struct {
 	engine engine.Engine
 	cfg    config
 	codex  *codex.Store
 	logf   func(format string, args ...any)
-	// looking serializes loading the setup through recording complete writes.
+
 	looking  chan struct{}
-	written  map[string]delivered // by machine ID
+	written  map[string]delivered
 	problems map[string]string
 }
 
-// delivered is the setup a running machine got, and when that run started. A resume starts a
-// new run, which gets the setup again: the machine may have changed its copy, as codex logout
-// does.
 type delivered struct {
 	hash    [32]byte
 	started time.Time

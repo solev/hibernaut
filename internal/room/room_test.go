@@ -10,8 +10,6 @@ import (
 
 const gib = 1 << 30
 
-// meminfo is the host's /proc/meminfo around its huge-page lines, with free and reserved huge
-// pages filled in.
 func meminfo(free, rsvd int) []byte {
 	return fmt.Appendf(nil, `MemTotal:       16366548 kB
 MemFree:         7398240 kB
@@ -33,7 +31,7 @@ func TestRoom(t *testing.T) {
 	// reserves 1024 more as it starts, and touches some of them.
 	var (
 		none  = meminfo(3125, 0)
-		one   = meminfo(3098, 997) // the host on 2026-10-02 with one dev machine running
+		one   = meminfo(3098, 997)
 		three = meminfo(3000, 2947)
 		api   = room.Machine{Name: "api", MemoryMB: 2048}
 		inf   = room.Machine{Name: "inf", MemoryMB: 2048}

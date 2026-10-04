@@ -29,14 +29,12 @@ import (
 	"github.com/solev/hibernaut/internal/room"
 )
 
-// guest plays machine-init in fake machines: each machine gets a host key on its first run,
-// and keeps it.
 type guest struct {
 	mu       sync.Mutex
 	hostKeys map[string]ssh.PublicKey
 	keys     map[string]string
 	runs     map[string]int
-	// result, if set, replaces machine-init's.
+
 	result func() (engine.ExecResult, error)
 	delay  time.Duration
 }
@@ -81,7 +79,6 @@ func newKey() ssh.PublicKey {
 	return key
 }
 
-// roomy reads a host with room for three dev machines.
 func roomy() (room.Host, error) {
 	return room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 3125, DiskFree: 80 << 30}, nil
 }
@@ -101,7 +98,6 @@ func newEnv(t *testing.T, opts ...fake.Option) *env {
 	return newEnvAt(t, time.Now, opts...)
 }
 
-// newEnvAt is newEnv with the engine and the Manager on clock now.
 func newEnvAt(t *testing.T, now func() time.Time, opts ...fake.Option) *env {
 	t.Helper()
 	g := &guest{hostKeys: map[string]ssh.PublicKey{}, keys: map[string]string{}, runs: map[string]int{}}
@@ -702,7 +698,6 @@ func TestDialUnknown(t *testing.T) {
 	}
 }
 
-// clock is a fake time that tests move.
 type clock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -748,7 +743,6 @@ func TestKeepalive(t *testing.T) {
 			t.Fatalf("EndAt = %v, want it kept at %v while connected", got, want)
 		}
 
-		// Paused on purpose: the keepalive must not start it again.
 		if err := v.m.Pause(t.Context(), "app"); err != nil {
 			t.Fatal(err)
 		}
@@ -796,7 +790,7 @@ func TestKeepaliveStopsOnClose(t *testing.T) {
 func TestCloseStartsIdleClock(t *testing.T) {
 	clk := &clock{now: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	v := newEnvAt(t, clk.Now)
-	app := v.createIdle(t, "app", time.Hour) // the keepalive won't tick during the test
+	app := v.createIdle(t, "app", time.Hour)
 	c, err := v.m.Dial(t.Context(), "app")
 	if err != nil {
 		t.Fatal(err)
@@ -807,7 +801,6 @@ func TestCloseStartsIdleClock(t *testing.T) {
 		t.Errorf("EndAt after Close = %v, want an hour after the disconnect, %v", got, want)
 	}
 
-	// Close never shortens a timeout.
 	far := clk.Now().Add(5 * time.Hour)
 	if err := v.e.SetTimeout(t.Context(), app.ID, 5*time.Hour); err != nil {
 		t.Fatal(err)

@@ -66,7 +66,6 @@ func (a *App) proxy(ctx context.Context, args []string) int {
 	return 0
 }
 
-// proxySetup is what hibd proxy reads before it opens anything.
 type proxySetup struct {
 	cfg    config
 	ca     *capkg.CA
@@ -74,9 +73,6 @@ type proxySetup struct {
 	engine engine.Engine
 }
 
-// runProxy opens the audit log and the proxy's port, then serves machines' traffic until ctx
-// ends or serving fails. The service hooks machines' traffic into the proxy, and unhooks it on
-// every exit.
 func (a *App) runProxy(ctx context.Context) error {
 	setup, err := a.loadProxySetup()
 	if err != nil {
@@ -98,7 +94,6 @@ func (a *App) runProxy(ctx context.Context) error {
 	return service.Serve(ctx, listener)
 }
 
-// loadProxySetup reads hibd proxy's settings, CA and engine.
 func (a *App) loadProxySetup() (proxySetup, error) {
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
@@ -150,7 +145,6 @@ func (a *App) listenProxy(port int) (net.Listener, error) {
 	return listen("tcp", fmt.Sprintf(":%d", port))
 }
 
-// proxyHook returns the hook that sends machines' HTTPS traffic to port.
 func (a *App) proxyHook(port int) proxypkg.Rule {
 	if a.ProxyHook != nil {
 		return a.ProxyHook
@@ -158,7 +152,6 @@ func (a *App) proxyHook(port int) proxypkg.Rule {
 	return proxyRule{hook.Rule{Port: port}}
 }
 
-// egressServer returns the proxy for machines' traffic. It audits to writer.
 func (a *App) egressServer(ctx context.Context, setup proxySetup, writer *audit.Log, logf func(format string, args ...any)) *egress.Server {
 	source := &proxypkg.VaultSource{Path: setup.cfg.vaultPath, KeyPath: setup.cfg.vaultKeyPath, Now: time.Now, Logf: logf}
 	identifier := &proxypkg.Identifier{
@@ -174,8 +167,6 @@ func (a *App) egressServer(ctx context.Context, setup proxySetup, writer *audit.
 	return server
 }
 
-// serveCodex makes server answer Codex's refresh requests, with one Store and one Endpoint for
-// the proxy's life.
 func (a *App) serveCodex(server *egress.Server, cfg config, logf func(format string, args ...any)) {
 	ep := codex.NewEndpoint(a.codexStore(cfg, logf), logf)
 	server.Endpoints = []egress.Endpoint{ep.Egress()}

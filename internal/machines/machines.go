@@ -1,6 +1,5 @@
 // Package machines is what hibd does with machines: it makes them from images, finds them by
-// name, and connects to their SSH servers. It keeps what the engine doesn't, in a state
-// directory: the lock that keeps names unique, and each machine's pinned SSH host key.
+// name, and connects to their SSH servers.
 package machines
 
 import (
@@ -110,7 +109,7 @@ func Name(em engine.Machine) string {
 }
 
 // Idle returns how long machine em keeps running once it's idle before it pauses, 0 for never,
-// and whether hibd made it. Machines made before hibd kept idle times get DefaultIdle.
+// and whether hibd made it. Missing or invalid idle times get DefaultIdle.
 func Idle(em engine.Machine) (idle time.Duration, ok bool) {
 	if Name(em) == "" {
 		return 0, false
@@ -122,7 +121,6 @@ func Idle(em engine.Machine) (idle time.Duration, ok bool) {
 	return idle, true
 }
 
-// timeoutFor returns the engine timeout that pauses a machine idle from now.
 func timeoutFor(idle time.Duration) time.Duration {
 	if idle == 0 {
 		return MaxRun
@@ -284,8 +282,7 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		return nil, err
 	}
 	idle, _ := Idle(em)
-	// Connecting resumes a paused machine, which needs room. Renewing a running machine first
-	// stops its timeout pausing it before the connection, which would then resume it unchecked.
+
 	paused := em.State == engine.Paused
 	if !paused {
 		err := Renew(ctx, m.e, em, timeoutFor(idle), m.now())
@@ -305,7 +302,7 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	}
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
-		// The pin was lost: ask the machine again. Its key file outlives its pin.
+
 		key, err = m.repin(ctx, em.ID, idle)
 	}
 	if err != nil {
@@ -326,8 +323,6 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	}}, nil
 }
 
-// checkRoom returns an error unless machine name, with memoryMB of RAM, fits on the host next to
-// the running machines, or runs already. It wraps room.ErrFull if the host is full.
 func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int) error {
 	ems, h, err := m.roomNow(ctx)
 	if err != nil {
@@ -359,7 +354,6 @@ func (m *Manager) Room(ctx context.Context, image string) (hibapi.Room, error) {
 	}, nil
 }
 
-// roomNow returns the running machines and a reading of the room on the host.
 func (m *Manager) roomNow(ctx context.Context) ([]engine.Machine, room.Host, error) {
 	ems, err := m.e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
 	if err != nil {
@@ -380,9 +374,6 @@ func roomMachines(ems []engine.Machine) []room.Machine {
 	return ms
 }
 
-// refused returns why the engine didn't start or resume machine name: the room message if the
-// host turns out to be full after all, or else err. Another start can take the room between
-// checkRoom and the engine's start.
 func (m *Manager) refused(ctx context.Context, name string, memoryMB int, err error) error {
 	if rerr := m.checkRoom(ctx, name, memoryMB); errors.Is(rerr, room.ErrFull) {
 		return rerr
@@ -401,11 +392,10 @@ func (m *Manager) repin(ctx context.Context, id string, idle time.Duration) (ssh
 	return m.initMachine(ctx, id, keys)
 }
 
-// keepalive keeps machine id running until ctx is done.
 func (m *Manager) keepalive(ctx context.Context, id string, idle time.Duration, done chan<- struct{}) {
 	defer close(done)
 	if idle == 0 {
-		<-ctx.Done() // It runs for MaxRun at a time anyway.
+		<-ctx.Done()
 		return
 	}
 	t := time.NewTicker(idle / 4)
@@ -420,9 +410,6 @@ func (m *Manager) keepalive(ctx context.Context, id string, idle time.Duration, 
 	}
 }
 
-// extend makes machine id run for at least idle from now, if it's running. It never shortens
-// the machine's timeout and, unlike Resume, never starts a machine that was paused on purpose.
-// Errors are ignored: callers try again later, or leave the machine to its timeout.
 func (m *Manager) extend(ctx context.Context, id string, idle time.Duration) {
 	if idle == 0 {
 		return
@@ -437,7 +424,8 @@ func (m *Manager) extend(ctx context.Context, id string, idle time.Duration) {
 }
 
 // Renew makes running machine em run for at least timeout from now. It never shortens the
-// machine's timeout or resumes it: it returns engine.ErrNotRunning if em has paused since.
+// machine's timeout or resumes it. If renewal is needed, it returns engine.ErrNotRunning if
+// em has paused since.
 func Renew(ctx context.Context, e engine.Engine, em engine.Machine, timeout time.Duration, now time.Time) error {
 	if !em.EndAt.Before(now.Add(timeout)) {
 		return nil
@@ -445,7 +433,6 @@ func Renew(ctx context.Context, e engine.Engine, em engine.Machine, timeout time
 	return e.SetTimeout(ctx, em.ID, timeout)
 }
 
-// lookup finds the machine called name.
 func (m *Manager) lookup(ctx context.Context, name string) (engine.Machine, error) {
 	if err := hibapi.CheckName(name); err != nil {
 		return engine.Machine{}, err
@@ -473,7 +460,6 @@ func (m *Manager) lookup(ctx context.Context, name string) (engine.Machine, erro
 	return engine.Machine{}, fmt.Errorf("%d machines are called %q (%s)", len(found), name, strings.Join(ids, ", "))
 }
 
-// initMachine runs machine-init in running machine id, and pins the host key it prints.
 func (m *Manager) initMachine(ctx context.Context, id string, keys []byte) (ssh.PublicKey, error) {
 	if _, err := m.pinPath(id); err != nil {
 		return nil, err
@@ -501,7 +487,6 @@ func (m *Manager) initMachine(ctx context.Context, id string, keys []byte) (ssh.
 	return key, nil
 }
 
-// authorizedKeys returns the keys new machines let in, one per line.
 func (m *Manager) authorizedKeys() ([]byte, error) {
 	if m.keysFile == "" {
 		return nil, errors.New("no authorized_keys file to take machines' keys from")
@@ -544,8 +529,6 @@ func (m *Manager) authorizedKeys() ([]byte, error) {
 	return out, nil
 }
 
-// checkState returns an error unless the state directory and its host-keys directory, which it
-// makes if need be, belong to this user and no one else can write to them.
 func (m *Manager) checkState() error {
 	if m.dir == "" {
 		return errors.New("no state directory configured")
@@ -581,7 +564,6 @@ func checkDir(dir string) error {
 	return nil
 }
 
-// lock waits for and takes the state directory's lock, which keeps machine names unique.
 func (m *Manager) lock(ctx context.Context) (unlock func(), err error) {
 	f, err := os.OpenFile(filepath.Join(m.dir, "hibd.lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -643,7 +625,7 @@ func toAPI(em engine.Machine) hibapi.Machine {
 	}
 	var idleSeconds *int64
 	if idle, ok := Idle(em); ok {
-		s := int64((idle + time.Second - 1) / time.Second) // Round up: only never is 0.
+		s := int64((idle + time.Second - 1) / time.Second)
 		idleSeconds = &s
 	}
 	return hibapi.Machine{

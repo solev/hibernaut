@@ -5,7 +5,6 @@ import (
 	"io"
 )
 
-// secretWriter redacts a known value even when a command writes it in separate chunks.
 type secretWriter struct {
 	w       io.Writer
 	value   []byte

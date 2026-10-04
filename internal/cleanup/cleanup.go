@@ -140,7 +140,6 @@ func indexEnvs(list []Env) map[string]Env {
 	return envs
 }
 
-// protection records the first reason a build must stay.
 type protection map[string]string
 
 func (p protection) keep(id, why string) {
@@ -152,7 +151,7 @@ func (p protection) keep(id, why string) {
 func readySlots(builds []Build, envs map[string]Env) (map[slot][]placed, map[string]bool) {
 	// E2B starts a machine from the ready build it put in an env last, under the tag asked for.
 	slots := map[slot][]placed{}
-	snapshotted := map[string]bool{} // machines with a ready snapshot
+	snapshotted := map[string]bool{}
 	for _, b := range builds {
 		if b.Status != "ready" {
 			continue
@@ -182,7 +181,7 @@ func (p protection) keepLatest(ps []placed, why string) {
 
 func (p protection) keepCurrent(slots map[slot][]placed, order []slot, envs map[string]Env) {
 	for _, s := range order {
-		e := envs[s.env] // an env E2B didn't list counts as not removed
+		e := envs[s.env]
 		if !e.Deleted.IsZero() {
 			continue
 		}
@@ -204,8 +203,7 @@ func currentReason(s slot, e Env) string {
 func startupSince(machines []Machine, snapshotted map[string]bool, now time.Time) time.Time {
 	// A machine needs the image build it started from until its first pause is done: only then
 	// do its snapshot's headers name it. E2B picks the build when it checks the image, and stamps
-	// the start once the machine runs, so keep every image build that was current from MinAge
-	// before the first of those machines started. E2B may not list one hibd is starting yet.
+	// the start once the machine runs. E2B may not list one hibd is starting yet.
 	since := now
 	for _, m := range machines {
 		if (!m.Paused || !snapshotted[m.ID]) && m.Started.Before(since) {
@@ -227,7 +225,7 @@ func (p protection) keepStartupBuilds(slots map[slot][]placed, order []slot, env
 }
 
 func (p protection) keepHistory(ps []placed, since time.Time) {
-	var before []placed // what was in the slot before since
+	var before []placed
 	for _, placed := range ps {
 		if placed.at.Before(since) && placed.finished.Before(since) {
 			before = append(before, placed)
@@ -239,7 +237,7 @@ func (p protection) keepHistory(ps []placed, since time.Time) {
 }
 
 func removedBuilds(builds []Build, envs map[string]Env) map[string]bool {
-	// A build is a removed machine's, or a removed image's, once every env it's in is removed.
+
 	removed := map[string]bool{}
 	for _, b := range builds {
 		removed[b.ID] = len(b.In) > 0
@@ -261,10 +259,9 @@ func (p protection) keepRecent(dirs []Dir, removed map[string]bool, minAge time.
 // A slot is a tag of an env: E2B starts machines from the build it put in the slot last.
 type slot struct{ env, tag string }
 
-// placed is a ready build in a slot.
 type placed struct {
 	build string
-	// at is when E2B put it in the slot.
+
 	at, finished time.Time
 }
 
@@ -275,7 +272,6 @@ func later(a, b time.Time) time.Time {
 	return a
 }
 
-// finished is when b finished, or else when it started.
 func finished(b Build) time.Time {
 	if b.Finished.IsZero() {
 		return b.Created
@@ -283,8 +279,6 @@ func finished(b Build) time.Time {
 	return b.Finished
 }
 
-// plan keeps the directories of roots and of every build their headers name, transitively, and
-// deletes the rest. It fails if a kept directory's headers couldn't be read.
 func plan(dirs []Dir, roots map[string]string) (Plan, error) {
 	byID := map[string]Dir{}
 	for _, d := range dirs {
@@ -339,7 +333,7 @@ const MinAge = time.Hour
 
 // StuckAfter is how long after a build started E2B must have stopped writing it, if it's still
 // not done: image builds time out after an hour, and pauses take seconds. E2B never finishes a
-// build it stopped writing, say when it crashed mid-pause, so cleanup can't wait for those.
+// build it stopped writing, say when it crashed mid-pause.
 const StuckAfter = 6 * time.Hour
 
 // ErrBusy is wrapped by Garbage's error while E2B is writing a build: until a build is done,

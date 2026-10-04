@@ -23,7 +23,7 @@ func (s *Store) path(name string) string { return filepath.Join(s.cfg.StateDir, 
 
 type diskProfile struct {
 	Profile
-	// This fingerprint recovers Published after the vault saved but the profile did not.
+
 	Placeholders string `json:"placeholders,omitempty"`
 }
 
@@ -507,7 +507,7 @@ func (s *Store) retire(old, next Tokens, now time.Time) error {
 		if _, keep := activeRetired(value, now); !keep {
 			continue
 		}
-		// Retirement never creates a key. A replaced value already has one.
+
 		key, err := vault.LoadKey(s.cfg.KeyPath)
 		if err != nil {
 			return errors.New("retiring codex values: restore the vault key")

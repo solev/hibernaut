@@ -30,27 +30,25 @@ const (
 	testEmail  = "583231+octocat@users.noreply.github.com"
 )
 
-// account is how the fake GitHub answers GET /user for one token.
 type account struct {
-	status int // 0 means 200
+	status int
 	login  string
 	id     int64
 	name   string
-	scopes *string // nil sends no X-OAuth-Scopes header
+	scopes *string
 }
 
 func scopes(s string) *string { return &s }
 
 var octocat = account{login: "octocat", id: 583231, name: "The Octocat", scopes: scopes("repo, workflow, read:org")}
 
-// fakeGitHub is GitHub's API, over TLS. Tokens it doesn't know get 401.
 type fakeGitHub struct {
 	srv      *httptest.Server
 	mu       sync.Mutex
 	accounts map[string]account
 	calls    int
 	problems []string
-	// delay is how long each answer takes.
+
 	delay          time.Duration
 	inFlight, most int
 }
@@ -59,7 +57,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
 	g := &fakeGitHub{accounts: map[string]account{}}
 	g.srv = httptest.NewUnstartedServer(http.HandlerFunc(g.serve))
-	// Status checks at once, so a test can end while a spare connection's handshake runs.
+
 	g.srv.Config.ErrorLog = log.New(io.Discard, "", 0)
 	g.srv.StartTLS()
 	t.Cleanup(func() {
@@ -85,7 +83,6 @@ func (g *fakeGitHub) callCount() int {
 	return g.calls
 }
 
-// mostAtOnce returns the most calls the fake answered at once.
 func (g *fakeGitHub) mostAtOnce() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -126,7 +123,6 @@ func (g *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"login": acct.login, "id": acct.id, "name": acct.name})
 }
 
-// newGitHubApp returns an App running as root, with a vault, and GitHub's API faked.
 func newGitHubApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer, *fakeGitHub) {
 	t.Helper()
 	gh := newFakeGitHub(t)
@@ -138,7 +134,6 @@ func newGitHubApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Bu
 	return a, out, errOut, gh
 }
 
-// runningApp returns an engine running machine app, plus one hibd didn't make, and one paused.
 func runningApp(guest *secretGuest) *fake.Engine {
 	e := fake.New(fake.WithExec(guest.exec))
 	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now(),
@@ -162,8 +157,6 @@ func loadVault(t *testing.T, a *App) []vault.Secret {
 	return f.Secrets()
 }
 
-// wantNoToken fails the test if any of what a command printed, or ran in a machine, holds a
-// real token.
 func wantNoToken(t *testing.T, guest *secretGuest, outputs ...string) {
 	t.Helper()
 	for _, token := range []string{testToken, testToken2} {
@@ -186,15 +179,12 @@ func wantNoToken(t *testing.T, guest *secretGuest, outputs ...string) {
 	}
 }
 
-// connectGitHub runs connect github -json with token on stdin. A reply that's an error comes
-// back in Response.Error.
 func connectGitHub(t *testing.T, a *App, out *bytes.Buffer, token string, args ...string) (int, hibapi.Response) {
 	t.Helper()
 	a.Stdin = strings.NewReader(token + "\n")
 	return runJSONReply(t, a, out, append([]string{"connect", "github", "-json"}, args...)...)
 }
 
-// runJSONReply is runJSON, with a reply that's an error in Response.Error.
 func runJSONReply(t *testing.T, a *App, out *bytes.Buffer, args ...string) (int, hibapi.Response) {
 	t.Helper()
 	code, r, err := runJSON(t, a, out, args...)
@@ -397,7 +387,6 @@ func TestConnectGitHubRejectsABadTokenWithoutQuotingIt(t *testing.T) {
 	}
 }
 
-// unread fails the test if anything reads it.
 type unread struct{ t *testing.T }
 
 func (u unread) Read([]byte) (int, error) {
@@ -454,8 +443,8 @@ func TestConnectGitHubWhileAnotherSecretSetsGHToken(t *testing.T) {
 	}
 }
 
-// The token and the account are saved together, under the vault's lock, so two connects can't
-// leave one's token with the other's account.
+// TestConnectGitHubStoresNothingIfTheAccountCantBeSaved checks that no token is stored when
+// saving the account fails.
 func TestConnectGitHubStoresNothingIfTheAccountCantBeSaved(t *testing.T) {
 	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
 	a, out, errOut, gh := newGitHubApp(t, runningApp(guest))
@@ -519,8 +508,6 @@ func TestConnectGitHubLeavesMachinesAloneWhileQuiescing(t *testing.T) {
 	}
 }
 
-// storeOldGitHub stores secret github as a connection made before M5 left it: bound to git, the
-// API and uploads, but not Copilot.
 func storeOldGitHub(t *testing.T, a *App, token string) vault.Secret {
 	t.Helper()
 	var saved vault.Secret
@@ -558,7 +545,6 @@ func TestDaemonBindsAnOldGitHubConnectionToCopilot(t *testing.T) {
 		t.Errorf("the log mentions Copilot's sites %d times, want once:\n%s", n, logs)
 	}
 
-	// Once bound, the daemon leaves the vault alone.
 	fi, err := os.Stat(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "vault.json"))
 	if err != nil {
 		t.Fatal(err)

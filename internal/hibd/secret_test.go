@@ -32,14 +32,13 @@ type secretGuest struct {
 	env      []byte
 	requests []engine.ExecRequest
 	hostKey  ssh.PublicKey
-	// git is git's identity, as the setup wrote it.
+
 	git *machines.GitIdentity
-	// gitExit, if set, is the exit code of setting git's identity.
+
 	gitExit int
-	// noGit, if set, runs the setup's git script for real, in a shell whose PATH is this empty
-	// directory, as in an image without git.
+
 	noGit string
-	// codexAuth is Codex's login file, as the setup wrote it.
+
 	codexAuth []byte
 }
 
@@ -82,7 +81,6 @@ func (g *secretGuest) exec(_ context.Context, _ engine.Machine, _ string, req en
 	return engine.ExecResult{ExitCode: 127}, nil
 }
 
-// setGit plays the setup's git script. g.mu is held.
 func (g *secretGuest) setGit(req engine.ExecRequest) (engine.ExecResult, error) {
 	if req.User != "root" {
 		return engine.ExecResult{ExitCode: 1, Stderr: []byte("not root")}, nil

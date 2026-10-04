@@ -158,7 +158,6 @@ func scanBuild(ctx context.Context, query scanpkg.Query, cfg config, target hiba
 	}, nil
 }
 
-// secretNames returns the names of secrets, sorted, each once.
 func secretNames(secrets []scanpkg.Secret) []string {
 	names := make([]string, len(secrets))
 	for i, s := range secrets {
@@ -287,8 +286,6 @@ func (a *App) printLeakscanResult(asJSON bool, result hibapi.LeakScan) int {
 	return 1
 }
 
-// loadLeakscanSecrets returns the values the leak scan looks for: the vault's, and the Codex
-// values that refreshes replaced, under the names they had.
 func (a *App) loadLeakscanSecrets(cfg config) ([]scanpkg.Secret, error) {
 	f, err := vault.Load(cfg.vaultPath)
 	if err != nil {
@@ -343,7 +340,6 @@ func findLeakscanMachine(ctx context.Context, e engine.Engine, name string) (eng
 	}
 }
 
-// needRoot fails unless hibd runs as root, saying how to run command.
 func (a *App) needRoot(command string) error {
 	if a.euid() != 0 {
 		return fmt.Errorf("run it as root: sudo hibd %s", command)

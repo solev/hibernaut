@@ -28,14 +28,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// The fake codex reads what to do from files beside its link, since hibd gives it a clean
-// environment.
 const (
-	fakeCodexCalls   = "calls.jsonl" // it appends a fakeCodexCall here for each run
-	fakeCodexVersion = "version"     // what --version prints, instead of the pinned version
-	fakeCodexAuth    = "auth.json"   // what login copies into $CODEX_HOME
-	fakeCodexFail    = "fail"        // login fails after printing the code
-	fakeCodexHang    = "hang"        // login waits to be killed, after writing its PID to started
+	fakeCodexCalls   = "calls.jsonl"
+	fakeCodexVersion = "version"
+	fakeCodexAuth    = "auth.json"
+	fakeCodexFail    = "fail"
+	fakeCodexHang    = "hang"
 	fakeCodexStarted = "started"
 	fakeDeviceCode   = "FAKE-7Q2K"
 )
@@ -44,7 +42,7 @@ type fakeCodexCall struct {
 	Args          []string `json:"args"`
 	Env           []string `json:"env"`
 	Dir           string   `json:"dir"`
-	CodexHomeMode string   `json:"codexHomeMode"` // $CODEX_HOME's permissions in octal, such as 0700
+	CodexHomeMode string   `json:"codexHomeMode"`
 }
 
 func fakeCodex() int {
@@ -99,13 +97,10 @@ func fakeCodex() int {
 	return 0
 }
 
-// fakeCodexBin is a fake codex in its own directory.
 type fakeCodexBin struct {
 	dir, bin string
 }
 
-// newFakeCodex returns a fake codex whose login writes auth, or fails to write anything if auth
-// is nil.
 func newFakeCodex(t *testing.T, auth []byte) fakeCodexBin {
 	t.Helper()
 	self, err := os.Executable()
@@ -150,8 +145,6 @@ func (f fakeCodexBin) calls(t *testing.T) []fakeCodexCall {
 	return out
 }
 
-// newCodexApp returns a root App whose codex is a fake one, and whose Store talks to a fake
-// token server.
 func newCodexApp(t *testing.T, guest *secretGuest, tokens codex.Tokens) (*App, *bytes.Buffer, *bytes.Buffer, fakeCodexBin) {
 	t.Helper()
 	e := fake.New()
@@ -173,8 +166,6 @@ func testCodexTokens() codex.Tokens {
 	return codextest.Tokens("acct-1234", "dev@example.com", "plus", now, now.Add(10*24*time.Hour))
 }
 
-// wantNoCodexToken fails the test if any output holds one of t's real tokens. It never prints
-// them.
 func wantNoCodexToken(t *testing.T, tokens codex.Tokens, outputs ...[]byte) {
 	t.Helper()
 	for _, token := range []string{tokens.AccessToken, tokens.RefreshToken, tokens.IDToken} {
@@ -194,7 +185,6 @@ func codexStoreFor(a *App) *codex.Store {
 	return a.codexStore(cfg, nil)
 }
 
-// codexLogins returns the login directories in a's state directory.
 func codexLogins(t *testing.T, a *App) []string {
 	t.Helper()
 	found, err := filepath.Glob(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "codex-login-*"))
@@ -437,8 +427,6 @@ func TestDaemonDeletesLeftoverCodexLogins(t *testing.T) {
 	}
 }
 
-// pinnedCodex returns the pinned codex from $HIB_CODEX. It skips the test without one, unless
-// HIB_REQUIRE_CODEX=1.
 func pinnedCodex(t *testing.T) string {
 	t.Helper()
 	bin := os.Getenv("HIB_CODEX")
