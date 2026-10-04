@@ -142,7 +142,8 @@ func normalizeHost(host string) string {
 	return host
 }
 
-// Bound reports whether any secret may be sent to host.
+// Bound reports whether any secret is bound to host, scrub-only or not. The proxy intercepts
+// such hosts.
 func (sw *Swapper) Bound(host string) bool {
 	return len(sw.bound(host)) > 0
 }
@@ -175,10 +176,11 @@ func (sw *Swapper) bound(host string) []compiledSecret {
 	return out
 }
 
-// Request swaps Authorization placeholders for secrets bound to host.
-// Bodies and all other request fields remain untouched. It returns the swapped secret names.
+// Request swaps Authorization placeholders for secrets bound to host. Scrub-only secrets are
+// never swapped. Bodies and all other request fields remain untouched. It returns the swapped
+// secret names.
 func (sw *Swapper) Request(r *http.Request, host string) ([]string, error) {
-	bound := sw.bound(host)
+	bound := slices.DeleteFunc(sw.bound(host), func(s compiledSecret) bool { return s.ScrubOnly })
 	if len(bound) == 0 {
 		return nil, nil
 	}
