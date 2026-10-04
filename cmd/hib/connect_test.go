@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 )
@@ -162,7 +163,10 @@ func TestConnectGitHubRejectsArguments(t *testing.T) {
 		{"both sources", []string{"github", "--from-gh", "--token"}, "choose exactly one"},
 		{"neither source", []string{"github"}, "choose exactly one"},
 		{"false source", []string{"github", "--token=false"}, "choose exactly one"},
-		{"another provider", []string{"codex", "--token"}, "only GitHub is supported"},
+		{"another provider", []string{"gitlab", "--token"}, "only GitHub and Codex are supported"},
+		{"codex with a flag", []string{"codex", "--token"}, "hib connect codex takes no flags"},
+		{"codex with a false flag", []string{"codex", "--from-gh=false"}, "hib connect codex takes no flags"},
+		{"codex and a token", []string{"codex", testGitHubToken}, "arguments end up in shell history"},
 		{"no arguments", nil, "usage: hib connect"},
 		{"no provider", []string{"--token"}, "usage: hib connect"},
 		{"positional token", []string{"github", "--token", testGitHubToken}, "arguments end up in shell history"},
@@ -372,5 +376,93 @@ func TestConnectGitHubReplaysTokenAfterWakingHost(t *testing.T) {
 	}
 	if starts != 1 {
 		t.Errorf("Azure starts %d, want 1", starts)
+	}
+}
+
+func TestConnectCodex(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	var deadline time.Time
+	run := c.ssh
+	c.ssh = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		deadline, _ = ctx.Deadline()
+		return run(ctx, args, stdin, stdout, stderr)
+	}
+	var shown string
+	h.override = func(words []string, stdout, stderr io.Writer) (int, bool) {
+		if want := []string{"sudo", "-n", "hibd", "connect", "codex", "--json"}; !slices.Equal(words, want) {
+			t.Errorf("connect codex ran %q, want %q", words, want)
+			return 1, true
+		}
+		if h.lastStdin != nil {
+			t.Error("connect codex sent hibd input")
+		}
+		io.WriteString(stderr, "Follow these steps to sign in with ChatGPT using device code authorization:\n")
+		io.WriteString(stderr, "1. Open this link in your browser\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n")
+		io.WriteString(stderr, "2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mABCD-12345\x1b[0m\n")
+		shown = c.errOut.String()
+		return writeTestResponse(stdout, hibapi.Response{Codex: &hibapi.Codex{
+			Email: "dev@example.com", Plan: "plus", AccountID: "acct-1234", Health: hibapi.CodexOK,
+		}}), true
+	}
+	start := time.Now()
+	code := c.hib("connect", "codex")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, c.errOut)
+	}
+	if want := "connected Codex as dev@example.com, on the plus plan\n"; c.out.String() != want {
+		t.Errorf("printed %q, want %q", c.out, want)
+	}
+	deviceCode := `   \x1b[94mABCD-12345\x1b[0m`
+	if !strings.Contains(shown, deviceCode) || !strings.Contains(shown, `\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m`) {
+		t.Errorf("while hibd waited, hib showed %q, want the link and the code, without terminal escapes", shown)
+	}
+	if strings.Contains(c.errOut.String(), "\x1b") {
+		t.Error("hib passed hibd's terminal escapes through")
+	}
+	if wait := deadline.Sub(start); wait < 16*time.Minute-time.Second || wait > 16*time.Minute+time.Second {
+		t.Errorf("hib waits %v for hibd, want 16m, a minute more than the code lasts", wait)
+	}
+}
+
+func TestConnectCodexFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response hibapi.Response
+		empty    bool
+		want     string
+	}{
+		{"hibd error", hibapi.Response{Error: "codex login failed: turn on device code login in ChatGPT\x1b[31m"}, false,
+			"hib: codex login failed: turn on device code login in ChatGPT\\x1b[31m\n"},
+		{"missing account", hibapi.Response{}, false, "hib: hibd didn't say which account it connected\n"},
+		{"no sudo", hibapi.Response{}, true, "hib: hibd needs passwordless sudo on the host\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				if tc.empty {
+					return 1, true
+				}
+				return writeTestResponse(stdout, tc.response), true
+			}
+			code := c.hib("connect", "codex")
+			if code != 1 || c.out.Len() != 0 || c.errOut.String() != tc.want {
+				t.Errorf("exit %d, stdout %q, stderr %q, want exit 1 and stderr %q", code, c.out, c.errOut, tc.want)
+			}
+		})
+	}
+}
+
+func TestConnectCodexAccountIsTerminalSafe(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+		return writeTestResponse(stdout, hibapi.Response{Codex: &hibapi.Codex{Email: "dev@example.com\x1b]0;x\x07", Plan: "plus\x1b[2J"}}), true
+	}
+	code := c.hib("connect", "codex")
+	want := "connected Codex as dev@example.com\\x1b]0;x\\x07, on the plus\\x1b[2J plan\n"
+	if code != 0 || c.out.String() != want {
+		t.Errorf("exit %d, printed %q, want %q", code, c.out, want)
 	}
 }
