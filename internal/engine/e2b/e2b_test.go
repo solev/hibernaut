@@ -42,6 +42,7 @@ type fakeE2B struct {
 	statuses   []map[string]any
 	offsets    []string
 	redirectTo string
+	envd       http.Handler
 
 	maxMessage atomic.Int64
 }
@@ -55,13 +56,16 @@ func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
 
 	envdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		redirect := f.redirectTo
+		redirect, envd := f.redirectTo, f.envd
 		f.mu.Unlock()
-		if redirect != "" {
+		switch {
+		case redirect != "":
 			http.Redirect(w, r, redirect, http.StatusFound)
-			return
+		case envd != nil:
+			envd.ServeHTTP(w, r)
+		default:
+			envdMux.ServeHTTP(w, r)
 		}
-		envdMux.ServeHTTP(w, r)
 	}))
 	t.Cleanup(envdSrv.Close)
 
@@ -277,15 +281,28 @@ func (f *fakeEnvd) Start(_ context.Context, req *connect.Request[process.StartRe
 		}
 		user = u
 	}
-	if p.GetCmd() == "flood" {
+	switch p.GetCmd() {
+	case "flood":
 		chunk := bytes.Repeat([]byte("x"), 1<<20)
 		for range 10 {
-			ev := &process.ProcessEvent{Event: &process.ProcessEvent_Data{Data: &process.ProcessEvent_DataEvent{Output: &process.ProcessEvent_DataEvent_Stdout{Stdout: chunk}}}}
-			if err := stream.Send(&process.StartResponse{Event: ev}); err != nil {
+			if err := stream.Send(stdout(chunk)); err != nil {
 				return err
 			}
 		}
-		return stream.Send(&process.StartResponse{Event: &process.ProcessEvent{Event: &process.ProcessEvent_End{End: &process.ProcessEvent_EndEvent{Exited: true}}}})
+		return stream.Send(exited(0))
+	case "true":
+		return stream.Send(exited(0))
+	case "noend":
+		return stream.Send(stdout([]byte("partial")))
+	case "fail":
+		var code connect.Code
+		if err := code.UnmarshalText([]byte(p.GetArgs()[0])); err != nil {
+			return err
+		}
+		if err := stream.Send(stdout([]byte("partial"))); err != nil {
+			return err
+		}
+		return connect.NewError(code, errors.New("envd says no"))
 	}
 	line := fmt.Sprintf("%s %s cwd=%s env=%s user=%s", p.GetCmd(), strings.Join(p.GetArgs(), " "), p.GetCwd(), p.GetEnvs()["K"], user)
 	events := []*process.ProcessEvent{
@@ -301,6 +318,14 @@ func (f *fakeEnvd) Start(_ context.Context, req *connect.Request[process.StartRe
 		}
 	}
 	return nil
+}
+
+func stdout(b []byte) *process.StartResponse {
+	return &process.StartResponse{Event: &process.ProcessEvent{Event: &process.ProcessEvent_Data{Data: &process.ProcessEvent_DataEvent{Output: &process.ProcessEvent_DataEvent_Stdout{Stdout: b}}}}}
+}
+
+func exited(code int32) *process.StartResponse {
+	return &process.StartResponse{Event: &process.ProcessEvent{Event: &process.ProcessEvent_End{End: &process.ProcessEvent_EndEvent{ExitCode: code, Exited: true}}}}
 }
 
 func TestCreate(t *testing.T) {
@@ -450,8 +475,8 @@ func TestExecOutputCap(t *testing.T) {
 	f, e := newFakeE2B(t)
 	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
 	_, err := e.Exec(t.Context(), "aaaaaaaaaaaaaaaaaaaa", engine.ExecRequest{Cmd: "flood"})
-	if err == nil || !strings.Contains(err.Error(), "more than") {
-		t.Errorf("Exec(flood) = %v, want an error about too much output", err)
+	if err == nil || !strings.Contains(err.Error(), "more than") || errors.Is(err, engine.ErrConnectionLost) {
+		t.Errorf("Exec(flood) = %v, want only an error about too much output", err)
 	}
 }
 

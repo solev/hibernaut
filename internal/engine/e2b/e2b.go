@@ -324,7 +324,7 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 
 	stream, err := e.envd.Start(ctx, r)
 	if err != nil {
-		return engine.ExecResult{}, fmt.Errorf("exec %s: %w", id, err)
+		return engine.ExecResult{}, execError(id, err)
 	}
 	defer stream.Close()
 
@@ -344,12 +344,22 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return engine.ExecResult{}, fmt.Errorf("exec %s: %w", id, err)
+		return engine.ExecResult{}, execError(id, err)
 	}
 	if !ended {
-		return engine.ExecResult{}, fmt.Errorf("exec %s: stream closed before the command exited", id)
+		return engine.ExecResult{}, fmt.Errorf("exec %s: %w: the stream ended without the command's exit", id, engine.ErrConnectionLost)
 	}
 	return res, nil
+}
+
+// E2B's sandbox proxy ends a stream it loses mid-body with code unavailable, and connect-go gives
+// transport errors and HTTP 429, 502, 503 and 504 that code too. A cut stream doesn't stop the
+// command in the machine.
+func execError(id string, err error) error {
+	if connect.CodeOf(err) == connect.CodeUnavailable {
+		return fmt.Errorf("exec %s: %w: %w", id, engine.ErrConnectionLost, err)
+	}
+	return fmt.Errorf("exec %s: %w", id, err)
 }
 
 func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
