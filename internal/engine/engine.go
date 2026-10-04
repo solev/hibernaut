@@ -173,8 +173,8 @@ type Engine interface {
 	// can then be created from with only the metadata their own CreateOptions give them. The
 	// machine keeps running. Saving to an alias that exists adds a build to that template. It
 	// returns ErrNotRunning for a paused machine. An error wrapping ErrCheckpoint means the
-	// engine stopped the machine while saving: it's paused then, at its last snapshot. A failed
-	// save may leave alias behind, unusable.
+	// engine stopped the machine while saving: it's paused then, at its last snapshot, or lost if
+	// it had none. A failed save may leave alias behind, unusable.
 	SaveTemplate(ctx context.Context, id, alias string) (TemplateInfo, error)
 	// Template returns the template called alias, built or saved, or an error wrapping
 	// ErrNoTemplate. It also finds an alias a failed save left behind.

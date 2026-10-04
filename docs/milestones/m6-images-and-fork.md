@@ -181,7 +181,8 @@ meanwhile.
 - `internal/engine`: `TemplateInfo`, and `Engine` gains `SaveTemplate`, `Template`,
   `SavedTemplates` and `DeleteTemplate`, with `ErrCheckpoint` and `ErrTemplateInUse`. The e2b
   client gains `GET /snapshots` (the `snapshots` tag).
-- `internal/engine/fake`: saves, copies and deletes as E2B does, plus `FailNextSave(err)` and
+- `internal/engine/fake`: saves, copies and deletes as E2B does, and loses a machine whose first
+  checkpoint fails. Tests fail saves and creates with `FailNextSave(err)` and
   `FailCreateAfterStart(metadata)`.
 - `images`: `Template(name)` resolves a name. `IsBuiltIn`, `SavedTemplate`, `SavedName`,
   `ForkTemplate` and `IsForkTemplate` name and read the namespaces.
