@@ -38,15 +38,17 @@ const (
 )
 
 type host struct {
-	t          *testing.T
-	engine     *fake.Engine
-	env        map[string]string
-	machineKey ssh.PublicKey
-	far        chan net.Conn
-	sshVersion string
-	override   func(words []string, stdout, stderr io.Writer) (int, bool)
-	lastStdin  io.Reader
-	sshInput   func(ctx context.Context, args []string, stdin io.Reader)
+	t              *testing.T
+	engine         *fake.Engine
+	env            map[string]string
+	machineKey     ssh.PublicKey
+	far            chan net.Conn
+	sshVersion     string
+	override       func(words []string, stdout, stderr io.Writer) (int, bool)
+	lastStdin      io.Reader
+	sshInput       func(ctx context.Context, args []string, stdin io.Reader)
+	sudoApp        func(*hibd.App)
+	sudoDisconnect <-chan struct{}
 
 	mu       sync.Mutex
 	calls    [][]string
@@ -54,6 +56,33 @@ type host struct {
 	booting  int
 	states   []string
 	readRoom func() (room.Host, error)
+	sudoRuns []*hostRun
+}
+
+type hostRun struct {
+	done           chan struct{}
+	code           int
+	stdout, stderr bytes.Buffer
+}
+
+type hostOutput struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *hostOutput) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.w == nil {
+		return len(p), nil
+	}
+	return w.w.Write(p)
+}
+
+func (w *hostOutput) disconnect() {
+	w.mu.Lock()
+	w.w = nil
+	w.mu.Unlock()
 }
 
 func newHost(t *testing.T) *host {
@@ -187,6 +216,10 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 			return code, nil
 		}
 	}
+	sudo := h.sudoApp != nil && len(words) >= 3 && slices.Equal(words[:3], []string{"sudo", "-n", "hibd"})
+	if sudo {
+		words = words[2:]
+	}
 	if words[0] != "hibd" {
 		fmt.Fprintf(stderr, "bash: %s: command not found\n", words[0])
 		return 127, nil
@@ -202,7 +235,72 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 		NewEngine: func() (engine.Engine, error) { return h.engine, nil },
 		ReadRoom:  h.readRoom,
 	}
+	if sudo {
+		app.EUID = func() int { return 0 }
+		h.sudoApp(app)
+		run := &hostRun{done: make(chan struct{})}
+		h.mu.Lock()
+		h.sudoRuns = append(h.sudoRuns, run)
+		h.mu.Unlock()
+		out, diagnostics := &hostOutput{w: stdout}, &hostOutput{w: stderr}
+		app.Stdout = io.MultiWriter(&run.stdout, out)
+		app.Stderr = io.MultiWriter(&run.stderr, diagnostics)
+		defer out.disconnect()
+		defer diagnostics.disconnect()
+		go func() {
+			run.code = app.Run(h.t.Context(), words[1:])
+			close(run.done)
+		}()
+		select {
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		case <-h.sudoDisconnect:
+			return 255, nil
+		case <-run.done:
+			if err := ctx.Err(); err != nil {
+				return -1, err
+			}
+			return run.code, nil
+		}
+	}
 	return app.Run(ctx, words[1:]), nil
+}
+
+func (h *host) lastHibd() *hostRun {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.sudoRuns) == 0 {
+		return nil
+	}
+	return h.sudoRuns[len(h.sudoRuns)-1]
+}
+
+func (h *host) hibdReturned() bool {
+	run := h.lastHibd()
+	if run == nil {
+		return false
+	}
+	select {
+	case <-run.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *host) waitHibd() int {
+	h.t.Helper()
+	run := h.lastHibd()
+	if run == nil {
+		h.t.Fatal("sudo hibd wasn't started")
+	}
+	select {
+	case <-run.done:
+		return run.code
+	case <-time.After(10 * time.Second):
+		h.t.Fatal("in-process hibd didn't return")
+		return -1
+	}
 }
 
 func shellFields(s string) []string {
@@ -307,9 +405,13 @@ func initClient(t *testing.T, h *host, noAzure ...bool) *client {
 }
 
 func (c *client) hib(args ...string) int {
+	return c.hibContext(c.t.Context(), args...)
+}
+
+func (c *client) hibContext(ctx context.Context, args ...string) int {
 	c.out.Reset()
 	c.errOut.Reset()
-	return c.run(c.t.Context(), append([]string{"-config", c.dir}, args...))
+	return c.run(ctx, append([]string{"-config", c.dir}, args...))
 }
 
 func tableLines(out string) []string {
