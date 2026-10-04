@@ -64,6 +64,9 @@ type diskFile struct {
 
 // CheckSecret reports whether name, env and sites form valid public secret metadata.
 func CheckSecret(name, env string, sites []string) error {
+	if env == "" {
+		return errors.New("an environment variable is required")
+	}
 	s := Secret{Name: name, Env: env, Sites: slices.Clone(sites)}
 	return normalizeSecret(&s)
 }
@@ -282,7 +285,7 @@ func (f *File) Put(key Key, name, env string, sites []string, value string) (Sec
 		return Secret{}, err
 	}
 	for _, e := range f.secrets {
-		if e.Secret.Name != s.Name && strings.EqualFold(e.Secret.Env, s.Env) {
+		if s.Env != "" && e.Secret.Name != s.Name && strings.EqualFold(e.Secret.Env, s.Env) {
 			return Secret{}, fmt.Errorf("environment variable %s is already used by secret %s", s.Env, e.Secret.Name)
 		}
 	}
@@ -562,7 +565,7 @@ func normalizeSecret(s *Secret) error {
 	if err := hibapi.CheckName(s.Name); err != nil {
 		return err
 	}
-	if len(s.Env) > 128 || !envRE.MatchString(s.Env) {
+	if s.Env != "" && (len(s.Env) > 128 || !envRE.MatchString(s.Env)) {
 		return fmt.Errorf("bad environment variable %s: use A-Z, 0-9 and _, starting with A-Z or _", s.Env)
 	}
 	env := strings.ToUpper(s.Env)
@@ -771,7 +774,7 @@ func jwtPlaceholder(jwt jwtParts, rand io.Reader) (string, error) {
 var knownPrefixes = []string{
 	"github_pat_", "sk-ant-api03-", "sk-or-v1-", "sk-proj-", "sk-ant-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
 	"xoxb-", "xoxp-", "xapp-", "glpat-", "npm_", "pypi-", "dop_v1_", "PMAK-", "AIza", "HRKU-", "xai-",
-	"gsk_", "glsa_", "shpat_", "dckr_pat_", "sbp_", "r8_", "pplx-", "lin_api_", "hf_", "at-", "AKIA", "ASIA",
+	"gsk_", "glsa_", "shpat_", "dckr_pat_", "sbp_", "r8_", "pplx-", "lin_api_", "hf_", "at-", "AKIA", "ASIA", "rt.",
 }
 
 func placeholderPrefix(value string) string {
