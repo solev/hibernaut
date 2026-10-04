@@ -207,7 +207,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
-	setup, err := loadSetup(cfg)
+	setup, err := loadSetup(cfg, a.codexStore(cfg, a.warnf))
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
@@ -572,7 +572,8 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	}
 	s := &sweeper{engine: e, logf: func(format string, args ...any) { logger.Printf("cleanup: "+format, args...) }}
 	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
-	delivery := newSetupDelivery(e, cfg, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
+	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
+	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	t := time.NewTicker(*every)
 	defer t.Stop()

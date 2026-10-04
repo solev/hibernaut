@@ -2,21 +2,23 @@ package hibd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-// loadSetup loads what hibd writes into machines: the vault's placeholders, and git's identity
-// once GitHub is connected.
-func loadSetup(cfg config) (machines.Setup, error) {
+// loadSetup loads what hibd writes into machines: the vault's placeholders, git's identity
+// once GitHub is connected, and Codex's login file once Codex is.
+func loadSetup(cfg config, store *codex.Store) (machines.Setup, error) {
 	block, err := loadSecretBlock(cfg.vaultPath)
 	if err != nil {
 		return machines.Setup{}, err
@@ -25,11 +27,27 @@ func loadSetup(cfg config) (machines.Setup, error) {
 	if err != nil {
 		return machines.Setup{}, err
 	}
-	s := machines.Setup{EnvBlock: block}
+	auth, err := codexAuthFile(store)
+	if err != nil {
+		return machines.Setup{}, err
+	}
+	s := machines.Setup{EnvBlock: block, CodexAuth: auth}
 	if p != nil {
 		s.Git = &machines.GitIdentity{Name: p.Name, Email: p.Email()}
 	}
 	return s, nil
+}
+
+// codexAuthFile returns the login file machines get, or nil while Codex isn't connected.
+func codexAuthFile(store *codex.Store) ([]byte, error) {
+	pub, err := store.Public()
+	if errors.Is(err, codex.ErrNotConnected) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the codex login: %w", err)
+	}
+	return codex.RenderAuthFile(pub)
 }
 
 // pushSetup writes the machine setup into every running machine hibd made, after done, such
@@ -42,7 +60,7 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 	warn := func(doing string, err error) {
 		fmt.Fprintf(a.Stderr, "warning: %s, but %s failed: %s\n", done, termsafe.String(doing), termsafe.String(err.Error()))
 	}
-	setup, err := loadSetup(cfg)
+	setup, err := loadSetup(cfg, a.codexStore(cfg, a.warnf))
 	if err != nil {
 		warn("loading the machine setup", err)
 		return
@@ -75,19 +93,20 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 type setupDelivery struct {
 	engine   engine.Engine
 	cfg      config
+	codex    *codex.Store
 	logf     func(format string, args ...any)
 	hashes   map[string][32]byte // the setup each machine has
 	problems map[string]string
 }
 
-func newSetupDelivery(e engine.Engine, cfg config, logf func(format string, args ...any)) *setupDelivery {
-	return &setupDelivery{engine: e, cfg: cfg, logf: logf, hashes: map[string][32]byte{}, problems: map[string]string{}}
+func newSetupDelivery(e engine.Engine, cfg config, store *codex.Store, logf func(format string, args ...any)) *setupDelivery {
+	return &setupDelivery{engine: e, cfg: cfg, codex: store, logf: logf, hashes: map[string][32]byte{}, problems: map[string]string{}}
 }
 
 func (d *setupDelivery) look(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	setup, err := loadSetup(d.cfg)
+	setup, err := loadSetup(d.cfg, d.codex)
 	if err != nil {
 		d.report("loading the machine setup", err)
 		return
