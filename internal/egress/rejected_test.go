@@ -135,7 +135,6 @@ func TestRejectedGetsTheFingerprintOfTheValueSent(t *testing.T) {
 	var rotated atomic.Bool
 	var heard rejections
 	fx := newFixtureConfigured(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
 		rotated.Store(true)
 		w.WriteHeader(http.StatusUnauthorized)
 	}), func(s *Server) {

@@ -463,7 +463,6 @@ func TestTermFallback(t *testing.T) {
 		{"hib-no-such-terminal", "TERM=xterm-256color"},
 		{"", ""},
 	} {
-
 		cmd := exec.Command("sh", "-c", string(script)+"\nenv")
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		if c.term != "" {

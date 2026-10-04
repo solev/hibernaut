@@ -73,7 +73,6 @@ func TestPauseCycles(t *testing.T) {
 	id := machineID(t, ctx, name)
 	sshMachine(t, ctx, name, "tmux new -d -s keep 'sleep 100000'")
 	for i := 1; i <= 20; i++ {
-
 		sshMachine(t, ctx, name, "head -c 64M /dev/urandom > /home/user/churn")
 		hib(t, ctx, "pause", name)
 		cleanUp(t, ctx)

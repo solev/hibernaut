@@ -35,14 +35,12 @@ const (
 type fakeE2B struct {
 	t *testing.T
 
-	mu        sync.Mutex
-	sandboxes map[string]map[string]any
-	requests  []*http.Request
-	bodies    map[string]map[string]any
-
-	statuses []map[string]any
-	offsets  []string
-
+	mu         sync.Mutex
+	sandboxes  map[string]map[string]any
+	requests   []*http.Request
+	bodies     map[string]map[string]any
+	statuses   []map[string]any
+	offsets    []string
 	redirectTo string
 
 	maxMessage atomic.Int64
@@ -127,7 +125,6 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 201, map[string]any{"sandboxID": id, "templateID": "tmpl123", "clientID": "c", "envdVersion": "0.2.0"})
 
 	case r.Method == "GET" && r.URL.Path == "/v2/sandboxes":
-
 		if r.URL.Query().Get("nextToken") == "" {
 			w.Header().Set("X-Next-Token", "page2")
 			writeJSON(w, 200, []any{f.sandboxes["aaaaaaaaaaaaaaaaaaaa"]})

@@ -195,10 +195,8 @@ func sshMachine(t *testing.T, ctx context.Context, name, command string) string 
 }
 
 type host struct {
-	root string
-
+	root   string
 	target string
-
 	engine *e2b.Engine
 
 	tunnel *sshTunnel
@@ -282,7 +280,6 @@ func (h *host) deleteLeftovers(ctx context.Context) error {
 		return err
 	}
 	for _, m := range ms {
-
 		if !hasLabels(m.Metadata, labels) && !strings.HasPrefix(m.Metadata["hib.name"], "e2e-") {
 			continue
 		}

@@ -31,8 +31,7 @@ import (
 
 const (
 	envdPort = 49983
-
-	wsChunk = 32 << 10
+	wsChunk  = 32 << 10
 )
 
 // BuildPollInterval is how often BuildTemplate asks E2B how a build is going.
@@ -94,14 +93,11 @@ func New(cfg Config) (*Engine, error) {
 
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
 	body := e2bapi.NewSandboxV2{
-		TemplateID: opts.Template,
-
+		TemplateID:      opts.Template,
 		AutoPause:       ptr(true),
 		AutoPauseMemory: ptr(true),
-
-		AutoResume: &e2bapi.SandboxAutoResumeConfig{Enabled: false},
-
-		Network: &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
+		AutoResume:      &e2bapi.SandboxAutoResumeConfig{Enabled: false},
+		Network:         &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
 	}
 	if opts.Timeout > 0 {
 		body.Timeout = ptr(seconds(opts.Timeout))
@@ -298,7 +294,6 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 }
 
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
-
 	d, err := e.running(ctx, id)
 	if err != nil {
 		return engine.ExecResult{}, fmt.Errorf("exec: %w", err)

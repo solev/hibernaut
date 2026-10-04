@@ -94,7 +94,6 @@ var catalog = map[string]image{
 				run: lib + "/tools",
 			},
 		},
-
 		startCmd: "sudo -n " + lib + "/start",
 		readyCmd: lib + "/ready",
 	},

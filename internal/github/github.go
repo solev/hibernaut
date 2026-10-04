@@ -146,7 +146,6 @@ func GetUser(ctx context.Context, client *http.Client, baseURL, token string) (U
 	}
 	u, err := getUser(ctx, client, baseURL, token)
 	if err != nil && strings.Contains(err.Error(), token) {
-
 		return User{}, errors.New("GitHub's answer was unreadable")
 	}
 	return u, err
