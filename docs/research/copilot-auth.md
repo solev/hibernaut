@@ -172,10 +172,12 @@ Expected output should be exactly or visibly `OK`; any prompt, login URL, cert e
 ## Gaps
 
 - **Not found** — Copilot CLI OAuth client ID.
-- **Answered (§9)** — The official CLI does no `copilot_internal` exchange in 1.0.91. It sends the
-  GitHub token to the Copilot API host directly.
+- **Answered (§9)** — The official CLI does no `copilot_internal` exchange in 1.0.91. It sends
+  the GitHub token to the Copilot API host directly.
 - **Answered (§9)** — An env-var token was not written to `COPILOT_HOME` in the traced run.
 - **Not found** — CLI-specific support for `SSL_CERT_FILE`.
-- **Not found** — Certificate pinning evidence. Custom-CA docs suggest normal trust-store behavior but do not prove every path. The traced run trusted the mitm CA from `NODE_EXTRA_CA_CERTS`.
+- **Not found** — Certificate pinning evidence. Custom-CA docs suggest normal trust-store
+  behavior but do not prove every path. The traced run trusted the mitm CA from
+  `NODE_EXTRA_CA_CERTS`.
 - **Answered (§9)** — A real `gho_` token from gh works as `GH_TOKEN`, and so does a placeholder
   swapped for it.
