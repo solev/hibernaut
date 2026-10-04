@@ -217,7 +217,7 @@ func (s *Store) Public() (PublicAuth, error) { return s.public() }
 
 // EnsureFresh refreshes the real login if reason calls for it, then returns Public.
 func (s *Store) EnsureFresh(ctx context.Context, reason Reason) (PublicAuth, error) {
-	return PublicAuth{}, ErrNotConnected
+	return s.ensureFresh(ctx, reason)
 }
 
 // CommitLogin replaces the login with a new device login's tokens. It may be another account.

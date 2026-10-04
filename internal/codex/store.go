@@ -19,19 +19,30 @@ import (
 
 func (s *Store) path(name string) string { return filepath.Join(s.cfg.StateDir, name) }
 
-func (s *Store) readProfile() (Profile, error) {
+type diskProfile struct {
+	Profile
+	// This fingerprint recovers Published after the vault saved but the profile did not.
+	Placeholders string `json:"placeholders,omitempty"`
+}
+
+func (s *Store) readDiskProfile() (diskProfile, error) {
 	b, err := os.ReadFile(s.path(ProfileFile))
 	if errors.Is(err, os.ErrNotExist) {
-		return Profile{}, ErrNotConnected
+		return diskProfile{}, ErrNotConnected
 	}
 	if err != nil {
-		return Profile{}, errors.New("reading codex profile")
+		return diskProfile{}, errors.New("reading codex profile")
 	}
-	var p Profile
+	var p diskProfile
 	if json.Unmarshal(b, &p) != nil || p.AccountID == "" {
-		return Profile{}, errors.New("invalid codex profile: run hib connect codex")
+		return diskProfile{}, errors.New("invalid codex profile: run hib connect codex")
 	}
 	return p, nil
+}
+
+func (s *Store) readProfile() (Profile, error) {
+	p, err := s.readDiskProfile()
+	return p.Profile, err
 }
 
 func (s *Store) load() (Profile, error) {
@@ -55,6 +66,10 @@ func (s *Store) load() (Profile, error) {
 		return Profile{}, errors.New("checking codex refresh lock")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	p, err = s.readProfile()
+	if err != nil || p.Attempt == nil {
+		return p, err
+	}
 	return s.recoverProfile(p)
 }
 
@@ -65,14 +80,25 @@ func (s *Store) recoverProfile(p Profile) (Profile, error) {
 	}
 	if swap.Fingerprint(t.RefreshToken) == p.Attempt.Generation {
 		p.Health = HealthStuck
-		p.Problem = "a refresh was interrupted: run hib connect codex"
+		if p.Problem == "" {
+			p.Problem = "a refresh was interrupted: run hib connect codex"
+		}
 		return p, nil
 	}
 	updated, err := tokenProfile(t)
 	if err != nil {
 		return Profile{}, err
 	}
-	if p.Email != updated.Email || p.Plan != updated.Plan || p.AccountID != updated.AccountID {
+	record, err := s.readDiskProfile()
+	if err != nil {
+		return Profile{}, err
+	}
+	generation, err := s.placeholderGeneration()
+	if err != nil {
+		return Profile{}, err
+	}
+	changed := record.Placeholders != "" && record.Placeholders != generation
+	if changed || p.Email != updated.Email || p.Plan != updated.Plan || p.AccountID != updated.AccountID {
 		p.Published = p.Attempt.Started
 	}
 	p.Email, p.Plan, p.AccountID, p.Expires = updated.Email, updated.Plan, updated.AccountID, updated.Expires
@@ -156,6 +182,10 @@ func (s *Store) lock(ctx context.Context) (*os.File, error) {
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			f.Close()
+			return nil, err
+		}
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
 			return f, nil
@@ -179,7 +209,11 @@ func unlock(f *os.File) {
 }
 
 func (s *Store) saveProfile(p Profile) error {
-	b, err := json.MarshalIndent(p, "", "  ")
+	generation, err := s.placeholderGeneration()
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(diskProfile{p, generation}, "", "  ")
 	if err != nil {
 		return errors.New("encoding codex profile")
 	}
@@ -215,6 +249,28 @@ func (s *Store) saveProfile(p Profile) error {
 	return nil
 }
 
+func (s *Store) placeholderGeneration() (string, error) {
+	f, err := vault.Load(s.cfg.VaultPath)
+	if err != nil {
+		return "", errors.New("reading codex placeholder generation")
+	}
+	values := make([]string, 3)
+	for _, secret := range f.Secrets() {
+		switch secret.Name {
+		case AccessName:
+			values[0] = secret.Placeholder
+		case IDName:
+			values[1] = secret.Placeholder
+		case RefreshName:
+			values[2] = secret.Placeholder
+		}
+	}
+	if slices.Contains(values, "") {
+		return "", nil
+	}
+	return swap.Fingerprint(strings.Join(values, "\x00")), nil
+}
+
 func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	p, err := tokenProfile(t)
 	if err != nil {
@@ -231,7 +287,9 @@ func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	if err != nil && !errors.Is(err, ErrNotConnected) {
 		return Profile{}, err
 	}
-	changed, err := s.publishTokens(t, now)
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	defer cancel()
+	changed, err := s.publishTokens(publishCtx, t, now)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -244,7 +302,7 @@ func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	return p, nil
 }
 
-func (s *Store) publishTokens(t Tokens, now time.Time) (bool, error) {
+func (s *Store) publishTokens(ctx context.Context, t Tokens, now time.Time) (bool, error) {
 	old, err := s.tokens()
 	if err != nil && !errors.Is(err, ErrNotConnected) {
 		return false, err
@@ -253,7 +311,7 @@ func (s *Store) publishTokens(t Tokens, now time.Time) (bool, error) {
 		return false, err
 	}
 	changed := false
-	err = vault.Update(s.cfg.VaultPath, s.cfg.KeyPath, func(f *vault.File, key vault.Key) error {
+	err = vault.UpdateContext(ctx, s.cfg.VaultPath, s.cfg.KeyPath, func(f *vault.File, key vault.Key) error {
 		previous := map[string]string{}
 		for _, secret := range f.Secrets() {
 			previous[secret.Name] = secret.Placeholder

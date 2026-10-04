@@ -3,6 +3,7 @@ package vault
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	crand "crypto/rand"
@@ -22,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 )
@@ -62,7 +64,8 @@ type diskFile struct {
 	Secrets []entry `json:"secrets"`
 }
 
-// CheckSecret reports whether name, env and sites form valid public secret metadata.
+// CheckSecret checks metadata for a user-added secret. Unlike Put, it requires an environment
+// variable.
 func CheckSecret(name, env string, sites []string) error {
 	if env == "" {
 		return errors.New("an environment variable is required")
@@ -393,12 +396,20 @@ func (f *File) Save(path string) error {
 // Update locks the vault, loads or makes its key, runs fn, then saves the vault.
 // It repairs incomplete keys only when the vault has no secrets.
 func Update(path, keyPath string, fn func(*File, Key) error) error {
+	return UpdateContext(context.Background(), path, keyPath, fn)
+}
+
+// UpdateContext is Update with a cancelable lock wait. Once fn starts, saving runs to the end.
+func UpdateContext(ctx context.Context, path, keyPath string, fn func(*File, Key) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockContext(ctx, lock); err != nil {
 		return fmt.Errorf("locking vault: %w", err)
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
@@ -427,6 +438,28 @@ func Update(path, keyPath string, fn func(*File, Key) error) error {
 		return err
 	}
 	return f.Save(path)
+}
+
+func lockContext(ctx context.Context, lock *os.File) error {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
 }
 
 func (f *File) index(name string) int {

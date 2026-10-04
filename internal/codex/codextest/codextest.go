@@ -124,6 +124,22 @@ func (s *TokenServer) serve(w http.ResponseWriter, r *http.Request) {
 	if len(s.next) != 0 {
 		a := s.next[0]
 		s.next = s.next[1:]
+		if a.status == http.StatusOK {
+			var tokens struct {
+				Access  string `json:"access_token"`
+				ID      string `json:"id_token"`
+				Refresh string `json:"refresh_token"`
+			}
+			if json.Unmarshal([]byte(a.body), &tokens) == nil && tokens.Access != "" {
+				s.tokens.AccessToken = tokens.Access
+				if tokens.ID != "" {
+					s.tokens.IDToken = tokens.ID
+				}
+				if tokens.Refresh != "" {
+					s.tokens.RefreshToken = tokens.Refresh
+				}
+			}
+		}
 		w.WriteHeader(a.status)
 		_, _ = w.Write([]byte(a.body))
 		return
