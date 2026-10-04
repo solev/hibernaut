@@ -3,6 +3,7 @@ package codex_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -546,5 +547,58 @@ func TestEnsureFreshRecordsUnpublishedLoginWithoutOldTokens(t *testing.T) {
 	after, err := os.ReadFile(profilePath)
 	if err != nil || bytes.Equal(after, pending) {
 		t.Fatal("background did not clear the unpublished attempt before reporting missing tokens")
+	}
+}
+
+func TestPublicRefusesUnmarkedAccountSwitchMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, account string
+		fingerprint   bool
+	}{
+		{"changed account with fingerprint", "second", true},
+		{"changed account without fingerprint", "second", false},
+		{"same account with changed placeholders", "first", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
+			s, cfg := newStore(t, start)
+			initial := codextest.Tokens("first", "first@example.com", "plus", start, start.Add(time.Hour))
+			if _, err := s.CommitLogin(context.Background(), initial); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(cfg.StateDir, codex.ProfileFile)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := codextest.Tokens(tc.account, "second@example.com", "pro", start, start.Add(time.Hour))
+			if _, err := s.CommitLogin(context.Background(), next); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.fingerprint {
+				var record map[string]any
+				if err := json.Unmarshal(before, &record); err != nil {
+					t.Fatal(err)
+				}
+				delete(record, "placeholders")
+				before, err = json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(path, before, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(cfg.KeyPath, cfg.KeyPath+".saved"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Public(); err == nil || !strings.Contains(err.Error(), "run hib connect codex") {
+				t.Fatal("Public did not refuse an unmarked profile and vault mismatch")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(after, before) {
+				t.Fatal("Public rewrote an unmarked profile mismatch")
+			}
+		})
 	}
 }

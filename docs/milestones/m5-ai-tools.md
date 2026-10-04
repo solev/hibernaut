@@ -62,6 +62,8 @@ many goroutines and processes at once. All of them run as root.
   snapshot as the placeholders, even while the publisher holds the lock. It never writes.
   It checks that the profile stayed the same while reading the vault, and tries again if not.
   After three changing reads it returns an error asking the caller to try again.
+  An unmarked profile whose account or recorded placeholder fingerprint disagrees with the vault
+  is refused with a hint to run `hib connect codex`.
 - `EnsureFresh(ctx, reason)` refreshes if the reason calls for it, then returns `Public`.
 - `CommitLogin(ctx, tokens)` replaces the login under the lock: it retires the old values, puts the
   new ones, and starts a new profile. Another account is fine. It recovers any previous attempt

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/egress/swap"
+	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -156,6 +157,14 @@ func (s *Store) Public() (PublicAuth, error) {
 		out.AccountID, out.LastRefresh = p.AccountID, p.Published
 		if out.AccessToken == "" || out.RefreshToken == "" || out.IDToken == "" {
 			return PublicAuth{}, ErrNotConnected
+		}
+		access, err := decodeClaims(out.AccessToken)
+		if err != nil {
+			return PublicAuth{}, errors.New("invalid codex placeholders: run hib connect codex")
+		}
+		if p.AccountID != termsafe.String(access.Auth.Account) ||
+			(record.Attempt == nil && record.Placeholders != "" && record.Placeholders != placeholderGeneration(f)) {
+			return PublicAuth{}, errors.New("codex profile does not match its vault: run hib connect codex")
 		}
 		return out, nil
 	}
