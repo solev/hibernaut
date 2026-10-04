@@ -3,6 +3,7 @@ package vault
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	crand "crypto/rand"
@@ -22,6 +23,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 )
@@ -62,8 +64,12 @@ type diskFile struct {
 	Secrets []entry `json:"secrets"`
 }
 
-// CheckSecret reports whether name, env and sites form valid public secret metadata.
+// CheckSecret checks metadata for a user-added secret. Unlike Put, it requires an environment
+// variable.
 func CheckSecret(name, env string, sites []string) error {
+	if env == "" {
+		return errors.New("an environment variable is required")
+	}
 	s := Secret{Name: name, Env: env, Sites: slices.Clone(sites)}
 	return normalizeSecret(&s)
 }
@@ -282,7 +288,7 @@ func (f *File) Put(key Key, name, env string, sites []string, value string) (Sec
 		return Secret{}, err
 	}
 	for _, e := range f.secrets {
-		if e.Secret.Name != s.Name && strings.EqualFold(e.Secret.Env, s.Env) {
+		if s.Env != "" && e.Secret.Name != s.Name && strings.EqualFold(e.Secret.Env, s.Env) {
 			return Secret{}, fmt.Errorf("environment variable %s is already used by secret %s", s.Env, e.Secret.Name)
 		}
 	}
@@ -390,12 +396,20 @@ func (f *File) Save(path string) error {
 // Update locks the vault, loads or makes its key, runs fn, then saves the vault.
 // It repairs incomplete keys only when the vault has no secrets.
 func Update(path, keyPath string, fn func(*File, Key) error) error {
+	return UpdateContext(context.Background(), path, keyPath, fn)
+}
+
+// UpdateContext is Update with a cancelable lock wait. Once fn starts, saving runs to the end.
+func UpdateContext(ctx context.Context, path, keyPath string, fn func(*File, Key) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockContext(ctx, lock); err != nil {
 		return fmt.Errorf("locking vault: %w", err)
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
@@ -424,6 +438,28 @@ func Update(path, keyPath string, fn func(*File, Key) error) error {
 		return err
 	}
 	return f.Save(path)
+}
+
+func lockContext(ctx context.Context, lock *os.File) error {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
 }
 
 func (f *File) index(name string) int {
@@ -562,7 +598,7 @@ func normalizeSecret(s *Secret) error {
 	if err := hibapi.CheckName(s.Name); err != nil {
 		return err
 	}
-	if len(s.Env) > 128 || !envRE.MatchString(s.Env) {
+	if s.Env != "" && (len(s.Env) > 128 || !envRE.MatchString(s.Env)) {
 		return fmt.Errorf("bad environment variable %s: use A-Z, 0-9 and _, starting with A-Z or _", s.Env)
 	}
 	env := strings.ToUpper(s.Env)
@@ -771,7 +807,7 @@ func jwtPlaceholder(jwt jwtParts, rand io.Reader) (string, error) {
 var knownPrefixes = []string{
 	"github_pat_", "sk-ant-api03-", "sk-or-v1-", "sk-proj-", "sk-ant-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
 	"xoxb-", "xoxp-", "xapp-", "glpat-", "npm_", "pypi-", "dop_v1_", "PMAK-", "AIza", "HRKU-", "xai-",
-	"gsk_", "glsa_", "shpat_", "dckr_pat_", "sbp_", "r8_", "pplx-", "lin_api_", "hf_", "at-", "AKIA", "ASIA",
+	"gsk_", "glsa_", "shpat_", "dckr_pat_", "sbp_", "r8_", "pplx-", "lin_api_", "hf_", "at-", "AKIA", "ASIA", "rt.",
 }
 
 func placeholderPrefix(value string) string {
