@@ -51,6 +51,11 @@ func (a *App) warnf(format string, args ...any) {
 	fmt.Fprintf(a.Stderr, "warning: %s\n", termsafe.String(fmt.Sprintf(format, args...)))
 }
 
+// notef prints a line on stderr, made safe for a terminal.
+func (a *App) notef(format string, args ...any) {
+	fmt.Fprintf(a.Stderr, "%s\n", termsafe.String(fmt.Sprintf(format, args...)))
+}
+
 func (a *App) codexBin() string {
 	if a.CodexBin != "" {
 		return a.CodexBin

@@ -67,6 +67,14 @@ func PrintStatus(w io.Writer, host string, s Status) {
 	tw.Flush()
 }
 
+// PrintCodex writes the Codex login as PrintStatus does, terminal-safe: the account, the plan
+// and the token's expiry, then what's wrong unless the login is ok.
+func PrintCodex(w io.Writer, c Codex) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	printCodex(tw, &c)
+	tw.Flush()
+}
+
 // printCodex writes the Codex line, and a second line saying what's wrong unless the login is
 // ok.
 func printCodex(w io.Writer, c *Codex) {

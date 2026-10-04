@@ -51,7 +51,11 @@ commands:
   log               show secret swap audit entries (-n, default 50)
   connect github    store a GitHub token from stdin as secret github, after GitHub accepts it,
                     and give machines git's identity, as root (-source gh|token)
-  status            check E2B and every secret, as root
+  connect codex     log in to Codex on a ChatGPT plan with a device code, keep the login, and
+                    give machines a login file of placeholders, as root
+  codex refresh     refresh the Codex login once half its token's lifetime has passed, as root
+                    (-force refreshes now, even when a refresh is stuck)
+  status            check E2B, every secret and the Codex login, as root
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image (-force rebuilds every step)
@@ -65,7 +69,8 @@ commands:
                     removed and hourly; systemd runs it as root
   version           print the version
 
-new, ls, rm, pause, image build, connect github, status and version print JSON with -json.
+new, ls, rm, pause, image build, connect github, connect codex, codex refresh, status and version
+print JSON with -json.
 
 hibd reads its settings from ` + defaultConfig + ` ($HIBD_CONFIG overrides the path).
 Environment variables of the same names override the file:
@@ -157,6 +162,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.secret(ctx, args)
 	case "connect":
 		return a.connect(ctx, args)
+	case "codex":
+		return a.runCodex(ctx, args)
 	case "status":
 		return a.status(ctx, args)
 	case "log":

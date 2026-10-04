@@ -253,6 +253,17 @@ func TestPrintStatus(t *testing.T) {
 	}
 }
 
+func TestPrintCodex(t *testing.T) {
+	var out bytes.Buffer
+	hibapi.PrintCodex(&out, hibapi.Codex{Email: "octo@example.com", Plan: "pro", Health: hibapi.CodexStuck,
+		Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)})
+	want := "Codex  octo@example.com, pro plan, token expires 2026-10-14 06:30 UTC\n" +
+		"       stuck: run hib connect codex\n"
+	if out.String() != want {
+		t.Errorf("PrintCodex = %q, want %q", out.String(), want)
+	}
+}
+
 func TestStatusResponseRoundTrip(t *testing.T) {
 	want := hibapi.Response{
 		V: hibapi.Version,
