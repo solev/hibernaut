@@ -27,9 +27,8 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
   login: `git clone`, `git push` and `gh` work, with only a placeholder inside.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines), M2 (idle and wake) and M3 (vault and egress proxy) are done. M4 (GitHub) works,
-  and its last test waits for a token with the `workflow` scope. Progress:
-  [docs/milestones](docs/milestones/README.md).
+  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy) and M4 (GitHub) are done. M5
+  (AI tools) is next. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 

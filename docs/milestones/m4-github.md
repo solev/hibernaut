@@ -1,6 +1,6 @@
 # M4 GitHub
 
-Status: **in progress** · Spec: §4.3, §8 (end-to-end details)
+Status: **done** · Spec: §4.3, §8 (end-to-end details)
 
 **Goal:** a fresh machine does the whole GitHub loop (clone, commit, push, open a PR) with no
 login, and the token never enters it.
@@ -168,14 +168,14 @@ End-to-end:
   - `gh pr create`, then `gh pr close --delete-branch`;
   - leak scan clean;
   - cleanup runs even when the test fails.
-- [ ] `TestWorkflowPush`: push a change under `.github/workflows/` to a branch (needs `workflow`),
+- [x] `TestWorkflowPush`: push a change under `.github/workflows/` to a branch (needs `workflow`),
       then delete the branch.
 
 ## Done when
 
 - [x] `make lint test`, CI and `make e2e` are green. CI is parked, so `make lint test`,
       `make test-host-remote` and a clean `make generate` stand in for it. `make e2e-slow` passed
-      too, with `TestWorkflowPush` skipped until the token has the `workflow` scope.
+      too. `TestWorkflowPush` skipped there, and passed on its own once the token had `workflow`.
 - [x] README: `hib connect github --from-gh`, the `workflow` scope, `hib status`.
 
 ## Changes
@@ -205,3 +205,6 @@ End-to-end:
   `Bearer`. Fixed, and run on the host with a temporary gh.
 - 2026-10-03: `hibd connect github` writes `github.json` inside the vault's update, not after it.
   Review found that two connects at once could leave one's token with the other's account.
+- 2026-10-04: Done. Both end-to-end tests passed live. `TestWorkflowPush` ran after
+  `gh auth refresh -h github.com -s workflow` and `hib connect github --from-gh`, and
+  `hib status` then showed no scope warning.
