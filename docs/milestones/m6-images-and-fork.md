@@ -180,6 +180,8 @@ Image save and fork run as root to confirm snapshot files reached disk. The stat
 owned by the login user. Root can use this trusted state only while it and `host-keys` are privately
 writable and share an owner. New directories, locks and pins keep the state owner's UID and GID.
 Pins and locks get their owner before they are published, so ordinary user commands still work.
+Under sudo `HOME` is root's, so `setup-host.sh` names the login user's keys in
+`HIBD_AUTHORIZED_KEYS`, and copies let the same keys in as any other machine.
 
 **Packages** (the contract commit adds the types, the stubs and the fake engine):
 
@@ -305,3 +307,5 @@ End-to-end:
 - 2026-10-04: Save and fork run as root, but the state directory belongs to the login user. So
   root may use that state while it stays private, and gives what it creates to the state's owner.
   `make test-host` and `make test-host-remote` also run the machines `TestHost` tests as root.
+  The first live fork found sudo's `HOME` pointing at root's keys, which Azure limits to a
+  "log in as the user" message. `setup-host.sh` now names the login user's keys.
