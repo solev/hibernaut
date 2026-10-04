@@ -195,7 +195,7 @@ func TestVaultReloadsSameSizeAndMtimeReplacement(t *testing.T) {
 	}
 }
 
-func TestVaultSourcePassesThroughUntilTheFilesChangeAfterAFailedReload(t *testing.T) {
+func TestVaultSourcePassesThroughAfterAFailedReload(t *testing.T) {
 	cases := []struct {
 		name, stage  string
 		needsNonRoot bool
@@ -222,7 +222,11 @@ func TestVaultSourcePassesThroughUntilTheFilesChangeAfterAFailedReload(t *testin
 			if f.swap(t) != "" {
 				t.Fatal("a failed reload kept the last good swapper")
 			}
-			line := fmt.Sprintf("proxy: cannot load secrets (%s). Passing placeholders through until the files change\n", tc.stage)
+			next := "until the files change"
+			if tc.retries {
+				next = "and trying again on the next request"
+			}
+			line := fmt.Sprintf("proxy: cannot load secrets (%s). Passing placeholders through %s\n", tc.stage, next)
 			if got := f.logs.String(); got != line {
 				t.Fatalf("logs = %q, want %q", got, line)
 			}

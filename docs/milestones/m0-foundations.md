@@ -73,8 +73,8 @@ End-to-end:
       alone, and the machine resumes with its file.
 - [x] `TestSurvivesHostRestart` (slow, S4):
   - create a machine, write a file, start a counter process;
-  - `reboot`: reboot the VM. `nightly-deallocate`: run the real nightly unit (quiesce →
-    deallocate), then start the VM (`azure/start.sh`);
+  - reboot the VM. The nightly deallocate is `TestWakeOnSSH`'s `nightly-deallocate` case now: it
+    runs the real nightly unit, which quiesces and deallocates, and ssh wakes the VM;
   - E2B comes up on its own; the journal shows the machine was paused on the way down; it resumes
     with the file and the same counter process, still counting.
 

@@ -119,7 +119,11 @@ func (s *VaultSource) logFailure(stage string) {
 		now = s.Now()
 	}
 	if s.Logf != nil && !now.Before(s.nextLog) {
-		s.Logf("proxy: cannot load secrets (%s). Passing placeholders through until the files change", stage)
+		next := "until the files change"
+		if !s.loaded {
+			next = "and trying again on the next request"
+		}
+		s.Logf("proxy: cannot load secrets (%s). Passing placeholders through %s", stage, next)
 		s.nextLog = now.Add(time.Minute)
 	}
 }
