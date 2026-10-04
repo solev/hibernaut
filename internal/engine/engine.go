@@ -27,8 +27,10 @@ const (
 type Machine struct {
 	ID string
 	// Template is the ID of the template the machine started from.
-	Template  string
-	State     State
+	Template string
+	State    State
+	// StartedAt is when the machine last started: when it was created or last resumed.
+	// Extending its timeout leaves it alone.
 	StartedAt time.Time
 	// EndAt is when a running machine pauses itself unless its timeout is extended.
 	EndAt time.Time

@@ -165,6 +165,10 @@ placeholder, so every `refresh_token` grant gets the 401, without an audit entry
 - `Setup.CodexAuth` is nil while Codex isn't connected, and nil leaves the file alone. Otherwise
   it's written to `/home/user/.codex/auth.json` through a temporary file and a rename, owned by
   `user`, with the directory 0700 and the file 0600. It's part of `Setup.Hash`.
+- The daemon writes the whole setup into a running machine again when `Setup.Hash` changes, and
+  at its first look after each resume, which it tells by a new `StartedAt`. E2B gives a resumed
+  machine a new start time, and extending a timeout keeps it. So a pause and resume between two
+  looks still gets the setup, and brings back a login file that `codex logout` deleted.
 - The environment block skips secrets without a variable.
 - The leak scan looks for the vault's values and the retired ones, under their original names. It
   lists the names it covered in `LeakScan.Secrets`.

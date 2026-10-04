@@ -88,19 +88,28 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 	}
 }
 
-// setupDelivery writes the machine setup into each running machine whose copy is out of date:
-// one that just woke, one a push missed, or every machine after the daemon starts.
+// setupDelivery writes the machine setup into each running machine whose copy may be out of
+// date: one that resumed since its last write, one a push missed, or every machine after the
+// daemon starts.
 type setupDelivery struct {
 	engine   engine.Engine
 	cfg      config
 	codex    *codex.Store
 	logf     func(format string, args ...any)
-	hashes   map[string][32]byte // the setup each machine has
+	written  map[string]delivered // by machine ID
 	problems map[string]string
 }
 
+// delivered is the setup a running machine got, and when that run started. A resume starts a
+// new run, which gets the setup again: the machine may have changed its copy, as codex logout
+// does.
+type delivered struct {
+	hash    [32]byte
+	started time.Time
+}
+
 func newSetupDelivery(e engine.Engine, cfg config, store *codex.Store, logf func(format string, args ...any)) *setupDelivery {
-	return &setupDelivery{engine: e, cfg: cfg, codex: store, logf: logf, hashes: map[string][32]byte{}, problems: map[string]string{}}
+	return &setupDelivery{engine: e, cfg: cfg, codex: store, logf: logf, written: map[string]delivered{}, problems: map[string]string{}}
 }
 
 func (d *setupDelivery) look(ctx context.Context) {
@@ -125,7 +134,7 @@ func (d *setupDelivery) look(ctx context.Context) {
 			continue
 		}
 		running[m.ID] = true
-		if d.hashes[m.ID] == hash {
+		if w, ok := d.written[m.ID]; ok && w.hash == hash && w.started.Equal(m.StartedAt) {
 			continue
 		}
 		stale = append(stale, m)
@@ -141,13 +150,13 @@ func (d *setupDelivery) look(ctx context.Context) {
 		name := machines.Name(m)
 		err := results[i]
 		if err == nil {
-			d.hashes[m.ID] = hash
+			d.written[m.ID] = delivered{hash: hash, started: m.StartedAt}
 		}
 		d.report("updating "+name, err)
 	}
-	for id := range d.hashes {
+	for id := range d.written {
 		if !running[id] {
-			delete(d.hashes, id)
+			delete(d.written, id)
 		}
 	}
 	for key := range d.problems {
