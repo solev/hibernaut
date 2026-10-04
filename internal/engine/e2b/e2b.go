@@ -501,11 +501,7 @@ func (e *Engine) running(ctx context.Context, id string) (*e2bapi.SandboxDetail,
 }
 
 func apiError(op, id string, status int, body []byte) error {
-	msg := string(body)
-	var apiErr e2bapi.Error
-	if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
-		msg = apiErr.Message
-	}
+	msg := apiMessage(body)
 	subject := op
 	if id != "" {
 		subject += " " + id
@@ -517,6 +513,14 @@ func apiError(op, id string, status int, body []byte) error {
 		return fmt.Errorf("%s: %s: %w", subject, msg, engine.ErrNotRunning)
 	}
 	return fmt.Errorf("%s: E2B returned %d: %s", subject, status, msg)
+}
+
+func apiMessage(body []byte) string {
+	var apiErr e2bapi.Error
+	if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
+		return apiErr.Message
+	}
+	return string(body)
 }
 
 func seconds(d time.Duration) int32 {
