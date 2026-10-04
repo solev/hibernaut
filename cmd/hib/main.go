@@ -32,6 +32,7 @@ commands:
   ls                list machines, and when each pauses unless it's busy
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
+  fork MACHINE      copy a machine (-count, default 1, most 10)
   connect github    give machines your GitHub login (--from-gh, or --token on stdin)
   connect codex     give machines your Codex login on a ChatGPT plan, with a device code
   status            show the health of the host, E2B, each secret and the Codex login; never
@@ -42,6 +43,10 @@ commands:
   log               show secret swap audit entries (-n, default 50)
   exec NAME -- CMD  run CMD on a machine, as ssh NAME.hib -- CMD does
   image build NAME  build an image on the host (-force rebuilds every step)
+  image save MACHINE NAME
+                    save a machine as an image, memory included
+  image ls          list built-in and saved images
+  image rm NAME     remove a saved image not used by any machine
   bridge NAME.hib   connect to a machine's SSH server; ssh runs this for you
   version           print the version
 
@@ -110,7 +115,7 @@ func (a *app) run(ctx context.Context, args []string) int {
 	case "help":
 		fmt.Fprint(a.stdout, usage)
 		return 0
-	case "init", "new", "ls", "rm", "pause", "exec", "image", "bridge", "secret", "log", "connect", "status":
+	case "init", "new", "ls", "rm", "pause", "fork", "exec", "image", "bridge", "secret", "log", "connect", "status":
 	default:
 		fmt.Fprintf(a.stderr, "hib: unknown command %q\n\n%s", cmd, usage)
 		return 2
@@ -121,6 +126,14 @@ func (a *app) run(ctx context.Context, args []string) int {
 	}
 	if cmd == "init" {
 		return a.init(ctx, cfgDir, args)
+	}
+	if slices.Contains(args, "-h") || slices.Contains(args, "-help") || slices.Contains(args, "--help") {
+		switch {
+		case cmd == "fork":
+			return a.fork(ctx, nil, args)
+		case cmd == "image" && len(args) > 0 && args[0] == "save":
+			return a.imageSave(ctx, nil, args[1:])
+		}
 	}
 	cfg, err := loadConfig(cfgDir)
 	if err != nil {
@@ -135,6 +148,8 @@ func (a *app) run(ctx context.Context, args []string) int {
 		return a.byName(ctx, cfg, "rm", "removed", args)
 	case "pause":
 		return a.byName(ctx, cfg, "pause", "paused", args)
+	case "fork":
+		return a.fork(ctx, cfg, args)
 	case "secret":
 		return a.secret(ctx, cfg, args)
 	case "connect":
@@ -190,10 +205,10 @@ func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
 	})
 	now := a.now()
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tIDLE\tPAUSES IN\tSTARTED\tID")
+	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
 	for _, m := range r.Machines {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image),
-			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image),
+			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID), safe(m.ForkOf))
 	}
 	tw.Flush()
 	if r.Room != nil {
@@ -286,8 +301,20 @@ func execSSH(args []string) error {
 }
 
 func (a *app) image(ctx context.Context, cfg *config, args []string) int {
-	if len(args) == 0 || args[0] != "build" {
-		fmt.Fprintln(a.stderr, "usage: hib image build NAME [-force]")
+	if len(args) == 0 {
+		fmt.Fprintln(a.stderr, imageUsage)
+		return 2
+	}
+	switch args[0] {
+	case "save":
+		return a.imageSave(ctx, cfg, args[1:])
+	case "ls":
+		return a.imageList(ctx, cfg, args[1:])
+	case "rm":
+		return a.imageRemove(ctx, cfg, args[1:])
+	case "build":
+	default:
+		fmt.Fprintln(a.stderr, imageUsage)
 		return 2
 	}
 	fl := a.flags("image build")
@@ -351,10 +378,15 @@ func (a *app) flags(cmd string) *flag.FlagSet {
 }
 
 func (a *app) parse(fl *flag.FlagSet, args []string, n int, use string) ([]string, bool) {
+	rest, err := a.parseCommand(fl, args, n, use)
+	return rest, err == nil
+}
+
+func (a *app) parseCommand(fl *flag.FlagSet, args []string, n int, use string) ([]string, error) {
 	var rest []string
 	for {
 		if err := fl.Parse(args); err != nil {
-			return nil, false
+			return nil, err
 		}
 		if fl.NArg() == 0 {
 			break
@@ -364,9 +396,16 @@ func (a *app) parse(fl *flag.FlagSet, args []string, n int, use string) ([]strin
 	}
 	if len(rest) != n {
 		fmt.Fprintf(a.stderr, "usage: hib %s\n", use)
-		return nil, false
+		return nil, errors.New("wrong argument count")
 	}
-	return rest, true
+	return rest, nil
+}
+
+func argumentExit(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	return 2
 }
 
 func (a *app) fail(err error) int {
