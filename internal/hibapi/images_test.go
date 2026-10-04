@@ -9,6 +9,38 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
+func TestSavedImageOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		image hibapi.Image
+		want  string
+	}{
+		{
+			name:  "mebibytes",
+			image: hibapi.Image{Name: "myimg", MemoryMB: 512},
+			want:  "saved image myimg (512 MiB). use it with: hib new NAME -image myimg\n",
+		},
+		{
+			name:  "gibibytes",
+			image: hibapi.Image{Name: "myimg", MemoryMB: 2048},
+			want:  "saved image myimg (2 GiB). use it with: hib new NAME -image myimg\n",
+		},
+		{
+			name:  "terminal controls",
+			image: hibapi.Image{Name: "myimg\x1b\x07", MemoryMB: 2048},
+			want:  "saved image myimg\\x1b\\x07 (2 GiB). use it with: hib new NAME -image myimg\\x1b\\x07\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			hibapi.PrintSavedImage(&out, tc.image)
+			if got := out.String(); got != tc.want {
+				t.Errorf("saved image output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestImageAndForkOutputIsTerminalSafe(t *testing.T) {
 	var out bytes.Buffer
 	hibapi.PrintImages(&out, []hibapi.Image{{

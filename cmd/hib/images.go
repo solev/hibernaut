@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/solev/hibernaut/internal/hibapi"
-	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const imageUsage = `usage: hib image build NAME [-force]
@@ -38,9 +37,7 @@ func (a *app) imageSave(ctx context.Context, cfg *config, args []string) int {
 	if r.Image == nil {
 		return a.fail(errors.New("hibd didn't say which image it saved"))
 	}
-	img := r.Image
-	fmt.Fprintf(a.stdout, "saved image %s (%s). use it with: hib new NAME -image %s\n",
-		termsafe.String(img.Name), hibapi.FormatMB(int64(img.MemoryMB)), termsafe.String(img.Name))
+	hibapi.PrintSavedImage(a.stdout, *r.Image)
 	return 0
 }
 

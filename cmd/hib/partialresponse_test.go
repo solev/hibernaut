@@ -29,7 +29,7 @@ func TestFailedRepliesAreNotTreatedAsSuccess(t *testing.T) {
 		{"image", "ls"}, {"image", "rm", "myimg"},
 		{"secret", "add", "key", "-env", "KEY", "-bind", "example.com"},
 		{"secret", "ls"}, {"secret", "rm", "key"}, {"log"},
-		{"connect", "github", "--token"}, {"connect", "codex"}, {"status"},
+		{"connect", "github", "-token"}, {"connect", "codex"}, {"status"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			c.stdin = strings.NewReader("test-value-123456789\n")
