@@ -65,7 +65,12 @@ func (m *Manager) saveOrigin(ctx context.Context, em engine.Machine, alias strin
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		if err := m.e.Pause(rctx, em.ID); err != nil && !errors.Is(err, engine.ErrNotRunning) {
-			return tmpl, describe(err, fmt.Sprintf("saved %s, but couldn't pause %s again: %v. %s", alias, Name(em), err, m.readOriginState(rctx, em, true)))
+			cleanup := m.cleanAlias(ctx, alias)
+			state := m.readOriginState(ctx, em, true)
+			if cleanup == nil {
+				return engine.TemplateInfo{}, describe(err, fmt.Sprintf("couldn't pause %s again: %v. %s Nothing was saved.", Name(em), err, state))
+			}
+			return tmpl, describe(errors.Join(err, cleanup), fmt.Sprintf("saved %s, but couldn't pause %s again: %v. %s Also couldn't remove template %s: %v.", alias, Name(em), err, state, alias, cleanup))
 		}
 	}
 	return tmpl, nil
