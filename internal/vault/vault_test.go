@@ -812,3 +812,79 @@ func TestNormalizeSites(t *testing.T) {
 		t.Fatalf("Sites = %q, want %q", secret.Sites, want)
 	}
 }
+
+func TestCheckSecretSites(t *testing.T) {
+	label63, label64 := strings.Repeat("a", 63), strings.Repeat("a", 64)
+	host253 := strings.Join([]string{label63, label63, label63, strings.Repeat("a", 61)}, ".")
+	sites := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("site%d.example.com", i)
+		}
+		return out
+	}
+	const (
+		size     = "want a hostname up to 253 bytes"
+		shape    = "no ports, paths or trailing dots"
+		wildcard = "wildcard is only allowed as the whole leftmost label"
+		ip       = "IP addresses are not allowed"
+		labels   = "want at least two labels"
+		length   = "labels must be 1 to 63 bytes"
+		hyphen   = "labels must not start or end with hyphen"
+		chars    = "use lowercase ASCII letters, digits and hyphens"
+		count    = "want 1 to 16 hostnames"
+	)
+	for _, tc := range []struct {
+		name  string
+		sites []string
+		want  string
+	}{
+		{"one site", []string{"example.com"}, ""},
+		{"no sites", nil, count},
+		{"16 sites", sites(16), ""},
+		{"17 sites", sites(17), count},
+		{"empty", []string{""}, size},
+		{"253 bytes", []string{host253}, ""},
+		{"254 bytes", []string{host253 + "a"}, size},
+		{"trailing dot", []string{"example.com."}, shape},
+		{"port", []string{"example.com:443"}, shape},
+		{"path", []string{"example.com/v1"}, shape},
+		{"IPv6", []string{"::1"}, shape},
+		{"wildcard", []string{"*.example.com"}, ""},
+		{"wildcard inside a label", []string{"a*.example.com"}, wildcard},
+		{"wildcard alone", []string{"*"}, wildcard},
+		{"wildcard with nothing after", []string{"*."}, shape},
+		{"wildcard over one label", []string{"*.com"}, labels},
+		{"second wildcard", []string{"*.*.example.com"}, chars},
+		{"IPv4", []string{"192.0.2.1"}, ip},
+		{"wildcard over IPv4", []string{"*.192.0.2.1"}, ip},
+		{"one label", []string{"localhost"}, labels},
+		{"63-byte label", []string{label63 + ".com"}, ""},
+		{"64-byte label", []string{label64 + ".com"}, length},
+		{"empty label", []string{"a..com"}, length},
+		{"leading dot", []string{".example.com"}, length},
+		{"inner hyphen", []string{"a-b.example.com"}, ""},
+		{"leading hyphen", []string{"-a.example.com"}, hyphen},
+		{"trailing hyphen", []string{"a-.example.com"}, hyphen},
+		{"letters and digits", []string{"az09.example.com"}, ""},
+		{"uppercase", []string{"API.Example.COM"}, ""},
+		{"byte before a", []string{"a`b.example.com"}, chars},
+		{"byte after z", []string{"a{b.example.com"}, chars},
+		{"underscore", []string{"a_b.example.com"}, chars},
+		{"non-ASCII", []string{"exämple.com"}, chars},
+		{"one bad site among good ones", []string{"example.com", "bad_site.example.com"}, chars},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := vault.CheckSecret("token", "TOKEN", tc.sites)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("CheckSecret(%q) = %v, want nil", tc.sites, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("CheckSecret(%q) = %v, want %q", tc.sites, err, tc.want)
+			}
+		})
+	}
+}
