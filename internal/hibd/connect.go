@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -14,7 +16,10 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-const connectGitHubUsage = "connect github [-source gh|token] [-json]"
+const (
+	connectGitHubUsage = "connect github [-source gh|token|device] [-json]"
+	githubLoginLock    = "github-login.lock"
+)
 
 func (a *App) connect(ctx context.Context, args []string) int {
 	if len(args) > 0 {
@@ -31,19 +36,19 @@ func (a *App) connect(ctx context.Context, args []string) int {
 
 func (a *App) connectGitHub(ctx context.Context, args []string) int {
 	fl := a.flags("connect github")
-	source := fl.String("source", hibapi.GitHubFromGH, "how the token was given: gh or token")
+	source := fl.String("source", hibapi.GitHubFromGH, "how the token is given: gh or token on stdin, or device to log in")
 	asJSON := fl.Bool("json", false, "print JSON")
 	if _, ok := a.parse(fl, args, 0, connectGitHubUsage); !ok {
 		return 2
 	}
-	if *source != hibapi.GitHubFromGH && *source != hibapi.GitHubFromToken {
-		fmt.Fprintf(a.Stderr, "hibd connect github: -source must be gh or token, not %q\n", termsafe.String(*source))
+	if *source != hibapi.GitHubFromGH && *source != hibapi.GitHubFromToken && *source != hibapi.GitHubFromDevice {
+		fmt.Fprintf(a.Stderr, "hibd connect github: -source must be gh, token or device, not %q\n", termsafe.String(*source))
 		return 2
 	}
 	if err := a.needRoot("connect github"); err != nil {
 		return a.fail(*asJSON, "connect github", err)
 	}
-	gh, err := a.storeGitHub(ctx, *source)
+	gh, err := a.loginGitHub(ctx, *source)
 	if err != nil {
 		return a.fail(*asJSON, "connect github", err)
 	}
@@ -57,18 +62,29 @@ func (a *App) connectGitHub(ctx context.Context, args []string) int {
 	return 0
 }
 
-func (a *App) storeGitHub(ctx context.Context, source string) (hibapi.GitHub, error) {
-	token, err := vault.ReadValue(a.Stdin)
-	if err != nil {
-		return hibapi.GitHub{}, err
-	}
-	if err := github.CheckToken(token); err != nil {
-		return hibapi.GitHub{}, err
+func (a *App) loginGitHub(ctx context.Context, source string) (hibapi.GitHub, error) {
+	var token string
+	if source != hibapi.GitHubFromDevice {
+		var err error
+		if token, err = vault.ReadValue(a.Stdin); err != nil {
+			return hibapi.GitHub{}, err
+		}
+		if err := github.CheckToken(token); err != nil {
+			return hibapi.GitHub{}, err
+		}
 	}
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
 		return hibapi.GitHub{}, err
 	}
+	unlock, ok, err := tryLock(filepath.Join(cfg.stateDir, githubLoginLock), "GitHub login")
+	if err != nil {
+		return hibapi.GitHub{}, err
+	}
+	if !ok {
+		return hibapi.GitHub{}, errors.New("another hib connect github is running: finish it, or stop it, then try again")
+	}
+	defer unlock()
 	f, err := vault.Load(cfg.vaultPath)
 	if err != nil {
 		return hibapi.GitHub{}, err
@@ -76,6 +92,53 @@ func (a *App) storeGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 	if err := checkGHTokenFree(f); err != nil {
 		return hibapi.GitHub{}, err
 	}
+	if source == hibapi.GitHubFromDevice {
+		if token, err = a.githubDeviceLogin(ctx); err != nil {
+			return hibapi.GitHub{}, err
+		}
+	}
+	return a.storeGitHub(ctx, cfg, source, token)
+}
+
+func (a *App) githubDeviceLogin(ctx context.Context) (string, error) {
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if stdin := a.Stdin; stdin != nil {
+		// Nothing waits for this: hib ends stdin only after hibd exits.
+		go func() {
+			_, _ = io.Copy(io.Discard, stdin)
+			cancel()
+		}()
+	}
+	flow := a.GitHubDeviceFlow
+	if flow == nil {
+		flow = &github.DeviceFlow{ClientID: github.ClientID}
+	}
+	token, err := flow.Login(waitCtx, func(p github.DevicePrompt) {
+		fmt.Fprint(a.Stderr, termsafe.String(hibapi.GitHubDevicePrompt(p.UserCode, p.ExpiresIn)+"Waiting for GitHub. Press Ctrl-C to cancel.\n"))
+	})
+	switch {
+	case err == nil:
+		return token, nil
+	case waitCtx.Err() != nil:
+		return "", errors.New("the GitHub login was cancelled. Nothing was stored")
+	case errors.Is(err, github.ErrCodeExpired):
+		return "", fmt.Errorf("%w. Run hib connect github again for a new code", err)
+	case errors.Is(err, github.ErrAccessDenied):
+		return "", fmt.Errorf("%w. Nothing was stored", github.ErrAccessDenied)
+	case errors.Is(err, github.ErrAppRefused):
+		return "", errors.New("GitHub refused the Hibernaut OAuth App. Its owner must turn on Device Flow at " +
+			"github.com/settings/developers. Until then, run hib connect github --from-gh or --token")
+	case errors.Is(err, github.ErrNoClientID):
+		return "", errors.New("this hibd has no GitHub OAuth App to log in to. Run hib connect github --from-gh or --token")
+	case errors.Is(err, github.ErrExpiringToken):
+		return "", fmt.Errorf("%w, and hibd can't refresh tokens. Turn off expiring tokens for the Hibernaut OAuth App, "+
+			"then run hib connect github again", github.ErrExpiringToken)
+	}
+	return "", fmt.Errorf("the GitHub login failed: %w. Nothing was stored", err)
+}
+
+func (a *App) storeGitHub(ctx context.Context, cfg config, source, token string) (hibapi.GitHub, error) {
 	user, err := github.GetUser(ctx, a.githubClient(), a.githubAPI(), token)
 	if errors.Is(err, github.ErrUnauthorized) {
 		return hibapi.GitHub{}, refusedToken(source)
@@ -116,7 +179,10 @@ func checkGHTokenFree(f *vault.File) error {
 
 func refusedToken(source string) error {
 	reconnect := hibapi.GitHub{Source: source}.Reconnect()
-	if source == hibapi.GitHubFromToken {
+	switch source {
+	case hibapi.GitHubFromDevice:
+		return fmt.Errorf("%w. Nothing was stored. Run %s again", github.ErrUnauthorized, reconnect)
+	case hibapi.GitHubFromToken:
 		return fmt.Errorf("%w. Nothing was stored. Make a new token on github.com, then run %s again",
 			github.ErrUnauthorized, reconnect)
 	}

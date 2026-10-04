@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
@@ -176,21 +175,7 @@ func readCodexAuth(path string) ([]byte, error) {
 }
 
 func lockCodexLogins(stateDir string) (unlock func(), ok bool, err error) {
-	f, err := os.OpenFile(filepath.Join(stateDir, codexLoginLock), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return nil, false, fmt.Errorf("opening the codex login lock: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("locking the codex login: %w", err)
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, true, nil
+	return tryLock(filepath.Join(stateDir, codexLoginLock), "codex login")
 }
 
 func removeCodexLogins(stateDir string, logf func(format string, args ...any)) {

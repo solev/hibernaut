@@ -400,6 +400,7 @@ func TestConnectAndStatusNeedRoot(t *testing.T) {
 	}{
 		{[]string{"connect", "github"}, "run it as root: sudo hibd connect github"},
 		{[]string{"connect", "github", "-json"}, "run it as root: sudo hibd connect github"},
+		{[]string{"connect", "github", "-source", "device", "-json"}, "run it as root: sudo hibd connect github"},
 		{[]string{"status"}, "run it as root: sudo hibd status"},
 		{[]string{"status", "-json"}, "run it as root: sudo hibd status"},
 	} {
