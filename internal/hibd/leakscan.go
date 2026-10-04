@@ -105,7 +105,7 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "leakscan", err)
 	}
-	secrets, err := loadLeakscanSecrets(cfg)
+	secrets, err := a.loadLeakscanSecrets(cfg)
 	if err != nil {
 		return a.fail(*asJSON, "leakscan", err)
 	}
@@ -153,8 +153,19 @@ func scanBuild(ctx context.Context, query scanpkg.Query, cfg config, target hiba
 		Target:      target,
 		BuildID:     build,
 		SecretCount: len(secrets),
+		Secrets:     secretNames(secrets),
 		Hits:        apiLeakscanHits(hits),
 	}, nil
+}
+
+// secretNames returns the names of secrets, sorted, each once.
+func secretNames(secrets []scanpkg.Secret) []string {
+	names := make([]string, len(secrets))
+	for i, s := range secrets {
+		names[i] = s.Name
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 func (a *App) leakscanCanary(ctx context.Context, asJSON bool) int {
@@ -276,7 +287,9 @@ func (a *App) printLeakscanResult(asJSON bool, result hibapi.LeakScan) int {
 	return 1
 }
 
-func loadLeakscanSecrets(cfg config) ([]scanpkg.Secret, error) {
+// loadLeakscanSecrets returns the values the leak scan looks for: the vault's, and the Codex
+// values that refreshes replaced, under the names they had.
+func (a *App) loadLeakscanSecrets(cfg config) ([]scanpkg.Secret, error) {
 	f, err := vault.Load(cfg.vaultPath)
 	if err != nil {
 		return nil, err
@@ -295,6 +308,13 @@ func loadLeakscanSecrets(cfg config) ([]scanpkg.Secret, error) {
 	secrets := make([]scanpkg.Secret, len(revealed))
 	for i, s := range revealed {
 		secrets[i] = scanpkg.Secret{Name: s.Name, Value: s.Value}
+	}
+	retired, err := a.codexStore(cfg, a.warnf).Retired()
+	if err != nil {
+		return nil, err
+	}
+	for _, old := range retired {
+		secrets = append(secrets, scanpkg.Secret{Name: old.Name, Value: old.Value})
 	}
 	return secrets, nil
 }
