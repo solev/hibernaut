@@ -3,19 +3,24 @@
 package termsafe
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"unicode/utf8"
 )
 
-// String returns s with control characters other than tab, newline and carriage return, and
-// bytes that aren't UTF-8, written as Go escapes such as \x1b.
+// maxColour is the longest colour sequence that's dropped. A longer one is escaped instead.
+const maxColour = 64
+
+// String returns s with colour sequences dropped, and with control characters other than tab,
+// newline and carriage return, and bytes that aren't UTF-8, written as Go escapes such as \x1b.
+// Colours would only be noise once escaped: Codex's device login colours its code, for one.
 func String(s string) string {
 	return string(appendSafe(nil, []byte(s)))
 }
 
 // Writer escapes what's written to it as String does, and writes the result on. Call Flush
-// after the last Write: a character split across writes waits for its last bytes.
+// after the last Write: a character or colour split across writes waits for its last bytes.
 type Writer struct {
 	w       io.Writer
 	pending []byte
@@ -35,6 +40,10 @@ func (w *Writer) Write(p []byte) (int, error) {
 			break
 		}
 	}
+	// And a colour that more bytes could complete. Only the last escape can start one.
+	if i := bytes.LastIndexByte(data, 0x1b); i >= 0 && colourLen(data[i:]) < 0 {
+		n = min(n, i)
+	}
 	w.pending = append([]byte(nil), data[n:]...)
 	if _, err := w.w.Write(appendSafe(nil, data[:n])); err != nil {
 		return 0, err
@@ -42,7 +51,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Flush writes bytes held back for a character that never finished, escaped.
+// Flush writes bytes held back for a character or colour that never finished, escaped.
 func (w *Writer) Flush() error {
 	if len(w.pending) == 0 {
 		return nil
@@ -54,6 +63,10 @@ func (w *Writer) Flush() error {
 
 func appendSafe(dst, p []byte) []byte {
 	for len(p) > 0 {
+		if n := colourLen(p); n > 0 {
+			p = p[n:]
+			continue
+		}
 		r, size := utf8.DecodeRune(p)
 		switch {
 		case r == utf8.RuneError && size == 1:
@@ -70,4 +83,29 @@ func appendSafe(dst, p []byte) []byte {
 		p = p[size:]
 	}
 	return dst
+}
+
+// colourLen returns the length of the colour sequence p starts with: ESC [, then digits, ';' or
+// ':', then m. It returns 0 if p doesn't start with one, and -1 if more bytes could make one.
+func colourLen(p []byte) int {
+	if len(p) == 0 || p[0] != 0x1b {
+		return 0
+	}
+	for i := 1; i < min(len(p), maxColour); i++ {
+		switch c := p[i]; {
+		case i == 1:
+			if c != '[' {
+				return 0
+			}
+		case c == 'm':
+			return i + 1
+		case c >= '0' && c <= '9', c == ';', c == ':':
+		default:
+			return 0
+		}
+	}
+	if len(p) < maxColour {
+		return -1
+	}
+	return 0
 }

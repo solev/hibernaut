@@ -2,6 +2,7 @@ package termsafe
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,52 @@ func TestWriterSplitsAnywhere(t *testing.T) {
 		if out.String() != want {
 			t.Errorf("in chunks of %d: %q, want %q", size, out.String(), want)
 		}
+	}
+}
+
+func TestStringDropsColours(t *testing.T) {
+	long := "\x1b[" + strings.Repeat("1", maxColour) + "m"
+	for in, want := range map[string]string{
+		"Welcome to Codex [v\x1b[90m0.160.0\x1b[0m]":   "Welcome to Codex [v0.160.0]",
+		"   \x1b[94mDK1O-ZJVSW\x1b[0m\n":               "   DK1O-ZJVSW\n",
+		"\x1b[m\x1b[1;38;5;196m\x1b[38:2::255:0:0mred": "red",
+		"\x1b\x1b[0m[2J":     `\x1b[2J`,
+		"unfinished \x1b[31": `unfinished \x1b[31`,
+		"\x1b[31;2J":         `\x1b[31;2J`,
+		long:                 `\x1b` + long[1:],
+	} {
+		if got := String(in); got != want {
+			t.Errorf("String(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWriterDropsColoursSplitAnywhere(t *testing.T) {
+	in := "Welcome to Codex [v\x1b[90m0.160.0\x1b[0m]\n   \x1b[94mDK1O-ZJVSW\x1b[0m\n"
+	want := "Welcome to Codex [v0.160.0]\n   DK1O-ZJVSW\n"
+	for size := 1; size <= len(in); size++ {
+		var out bytes.Buffer
+		w := NewWriter(&out)
+		for i := 0; i < len(in); i += size {
+			w.Write([]byte(in[i:min(i+size, len(in))]))
+		}
+		w.Flush()
+		if out.String() != want {
+			t.Errorf("in chunks of %d: %q, want %q", size, out.String(), want)
+		}
+	}
+}
+
+func TestWriterFlushEscapesAnUnfinishedColour(t *testing.T) {
+	var out bytes.Buffer
+	w := NewWriter(&out)
+	w.Write([]byte("x\x1b[3"))
+	if out.String() != "x" {
+		t.Errorf("before Flush: %q, want %q", out.String(), "x")
+	}
+	w.Flush()
+	if want := `x\x1b[3`; out.String() != want {
+		t.Errorf("after Flush: %q, want %q", out.String(), want)
 	}
 }
 

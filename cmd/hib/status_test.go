@@ -68,7 +68,7 @@ func TestStatusAsleepHostNeverUsesSSHOrStartsAzure(t *testing.T) {
 		{"stopping", "VM stopping", "VM stopping"},
 		{"deallocating", "VM deallocating", "VM deallocating"},
 		{"starting", "VM starting", "VM starting"},
-		{"terminal controls", "VM deallocated\x1b[31m\nforged", "VM deallocated\\x1b[31m forged"},
+		{"terminal controls", "VM deallocated\x1b[2J\nforged", "VM deallocated\\x1b[2J forged"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)
@@ -125,7 +125,7 @@ func TestStatusReportsHealthAndProtocolFailures(t *testing.T) {
 			E2B: hibapi.Health{OK: true}, Codex: &hibapi.Codex{Email: "octo@example.com", Plan: "plus", Health: hibapi.CodexDead},
 		}}, 1, "dead: run hib connect codex"},
 		{"missing status", hibapi.Response{}, 1, "hibd didn't report a status"},
-		{"hibd error", hibapi.Response{Error: "repair the vault\x1b[31m"}, 1, "repair the vault\\x1b[31m"},
+		{"hibd error", hibapi.Response{Error: "repair the vault\x1b[2J"}, 1, "repair the vault\\x1b[2J"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)
@@ -153,12 +153,12 @@ func TestStatusUnreachableRunningHostDoesNotWakeOrRetry(t *testing.T) {
 	c := initClient(t, h)
 	h.states = []string{"VM running", "VM deallocated"}
 	h.override = func(_ []string, _ io.Writer, stderr io.Writer) (int, bool) {
-		io.WriteString(stderr, "ssh: refused\x1b[31m\n")
+		io.WriteString(stderr, "ssh: refused\x1b[2J\n")
 		return 255, true
 	}
 	code := c.hib("status")
 	if code != 1 || c.out.Len() != 0 ||
-		c.errOut.String() != "ssh: refused\\x1b[31m\nhib: couldn't reach "+testHost+": see ssh's message above\n" {
+		c.errOut.String() != "ssh: refused\\x1b[2J\nhib: couldn't reach "+testHost+": see ssh's message above\n" {
 		t.Errorf("exit %d, stdout %q, stderr %q", code, c.out.String(), c.errOut.String())
 	}
 	calls := h.takeCalls()
@@ -174,11 +174,11 @@ func TestStatusAzureFailureDoesNotUseSSH(t *testing.T) {
 	var checks int
 	c.az = func(_ context.Context, _ ...string) ([]byte, error) {
 		checks++
-		return nil, errors.New("run az login\x1b[31m")
+		return nil, errors.New("run az login\x1b[2J")
 	}
 	code := c.hib("status")
 	if code != 1 || checks != 1 || c.out.Len() != 0 ||
-		!strings.Contains(c.errOut.String(), "run az login\\x1b[31m") {
+		!strings.Contains(c.errOut.String(), "run az login\\x1b[2J") {
 		t.Errorf("exit %d, Azure checks %d, stderr %q", code, checks, c.errOut.String())
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
@@ -189,7 +189,7 @@ func TestStatusAzureFailureDoesNotUseSSH(t *testing.T) {
 func TestStatusRejectsArgumentsSafelyBeforeCheckingHost(t *testing.T) {
 	h := newHost(t)
 	c := initClient(t, h)
-	code := c.hib("status", "--unknown\x1b[31m")
+	code := c.hib("status", "--unknown\x1b[2J")
 	if code != 2 || strings.Contains(c.errOut.String(), "\x1b") ||
 		!strings.Contains(c.errOut.String(), "\\x1b") {
 		t.Errorf("exit %d, expected a terminal-safe flag error", code)

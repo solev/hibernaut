@@ -26,7 +26,7 @@ func TestConnectGitHubFromGH(t *testing.T) {
 		}
 		fmtToken := testGitHubToken + "\n"
 		io.WriteString(stdout, fmtToken)
-		io.WriteString(stderr, "\x1b[31mgh diagnostic\x1b[0m\n")
+		io.WriteString(stderr, "\x1b[2Jgh diagnostic\x1b[K\n")
 		return 0, nil
 	}
 	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
@@ -50,7 +50,7 @@ func TestConnectGitHubFromGH(t *testing.T) {
 		t.Fatalf("exit %d, gh calls %d, ssh calls %d", code, ghCalls, sshCalls)
 	}
 	want := "connected GitHub as octocat. Machines commit as 1+octocat@users.noreply.github.com\n"
-	if c.out.String() != want || c.errOut.String() != "\\x1b[31mgh diagnostic\\x1b[0m\n" {
+	if c.out.String() != want || c.errOut.String() != "\\x1b[2Jgh diagnostic\\x1b[K\n" {
 		t.Error("connect didn't print the account and terminal-safe gh diagnostic")
 	}
 }
@@ -106,7 +106,7 @@ func TestConnectGitHubGHFailures(t *testing.T) {
 			c := initClient(t, h)
 			c.gh = func(_ context.Context, _ []string, _ io.Reader, stdout, stderr io.Writer) (int, error) {
 				io.WriteString(stdout, tc.stdout)
-				io.WriteString(stderr, "\x1b[31mgh diagnostic\x1b[0m\n")
+				io.WriteString(stderr, "\x1b[2Jgh diagnostic\x1b[K\n")
 				return tc.code, tc.err
 			}
 			code := c.hib("connect", "github", "--from-gh")
@@ -115,7 +115,7 @@ func TestConnectGitHubGHFailures(t *testing.T) {
 			if code != 1 || !strings.Contains(c.errOut.String(), tc.want) {
 				t.Errorf("exit %d, expected a gh failure explaining %s", code, tc.want)
 			}
-			if !strings.Contains(c.errOut.String(), "\\x1b[31mgh diagnostic\\x1b[0m") {
+			if !strings.Contains(c.errOut.String(), "\\x1b[2Jgh diagnostic\\x1b[K") {
 				t.Error("gh stderr wasn't terminal-safe")
 			}
 			if tc.name == "missing" && (!strings.Contains(c.errOut.String(), "gh auth login") ||
@@ -220,9 +220,9 @@ func TestConnectGitHubDoesNotPrintReflectedToken(t *testing.T) {
 			c.gh = func(_ context.Context, _ []string, _ io.Reader, stdout, stderr io.Writer) (int, error) {
 				io.WriteString(stdout, testGitHubToken)
 				if mode == "gh stderr" {
-					io.WriteString(stderr, "gh: \x1b[31m")
+					io.WriteString(stderr, "gh: \x1b[2J")
 					io.WriteString(stderr, testGitHubToken[:10])
-					io.WriteString(stderr, testGitHubToken[10:]+"\x1b[0m\n")
+					io.WriteString(stderr, testGitHubToken[10:]+"\x1b[K\n")
 				}
 				return 0, nil
 			}
@@ -230,9 +230,9 @@ func TestConnectGitHubDoesNotPrintReflectedToken(t *testing.T) {
 				account := &hibapi.GitHub{Login: "octocat", Email: "1+octocat@users.noreply.github.com"}
 				switch mode {
 				case "ssh stderr":
-					io.WriteString(stderr, "hibd: \x1b[31m")
+					io.WriteString(stderr, "hibd: \x1b[2J")
 					io.WriteString(stderr, testGitHubToken[:10])
-					io.WriteString(stderr, testGitHubToken[10:]+"\x1b[0m\n")
+					io.WriteString(stderr, testGitHubToken[10:]+"\x1b[K\n")
 				case "hibd error":
 					return writeTestResponse(stdout, hibapi.Response{Error: "token refused: " + testGitHubToken}), true
 				case "unreadable reply":
@@ -277,8 +277,8 @@ func TestConnectGitHubRemoteErrors(t *testing.T) {
 		want     string
 	}{
 		{"missing account", hibapi.Response{}, false, "hibd didn't say which account it connected"},
-		{"hibd error", hibapi.Response{Error: "GitHub refused the token: connect again\x1b[31m"}, false,
-			"GitHub refused the token: connect again\\x1b[31m"},
+		{"hibd error", hibapi.Response{Error: "GitHub refused the token: connect again\x1b[2J"}, false,
+			"GitHub refused the token: connect again\\x1b[2J"},
 		{"no sudo", hibapi.Response{}, true, "hibd needs passwordless sudo on the host"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -413,9 +413,8 @@ func TestConnectCodex(t *testing.T) {
 	if want := "connected Codex as dev@example.com, on the plus plan\n"; c.out.String() != want {
 		t.Errorf("printed %q, want %q", c.out, want)
 	}
-	deviceCode := `   \x1b[94mABCD-12345\x1b[0m`
-	if !strings.Contains(shown, deviceCode) || !strings.Contains(shown, `\x1b[94mhttps://auth.openai.com/codex/device\x1b[0m`) {
-		t.Errorf("while hibd waited, hib showed %q, want the link and the code, without terminal escapes", shown)
+	if !strings.Contains(shown, "\n   ABCD-12345\n") || !strings.Contains(shown, "\n   https://auth.openai.com/codex/device\n") {
+		t.Errorf("while hibd waited, hib showed %q, want the link and the code, without Codex's colours", shown)
 	}
 	if strings.Contains(c.errOut.String(), "\x1b") {
 		t.Error("hib passed hibd's terminal escapes through")
@@ -432,8 +431,8 @@ func TestConnectCodexFailures(t *testing.T) {
 		empty    bool
 		want     string
 	}{
-		{"hibd error", hibapi.Response{Error: "codex login failed: turn on device code login in ChatGPT\x1b[31m"}, false,
-			"hib: codex login failed: turn on device code login in ChatGPT\\x1b[31m\n"},
+		{"hibd error", hibapi.Response{Error: "codex login failed: turn on device code login in ChatGPT\x1b[2J"}, false,
+			"hib: codex login failed: turn on device code login in ChatGPT\\x1b[2J\n"},
 		{"missing account", hibapi.Response{}, false, "hib: hibd didn't say which account it connected\n"},
 		{"no sudo", hibapi.Response{}, true, "hib: hibd needs passwordless sudo on the host\n"},
 	} {

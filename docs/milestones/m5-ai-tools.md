@@ -134,8 +134,9 @@ placeholder, so every `refresh_token` grant gets the 401, without an audit entry
 **Who runs what:**
 
 - `hib connect codex` runs `sudo -n hibd connect codex -json`, and gives up after 16 minutes. It
-  shows hibd's stderr as it comes (the code and the link), without terminal escapes, then the
-  account and plan.
+  shows hibd's stderr as it comes (the code and the link) as plain text, then the account and
+  plan. Codex colours its prompt even without a terminal, so `termsafe` drops colour codes, and
+  escapes other terminal escapes as before.
 - `hibd connect codex` needs root. It checks that `codex --version` is `codex.Version`, then runs
   `codex login --device-auth -c 'cli_auth_credentials_store="file"'` in a new 0700 directory under
   the state directory. The environment is exactly `HOME` and `CODEX_HOME`, both that directory,
@@ -314,3 +315,6 @@ End-to-end:
   three managed Codex secrets (two of them scrub-only), refreshes at half the lifetime, refreshes
   with an unknown outcome never retried by themselves, the token endpoint's answers, and
   `hibd codex refresh` for tests.
+- 2026-10-04: The live device login showed Codex's colour codes as text, such as `\x1b[94m`.
+  Codex writes them whether or not it has a terminal, and `NO_COLOR` doesn't stop them. So
+  `termsafe` now drops colour codes. Other terminal escapes are still escaped.
