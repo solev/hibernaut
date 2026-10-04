@@ -18,6 +18,7 @@ The M5 code is built against this section. Code that has to differ updates it in
 | `/var/lib/hibernaut/codex.json` | root, 0644 | The Codex profile: account, plan, expiry, health, and the refresh in progress. No token. Written atomically. |
 | `/var/lib/hibernaut/codex-retired.json` | root, 0644 | Replaced real values that the leak scan still looks for, in the vault's format and sealed with its key. |
 | `/var/lib/hibernaut/codex.lock` | root, 0600 | Held for any refresh or login change, and always taken before the vault's lock. |
+| `/var/lib/hibernaut/codex-login.lock` | root, 0600 | Held while `hibd connect codex` runs, so one login runs at a time and nothing deletes its directory. |
 | `/usr/local/lib/codex-0.160.0` | root, 0755 | Codex's package, helpers and resources. |
 | `/usr/local/bin/codex` | root, symlink | Entrypoint for `hibd connect codex`. |
 
@@ -67,10 +68,11 @@ many goroutines and processes at once. All of them run as root.
 | --- | --- | --- |
 | `Background`: the daemon, each minute | Half the access token's lifetime (`iat` to `exp`) has passed. Never while dead or stuck, or before `RetryAt`. | Returns the placeholders. |
 | `Client`: a machine's refresh request | A site answered 401 to the current real access token (`Rejected` is its fingerprint), or it expires within 5 minutes. At most one in 10 minutes (`ClientRefreshAt`). Past that, `ErrUnavailable`. | Returns the placeholders, whatever the health. |
-| `Force`: `hibd codex refresh -force` | Always, even when stuck. | |
+| `Force`: `hibd codex refresh -force` | Always, even when stuck, but not while dead. | |
 
-A refresh that's due fails with `ErrDead` while the login is dead, and with `ErrStuck` while it's
-stuck, except for `Force`.
+A refresh that's due fails with `ErrDead` while the login is dead, even with `Force`: OpenAI has
+refused its refresh token, so only `hib connect codex` helps. It fails with `ErrStuck` while it's
+stuck, except with `Force`.
 
 **A refresh:**
 
@@ -133,7 +135,9 @@ placeholder, so every `refresh_token` grant gets the 401, without an audit entry
 
 **Who runs what:**
 
-- `hib connect codex` runs `sudo -n hibd connect codex -json`, and gives up after 16 minutes. It
+- `hib connect codex` runs `sudo -n hibd connect codex -json`. It gives up if hibd hasn't
+  answered after 16 minutes, a minute more than the code lasts. If it wakes the host first, the
+  16 minutes start after that, because the code only starts once hibd runs. It
   shows hibd's stderr as it comes (the code and the link) as plain text, then the account and
   plan. Codex colours its prompt even without a terminal, so `termsafe` drops colour codes, and
   escapes other terminal escapes as before.
@@ -145,7 +149,8 @@ placeholder, so every `refresh_token` grant gets the 401, without an audit entry
   running machines, and replies with the profile.
   - A failed login adds a hint: turn on device code login in ChatGPT, under Settings, Security.
   - Login directories left by a crash are deleted when the next login starts, and when the daemon
-    starts.
+    starts. Both take `codex-login.lock` without waiting. So a second `hib connect codex` is
+    refused while one runs, and the daemon leaves a running login's directory alone.
   - The binary's path, the token URL and the HTTP client are `App` fields for tests, never
     settings.
 - `hibd codex refresh [-force] [-json]` needs root. It calls `EnsureFresh` with `Background`, or
@@ -157,7 +162,9 @@ placeholder, so every `refresh_token` grant gets the 401, without an audit entry
   runs, because the file is part of `Setup.Hash`. At start, if GitHub is connected, it puts the
   `github` secret again with `github.Sites()` and the same value, which keeps its placeholder.
 - `hibd status` and `hib status` show a Codex line from the profile, without calling OpenAI. Dead
-  or stuck isn't OK, and says to run `hib connect codex`.
+  or stuck isn't OK, and says to run `hib connect codex`. A profile that can't be read fails the
+  status, rather than showing Codex as not connected. The `codex-` secrets' rows are unchecked,
+  with "part of the Codex login above".
 - `hibd secret add` and `rm` refuse names that start with `codex-`.
 
 **Machines and the leak scan:**
@@ -318,3 +325,15 @@ End-to-end:
 - 2026-10-04: The live device login showed Codex's colour codes as text, such as `\x1b[94m`.
   Codex writes them whether or not it has a terminal, and `NO_COLOR` doesn't stop them. So
   `termsafe` now drops colour codes. Other terminal escapes are still escaped.
+- 2026-10-04: The image's `tools` step is last, after `trust-ca`: builds reach `github.com`
+  through the proxy, which intercepts it while GitHub is connected. websocat's download moved into
+  it too. Codex installs as its full package under `/usr/local/lib/codex-0.160.0`, linked from
+  `/usr/local/bin/codex`, because the bare binary lacks `codex-code-mode-host`.
+- 2026-10-04: Built as designed, plus: the profile keeps a fingerprint of the placeholders, so a
+  recovered publication gets `Published` right. While Codex isn't connected, the token endpoint
+  answers every refresh with the 401, without an audit entry. The daemon doesn't refresh while
+  the host is going to sleep.
+- 2026-10-04: After the M5 reviews: `hibd connect codex` takes `codex-login.lock`, so one login
+  runs at a time. `hibd status` fails on a profile it can't read, and shows the `codex-` secrets
+  as part of the login. `Force` still fails on a dead login, since only reconnecting helps. hib's
+  16 minutes for hibd start once the host is awake.
