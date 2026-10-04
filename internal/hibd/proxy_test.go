@@ -3,11 +3,20 @@ package hibd
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/solev/hibernaut/internal/codex"
+	"github.com/solev/hibernaut/internal/codex/codextest"
+	"github.com/solev/hibernaut/internal/egress"
+	"github.com/solev/hibernaut/internal/egress/swap"
 )
 
 func TestCAInit(t *testing.T) {
@@ -97,5 +106,54 @@ func TestProxyMissingCAExplainsInitialization(t *testing.T) {
 	if code := a.Run(t.Context(), []string{"proxy"}); code != 1 ||
 		!strings.Contains(logs.String(), "sudo hibd ca init") {
 		t.Fatalf("missing CA: exit %d: %s", code, &logs)
+	}
+}
+
+func TestProxyAnswersCodexRefreshWithOneStore(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config{stateDir: dir, vaultPath: filepath.Join(dir, "vault.json"), vaultKeyPath: filepath.Join(dir, "vault.key")}
+	now := time.Now()
+	tokens := codextest.Tokens("acct-1234", "dev@example.com", "plus", now, now.Add(10*24*time.Hour))
+	upstream := codextest.NewTokenServer(t, tokens)
+	a := &App{CodexTokenURL: upstream.URL, CodexClient: upstream.Client}
+	if _, err := a.codexStore(cfg, nil).CommitLogin(t.Context(), tokens); err != nil {
+		t.Fatal(err)
+	}
+	placeholders, err := a.codexStore(cfg, nil).Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	server := &egress.Server{}
+	a.serveCodex(server, cfg, func(format string, args ...any) { fmt.Fprintf(&logs, format+"\n", args...) })
+	if len(server.Endpoints) != 1 || server.Rejected == nil {
+		t.Fatalf("proxy has %d endpoints and Rejected set %v, want the token endpoint and Rejected", len(server.Endpoints), server.Rejected != nil)
+	}
+	ep := server.Endpoints[0]
+	if ep.Site != codex.TokenSite || ep.Method != http.MethodPost || ep.Path != codex.TokenPath {
+		t.Fatalf("endpoint = %s %s%s, want POST auth.openai.com/oauth/token", ep.Method, ep.Site, ep.Path)
+	}
+	refresh := func() {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"grant_type": "refresh_token", "refresh_token": placeholders.RefreshToken})
+		resp := ep.Handle(t.Context(), egress.EndpointRequest{Body: body, Audit: func(string) error { return nil }})
+		var got struct {
+			Access string `json:"access_token"`
+		}
+		if err := json.Unmarshal(resp.Body, &got); err != nil || resp.Status != http.StatusOK || got.Access != placeholders.AccessToken {
+			t.Fatalf("refresh: status %d, placeholder answered %v", resp.Status, got.Access == placeholders.AccessToken)
+		}
+	}
+	refresh()
+	if upstream.Requests() != 0 {
+		t.Fatal("a fresh login was refreshed")
+	}
+	server.Rejected(codex.AccessName, swap.Fingerprint(tokens.AccessToken))
+	refresh()
+	if upstream.Requests() != 1 {
+		t.Fatalf("refresh after a rejection reached the token server %d times, want once", upstream.Requests())
+	}
+	if bytes.Contains(logs.Bytes(), []byte(tokens.AccessToken)) || bytes.Contains(logs.Bytes(), []byte(tokens.RefreshToken)) {
+		t.Fatal("a real codex token reached the logs")
 	}
 }
