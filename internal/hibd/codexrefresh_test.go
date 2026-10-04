@@ -17,7 +17,6 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
-// codexLoginFile returns the placeholder login file a's Store gives machines now.
 func codexLoginFile(t *testing.T, a *App) []byte {
 	t.Helper()
 	pub, err := codexStoreFor(a).Public()
@@ -31,13 +30,11 @@ func codexLoginFile(t *testing.T, a *App) []byte {
 	return file
 }
 
-// halfSpentCodexTokens returns tokens past half their lifetime, so a Background refresh is due.
 func halfSpentCodexTokens() codex.Tokens {
 	now := time.Now()
 	return codextest.Tokens("acct-1234", "dev@example.com", "plus", now.Add(-6*24*time.Hour), now.Add(4*24*time.Hour))
 }
 
-// queueCodexTokens makes server's next answer next's tokens.
 func queueCodexTokens(t *testing.T, server *codextest.TokenServer, next codex.Tokens) {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{"access_token": next.AccessToken, "id_token": next.IDToken, "refresh_token": next.RefreshToken})
@@ -54,7 +51,7 @@ func TestCodexRefreshForce(t *testing.T) {
 	server := connectTestCodex(t, a, tokens)
 	before := codexLoginFile(t, a)
 	now := time.Now()
-	// A new plan changes the JWTs' placeholders, and so the login file.
+
 	upgraded := codextest.Tokens("acct-1234", "dev@example.com", "pro", now, now.Add(time.Hour))
 	queueCodexTokens(t, server, upgraded)
 
@@ -111,7 +108,7 @@ func TestCodexRefreshWhenHalfTheLifetimeHasPassed(t *testing.T) {
 	if n := server.Requests(); n != 1 {
 		t.Errorf("OpenAI got %d refresh requests, want 1", n)
 	}
-	// The same account and plan keep every placeholder, so machines need nothing new.
+
 	if got := guest.codexAuthFile(); got != nil {
 		t.Errorf("codex refresh wrote auth.json though no placeholder changed:\n%s", got)
 	}
@@ -188,7 +185,6 @@ func TestCodexUsage(t *testing.T) {
 	}
 }
 
-// lineLog keeps the lines a logf wrote.
 type lineLog struct {
 	mu    sync.Mutex
 	lines []string
@@ -200,7 +196,6 @@ func (l *lineLog) logf(format string, args ...any) {
 	l.lines = append(l.lines, fmt.Sprintf(format, args...))
 }
 
-// take returns the lines written since the last take.
 func (l *lineLog) take() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -220,8 +215,7 @@ func TestCodexRefresherLogsEachChangeOnce(t *testing.T) {
 			t.Errorf("logged %q, want %q", got, want)
 		}
 	}
-	// connect connects tokens, as hib connect codex would, and points r at a token server for
-	// them.
+
 	connect := func(tokens codex.Tokens) *codextest.TokenServer {
 		t.Helper()
 		server := connectTestCodex(t, a, tokens)
@@ -240,7 +234,6 @@ func TestCodexRefresherLogsEachChangeOnce(t *testing.T) {
 		t.Errorf("OpenAI got %d refresh requests for a fresh login, want none", n)
 	}
 
-	// Another process, such as the proxy, refreshes.
 	if _, err := codexStoreFor(a).EnsureFresh(t.Context(), codex.Reason{Kind: codex.Force}); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +269,6 @@ func TestCodexRefresherLogsEachChangeOnce(t *testing.T) {
 	}
 }
 
-// codexExpiry returns when store's token expires, as the refresher logs it.
 func codexExpiry(t *testing.T, store *codex.Store) string {
 	t.Helper()
 	p, err := store.Load()
@@ -324,8 +316,7 @@ func TestCodexRefresherLeavesCodexAloneWhileQuiescing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	calls, whileAsleep := 0, -1
-	// awake says the host is going to sleep for three looks, lets the fourth happen, and then
-	// stops the refresher.
+
 	awake := func() error {
 		calls++
 		switch {

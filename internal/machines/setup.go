@@ -28,7 +28,6 @@ type GitIdentity struct {
 	Name, Email string
 }
 
-// empty reports whether s writes nothing into a new machine.
 func (s Setup) empty() bool {
 	return len(s.EnvBlock) == 0 && s.Git == nil && len(s.CodexAuth) == 0
 }
@@ -50,7 +49,7 @@ func (s Setup) Write(ctx context.Context, e engine.Engine, id string) error {
 	return writeCodexAuth(ctx, e, id, s.CodexAuth)
 }
 
-// Hash identifies what Write writes, so a machine that has s needn't get it again.
+// Hash identifies what Write writes.
 func (s Setup) Hash() [32]byte {
 	h := sha256.New()
 	field := func(b []byte) {
@@ -92,14 +91,11 @@ func writeGitIdentity(ctx context.Context, e engine.Engine, id string, g GitIden
 	return nil
 }
 
-// gitScript sets git's identity for every user in the machine. The name and email come as
-// arguments, never as shell code. Images without git are fine.
 const gitScript = `set -eu
 command -v git >/dev/null 2>&1 || exit 0
 git config --system --replace-all user.name "$1"
 git config --system --replace-all user.email "$2"`
 
-// codexDir is where Codex keeps its login in a machine.
 const codexDir = "/home/user/.codex"
 
 func writeCodexAuth(ctx context.Context, e engine.Engine, id string, auth []byte) error {
@@ -117,8 +113,6 @@ func writeCodexAuth(ctx context.Context, e engine.Engine, id string, auth []byte
 	return nil
 }
 
-// codexScript writes Codex's login file into the directory $1, from the base64 in $2, through a
-// temporary file and a rename. The user owns both, and only the user can read them.
 const codexScript = `set -eu
 dir=$1
 mkdir -p "$dir"

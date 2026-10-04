@@ -97,7 +97,6 @@ func (e *Endpoint) handle(ctx context.Context, req egress.EndpointRequest) egres
 	}
 }
 
-// parseTokenRequest reads the grant type and refresh token from a JSON or form body.
 func parseTokenRequest(req egress.EndpointRequest) (grant, token string, err error) {
 	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	if mediaType == "application/x-www-form-urlencoded" {

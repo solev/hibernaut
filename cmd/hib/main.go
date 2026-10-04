@@ -73,8 +73,6 @@ func main() {
 	os.Exit(a.run(ctx, os.Args[1:]))
 }
 
-// runFunc runs a program with args and returns its exit code. err is for when it couldn't run
-// or was stopped.
 type runFunc func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (code int, err error)
 
 type app struct {
@@ -83,12 +81,11 @@ type app struct {
 	getenv         func(string) string
 	ssh            runFunc
 	gh             runFunc
-	// execSSH replaces hib with ssh.
-	execSSH    func(args []string) error
-	az         func(ctx context.Context, args ...string) ([]byte, error)
-	executable func() (string, error)
-	wakePoll   time.Duration
-	now        func() time.Time
+	execSSH        func(args []string) error
+	az             func(ctx context.Context, args ...string) ([]byte, error)
+	executable     func() (string, error)
+	wakePoll       time.Duration
+	now            func() time.Time
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
@@ -163,7 +160,7 @@ func (a *app) newMachine(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 	words := []string{"new", names[0], "--image", *image}
-	// hibd has the default and checks the idle time, so only pass one that was asked for.
+
 	fl.Visit(func(f *flag.Flag) {
 		if f.Name == "idle" {
 			words = append(words, "--idle", idle.String())
@@ -205,7 +202,6 @@ func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-// roomLine says how many more machines fit on the host, and how much memory and disk is free.
 func roomLine(r hibapi.Room) string {
 	free := fmt.Sprintf("%s of %s memory free, %s disk free.", hibapi.FormatMB(r.MemoryFreeMB), hibapi.FormatMB(r.MemoryMB),
 		hibapi.FormatMB(r.DiskFreeMB))
@@ -219,9 +215,6 @@ func roomLine(r hibapi.Room) string {
 	return fmt.Sprintf("Room for %d more %s machines: %s", r.Fits, image, free)
 }
 
-// pausesIn says how long until machine m pauses itself, as of now, unless it's busy: "12m",
-// "1h05m", "45s", "now", or "never". It's "-" for a machine that's paused or that hibd didn't
-// make.
 func pausesIn(m hibapi.Machine, now time.Time) string {
 	switch {
 	case m.State != "running" || m.IdleSeconds == nil:
@@ -241,7 +234,6 @@ func pausesIn(m hibapi.Machine, now time.Time) string {
 	return fmt.Sprintf("%dh%02dm", int(left/time.Hour), int(left%time.Hour/time.Minute))
 }
 
-// safe makes text from hibd safe to print, and shows empty text as "-".
 func safe(s string) string {
 	if s == "" {
 		return "-"
@@ -249,7 +241,6 @@ func safe(s string) string {
 	return termsafe.String(s)
 }
 
-// byName runs a hibd command that takes a machine name and replies with nothing.
 func (a *app) byName(ctx context.Context, cfg *config, cmd, done string, args []string) int {
 	names, ok := a.parse(a.flags(cmd), args, 1, cmd+" NAME")
 	if !ok || !a.checkNames(names[0]) {
@@ -267,7 +258,6 @@ func (a *app) byName(ctx context.Context, cfg *config, cmd, done string, args []
 	return 0
 }
 
-// exec runs ssh NAME.hib -- CMD in hib's place, so CMD gets the terminal, signals and exit code.
 func (a *app) exec(cfg *config, args []string) int {
 	if len(args) < 3 || args[1] != "--" {
 		fmt.Fprintln(a.stderr, "usage: hib exec NAME -- COMMAND [ARG...]")
@@ -331,7 +321,6 @@ func (a *app) bridgeCmd(ctx context.Context, cfg *config, args []string) int {
 	return a.bridge(ctx, cfg, name)
 }
 
-// checkNames reports whether names are all valid machine or image names, and explains if not.
 func (a *app) checkNames(names ...string) bool {
 	for _, n := range names {
 		if err := hibapi.CheckName(n); err != nil {
@@ -361,7 +350,6 @@ func (a *app) flags(cmd string) *flag.FlagSet {
 	return fl
 }
 
-// parse parses flags wherever they are among args, and wants exactly n other arguments.
 func (a *app) parse(fl *flag.FlagSet, args []string, n int, use string) ([]string, bool) {
 	var rest []string
 	for {
@@ -381,7 +369,6 @@ func (a *app) parse(fl *flag.FlagSet, args []string, n int, use string) ([]strin
 	return rest, true
 }
 
-// fail prints err, made safe for a terminal since it can quote hibd, and returns exit code 1.
 func (a *app) fail(err error) int {
 	fmt.Fprintf(a.stderr, "hib: %s\n", termsafe.String(err.Error()))
 	return 1

@@ -25,8 +25,7 @@ func (s *Store) EnsureFresh(ctx context.Context, reason Reason) (PublicAuth, err
 	if err != nil {
 		return PublicAuth{}, err
 	}
-	// Record an interrupted attempt before deciding whether another refresh is due.
-	// An active attempt must finish before applying the client throttle to its old expiry.
+
 	due := p.Attempt != nil
 	var t Tokens
 	if !due {
@@ -133,7 +132,7 @@ func (s *Store) refresh(ctx context.Context, p Profile, old Tokens) error {
 	defer cancel()
 	var wrote atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		// A write error can follow a partial request. Treat even that as possibly consumed.
+		// A write error can follow a partial request.
 		WroteRequest: func(httptrace.WroteRequestInfo) { wrote.Store(true) },
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.TokenURL, bytes.NewReader(body))
@@ -185,7 +184,7 @@ func (s *Store) refresh(ctx context.Context, p Profile, old Tokens) error {
 	if err != nil || updated.AccountID != p.AccountID {
 		return s.stuck(p, "the token endpoint returned a different account or invalid tokens: run hib connect codex")
 	}
-	// Once an answer has arrived, cancellation must not leave rotated credentials unpublished.
+
 	publishCtx, publishCancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer publishCancel()
 	if err := publishCtx.Err(); err != nil {
@@ -258,7 +257,7 @@ func (s *Store) backoff(p Profile, retryAfter string) error {
 
 func (s *Store) dead(p Profile, code string) error {
 	why := "the token endpoint refused the refresh token"
-	// Only known codes are diagnostic-safe. An unknown code could echo a credential.
+
 	if deadCode(code) {
 		why = termsafe.String(code)
 	}

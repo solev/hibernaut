@@ -20,20 +20,12 @@ import (
 const (
 	connectCodexUsage = "connect codex [-json]"
 
-	// codexBinary is the host's pinned codex, which vm/setup-host.sh installs.
-	codexBinary = "/usr/local/bin/codex"
-	// codexLoginPrefix starts the name of each login directory in the state directory, so the
-	// ones a crash left can be found.
+	codexBinary      = "/usr/local/bin/codex"
 	codexLoginPrefix = "codex-login-"
-	// codexLoginLock is held in the state directory while a login runs, so no one deletes its
-	// directory.
-	codexLoginLock = "codex-login.lock"
-	// maxCodexAuthFile bounds the login file codex login writes.
+	codexLoginLock   = "codex-login.lock"
 	maxCodexAuthFile = 1 << 20
 )
 
-// codexStore returns the Store that keeps the host's Codex login, with cfg's paths and the
-// App's test seams. Every part of hibd that needs the login uses one from here.
 func (a *App) codexStore(cfg config, logf func(format string, args ...any)) *codex.Store {
 	return codex.NewStore(codex.Config{
 		StateDir:  cfg.stateDir,
@@ -46,12 +38,10 @@ func (a *App) codexStore(cfg config, logf func(format string, args ...any)) *cod
 	})
 }
 
-// warnf prints a warning on stderr, made safe for a terminal.
 func (a *App) warnf(format string, args ...any) {
 	fmt.Fprintf(a.Stderr, "warning: %s\n", termsafe.String(fmt.Sprintf(format, args...)))
 }
 
-// notef prints a line on stderr, made safe for a terminal.
 func (a *App) notef(format string, args ...any) {
 	fmt.Fprintf(a.Stderr, "%s\n", termsafe.String(fmt.Sprintf(format, args...)))
 }
@@ -63,8 +53,6 @@ func (a *App) codexBin() string {
 	return codexBinary
 }
 
-// connectCodex runs Codex's device login on the host, keeps the login, and writes the machine
-// setup into running machines.
 func (a *App) connectCodex(ctx context.Context, args []string) int {
 	fl := a.flags("connect codex")
 	asJSON := fl.Bool("json", false, "print JSON")
@@ -120,8 +108,6 @@ func (a *App) loginCodex(ctx context.Context) (codex.Profile, error) {
 	return p, nil
 }
 
-// runCodexLogin runs codex login in dir, with Codex's output going to stderr, and returns the
-// tokens it saved.
 func (a *App) runCodexLogin(ctx context.Context, dir string) (codex.Tokens, error) {
 	bin := a.codexBin()
 	if err := checkCodexVersion(ctx, bin, dir); err != nil {
@@ -146,7 +132,6 @@ func (a *App) runCodexLogin(ctx context.Context, dir string) (codex.Tokens, erro
 	return codex.ParseAuthFile(data)
 }
 
-// checkCodexVersion fails unless bin is the pinned Codex. It runs bin in home, as a login does.
 func checkCodexVersion(ctx context.Context, bin, home string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -163,8 +148,6 @@ func checkCodexVersion(ctx context.Context, bin, home string) error {
 	return nil
 }
 
-// codexCommand runs codex with nothing from hibd's environment: HOME and CODEX_HOME are home.
-// It stops codex when ctx is done.
 func codexCommand(ctx context.Context, bin, home string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = []string{"HOME=" + home, "CODEX_HOME=" + home, "PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
@@ -192,8 +175,6 @@ func readCodexAuth(path string) ([]byte, error) {
 	return data, nil
 }
 
-// lockCodexLogins takes the login lock in stateDir without waiting. ok is false if a login holds
-// it.
 func lockCodexLogins(stateDir string) (unlock func(), ok bool, err error) {
 	f, err := os.OpenFile(filepath.Join(stateDir, codexLoginLock), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -212,7 +193,6 @@ func lockCodexLogins(stateDir string) (unlock func(), ok bool, err error) {
 	}, true, nil
 }
 
-// removeCodexLogins deletes the login directories in stateDir. The caller holds the login lock.
 func removeCodexLogins(stateDir string, logf func(format string, args ...any)) {
 	found, err := filepath.Glob(filepath.Join(stateDir, codexLoginPrefix+"*"))
 	if err != nil {
@@ -228,8 +208,6 @@ func removeCodexLogins(stateDir string, logf func(format string, args ...any)) {
 	}
 }
 
-// removeLeftoverCodexLogins deletes the login directories a crash left, unless a login is
-// running.
 func removeLeftoverCodexLogins(stateDir string, logf func(format string, args ...any)) {
 	unlock, ok, err := lockCodexLogins(stateDir)
 	if err != nil {
@@ -243,7 +221,6 @@ func removeLeftoverCodexLogins(stateDir string, logf func(format string, args ..
 	removeCodexLogins(stateDir, logf)
 }
 
-// limitedBuffer keeps the first max bytes written to it, and drops the rest.
 type limitedBuffer struct {
 	data []byte
 	max  int

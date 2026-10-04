@@ -34,12 +34,6 @@ import (
 	"github.com/solev/hibernaut/internal/proxy"
 )
 
-// These tests run the real egress proxy, swap and vault, with the token endpoint in front of a
-// real Store, against fake chatgpt.com and auth.openai.com. A small CONNECT proxy hands each
-// tunnel to the egress server, the way the host's iptables hook hands it a machine's
-// connection. It refuses every other host, so nothing reaches the internet.
-
-// The public addresses the CONNECT front reports as each tunnel's original destination.
 var fakeSites = map[string]netip.AddrPort{
 	"chatgpt.com:443":     netip.MustParseAddrPort("104.18.32.47:443"),
 	"auth.openai.com:443": netip.MustParseAddrPort("104.18.33.47:443"),
@@ -67,8 +61,6 @@ type codexHarness struct {
 	logs   bytes.Buffer
 }
 
-// newCodexHarness starts the proxy. refresher picks what the token endpoint refreshes
-// through. Nil means the Store.
 func newCodexHarness(t *testing.T, refresher func(*codex.Store) codex.Refresher) *codexHarness {
 	t.Helper()
 	h := &codexHarness{t: t}
@@ -169,7 +161,6 @@ func newHarnessCA(t *testing.T, name string) *ca.CA {
 	return c
 }
 
-// startSite serves h over TLS as host, with a certificate siteCA signs, and returns its address.
 func startSite(t *testing.T, siteCA *ca.CA, host string, h http.Handler) string {
 	t.Helper()
 	cert, err := siteCA.Leaf(host)
@@ -197,7 +188,6 @@ func (h *codexHarness) audit(e audit.Entry) error {
 	return nil
 }
 
-// auditCount counts the audit entries for secret on site.
 func (h *codexHarness) auditCount(site, secret string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -210,13 +200,11 @@ func (h *codexHarness) auditCount(site, secret string) int {
 	return n
 }
 
-// realTokens returns every real token the harness's login has had.
 func (h *codexHarness) realTokens() []string {
 	latest := h.tokenServer.Tokens()
 	return []string{h.tokens.AccessToken, h.tokens.RefreshToken, h.tokens.IDToken, latest.AccessToken, latest.RefreshToken, latest.IDToken}
 }
 
-// wantNoRealToken fails if any of outputs holds a real token. It never prints one.
 func (h *codexHarness) wantNoRealToken(what string, outputs ...[]byte) {
 	h.t.Helper()
 	for _, token := range h.realTokens() {
@@ -229,7 +217,6 @@ func (h *codexHarness) wantNoRealToken(what string, outputs ...[]byte) {
 	}
 }
 
-// client returns an HTTP client that goes through the CONNECT front and trusts the proxy's CA.
 func (h *codexHarness) client() *http.Client {
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(h.hibCA.CertPEM())
@@ -240,7 +227,6 @@ func (h *codexHarness) client() *http.Client {
 	}}
 }
 
-// connectFront is a CONNECT proxy that hands the tunnels to fake sites to the egress server.
 type connectFront struct {
 	listener net.Listener
 	tunnels  *tunnelListener
@@ -316,7 +302,6 @@ func (f *connectFront) refusedHosts() map[string]int {
 	return out
 }
 
-// tunnelConn is a CONNECT tunnel. Its reader holds anything read past the CONNECT request.
 type tunnelConn struct {
 	net.Conn
 	reader *bufio.Reader
@@ -325,7 +310,6 @@ type tunnelConn struct {
 
 func (c *tunnelConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
-// tunnelListener gives the egress server the tunnels.
 type tunnelListener struct {
 	conns  chan net.Conn
 	closed chan struct{}
@@ -358,11 +342,9 @@ func (l *tunnelListener) Close() error {
 
 func (l *tunnelListener) Addr() net.Addr { return l.addr }
 
-// fakeChatGPT is the least of chatgpt.com that codex exec needs. Codex first checks the
-// account's workspace routing on codexAccountsPath. The model stream is on codexResponsesPath,
-// as a WebSocket or, as a fallback, a POST answered with Server-Sent Events. Each turn answers
-// OK. Both paths answer 401 to an unknown token, and to a token revoked on that path, every
-// time. Every other path is 404, never 401, so Codex carries on without it.
+// Codex first checks the account's workspace routing on codexAccountsPath.
+// The model stream is on codexResponsesPath,
+// as a WebSocket or, as a fallback, a POST answered with Server-Sent Events.
 type fakeChatGPT struct {
 	account  string
 	accepted func() string
@@ -375,7 +357,6 @@ type fakeChatGPT struct {
 	paths          map[string]int
 }
 
-// revoke makes the fake reject token on paths, or on both of its paths when none are given.
 func (f *fakeChatGPT) revoke(token string, paths ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -388,7 +369,6 @@ func (f *fakeChatGPT) revoke(token string, paths ...string) {
 	}
 }
 
-// allowed records r, and reports whether it holds the accepted access token.
 func (f *fakeChatGPT) allowed(r *http.Request) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -431,8 +411,6 @@ func (f *fakeChatGPT) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveAccounts says the account has no workspace routing of its own, so Codex keeps
-// chatgpt.com.
 func (f *fakeChatGPT) serveAccounts(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]string{{
@@ -446,8 +424,6 @@ func (f *fakeChatGPT) stream(kind string) {
 	f.streams = append(f.streams, kind)
 }
 
-// turnEvents are the events of a turn that answers OK. A warm-up request (generate false)
-// gets no output.
 func turnEvents(generate bool) [][2]string {
 	events := [][2]string{{"response.created", `{"type":"response.created","response":{"id":"resp-1"}}`}}
 	if generate {
@@ -504,14 +480,11 @@ func (f *fakeChatGPT) seen() (authorizations []string, rejections int, streams [
 	return append([]string(nil), f.authorizations...), f.rejections, append([]string(nil), f.streams...), paths
 }
 
-// codexRun is a run of the pinned codex through the harness, in its own HOME.
 type codexRun struct {
 	bin, home string
 	env       []string
 }
 
-// newCodexRun finds the pinned codex and gives it a HOME with the placeholder login and the
-// image's config.toml. It skips the test without it, unless HIB_REQUIRE_CODEX=1.
 func (h *codexHarness) newCodexRun() *codexRun {
 	h.t.Helper()
 	home := h.t.TempDir()
@@ -576,7 +549,6 @@ func (r *codexRun) run(timeout time.Duration, args ...string) (stdout, stderr []
 	return out.Bytes(), errOut.Bytes(), err
 }
 
-// files returns the contents of every file under the run's HOME.
 func (r *codexRun) files(t *testing.T) []byte {
 	t.Helper()
 	var all bytes.Buffer
@@ -594,7 +566,6 @@ func (r *codexRun) files(t *testing.T) []byte {
 	return all.Bytes()
 }
 
-// exec runs codex exec and checks that it printed OK and that no real token reached it.
 func (h *codexHarness) exec(run *codexRun) {
 	h.t.Helper()
 	start := time.Now()
@@ -608,7 +579,6 @@ func (h *codexHarness) exec(run *codexRun) {
 	}
 }
 
-// redact replaces the real tokens in b, so a failure can print Codex's output.
 func (h *codexHarness) redact(b []byte) []byte {
 	for _, token := range h.realTokens() {
 		b = bytes.ReplaceAll(b, []byte(token), []byte("[real token]"))
@@ -616,8 +586,6 @@ func (h *codexHarness) redact(b []byte) []byte {
 	return b
 }
 
-// wantOnlyRealAccessTokens checks that every Authorization fake chatgpt.com saw holds a real
-// access token from tokens.
 func (h *codexHarness) wantOnlyRealAccessTokens(authorizations []string, tokens ...string) {
 	h.t.Helper()
 	if len(authorizations) == 0 {
@@ -670,8 +638,6 @@ func TestCodexRefreshesThroughTheTokenEndpoint(t *testing.T) {
 	})
 }
 
-// testCodexRefresh runs codex exec with its access token revoked on paths of fake chatgpt.com,
-// or on all of them when none are given.
 func testCodexRefresh(t *testing.T, paths ...string) {
 	h := newCodexHarness(t, nil)
 	run := h.newCodexRun()
@@ -760,8 +726,6 @@ func TestConcurrentRefreshesMakeOneUpstreamRefresh(t *testing.T) {
 	}
 }
 
-// leakyRefresher is the Store, except that EnsureFresh fails with err, or else answers with the
-// real tokens, as if it leaked them.
 type leakyRefresher struct {
 	*codex.Store
 	real codex.Tokens

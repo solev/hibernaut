@@ -16,13 +16,9 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-// sshArgs returns ssh's arguments to run hibd with args on the host. They keep the user's ssh
-// config from adding anything to the connection that could get in the way: forwardings, a
-// local command printing into the bridge, or a remote command of its own.
 func (c *config) sshArgs(args ...string) []string {
 	out := c.sshBase()
-	// The host's shell splits the command on spaces. Every arg is a checked name, a flag, or a
-	// time.Duration's String, which has only digits, letters, '.' and '-'.
+	// The host's shell splits the command on spaces.
 	return append(append(out, "--", c.Host, "hibd"), args...)
 }
 
@@ -61,7 +57,6 @@ func (c *config) sudoHibdArgs(args ...string) ([]string, error) {
 	return append(append(c.sshBase(), "--", c.Host), cmd), nil
 }
 
-// runCommand returns a runFunc for program.
 func runCommand(program string) runFunc {
 	return func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 		cmd := exec.CommandContext(ctx, program, args...)
@@ -99,9 +94,6 @@ func runAz(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// remote runs hibd with args, which end in --json, on the host and decodes its reply. ssh's and
-// hibd's messages go to stderr, made safe for a terminal. If ssh can't reach the host and it's
-// an Azure VM that isn't running, remote starts it, waits for it and tries again.
 func (a *app) remote(ctx context.Context, cfg *config, timeout time.Duration, args ...string) (hibapi.Response, error) {
 	return a.call(ctx, cfg, timeout, cfg.sshArgs(args...), callOptions{mayWake: true})
 }
@@ -114,13 +106,9 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 	return a.call(ctx, cfg, timeout, sshArgs, callOptions{stdin: stdin, sudo: true, mayWake: true})
 }
 
-// callOptions is how call runs hibd.
 type callOptions struct {
-	// stdin is hibd's input, if not nil.
-	stdin []byte
-	// sudo means sshArgs run hibd through sudo -n, so a failure with no output is sudo's.
-	sudo bool
-	// mayWake lets call start an Azure VM that isn't running, then try again.
+	stdin   []byte
+	sudo    bool
 	mayWake bool
 }
 
@@ -166,7 +154,6 @@ func (a *app) runSSH(ctx context.Context, timeout time.Duration, args []string, 
 	return code, err
 }
 
-// exitError explains an exit code from ssh running hibd, other than hibd's own 0 and 1.
 func exitError(cfg *config, code int) error {
 	switch code {
 	case 255:
@@ -182,12 +169,8 @@ const (
 	powerStateQuery = "instanceView.statuses[?starts_with(code,'PowerState')].displayStatus | [0]"
 )
 
-// errAwake means the host's VM is running, so being asleep isn't why ssh failed.
 var errAwake = errors.New("the host is awake")
 
-// wake starts the host's Azure VM unless it's running, and waits until hibd says E2B is ready.
-// It returns errAwake if the VM is running, so being asleep isn't why ssh failed, or if there's
-// no VM to start.
 func (a *app) wake(ctx context.Context, cfg *config) error {
 	if cfg.Azure == nil {
 		return errAwake
@@ -242,7 +225,6 @@ func (a *app) powerState(ctx context.Context, vm *azureVM) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// sleep waits a.wakePoll, unless wake's time is up.
 func (a *app) sleep(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -262,8 +244,6 @@ func wakeError(ctx context.Context, err error) error {
 	return err
 }
 
-// bridge connects stdin and stdout to machine name's SSH server, through hibd bridge on the
-// host. hibd first says the machine's host key, which bridge pins for ssh to check.
 func (a *app) bridge(ctx context.Context, cfg *config, name string) int {
 	for woke := false; ; woke = true {
 		code, err := a.bridgeOnce(ctx, cfg, name)
@@ -281,7 +261,7 @@ func (a *app) bridge(ctx context.Context, cfg *config, name string) int {
 		}
 		switch {
 		case code == 1:
-			// hibd said why.
+
 		case code == 0 && errors.Is(err, io.EOF):
 			a.fail(errors.New("hibd closed the bridge before it was up"))
 		case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
@@ -293,8 +273,6 @@ func (a *app) bridge(ctx context.Context, cfg *config, name string) int {
 	}
 }
 
-// bridgeOnce runs one hibd bridge. It reads nothing from stdin until the bridge is up, so it can
-// run again after waking the host. err is nil if the bridge came up.
 func (a *app) bridgeOnce(ctx context.Context, cfg *config, name string) (int, error) {
 	// ssh gets the pipes' far ends as its stdin and stdout, so it ends without waiting on us.
 	inR, inW, err := os.Pipe()

@@ -167,11 +167,9 @@ func TestProxyAnswersCodexRefreshWithOneStore(t *testing.T) {
 	}
 }
 
-// fakeHook stands in for the iptables rule and records its calls.
 type fakeHook struct {
 	ensureErr, keepErr, removeErr error
-	// kept is closed when Keep starts keeping the hook.
-	kept chan struct{}
+	kept                          chan struct{}
 
 	mu    sync.Mutex
 	calls []string
@@ -215,8 +213,6 @@ func (h *fakeHook) Calls() []string {
 	return slices.Clone(h.calls)
 }
 
-// testListener is a loopback listener that records Close, and fails Accept with acceptErr if
-// it's set.
 type testListener struct {
 	net.Listener
 	acceptErr error
@@ -235,9 +231,6 @@ func (l *testListener) Close() error {
 	return l.Listener.Close()
 }
 
-// proxyApp returns an App, run as root, whose hibd proxy has a fresh CA and state directory, an
-// empty fake engine, hook as its hook, and listener as its port. env is the App's environment,
-// for tests to change. listen records the address hibd proxy asked for.
 func proxyApp(t *testing.T, hook *fakeHook) (a *App, env map[string]string, listener *testListener, listen *[]string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -434,8 +427,6 @@ func TestProxyUnhookRemovesTheHookWithoutConfiguration(t *testing.T) {
 	}
 }
 
-// assertServes checks that the proxy accepts connections on addr. The proxy closes this one,
-// because it doesn't come from a machine.
 func assertServes(t *testing.T, addr string) {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)

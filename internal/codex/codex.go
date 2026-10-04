@@ -1,6 +1,4 @@
-// Package codex keeps the host's Codex login on a ChatGPT plan. The real tokens live in the
-// vault, the profile beside it, and machines get a login file with placeholders. Only a Store
-// changes the login, and only a Store talks to OpenAI.
+// Package codex keeps the host's Codex login on a ChatGPT plan.
 package codex
 
 import (
@@ -13,8 +11,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
-// Version is the Codex release the image and the host install. images/dev/versions pins the
-// same one.
+// Version is the Codex release the image and the host install.
 const Version = "0.160.0"
 
 const (
@@ -44,8 +41,7 @@ const (
 // AccessSites are where the access token is swapped.
 func AccessSites() []string { return []string{"chatgpt.com"} }
 
-// AuthSites are the refresh and ID tokens' sites. Those secrets are scrub-only, so binding them
-// intercepts the site for the token endpoint without swapping anything there.
+// AuthSites are the refresh and ID tokens' sites.
 func AuthSites() []string { return []string{TokenSite} }
 
 // Managed reports whether name is a secret this package owns.
@@ -89,7 +85,7 @@ func (t Tokens) GoString() string { return t.String() }
 // Format prints a redacted marker.
 func (t Tokens) Format(s fmt.State, verb rune) { fmt.Fprint(s, t.String()) }
 
-// MarshalJSON always refuses, so tokens never reach a file or a reply by mistake.
+// MarshalJSON always refuses.
 func (Tokens) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("codex tokens cannot be marshaled")
 }
@@ -169,8 +165,8 @@ type Config struct {
 	StateDir string
 	// VaultPath and KeyPath are the vault and its key.
 	VaultPath, KeyPath string
-	// TokenURL and Client are for tests only. Empty means TokenURL, and nil means a client
-	// with a 30 second timeout that refuses redirects.
+	// TokenURL and Client are for tests only. Empty means TokenURL. The client always has a
+	// 30 second timeout and refuses redirects.
 	TokenURL string
 	Client   *http.Client
 	Now      func() time.Time
@@ -219,7 +215,7 @@ func (o OldValue) GoString() string { return o.String() }
 // Format names the secret and redacts the value.
 func (o OldValue) Format(s fmt.State, verb rune) { fmt.Fprint(s, o.String()) }
 
-// MarshalJSON always refuses, so old values never reach a file or a reply by mistake.
+// MarshalJSON always refuses.
 func (OldValue) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("codex old values cannot be marshaled")
 }

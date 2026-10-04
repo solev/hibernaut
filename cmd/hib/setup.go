@@ -21,7 +21,6 @@ import (
 	"github.com/solev/hibernaut/internal/version"
 )
 
-// config is what hib init saves in config.json.
 type config struct {
 	// Host is the host's SSH destination, USER@HOST or a Host from ~/.ssh/config.
 	Host string `json:"host"`
@@ -32,8 +31,7 @@ type config struct {
 	// SSHConfig is the ssh config that includes hib's, if it isn't ~/.ssh/config.
 	SSHConfig string `json:"sshConfig,omitempty"`
 
-	dir string
-	// prompt lets ssh ask whether to trust the host's key, for hib init.
+	dir    string
 	prompt bool
 }
 
@@ -45,9 +43,7 @@ type azureVM struct {
 var (
 	hostRE  = regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$`)
 	azureRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._()-]{0,89}$`)
-	// Paths go into ssh's config, and the ProxyCommand's through a shell too, so they may only
-	// use characters that neither treats specially.
-	pathRE = regexp.MustCompile(`^/[A-Za-z0-9 ._/+,:@=~-]*$`)
+	pathRE  = regexp.MustCompile(`^/[A-Za-z0-9 ._/+,:@=~-]*$`)
 )
 
 func (c *config) validate() error {
@@ -102,8 +98,6 @@ func loadConfig(dir string) (*config, error) {
 	return &c, nil
 }
 
-// checkPrivate makes sure only this user can change path: what's there decides where hib
-// connects and which host keys ssh trusts.
 func checkPrivate(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -238,7 +232,6 @@ func (a *app) checkOpenSSH(ctx context.Context) error {
 	return nil
 }
 
-// save writes config.json, the ssh config for *.hib and the known_hosts directory.
 func (c *config) save(hib string) error {
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return err
@@ -263,7 +256,6 @@ func (c *config) save(hib string) error {
 	return os.Chmod(known, 0o700)
 }
 
-// sshConfig is the ssh config for *.hib. It comes first in ~/.ssh/config, so its settings win.
 func (c *config) sshConfig(hib string) string {
 	var b strings.Builder
 	b.WriteString("# Written by hib init, which rewrites it. ssh NAME.hib reaches machine NAME through hib.\n")
@@ -271,7 +263,7 @@ func (c *config) sshConfig(hib string) string {
 	// ssh 9.6+ refuses host names with shell metacharacters, so '%h' stays one word.
 	fmt.Fprintf(&b, "  ProxyCommand '%s' -config '%s' bridge '%%h'\n", hib, c.dir)
 	b.WriteString("  User user\n")
-	// hib bridge pins each machine's host key, from hibd, before ssh checks it.
+
 	fmt.Fprintf(&b, "  UserKnownHostsFile \"%s/known_hosts/%%h\"\n", c.dir)
 	b.WriteString("  GlobalKnownHostsFile /dev/null\n")
 	b.WriteString("  StrictHostKeyChecking yes\n")
@@ -292,9 +284,6 @@ func (c *config) sshConfig(hib string) string {
 	return b.String()
 }
 
-// addInclude puts a line including file at the top of the ssh config at path, unless it has
-// one already, and reports whether it did. It keeps the rest of the file and its mode, and
-// writes through a symlink.
 func addInclude(path, file string) (bool, error) {
 	line := `Include "` + file + `"`
 	if real, err := filepath.EvalSymlinks(path); err == nil {
@@ -330,7 +319,6 @@ func addInclude(path, file string) (bool, error) {
 	return true, atomicfile.WriteFile(path, append([]byte(head), data...), mode)
 }
 
-// pin saves machine name's host key where ssh looks for it.
 func (c *config) pin(name string, key ssh.PublicKey) error {
 	dir := filepath.Join(c.dir, "known_hosts")
 	if err := checkPrivate(dir); err != nil {

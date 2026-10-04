@@ -21,8 +21,6 @@ import (
 
 var t0 = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// world is a fake host: an engine, the CPU time each machine has used, and the command lines
-// of the processes running in each machine.
 type world struct {
 	t *testing.T
 	e *fake.Engine
@@ -49,7 +47,6 @@ func newWorld(t *testing.T, agents ...string) *world {
 	return v
 }
 
-// watcher returns a watcher of e on this world's clock, CPU counters and log.
 func (v *world) watcher(e engine.Engine, agents ...string) *busy.Watcher {
 	v.t.Helper()
 	w, err := busy.New(busy.Config{Engine: e, CPU: v.readCPU, Agents: agents, Now: v.Now, Logf: v.logf})
@@ -65,14 +62,12 @@ func (v *world) Now() time.Time {
 	return v.now
 }
 
-// later moves the clock on by d.
 func (v *world) later(d time.Duration) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.now = v.now.Add(d)
 }
 
-// use makes machine id use d more CPU time.
 func (v *world) use(id string, d time.Duration) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -91,7 +86,6 @@ func (v *world) readCPU(id string) (time.Duration, error) {
 	return used, err
 }
 
-// exec plays pgrep -f in the machine: Go's regexps are close enough to POSIX extended ones.
 func (v *world) exec(_ context.Context, m engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -118,8 +112,6 @@ func (v *world) logf(format string, args ...any) {
 	v.logs = append(v.logs, fmt.Sprintf(format, args...))
 }
 
-// machine adds a running machine hibd made, called name, with idle time idle ("" for none
-// kept), that pauses in left.
 func (v *world) machine(name, idle string, left time.Duration) string {
 	md := map[string]string{"hib.name": name, "hib.image": "dev"}
 	if idle != "" {
@@ -148,7 +140,6 @@ func (v *world) get(id string) engine.Machine {
 
 func (v *world) endAt(id string) time.Time { return v.get(id).EndAt }
 
-// count returns how often id is in ids.
 func (v *world) count(ids *[]string, id string) int {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -161,7 +152,6 @@ func (v *world) count(ids *[]string, id string) int {
 	return n
 }
 
-// logged returns how many log lines contain s.
 func (v *world) logged(s string) int {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -177,9 +167,9 @@ func (v *world) logged(s string) int {
 func TestCPUKeepsMachineRunning(t *testing.T) {
 	v := newWorld(t)
 	id := v.machine("app", "10m0s", time.Minute)
-	v.tick() // The first look only takes a reading.
+	v.tick()
 	v.later(15 * time.Second)
-	v.use(id, 3*time.Second) // 20% of a CPU
+	v.use(id, 3*time.Second)
 	v.tick()
 	if got, want := v.endAt(id), v.Now().Add(10*time.Minute); !got.Equal(want) {
 		t.Errorf("EndAt = %v, want the machine's idle time from now, %v", got, want)
@@ -299,7 +289,6 @@ func TestNeverShortens(t *testing.T) {
 func TestCPUCounterRestarts(t *testing.T) {
 	for name, restart := range map[string]func(v *world, id string){
 		"resumed": func(v *world, id string) {
-			// A resume starts a new run, whose counter starts again.
 			m := v.get(id)
 			m.StartedAt = v.Now()
 			v.e.Add(m)
@@ -308,7 +297,6 @@ func TestCPUCounterRestarts(t *testing.T) {
 			v.mu.Unlock()
 		},
 		"resumed, new counter higher": func(v *world, id string) {
-			// Differences between two runs' counters mean nothing, even if they look busy.
 			m := v.get(id)
 			m.StartedAt = v.Now()
 			v.e.Add(m)
@@ -401,7 +389,6 @@ func TestAgentProblemLoggedOnce(t *testing.T) {
 	}
 }
 
-// hanging is an engine whose Exec in machine id hangs until release is closed.
 type hanging struct {
 	engine.Engine
 	id      string
@@ -442,7 +429,6 @@ func TestHungMachineHoldsUpNoOther(t *testing.T) {
 	}
 }
 
-// guard fails the test on any call about a machine that was paused when last listed.
 type guard struct {
 	engine.Engine
 	t      *testing.T
@@ -527,7 +513,7 @@ func TestNeverTouchesPausedMachines(t *testing.T) {
 	if err := v.e.Pause(t.Context(), sleepy); err != nil {
 		t.Fatal(err)
 	}
-	// late is paused between being listed and being looked at, while it's busy.
+
 	late := v.machine("late", "10m0s", time.Minute)
 	for _, id := range []string{app, sleepy, late} {
 		v.procs[id] = codex
@@ -597,7 +583,7 @@ func TestCgroupCPU(t *testing.T) {
 	if got, err := cpu("abc123"); err != nil || got != 1500*time.Millisecond {
 		t.Errorf(`cpu("abc123") = %v, %v; want 1.5s`, got, err)
 	}
-	// A finished run's cgroup may linger: it doesn't change, so it can be added.
+
 	write("sbx-abc123-run0", "usage_usec 250\n")
 	if got, err := cpu("abc123"); err != nil || got != 1500*time.Millisecond+250*time.Microsecond {
 		t.Errorf(`cpu("abc123") = %v, %v; want 1.50025s`, got, err)

@@ -34,8 +34,6 @@ import (
 	"github.com/solev/hibernaut/internal/version"
 )
 
-// newApp returns an app with its own state directory and authorized_keys file, and no config
-// file.
 func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	state := t.TempDir()
@@ -68,7 +66,6 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 	}, &out, &errOut
 }
 
-// roomy is a host with room for three dev machines, and full one with room for none.
 var (
 	roomy = room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 3125, DiskFree: 80 << 30}
 	full  = room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 53, DiskFree: 80 << 30}
@@ -87,7 +84,6 @@ func newKey(t *testing.T) ssh.PublicKey {
 	return key
 }
 
-// newEngine returns a fake engine whose machines answer machine-init with hostKey.
 func newEngine(hostKey ssh.PublicKey, opts ...fake.Option) *fake.Engine {
 	return fake.New(append([]fake.Option{
 		fake.WithTemplates(images.Template("dev")),
@@ -100,7 +96,6 @@ func newEngine(hostKey ssh.PublicKey, opts ...fake.Option) *fake.Engine {
 	}, opts...)...)
 }
 
-// runJSON runs a command that prints JSON and decodes what it printed.
 func runJSON(t *testing.T, a *App, out *bytes.Buffer, args ...string) (int, hibapi.Response, error) {
 	t.Helper()
 	out.Reset()
@@ -429,7 +424,6 @@ func TestBridgeUnknownMachine(t *testing.T) {
 	}
 }
 
-// webAndOld returns an app whose host runs web, and has old paused.
 func webAndOld(t *testing.T) (*fake.Engine, *App, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	e := newEngine(newKey(t), fake.WithDialer(func(context.Context, engine.Machine, int) (net.Conn, error) {
@@ -448,7 +442,6 @@ func webAndOld(t *testing.T) (*fake.Engine, *App, *bytes.Buffer, *bytes.Buffer) 
 	return e, a, out, errOut
 }
 
-// wantNoRoom checks that a command failed with the message for a full host.
 func wantNoRoom(t *testing.T, what string, code int, msg, name string) {
 	t.Helper()
 	if code != 1 || !strings.Contains(msg, `no room on the host for "`+name+`"`) || !strings.Contains(msg, "Running now: web.") ||
@@ -464,8 +457,6 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// wantUntouched checks that web still runs and old is still paused, and that there's no other
-// machine.
 func wantUntouched(t *testing.T, e *fake.Engine) {
 	t.Helper()
 	ms, err := e.List(t.Context(), engine.ListOptions{})
@@ -490,15 +481,12 @@ func TestHostFull(t *testing.T) {
 	wantNoRoom(t, "bridge old", code, errOut.String(), "old")
 	wantUntouched(t, e)
 
-	// A running machine needs no more room.
 	errOut.Reset()
 	if code := a.Run(t.Context(), []string{"bridge", "web"}); code != 0 {
 		t.Errorf("bridge web = exit %d, %s; want it to connect", code, errOut)
 	}
 }
 
-// refusing is an engine that refuses to start or resume machines, as E2B does when its host's
-// memory runs out.
 type refusing struct{ *fake.Engine }
 
 const placeErr = "E2B returned 500: Failed to place sandbox, please retry"
@@ -512,8 +500,6 @@ func (refusing) DialWebSocket(context.Context, string, int, time.Duration) (net.
 }
 
 func TestHostFullAfterTheCheck(t *testing.T) {
-	// Another start can take the room between hibd's check and E2B's start. hibd then checks
-	// again.
 	e, a, out, errOut := webAndOld(t)
 	a.NewEngine = func() (engine.Engine, error) { return refusing{e}, nil }
 
@@ -525,7 +511,6 @@ func TestHostFullAfterTheCheck(t *testing.T) {
 	code = a.Run(t.Context(), []string{"bridge", "old"})
 	wantNoRoom(t, "bridge old", code, errOut.String(), "old")
 
-	// If there's room after all, E2B refused for some other reason.
 	a.ReadRoom = readings(roomy)
 	if code, _, err := runJSON(t, a, out, "new", "app", "-json"); code != 1 || err == nil || !strings.Contains(err.Error(), placeErr) {
 		t.Errorf("new app with room = %d, %v; want E2B's error", code, err)
@@ -533,7 +518,6 @@ func TestHostFullAfterTheCheck(t *testing.T) {
 	wantUntouched(t, e)
 }
 
-// timingOut is an engine whose machine id pauses on its timeout just after hibd lists it.
 type timingOut struct {
 	*fake.Engine
 	id string
@@ -563,7 +547,6 @@ func TestHostFullAsAMachinePauses(t *testing.T) {
 	}
 }
 
-// readings returns a reader that returns hs in turn, and then the last one again and again.
 func readings(hs ...room.Host) func() (room.Host, error) {
 	return func() (room.Host, error) {
 		h := hs[0]
@@ -574,7 +557,6 @@ func readings(hs ...room.Host) func() (room.Host, error) {
 	}
 }
 
-// unreachable is an engine whose machines resume, but don't answer on their SSH port.
 type unreachable struct{ *fake.Engine }
 
 func (u unreachable) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
@@ -587,8 +569,6 @@ func (u unreachable) DialWebSocket(ctx context.Context, id string, port int, tim
 }
 
 func TestResumedButUnreachable(t *testing.T) {
-	// Once old resumes, it holds its own memory, so the host can look full. That isn't why
-	// hibd couldn't connect.
 	e, a, _, errOut := webAndOld(t)
 	a.NewEngine = func() (engine.Engine, error) { return unreachable{e}, nil }
 	a.ReadRoom = readings(roomy, full)
@@ -759,7 +739,7 @@ func TestQuiescing(t *testing.T) {
 	if code := a.Run(t.Context(), []string{"bridge", "app"}); code != 1 || !strings.Contains(errOut.String(), "going to sleep") {
 		t.Errorf("bridge while quiescing: exit %d, stderr %q", code, errOut)
 	}
-	// Getting ready to sleep pauses machines, and anything else that doesn't start one works.
+
 	for _, args := range [][]string{{"ls", "-json"}, {"pause", "app", "-json"}, {"rm", "app", "-json"}} {
 		if code, _, err := runJSON(t, a, out, args...); code != 0 || err != nil {
 			t.Errorf("%q while quiescing: exit %d, %v", args, code, err)
@@ -777,7 +757,6 @@ func TestQuiescing(t *testing.T) {
 	}
 }
 
-// syncBuffer is a bytes.Buffer safe for concurrent use.
 type syncBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -810,7 +789,6 @@ func testCAPEM(t *testing.T) []byte {
 	return caPEM
 }
 
-// startDaemon runs a's daemon, looking every 10ms, until stop is called or the test ends.
 func startDaemon(t *testing.T, a *App) (logs *syncBuffer, stop func()) {
 	t.Helper()
 	logs = &syncBuffer{}
@@ -836,7 +814,6 @@ func startDaemon(t *testing.T, a *App) (logs *syncBuffer, stop func()) {
 	return logs, stop
 }
 
-// waitFor waits until ok, and fails the test if that takes more than 5 seconds.
 func waitFor(t *testing.T, logs *syncBuffer, what string, ok func() bool) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(5 * time.Millisecond) {
@@ -846,11 +823,10 @@ func waitFor(t *testing.T, logs *syncBuffer, what string, ok func() bool) {
 	}
 }
 
-// busyApp returns an App whose engine runs app1, a machine running a coding agent.
 func busyApp(t *testing.T) (*bounded, *App) {
 	t.Helper()
 	e := &bounded{Engine: fake.New(fake.WithExec(func(context.Context, engine.Machine, string, engine.ExecRequest) (engine.ExecResult, error) {
-		return engine.ExecResult{}, nil // a coding agent is running
+		return engine.ExecResult{}, nil
 	}))}
 	now := time.Now()
 	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: now, EndAt: now.Add(time.Minute),
@@ -904,7 +880,6 @@ func TestDaemon(t *testing.T) {
 	}
 	waitFor(t, logs, "the busy machine runs for its idle time", func() bool { return endAt().After(now.Add(9 * time.Minute)) })
 
-	// While the host gets ready to sleep, the daemon leaves machines alone.
 	if err := os.WriteFile(a.Getenv("HIBD_QUIESCING"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1031,7 +1006,6 @@ func TestDaemonKeepsBusyMachinesRunningWhileItCleansUp(t *testing.T) {
 }
 
 func TestDaemonBoundsCallsToE2B(t *testing.T) {
-	// A stuck call would stop the daemon for good, and busy machines would pause.
 	e, a := busyApp(t)
 	logs, stop := startDaemon(t, a)
 	waitFor(t, logs, "the daemon keeps the busy machine running and looks for removed ones", func() bool {
@@ -1043,7 +1017,6 @@ func TestDaemonBoundsCallsToE2B(t *testing.T) {
 	}
 }
 
-// bounded records the calls the daemon makes, and which have no deadline.
 type bounded struct {
 	*fake.Engine
 	mu        sync.Mutex

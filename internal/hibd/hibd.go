@@ -104,8 +104,6 @@ const (
 	dialTimeout   = 3 * time.Minute
 	buildTimeout  = time.Hour
 
-	// minIdle is the shortest idle time a machine may have, other than 0 (never pause). The
-	// daemon looks at machines every 15 s, and needs a few looks to see that one is busy.
 	minIdle = time.Minute
 )
 
@@ -127,8 +125,8 @@ type App struct {
 	EUID func() int
 	// NewCanary returns a canary secret for leakscan -canary. If it's nil, App uses random bytes.
 	NewCanary func() (string, error)
-	// GitHubAPI is the base URL of GitHub's API, for tests only. It's never a setting, so no
-	// config can send a token elsewhere. If it's "", App uses github.APIBase.
+	// GitHubAPI is the base URL of GitHub's API, for tests only.
+	// If it's "", App uses github.APIBase.
 	GitHubAPI string
 	// GitHubClient is the HTTP client for GitHub's API, for tests only. If it's nil, App uses
 	// github.NewClient().
@@ -137,8 +135,7 @@ type App struct {
 	// /usr/local/bin/codex.
 	CodexBin string
 	// CodexTokenURL is OpenAI's token endpoint, and CodexClient the HTTP client for it, for tests
-	// only. They're never settings, so no config can send a token elsewhere. Empty means the
-	// codex.Store's own.
+	// only. Empty means the codex.Store's own.
 	CodexTokenURL string
 	CodexClient   *http.Client
 	// ProxyHook sends machines' HTTPS traffic to hibd proxy, for tests only. If it's nil, App
@@ -147,8 +144,6 @@ type App struct {
 	// ProxyListen opens hibd proxy's port, for tests only. If it's nil, App uses net.Listen.
 	ProxyListen func(network, address string) (net.Listener, error)
 
-	// codexEvery is how often the daemon looks at the Codex login, for tests only. If it's 0,
-	// the daemon looks every minute.
 	codexEvery time.Duration
 }
 
@@ -273,7 +268,7 @@ func (a *App) ls(ctx context.Context, args []string) int {
 	switch {
 	case *asJSON:
 		r := hibapi.Response{Machines: ms}
-		// Without a reading, ls still lists the machines.
+
 		if rm, err := m.Room(ctx, images.Default); err == nil {
 			r.Room = &rm
 		}
@@ -294,7 +289,6 @@ func (a *App) ls(ctx context.Context, args []string) int {
 	return 0
 }
 
-// shortDuration formats d as "1m" or "720h" rather than "1m0s" or "720h0m0s".
 func shortDuration(d time.Duration) string {
 	sec := int64(d / time.Second)
 	return hibapi.FormatIdle(&sec)
@@ -307,7 +301,6 @@ func orDash(s string) string {
 	return s
 }
 
-// byName runs a command that takes a machine name and prints nothing.
 func (a *App) byName(ctx context.Context, cmd string, args []string, do func(*machines.Manager, context.Context, string) error) int {
 	fl := a.flags(cmd)
 	asJSON := fl.Bool("json", false, "print JSON")
@@ -328,8 +321,6 @@ func (a *App) byName(ctx context.Context, cmd string, args []string, do func(*ma
 	return 0
 }
 
-// bridge connects stdin and stdout to a machine's SSH server, after a header line that tells
-// hib the server's host key. It's what hib's ProxyCommand runs on the host.
 func (a *App) bridge(ctx context.Context, args []string) int {
 	fl := a.flags("bridge")
 	names, ok := a.parse(fl, args, 1, "bridge NAME")
@@ -353,7 +344,7 @@ func (a *App) bridge(ctx context.Context, args []string) int {
 	if err := hibapi.WriteBridgeHeader(a.Stdout, conn.HostKey); err != nil {
 		return a.fail(false, "bridge", err)
 	}
-	// Either side ending ends the bridge: SSH has nothing to say after a one-sided close.
+
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(conn, a.Stdin); done <- struct{}{} }()
 	go func() { io.Copy(a.Stdout, conn); done <- struct{}{} }()
@@ -402,7 +393,7 @@ func (a *App) image(ctx context.Context, args []string) int {
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
 	start := time.Now()
-	// The log has the output of the build's commands.
+
 	buildLog := termsafe.NewWriter(a.Stderr)
 	id, err := e.BuildTemplate(ctx, spec, buildLog)
 	buildLog.Flush()
@@ -417,7 +408,6 @@ func (a *App) image(ctx context.Context, args []string) int {
 	return 0
 }
 
-// ready waits until each of E2B's services answers its health check.
 func (a *App) ready(ctx context.Context, args []string) int {
 	fl := a.flags("ready")
 	timeout := fl.Duration("timeout", 5*time.Minute, "give up after this long")
@@ -512,19 +502,15 @@ func (a *App) clean(ctx context.Context, e engine.Engine, now time.Time, dryRun 
 	return h.Clean(ctx, now, dryRun, logf)
 }
 
-// sweepTimeout bounds a sweeper's look, cleanup included: a stuck one mustn't stop cleanups for
-// good.
 const sweepTimeout = 30 * time.Second
 
-// sweeper cleans up when the daemon starts, when it sees a machine was removed, and hourly, which
-// catches a machine removed between two looks.
 type sweeper struct {
 	engine  engine.Engine
 	clean   func(ctx context.Context, now time.Time) error
 	logf    func(format string, args ...any)
-	seen    map[string]bool // the machines at the last look
-	next    time.Time       // when to clean up next, unless a machine is removed first
-	problem string          // the last cleanup's error, as logged
+	seen    map[string]bool
+	next    time.Time
+	problem string
 }
 
 func (s *sweeper) look(ctx context.Context, now time.Time) {
@@ -532,7 +518,7 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	defer cancel()
 	machines, err := s.engine.List(lctx, engine.ListOptions{})
 	if err != nil {
-		return // the busy watcher reports it
+		return
 	}
 	seen := map[string]bool{}
 	for _, m := range machines {
@@ -566,8 +552,6 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	s.problem = problem
 }
 
-// daemon keeps busy machines running, cleans up, and keeps the Codex login fresh, until ctx is
-// done.
 func (a *App) daemon(ctx context.Context, args []string) int {
 	fl := a.flags("daemon")
 	every := fl.Duration("every", 15*time.Second, "how often to look at the machines")
@@ -609,7 +593,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	var wg sync.WaitGroup
 	refresher := &codexRefresher{store: a.codexStore(cfg, nil), logf: func(format string, args ...any) { logger.Printf("codex: "+format, args...) }}
 	wg.Go(func() { refresher.run(ctx, cmp.Or(a.codexEvery, time.Minute), a.awake) })
-	problem := "" // what kept the last look from happening, as logged
+	problem := ""
 	for {
 		now := ""
 		switch err := a.awake(); {
@@ -668,7 +652,6 @@ func (a *App) flags(cmd string) *flag.FlagSet {
 	return fl
 }
 
-// parse parses flags wherever they are among args, and wants exactly n other arguments.
 func (a *App) parse(fl *flag.FlagSet, args []string, n int, use string) ([]string, bool) {
 	rest, ok := a.parseAny(fl, args)
 	if !ok {
@@ -696,8 +679,6 @@ func (a *App) parseAny(fl *flag.FlagSet, args []string) ([]string, bool) {
 	return rest, true
 }
 
-// fail reports err, as JSON on stdout if asJSON, and returns exit code 1. Errors can quote
-// what a machine said, so they're made safe for a terminal.
 func (a *App) fail(asJSON bool, cmd string, err error) int {
 	msg := termsafe.String(err.Error())
 	if asJSON {
@@ -708,7 +689,6 @@ func (a *App) fail(asJSON bool, cmd string, err error) int {
 	return 1
 }
 
-// reply prints r as JSON. It returns exit code 0, or 1 if r is an error.
 func (a *App) reply(r hibapi.Response) int {
 	r.V = hibapi.Version
 	if err := json.NewEncoder(a.Stdout).Encode(r); err != nil {
@@ -721,11 +701,8 @@ func (a *App) reply(r hibapi.Response) int {
 	return 0
 }
 
-// errQuiescing means the host is getting ready to sleep (vm/lib/quiesce). Machines mustn't start
-// then: pause-all may have run already, and stopping E2B would lose them.
 var errQuiescing = errors.New("the host is going to sleep: try again in a few minutes, and hib will wake it")
 
-// awake returns errQuiescing while the host gets ready to sleep.
 func (a *App) awake() error {
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
@@ -745,7 +722,6 @@ func (a *App) manager() (*machines.Manager, error) {
 	return a.managerWithSetup(machines.Setup{})
 }
 
-// managerWithSetup returns a Manager that writes setup into new machines.
 func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) {
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
@@ -787,7 +763,6 @@ type config struct {
 	proxyPort      string
 }
 
-// loadConfig reads the env file, then lets environment variables override it.
 func loadConfig(getenv func(string) string) (config, error) {
 	cfg, err := loadSettings(getenv)
 	if err != nil {

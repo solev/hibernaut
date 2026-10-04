@@ -18,14 +18,10 @@ import (
 )
 
 const (
-	// githubAPIHost is the site a GitHub token must be bound to for status to check it.
 	githubAPIHost = "api.github.com"
-	// maxChecks is how many secrets status checks at once.
-	maxChecks = 8
+	maxChecks     = 8
 )
 
-// status reports hibd's version, whether E2B is up, the connected GitHub account, the Codex
-// login, and each secret's health. Without -json, it exits 1 if something is broken.
 func (a *App) status(ctx context.Context, args []string) int {
 	fl := a.flags("status")
 	asJSON := fl.Bool("json", false, "print JSON")
@@ -80,8 +76,6 @@ func (a *App) hostStatus(ctx context.Context, cfg config) (hibapi.Status, error)
 	return s, nil
 }
 
-// loadCodexLogin returns the Codex login as hib shows it, or nil if Codex isn't connected. It
-// never calls OpenAI.
 func loadCodexLogin(store *codex.Store) (*hibapi.Codex, error) {
 	p, err := store.Load()
 	if errors.Is(err, codex.ErrNotConnected) {
@@ -94,8 +88,6 @@ func loadCodexLogin(store *codex.Store) (*hibapi.Codex, error) {
 	return &login, nil
 }
 
-// loadStatusSecrets returns every secret in the vault, sorted by name. Only those status checks
-// have their values.
 func loadStatusSecrets(cfg config) ([]vault.Revealed, error) {
 	f, err := vault.Load(cfg.vaultPath)
 	if err != nil {
@@ -125,7 +117,6 @@ func loadStatusSecrets(cfg config) ([]vault.Revealed, error) {
 	return revealed, nil
 }
 
-// checked reports whether status checks s: whether the proxy sends it to GitHub's API.
 func checked(s vault.Secret) bool {
 	return slices.ContainsFunc(s.Sites, func(site string) bool {
 		if rest, ok := strings.CutPrefix(site, "*."); ok {
@@ -135,8 +126,6 @@ func checked(s vault.Secret) bool {
 	})
 }
 
-// checkSecrets checks each secret bound to GitHub's API with GET /user, at most maxChecks at
-// once. It also returns what GitHub said about secret github, if it accepted it.
 func (a *App) checkSecrets(ctx context.Context, secrets []vault.Revealed, profile *github.Profile) ([]hibapi.SecretHealth, *github.User) {
 	health := make([]hibapi.SecretHealth, len(secrets))
 	var githubUser *github.User
@@ -176,7 +165,6 @@ func (a *App) checkSecrets(ctx context.Context, secrets []vault.Revealed, profil
 	return health, githubUser
 }
 
-// revokedDetail says how to replace secret name, which its site refused.
 func revokedDetail(name string, profile *github.Profile) string {
 	if name != github.SecretName {
 		return fmt.Sprintf("revoked: run hib secret add %s again", name)
@@ -188,7 +176,6 @@ func revokedDetail(name string, profile *github.Profile) string {
 	return "revoked: run " + g.Reconnect() + " again"
 }
 
-// checkE2B asks each of E2B's health URLs once, all at once. E2B is down if any fails.
 func checkE2B(ctx context.Context, urls []string) hibapi.Health {
 	client := &http.Client{Timeout: 5 * time.Second}
 	errs := make([]error, len(urls))

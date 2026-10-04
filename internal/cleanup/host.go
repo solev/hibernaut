@@ -67,7 +67,6 @@ func (h Host) Clean(ctx context.Context, now time.Time, dryRun bool, logf func(f
 		if dryRun {
 			logf("would delete %s (%s)", id, hibapi.FormatMB(used>>20))
 		} else {
-			// A directory E2B wrote to since it was read may be in use after all.
 			if m, err := newest(path); err != nil || m.After(modified[id]) {
 				logf("left %s: it changed while cleaning up", id)
 				continue
@@ -93,8 +92,6 @@ func (h Host) Clean(ctx context.Context, now time.Time, dryRun bool, logf func(f
 
 func (h Host) path(build string) string { return filepath.Join(h.Storage, build) }
 
-// read lists the machines before reading the database: a machine paused in between shows as
-// paused without a snapshot, so Garbage still keeps the image build it may have started from.
 func (h Host) read(ctx context.Context) (Listing, error) {
 	var l Listing
 	machines, err := h.Engine.List(ctx, engine.ListOptions{})
@@ -120,8 +117,7 @@ func (h Host) read(ctx context.Context) (Listing, error) {
 		}
 		l.Envs = append(l.Envs, e)
 	}
-	// One statement, so that the builds and the envs they're in agree. env_builds.env_id is
-	// only the first env a build was put in.
+	// env_builds.env_id is only the first env a build was put in.
 	rows, err = h.query(ctx, 7, `SELECT b.id, coalesce(b.status_group, ''),
 		floor(extract(epoch FROM b.created_at) * 1000000)::bigint,
 		coalesce(floor(extract(epoch FROM b.finished_at) * 1000000)::bigint::text, ''),
@@ -144,7 +140,7 @@ func (h Host) read(ctx context.Context) (Listing, error) {
 			l.Builds = append(l.Builds, b)
 		}
 		if r[4] == "" {
-			continue // in no env
+			continue
 		}
 		at, err := micros(r[6])
 		if err != nil {
@@ -175,7 +171,7 @@ func (h Host) query(ctx context.Context, fields int, sql string) ([][]string, er
 	return rows, nil
 }
 
-// micros parses microseconds since 1970: Postgres keeps times to the microsecond.
+// Postgres keeps times to the microsecond.
 func micros(s string) (time.Time, error) {
 	us, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
@@ -184,7 +180,6 @@ func micros(s string) (time.Time, error) {
 	return time.UnixMicro(us), nil
 }
 
-// buildName matches the names of build directories, which are UUIDs.
 var buildName = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func readDirs(storage string) ([]Dir, error) {
@@ -219,7 +214,6 @@ func readDirs(storage string) ([]Dir, error) {
 	return dirs, nil
 }
 
-// newest returns when the directory at path or a file in it last changed.
 func newest(path string) (time.Time, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -242,7 +236,6 @@ func newest(path string) (time.Time, error) {
 	return t, nil
 }
 
-// du returns the disk space the files in the directory at path take, in bytes.
 func du(path string) int64 {
 	var n int64
 	entries, _ := os.ReadDir(path)
@@ -262,7 +255,6 @@ func size(path string) string { return hibapi.FormatMB(du(path) >> 20) }
 // E2B writes each to a hidden temporary file first, which a crash can leave half-written.
 var indexName = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// readCache returns the builds the layer cache's index points to.
 func readCache(cache string) ([]string, error) {
 	files, err := filepath.Glob(filepath.Join(cache, "*", "index", "*"))
 	if err != nil {
@@ -317,7 +309,6 @@ func Postgres(ctx context.Context, sql string) ([][]string, error) {
 	return rows, nil
 }
 
-// commandError adds what a command wrote to stderr to its error.
 func commandError(err error) error {
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && len(exit.Stderr) > 0 {

@@ -17,9 +17,7 @@ import (
 )
 
 const (
-	connectUsage = "connect github (--from-gh | --token)\n       hib connect codex"
-	// codexLoginTimeout is how long hib connect codex waits for hibd: a minute longer than
-	// Codex's device code lasts.
+	connectUsage      = "connect github (--from-gh | --token)\n       hib connect codex"
 	codexLoginTimeout = 16 * time.Minute
 )
 
@@ -87,8 +85,6 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-// connectCodex has hibd log in to Codex with a device code, and prints the account. hibd's
-// stderr shows the code and the link as they come.
 func (a *app) connectCodex(ctx context.Context, cfg *config) int {
 	r, err := a.remoteSudo(ctx, cfg, codexLoginTimeout, nil, "connect", "codex", "--json")
 	if err != nil {
@@ -127,11 +123,8 @@ func (a *app) readGitHubToken(ctx context.Context) (string, error) {
 	return value, valueErr
 }
 
-// maxGHOutput is how much of gh's output, and of its diagnostics, hib keeps.
 const maxGHOutput = 64 << 10
 
-// cappedBuffer keeps the first maxGHOutput bytes written to it, plus room for a trailing CRLF,
-// and drains the rest.
 type cappedBuffer struct {
 	buffer   bytes.Buffer
 	overflow bool
@@ -148,7 +141,7 @@ func (w *cappedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// checkConnectArgs keeps a pasted token out of flag's errors, which quote invalid values.
+// flag's errors quote invalid values.
 func checkConnectArgs(args []string) error {
 	const tokenArgument = "pass the token at the prompt or on stdin, not as an argument: arguments end up in shell history"
 	positional := 0

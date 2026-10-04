@@ -1,5 +1,5 @@
-// Package pauseall pauses every running machine, so nothing is lost when the host stops
-// (spec §5, The host). Running machines live in RAM; paused ones are snapshots on disk.
+// Package pauseall pauses every running machine (spec §5, The host).
+// Running machines live in RAM; paused ones are snapshots on disk.
 package pauseall
 
 import (
@@ -24,9 +24,8 @@ type Options struct {
 	Logf func(format string, args ...any)
 }
 
-// Run pauses every running machine. It lists and pauses in rounds until a list comes back
-// empty, so machines that start or wake meanwhile are paused too. When ctx is done first, it
-// returns an error naming the machines it couldn't pause.
+// Run pauses every running machine, including machines that start or wake meanwhile.
+// When ctx is done first, it returns an error naming the machines it couldn't pause.
 //
 // It returns the IDs it paused, in the order they finished.
 func Run(ctx context.Context, e engine.Engine, opts Options) ([]string, error) {
@@ -73,8 +72,6 @@ func Run(ctx context.Context, e engine.Engine, opts Options) ([]string, error) {
 	}
 }
 
-// pauseEach pauses ids with bounded concurrency. It returns the IDs it paused and the IDs that
-// failed. Machines that were paused or deleted by someone else count as neither.
 func pauseEach(ctx context.Context, e engine.Engine, ids []string, concurrency int, logf func(string, ...any)) (done, failed []string) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup

@@ -37,29 +37,21 @@ const (
 	testVM    = "vm-test"
 )
 
-// host is a fake host. Its ssh runs the real hibd in this process, on a fake engine whose
-// machines all have machineKey, and its az answers for the host's VM.
 type host struct {
 	t          *testing.T
 	engine     *fake.Engine
 	env        map[string]string
 	machineKey ssh.PublicKey
-	// far gets the machine's end of each connection to a machine's SSH server.
 	far        chan net.Conn
 	sshVersion string
-	// override answers a hibd command in hibd's place when it returns true.
-	override  func(words []string, stdout, stderr io.Writer) (int, bool)
-	lastStdin io.Reader
+	override   func(words []string, stdout, stderr io.Writer) (int, bool)
+	lastStdin  io.Reader
 
-	mu    sync.Mutex
-	calls [][]string
-	// asleep makes ssh fail as it does when the VM is deallocated.
-	asleep bool
-	// booting is how many ssh connections fail after the VM starts.
-	booting int
-	// states are the VM's power states az reports, one per call; the last one repeats.
-	states []string
-	// readRoom reads the host's free memory and disk.
+	mu       sync.Mutex
+	calls    [][]string
+	asleep   bool
+	booting  int
+	states   []string
 	readRoom func() (room.Host, error)
 }
 
@@ -146,7 +138,6 @@ func (h *host) record(call []string) {
 	h.calls = append(h.calls, slices.Clone(call))
 }
 
-// takeCalls returns the ssh and az calls so far, and forgets them.
 func (h *host) takeCalls() [][]string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -267,7 +258,6 @@ func (h *host) sleep(states ...string) {
 	h.states = states
 }
 
-// client is hib on a laptop that hib init has set up for a host.
 type client struct {
 	*app
 	t           *testing.T
@@ -298,7 +288,6 @@ func newClient(t *testing.T, h *host) *client {
 	return c
 }
 
-// initClient returns a client after hib init, with -azure-* unless noAzure.
 func initClient(t *testing.T, h *host, noAzure ...bool) *client {
 	t.Helper()
 	c := newClient(t, h)
@@ -319,13 +308,11 @@ func (c *client) hib(args ...string) int {
 	return c.run(c.t.Context(), append([]string{"-config", c.dir}, args...))
 }
 
-// tableLines returns the lines of the table hib ls printed, without the room line under it.
 func tableLines(out string) []string {
 	table, _, _ := strings.Cut(out, "\n\n")
 	return strings.Split(strings.TrimSpace(table), "\n")
 }
 
-// remoteCommands returns the hibd command lines in calls.
 func remoteCommands(calls [][]string) []string {
 	var cmds []string
 	for _, call := range calls {
@@ -412,7 +399,6 @@ func TestNewIdle(t *testing.T) {
 		}
 	}
 
-	// hibd decides which idle times are good, so an older hibd can still answer.
 	if code := c.hib("new", "quick", "--idle", "30s"); code != 1 || !strings.Contains(c.errOut.String(), "bad idle time 30s") {
 		t.Errorf("new --idle 30s: exit %d, stderr %q", code, c.errOut)
 	}
@@ -432,7 +418,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	for _, m := range []struct {
 		name  string
 		state engine.State
-		idle  string // "" for a machine made before hibd kept idle times
+		idle  string
 		left  time.Duration
 	}{
 		{"tick", engine.Running, "1m0s", 45*time.Second + 600*time.Millisecond},
@@ -449,7 +435,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 		}
 		h.engine.Add(engine.Machine{ID: fake.NewID(), State: m.state, StartedAt: now.Add(-time.Hour), EndAt: now.Add(m.left), Metadata: md})
 	}
-	// A machine hibd didn't make.
+
 	h.engine.Add(engine.Machine{ID: fake.NewID(), State: engine.Running, StartedAt: now.Add(-time.Hour), EndAt: now.Add(time.Hour)})
 
 	if code := c.hib("ls"); code != 0 {
@@ -459,7 +445,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "IDLE", "PAUSES", "IN", "STARTED", "ID"}; !slices.Equal(got, want) {
 		t.Errorf("ls header = %q, want %q", got, want)
 	}
-	want := map[string][2]string{ // name: IDLE, PAUSES IN
+	want := map[string][2]string{
 		"tick":  {"1m", "45s"},
 		"soon":  {"15m", "12m"},
 		"long":  {"2h", "1h05m"},
@@ -492,7 +478,7 @@ func TestLsShowsRoomOnTheHost(t *testing.T) {
 	if code := c.hib("new", "web"); code != 0 {
 		t.Fatalf("new web: exit %d: %s", code, c.errOut)
 	}
-	// reading has 3200 huge pages of 2 MiB, and 79 GiB of disk free.
+
 	reading := func(freePages int64) func() (room.Host, error) {
 		return func() (room.Host, error) {
 			return room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: freePages, DiskFree: 79 << 30}, nil
@@ -507,7 +493,6 @@ func TestLsShowsRoomOnTheHost(t *testing.T) {
 		{"one", reading(1077), "Room for 1 more dev machine: 2.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
 		{"full", reading(53), "No room for another dev machine: 106 MiB of 6.2 GiB memory free, 79 GiB disk free. " +
 			"hib pause NAME frees memory, hib rm NAME frees disk."},
-		// ls still lists the machines.
 		{"unreadable", func() (room.Host, error) { return room.Host{}, errors.New("no /proc/meminfo") }, ""},
 	} {
 		h.readRoom = tc.readRoom
@@ -591,7 +576,6 @@ func TestExec(t *testing.T) {
 		t.Errorf("ran ssh %q, want %q", c.execs, want)
 	}
 
-	// With its own ssh config, ssh must read that one.
 	h2 := newHost(t)
 	c2 := newClient(t, h2)
 	own := filepath.Join(t.TempDir(), "my ssh config")
@@ -711,7 +695,7 @@ func TestBridge(t *testing.T) {
 		t.Fatal("hibd bridge didn't connect to the machine")
 	}
 	machine.SetDeadline(time.Now().Add(5 * time.Second))
-	// The machine speaks first in SSH.
+
 	go machine.Write([]byte("SSH-2.0-machine\r\n"))
 	got := make([]byte, 17)
 	if _, err := io.ReadFull(outR, got); err != nil || string(got) != "SSH-2.0-machine\r\n" {
@@ -812,7 +796,6 @@ func TestWake(t *testing.T) {
 		t.Errorf("remote commands = %q, want %q", cmds, want)
 	}
 
-	// A running VM that ssh can't reach isn't asleep.
 	h.mu.Lock()
 	h.asleep = true
 	h.mu.Unlock()
@@ -843,7 +826,7 @@ func TestWakeForBridge(t *testing.T) {
 		done <- c.run(t.Context(), []string{"-config", c.dir, "bridge", "app.hib"})
 		outW.Close()
 	}()
-	// ssh writes first; a failed attempt mustn't swallow it.
+
 	go stdinW.Write([]byte("SSH-2.0-laptop\r\n"))
 	var machine net.Conn
 	select {
@@ -881,7 +864,7 @@ func TestBridgeKeepsBytesAfterTheHeader(t *testing.T) {
 		if err := hibapi.WriteBridgeHeader(&b, h.machineKey); err != nil {
 			t.Error(err)
 		}
-		// One write, so hib reads the header and the banner together.
+
 		stdout.Write(append(b.Bytes(), "SSH-2.0-machine\r\n"...))
 		return 0, true
 	}

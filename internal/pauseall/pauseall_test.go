@@ -33,7 +33,6 @@ func states(t *testing.T, e engine.Engine) map[string]engine.State {
 	return out
 }
 
-// recorder records which machines Pause was called for.
 type recorder struct {
 	mu    sync.Mutex
 	calls []string
@@ -87,7 +86,6 @@ func TestPausesMachinesThatStartMeanwhile(t *testing.T) {
 	var e *fake.Engine
 	var once sync.Once
 	e = fake.New(fake.WithPauseHook(func(ctx context.Context, id string) error {
-		// A machine wakes while the first one pauses.
 		once.Do(func() { add(e, "late", engine.Running) })
 		return nil
 	}))
@@ -132,7 +130,7 @@ func TestSkipsMachinesPausedOrKilledMeanwhile(t *testing.T) {
 	e := fake.New()
 	add(e, "gone", engine.Running)
 	add(e, "done", engine.Running)
-	// Someone else kills one and pauses the other between our List and our Pause.
+
 	racy := &raceEngine{Engine: e, beforePause: func(id string) {
 		switch id {
 		case "gone":
@@ -181,7 +179,7 @@ func TestGivesUpWhenContextEnds(t *testing.T) {
 			t.Fatal("quick wasn't paused while stuck was pausing")
 		}
 	}
-	cancel() // the time limit
+	cancel()
 	r := <-res
 
 	if r.err == nil {
@@ -246,7 +244,7 @@ func TestConcurrencyLimit(t *testing.T) {
 		_, err := pauseall.Run(t.Context(), e, pauseall.Options{Concurrency: 2, RetryDelay: time.Millisecond})
 		done <- err
 	}()
-	// Let pauses through one at a time; at most two may ever be waiting.
+
 	for range 5 {
 		release <- struct{}{}
 	}
@@ -258,11 +256,10 @@ func TestConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// raceEngine wraps an engine to inject races and failures.
 type raceEngine struct {
 	engine.Engine
 	beforePause  func(id string)
-	listFailures int // -1 fails forever
+	listFailures int
 	onList       func(n int)
 
 	mu    sync.Mutex

@@ -42,8 +42,8 @@ func random() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// AuthFile returns the auth.json Codex writes for tokens. It uses a fixed last_refresh to make
-// fixtures repeatable. The returned bytes contain synthetic values, not placeholders.
+// AuthFile returns the auth.json Codex writes for tokens.
+// The returned bytes contain synthetic values, not placeholders.
 func AuthFile(tokens codex.Tokens) []byte {
 	b, err := codex.RenderAuthFile(codex.PublicAuth{
 		IDToken: tokens.IDToken, AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
@@ -152,7 +152,7 @@ func (s *TokenServer) serve(w http.ResponseWriter, r *http.Request) {
 			Plan string `json:"chatgpt_plan_type"`
 		} `json:"https://api.openai.com/auth"`
 	}
-	// These tokens were made by Tokens, so the envelope is always valid.
+
 	parts, _ := base64.RawURLEncoding.DecodeString(strings.Split(s.tokens.IDToken, ".")[1])
 	_ = json.Unmarshal(parts, &payload)
 	now := time.Now()
