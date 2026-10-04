@@ -26,8 +26,7 @@ func (e *Engine) HasAlias(alias string) bool {
 	return ok
 }
 
-// lookupAlias finds alias as E2B's alias cache does, under e.mu.
-func (e *Engine) lookupAlias(alias string) *template {
+func (e *Engine) lookupAliasLocked(alias string) *template {
 	t := e.aliases[alias]
 	if !e.aliasCache {
 		return t
