@@ -46,8 +46,12 @@ type Server struct {
 	// Endpoints are requests the proxy answers itself, on intercepted sites only.
 	Endpoints []Endpoint
 	// Rejected is told when a site answers 401 to a request with swapped secrets: once for each
-	// secret, with the fingerprint of the value that was sent.
+	// secret, with the fingerprint of the value that was sent. It runs before the response is
+	// sent on, so it must return quickly.
 	Rejected func(secret, fingerprint string)
+
+	// endpointReadTimeout replaces EndpointReadTimeout in tests.
+	endpointReadTimeout time.Duration
 }
 
 const (
@@ -275,9 +279,14 @@ func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Tran
 			http.Error(w, "misdirected request\n", http.StatusMisdirectedRequest)
 			return
 		}
+		if ep, ok := s.endpoint(sni, r); ok {
+			s.serveEndpoint(w, r, sni, ep, identify)
+			return
+		}
 		// A connection stays intercepted after its site loses its last binding, so responses are
 		// scrubbed even when nothing is swapped.
 		active := s.currentSwapper()
+		var swapped []string
 		if active != nil && active.Bound(sni) {
 			names, err := active.Request(r, sni)
 			if err != nil {
@@ -285,6 +294,7 @@ func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Tran
 				http.Error(w, genericUpstreamError, http.StatusBadGateway)
 				return
 			}
+			swapped = names
 			if len(names) > 0 {
 				machine, machineID := identify.get()
 				entry := audit.Entry{
@@ -309,11 +319,11 @@ func (s *Server) proxyHandler(sni string, transport, upgradeTransport *http.Tran
 		if isUpgrade(r) {
 			t = upgradeTransport
 		}
-		s.reverseProxy(sni, active, t).ServeHTTP(w, r)
+		s.reverseProxy(sni, active, swapped, t).ServeHTTP(w, r)
 	})
 }
 
-func (s *Server) reverseProxy(sni string, sw *swap.Swapper, transport *http.Transport) *httputil.ReverseProxy {
+func (s *Server) reverseProxy(sni string, sw *swap.Swapper, swapped []string, transport *http.Transport) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "https"
@@ -327,6 +337,9 @@ func (s *Server) reverseProxy(sni string, sw *swap.Swapper, transport *http.Tran
 		Transport:     transport,
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
+			if resp.StatusCode == http.StatusUnauthorized {
+				s.rejected(sw, swapped)
+			}
 			if sw == nil {
 				return nil
 			}
