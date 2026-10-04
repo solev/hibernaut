@@ -41,7 +41,7 @@ One-time setup:
 
 ```bash
 hib init                       # pick the host, register your SSH key, add "Host *.hib" to ~/.ssh/config
-hib connect github --from-gh   # copies your laptop's gh login; the Copilot CLI uses it too
+hib connect github             # approve a code in the browser, for machines and the Copilot CLI
 hib connect codex              # shows a code → approve it in the browser (your ChatGPT plan)
 ```
 
@@ -206,20 +206,30 @@ git clone https://github.com/solev/private-repo
 
 **Connecting (on the laptop):**
 
-- **First (M4): `hib connect github --from-gh`** copies the laptop's `gh auth token` into the
-  vault. Zero setup. The host checks it first with `GET /user`, which gives the account and, in
-  the `X-OAuth-Scopes` header, the scopes. If GitHub refuses it, nothing is stored.
+- **Default (M7): `hib connect github`** runs GitHub's device flow on the host, with our own
+  "Hibernaut" GitHub OAuth App. `hibd` asks GitHub for a code, `hib` shows it and opens
+  `github.com/login/device`, and you approve it in the browser. The token goes straight into the
+  vault and never touches the laptop, and you can revoke it on its own.
+  - The app is created once by hand, with Device Flow enabled. Its client ID is built into
+    `hibd`. It isn't secret, and the device flow needs no client secret.
+  - Scopes: `repo`, `read:org`, `workflow`.
+  - OAuth App tokens (`gho_…`) don't expire unless the app turns expiring tokens on, so there's
+    nothing to refresh. `hibd` refuses a token that expires.
+  - A code lasts 15 minutes. Ctrl-C in `hib` stops `hibd` waiting, but a token GitHub granted
+    just before is still stored. `hib status` shows whether it was.
+  - An org that restricts OAuth Apps hides its repos from the token until an owner approves the
+    app.
+- **`hib connect github --from-gh`** (M4) copies the laptop's `gh auth token` into the vault.
+  Zero setup.
   - It's gh's own token (`gho_…`, no expiry) with gh's scopes: `repo`, `read:org`, `gist`.
   - Without `workflow`, agents can't push changes to `.github/workflows/`. `hib connect` warns
     and suggests `gh auth refresh -h github.com -s workflow`, then connecting again.
   - The laptop and the host share this token. GitHub keeps at most ten tokens per user, app and
     scope set, so logging gh in on many devices can revoke it. `hib status` shows when that
     happens, and running the command again fixes it.
-- **Later (M7): device flow** (you approve a code in the browser) with our own "Hibernaut" GitHub
-  OAuth App. The host gets its own token, which you can revoke separately.
-  - The app is created once by hand, with Device Flow enabled.
-  - Scopes: `repo`, `read:org`, `workflow`.
-  - OAuth App tokens (`gho_…`) don't expire by default, so there's nothing to refresh.
+- The host checks every token with `GET /user` before storing it. That gives the account and, in
+  the `X-OAuth-Scopes` header, the scopes. If GitHub refuses it, nothing is stored. One connect
+  runs at a time.
 - Only how the token reaches the vault differs. Everything after that is one code path, covered by
   the M4 end-to-end test (§8).
 - **Narrower access:** `hib connect github --token` accepts a fine-grained token limited to chosen
