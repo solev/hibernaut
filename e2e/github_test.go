@@ -146,7 +146,6 @@ func connectGitHub(t *testing.T, ctx context.Context) (token, login string) {
 	return token, login
 }
 
-// Values are positional arguments, never part of the script. No token goes to SSH.
 func githubScript(t *testing.T, ctx context.Context, name, token, script string, args ...string) string {
 	t.Helper()
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
@@ -236,7 +235,6 @@ func gitHubBranches(ctx context.Context) ([]string, error) {
 	return strings.Fields(out), nil
 }
 
-// cleanGitHubBranch closes the fixture's open PRs from branch, then deletes it.
 func cleanGitHubBranch(ctx context.Context, branch string) error {
 	pulls, err := openGitHubPulls(ctx)
 	if err != nil {
@@ -252,8 +250,6 @@ func cleanGitHubBranch(ctx context.Context, branch string) error {
 	return deleteGitHubBranch(ctx, branch)
 }
 
-// deleteLeftoverGitHub cleans every e2e- branch that killed runs left. Their PRs need no search
-// of their own: GitHub closes a PR when its branch is deleted.
 func deleteLeftoverGitHub(ctx context.Context) error {
 	branches, err := gitHubBranches(ctx)
 	if err != nil {

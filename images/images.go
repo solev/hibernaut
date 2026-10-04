@@ -1,6 +1,5 @@
 // Package images defines the machine images hibd builds into templates. An image is a directory
-// of files embedded in hibd: scripts, systemd units and configs that build steps install into
-// the template. The paths and port the guest side shares with hibd are constants here.
+// of files embedded in hibd: scripts, systemd units and configs.
 package images
 
 import (
@@ -43,8 +42,6 @@ type image struct {
 	readyCmd      string
 }
 
-// A step installs files from the image's directory and then runs a command, as root. Build
-// caches each step until it, or one before it, changes: put what is slow to build first.
 type step struct {
 	files []file
 	ca    bool
@@ -52,7 +49,7 @@ type step struct {
 }
 
 type file struct {
-	name string // in the image's directory
+	name string
 	dest string
 	mode fs.FileMode
 }
@@ -97,7 +94,6 @@ var catalog = map[string]image{
 				run: lib + "/tools",
 			},
 		},
-		// The start command runs as the template's default user, which has passwordless sudo.
 		startCmd: "sudo -n " + lib + "/start",
 		readyCmd: lib + "/ready",
 	},
@@ -189,9 +185,6 @@ func installStepScript(name, root string, s step, caPEM []byte) (string, error) 
 	return install, nil
 }
 
-// installScript returns a shell command that writes files, from image name's directory, under
-// root. Each file is replaced in one rename. The command is a single line, the file contents
-// base64 in single quotes, so that nothing in the files can be read as shell.
 func installScript(name, root string, list []file) (string, error) {
 	var b strings.Builder
 	b.WriteString(`set -euo pipefail; umask 022; put() { install -d -m 755 "$(dirname "$1")"; printf %s "$3" | base64 -d >"$1.tmp"; chmod "$2" "$1.tmp"; mv -f "$1.tmp" "$1"; }; `)
@@ -209,7 +202,6 @@ func putDataScript(dest string, mode fs.FileMode, data []byte) string {
 	return fmt.Sprintf("put %s %o '%s'; ", quote(dest), mode, base64.StdEncoding.EncodeToString(data))
 }
 
-// quote quotes s for the shell.
 func quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

@@ -32,22 +32,18 @@ const (
 	trafficToken = "traffic-token"
 )
 
-// fakeE2B serves the few E2B API routes the engine uses, from a map of sandboxes.
 type fakeE2B struct {
 	t *testing.T
 
-	mu        sync.Mutex
-	sandboxes map[string]map[string]any // id → detail JSON
-	requests  []*http.Request
-	bodies    map[string]map[string]any // "METHOD path" → last JSON body
-	// statuses are the build status answers, one per poll; the last one repeats.
-	statuses []map[string]any
-	offsets  []string // logsOffset of each status poll
-	// redirectTo, if set, makes serveWebSocket answer with a redirect there instead of
-	// upgrading, standing in for a machine that replaced its listener.
+	mu         sync.Mutex
+	sandboxes  map[string]map[string]any
+	requests   []*http.Request
+	bodies     map[string]map[string]any
+	statuses   []map[string]any
+	offsets    []string
 	redirectTo string
 
-	maxMessage atomic.Int64 // largest WebSocket message the proxy received
+	maxMessage atomic.Int64
 }
 
 func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
@@ -56,9 +52,7 @@ func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
 	envdMux := http.NewServeMux()
 	envdMux.Handle(processconnect.NewProcessHandler(&fakeEnvd{t: t}))
 	envdMux.HandleFunc("/", f.serveWebSocket)
-	// A machine controls everything its envd and port 8081 answer, so the whole envd server can
-	// stand in for a tampered machine: when redirectTo is set it redirects every request, both
-	// the Process RPCs and the WebSocket dial.
+
 	envdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		redirect := f.redirectTo
@@ -131,7 +125,6 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 201, map[string]any{"sandboxID": id, "templateID": "tmpl123", "clientID": "c", "envdVersion": "0.2.0"})
 
 	case r.Method == "GET" && r.URL.Path == "/v2/sandboxes":
-		// Two pages: the first names the second in X-Next-Token.
 		if r.URL.Query().Get("nextToken") == "" {
 			w.Header().Set("X-Next-Token", "page2")
 			writeJSON(w, 200, []any{f.sandboxes["aaaaaaaaaaaaaaaaaaaa"]})
@@ -224,8 +217,6 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveWebSocket is the proxy's WebSocket side for sandbox aaaa…'s port 8081: it checks the
-// routing headers and the traffic token, then echoes every binary message back.
 func (f *fakeE2B) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("E2b-Sandbox-Id") != "aaaaaaaaaaaaaaaaaaaa" || r.Header.Get("E2b-Sandbox-Port") != "8081" {
 		http.Error(w, "bad routing headers", http.StatusBadRequest)
@@ -267,8 +258,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// fakeEnvd answers Process.Start: it echoes the command line to stdout, "err" to stderr, and
-// exits 7.
 type fakeEnvd struct {
 	processconnect.UnimplementedProcessHandler
 	t *testing.T
@@ -408,7 +397,7 @@ func TestErrorMapping(t *testing.T) {
 			t.Errorf("%s = %v, want %v", c.name, c.err, c.want)
 		}
 	}
-	// Exec on a paused machine must not reach envd, or the proxy could wake it.
+
 	for _, r := range f.requests {
 		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/connect") && strings.Contains(r.URL.Path, "aaaa") {
 			t.Errorf("a call on the paused machine resumed it: %s %s", r.Method, r.URL.Path)
@@ -476,7 +465,7 @@ func TestDialWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	// The dial context is done with once the connection is up.
+
 	cancel()
 
 	if body := f.bodies["POST /v2/sandboxes/aaaaaaaaaaaaaaaaaaaa/connect"]; body["timeout"] != float64(3600) {
@@ -486,7 +475,6 @@ func TestDialWebSocket(t *testing.T) {
 		t.Errorf("state after dial = %v, want the paused machine resumed", st)
 	}
 
-	// 100 KiB in one Write must cross as messages websocat accepts.
 	want := make([]byte, 100<<10)
 	rand.Read(want)
 	go func() {
@@ -546,9 +534,7 @@ func TestDialWebSocketRejectsRedirect(t *testing.T) {
 	}
 }
 
-// TestExecRejectsRedirect is TestDialWebSocketRejectsRedirect for the envd RPC path, reached in
-// production when a machine with a lost host pin is re-pinned (Dial → repin → initMachine →
-// Exec). A redirect the machine's envd returns must not be followed.
+// TestExecRejectsRedirect is TestDialWebSocketRejectsRedirect for the envd RPC path.
 func TestExecRejectsRedirect(t *testing.T) {
 	f, e := newFakeE2B(t)
 	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
@@ -660,7 +646,6 @@ func TestBuildTemplateElidesLongMessages(t *testing.T) {
 	}
 }
 
-// fastPolls makes BuildTemplate poll without waiting.
 func fastPolls(t *testing.T) {
 	old := e2b.BuildPollInterval
 	e2b.BuildPollInterval = time.Millisecond

@@ -60,7 +60,6 @@ func TestScrubOnlySecretIsNeverSwapped(t *testing.T) {
 		}
 	}
 
-	// A secret that isn't scrub-only is still swapped on its own site.
 	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api/codex/models", nil)
 	if err != nil {
 		t.Fatal(err)

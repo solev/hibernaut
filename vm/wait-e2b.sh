@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Waits until E2B is healthy and has its base template. With --start it first starts E2B's units,
-# which leaves running ones alone (azure/up.sh uses it). Without, it starts nothing, so after a
-# boot it shows whether E2B came up on its own.
 set -euo pipefail
 source "$(dirname "$0")/lib/e2b.sh"
 

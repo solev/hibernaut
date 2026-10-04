@@ -77,7 +77,6 @@ func CheckSecret(name, env string, sites []string) error {
 // ReadValue reads one secret value, trims one trailing newline or CRLF, and enforces the
 // vault's size and non-empty rules.
 func ReadValue(r io.Reader) (string, error) {
-	// Two extra bytes leave room for a trailing CRLF on a value of exactly maxValue.
 	data, err := io.ReadAll(io.LimitReader(r, maxValue+2))
 	if err != nil {
 		return "", err

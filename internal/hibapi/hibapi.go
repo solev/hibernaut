@@ -1,6 +1,5 @@
 // Package hibapi is what hib and hibd say to each other over SSH: the JSON hibd prints for
-// --json, the header that starts a bridge, and what names and host keys look like. Both sides
-// check everything they're given.
+// --json, the header that starts a bridge, and what names and host keys look like.
 package hibapi
 
 import (
@@ -199,7 +198,6 @@ func versionError(v int) error {
 	return fmt.Errorf("%w: hibd speaks %d, hib %d; install the same release of both", ErrVersion, v, Version)
 }
 
-// clip shortens data for an error message.
 func clip(data []byte) []byte {
 	if len(data) > 200 {
 		return data[:200]
@@ -207,7 +205,6 @@ func clip(data []byte) []byte {
 	return data
 }
 
-// bridgeHeader is the line hibd bridge writes before the machine's SSH bytes.
 type bridgeHeader struct {
 	V int `json:"v"`
 	// HostKey is the machine's SSH host key, in authorized_keys format without a comment.

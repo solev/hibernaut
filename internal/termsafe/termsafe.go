@@ -9,12 +9,10 @@ import (
 	"unicode/utf8"
 )
 
-// maxColour is the longest colour sequence that's dropped. A longer one is escaped instead.
 const maxColour = 64
 
 // String returns s with colour sequences dropped, and with control characters other than tab,
 // newline and carriage return, and bytes that aren't UTF-8, written as Go escapes such as \x1b.
-// Colours would only be noise once escaped: Codex's device login colours its code, for one.
 func String(s string) string {
 	return string(appendSafe(nil, []byte(s)))
 }
@@ -31,7 +29,7 @@ func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
 func (w *Writer) Write(p []byte) (int, error) {
 	data := append(w.pending, p...)
 	n := len(data)
-	// Hold back a last character that more bytes could complete.
+
 	for i := n - 1; i >= max(0, n-utf8.UTFMax); i-- {
 		if utf8.RuneStart(data[i]) {
 			if !utf8.FullRune(data[i:]) {
@@ -40,7 +38,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 			break
 		}
 	}
-	// And a colour that more bytes could complete. Only the last escape can start one.
+
 	if i := bytes.LastIndexByte(data, 0x1b); i >= 0 && colourLen(data[i:]) < 0 {
 		n = min(n, i)
 	}
@@ -85,8 +83,6 @@ func appendSafe(dst, p []byte) []byte {
 	return dst
 }
 
-// colourLen returns the length of the colour sequence p starts with: ESC [, then digits, ';' or
-// ':', then m. It returns 0 if p doesn't start with one, and -1 if more bytes could make one.
 func colourLen(p []byte) int {
 	if len(p) == 0 || p[0] != 0x1b {
 		return 0

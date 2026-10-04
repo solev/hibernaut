@@ -20,7 +20,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
-// TestMachine is the milestone's main flow: hib new, reach the machine over ssh NAME.hib as the
+// TestMachine checks hib new, reaching the machine over ssh NAME.hib as the
 // unprivileged user, run commands with their exit codes, see it in hib ls, pause and resume it
 // with its files and processes intact, and remove it.
 func TestMachine(t *testing.T) {
@@ -33,8 +33,6 @@ func TestMachine(t *testing.T) {
 	}
 	t.Logf("first ssh after hib new took %v", time.Since(start).Round(time.Millisecond))
 
-	// hib exec is ssh NAME.hib -- CMD: the command gets the machine, and hib passes its exit
-	// code back.
 	if out := hib(t, ctx, "exec", name, "--", "uname", "-s"); strings.TrimSpace(out) != "Linux" {
 		t.Errorf("uname -s = %q, want Linux", strings.TrimSpace(out))
 	}
@@ -42,7 +40,6 @@ func TestMachine(t *testing.T) {
 		t.Errorf("hib exec of `exit 3` returned %d, want 3", code)
 	}
 
-	// hib ls shows the machine running, on the dev image.
 	ls := hib(t, ctx, "ls")
 	if row := nameRow(ls, name); row == "" {
 		t.Errorf("hib ls doesn't list %s:\n%s", name, ls)
@@ -61,7 +58,6 @@ func TestMachine(t *testing.T) {
 		t.Logf("hib exec on a paused machine took %v", time.Since(start).Round(time.Millisecond))
 	})
 
-	// rm deletes the machine for good: it leaves hib ls and the engine, and ssh to it fails.
 	hib(t, ctx, "rm", name)
 	if row := nameRow(hib(t, ctx, "ls"), name); row != "" {
 		t.Errorf("hib ls still lists %s after rm: %q", name, row)
@@ -76,8 +72,6 @@ func TestMachine(t *testing.T) {
 	}
 }
 
-// survivesPause pauses the machine and resumes it by connecting, and checks a file and a tmux
-// session written before the pause are still there.
 func survivesPause(t *testing.T, ctx context.Context, name string) {
 	sshMachine(t, ctx, name, "echo kept > /home/user/marker; tmux new -d -s keep 'sleep 100000'")
 
@@ -96,7 +90,6 @@ func survivesPause(t *testing.T, ctx context.Context, name string) {
 	}
 }
 
-// nameRow returns the line of hib ls output whose first field is name, or "".
 func nameRow(ls, name string) string {
 	for _, line := range strings.Split(ls, "\n") {
 		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == name {
@@ -112,23 +105,20 @@ func nameRow(ls, name string) string {
 func TestMachineSecurity(t *testing.T) {
 	ctx := testContext(t, 15*time.Minute)
 	name := newHibMachine(t, ctx)
-	sshMachine(t, ctx, name, "true") // bring it up and let hib pin its host key
+	sshMachine(t, ctx, name, "true")
 
-	// The server offers only public-key auth.
 	if _, stderr, err := sshResult(ctx, []string{"-o", "PreferredAuthentications=none"}, name, "true"); err == nil {
 		t.Error("ssh with no auth methods connected, want it refused")
 	} else if !strings.Contains(stderr, "publickey") {
 		t.Errorf("the server didn't say it wants publickey:\n%s", stderr)
 	}
 
-	// Only the unprivileged user may log in, not root or the websocket user.
 	for _, user := range []string{"root", "hib-ws"} {
 		if _, _, err := sshResult(ctx, []string{"-l", user}, name, "true"); err == nil {
 			t.Errorf("ssh -l %s connected, want it refused", user)
 		}
 	}
 
-	// The machine never receives the laptop's agent or X11, even when ssh offers them.
 	if got := mustSSHMachine(t, ctx, []string{"-A"}, name, `printf %s "${SSH_AUTH_SOCK:-unset}"`); got != "unset" {
 		t.Errorf("SSH_AUTH_SOCK in the machine = %q, want unset", got)
 	}
@@ -136,17 +126,14 @@ func TestMachineSecurity(t *testing.T) {
 		t.Errorf("DISPLAY in the machine = %q, want unset", got)
 	}
 
-	// Remote forwarding is refused, so the machine can't open a port back on the laptop.
 	if _, _, err := sshResult(ctx, []string{"-o", "ExitOnForwardFailure=yes", "-R", "127.0.0.1:0:127.0.0.1:22"}, name, "true"); err == nil {
 		t.Error("ssh -R connected, want remote forwarding refused")
 	}
 
-	// The key the laptop pinned is the one the host pinned for this machine.
 	if lap, host := laptopPinKey(t, name), hostPinKey(t, ctx, machineID(t, ctx, name)); lap != host {
 		t.Errorf("the laptop pinned %q but the host pinned %q", lap, host)
 	}
 
-	// A second machine gets a different host key.
 	other := newHibMachine(t, ctx)
 	sshMachine(t, ctx, other, "true")
 	if laptopPinKey(t, name) == laptopPinKey(t, other) {
@@ -156,9 +143,6 @@ func TestMachineSecurity(t *testing.T) {
 	t.Run("a swapped pin is caught", func(t *testing.T) { swappedPinIsCaught(t, ctx, name) })
 }
 
-// swappedPinIsCaught corrupts the host's pin for the machine to another key. The bridge then
-// advertises that key, but the machine presents its real one, so ssh must refuse. It restores
-// the pin afterwards.
 func swappedPinIsCaught(t *testing.T, ctx context.Context, name string) {
 	id := machineID(t, ctx, name)
 	original := hostPinKey(t, ctx, id)
@@ -178,13 +162,10 @@ func TestMachineNetwork(t *testing.T) {
 	ctx := testContext(t, 15*time.Minute)
 	name := newHibMachine(t, ctx)
 
-	// Egress to the internet works (positive control).
 	if code := curlCode(t, ctx, name, "https://github.com"); !strings.HasPrefix(code, "2") && !strings.HasPrefix(code, "3") {
 		t.Errorf("curl https://github.com from the machine = %q, want a 2xx or 3xx", code)
 	}
 
-	// The firewall blocks Azure's WireServer, which answered HTTP before the fix. 000 means the
-	// request got no response at all.
 	for _, url := range []string{"http://168.63.129.16:80/", "http://168.63.129.16:32526/"} {
 		if code := curlCode(t, ctx, name, url); code != "000" {
 			t.Errorf("curl %s from the machine = %q, want 000 (blocked)", url, code)
@@ -192,10 +173,8 @@ func TestMachineNetwork(t *testing.T) {
 	}
 }
 
-// TestMachineTerminal checks that full-screen programs work from the laptop's terminal. ssh
-// passes the laptop's TERM on, and Ghostty, kitty, WezTerm and Alacritty each set a TERM a stock
-// Ubuntu has no terminfo for, so clear, nano and tmux failed in them. For a terminal the machine
-// still doesn't know, the login shell falls back to xterm-256color.
+// TestMachineTerminal checks that full-screen programs work from the laptop's terminal.
+// For a terminal the machine still doesn't know, the login shell falls back to xterm-256color.
 func TestMachineTerminal(t *testing.T) {
 	ctx := testContext(t, 15*time.Minute)
 	name := newHibMachine(t, ctx)
@@ -210,8 +189,6 @@ func TestMachineTerminal(t *testing.T) {
 		}
 	}
 
-	// ssh NAME.hib logs in with a terminal. The terminal echoes the typed commands too, so the
-	// checks look for what only their output has.
 	cmd := sshMachineCmd(ctx, []string{"-tt", "-o", "SetEnv=TERM=hib-no-such-terminal"}, name, "")
 	cmd.Stdin = strings.NewReader("printf 'term=%s\\n' \"$TERM\"; tput clear >/dev/null && echo cleared''ok\nexit\n")
 	out, err := cmd.CombinedOutput()
@@ -220,8 +197,6 @@ func TestMachineTerminal(t *testing.T) {
 	}
 }
 
-// sshResult runs ssh NAME.hib command with extra options and returns its output, its stderr and
-// the run error, so a test can assert on a failed connection.
 func sshResult(ctx context.Context, extra []string, name, command string) (stdout, stderr string, err error) {
 	cmd := sshMachineCmd(ctx, extra, name, command)
 	var o, e bytes.Buffer
@@ -230,7 +205,6 @@ func sshResult(ctx context.Context, extra []string, name, command string) (stdou
 	return strings.TrimSpace(o.String()), strings.TrimSpace(e.String()), err
 }
 
-// mustSSH is sshResult that fails the test if the command doesn't exit 0.
 func mustSSHMachine(t *testing.T, ctx context.Context, extra []string, name, command string) string {
 	t.Helper()
 	stdout, stderr, err := sshResult(ctx, extra, name, command)
@@ -240,8 +214,6 @@ func mustSSHMachine(t *testing.T, ctx context.Context, extra []string, name, com
 	return stdout
 }
 
-// curlCode runs curl inside the machine and returns the HTTP status it saw, or "000" when no
-// response came back. curl's own exit code is ignored so a blocked request still reports 000.
 func curlCode(t *testing.T, ctx context.Context, name, url string) string {
 	t.Helper()
 	out, stderr, _ := sshResult(ctx, nil, name, fmt.Sprintf("curl -s -m 8 -o /dev/null -w '%%{http_code}' %s", url))
@@ -251,7 +223,6 @@ func curlCode(t *testing.T, ctx context.Context, name, url string) string {
 	return out
 }
 
-// machineID returns the engine ID of the one machine named name.
 func machineID(t *testing.T, ctx context.Context, name string) string {
 	t.Helper()
 	ms, err := vm.engine.List(ctx, engine.ListOptions{Metadata: map[string]string{"hib.name": name}})
@@ -264,7 +235,6 @@ func machineID(t *testing.T, ctx context.Context, name string) string {
 	return ms[0].ID
 }
 
-// laptopPinKey returns the "<type> <base64>" host key the laptop pinned for machine name.
 func laptopPinKey(t *testing.T, name string) string {
 	t.Helper()
 	f := strings.Fields(readFile(t, filepath.Join(hibDir, "known_hosts", name+".hib")))
@@ -283,7 +253,6 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-// hostPinKey returns the host key the host pinned for machine id, read as root.
 func hostPinKey(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
 	out, err := vm.ssh(ctx, "sudo cat /var/lib/hibernaut/host-keys/"+id)
@@ -293,8 +262,6 @@ func hostPinKey(t *testing.T, ctx context.Context, id string) string {
 	return strings.TrimSpace(out)
 }
 
-// setHostPin overwrites the host's pinned key for machine id, as root. tee keeps the file's
-// owner and mode so hibd can still read it.
 func setHostPin(t *testing.T, ctx context.Context, id, key string) {
 	t.Helper()
 	cmd := fmt.Sprintf("echo '%s' | sudo tee /var/lib/hibernaut/host-keys/%s >/dev/null", key, id)
@@ -303,7 +270,6 @@ func setHostPin(t *testing.T, ctx context.Context, id, key string) {
 	}
 }
 
-// wrongHostKey returns a freshly made, and so wrong, host key in the host pin's format.
 func wrongHostKey(t *testing.T) string {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)

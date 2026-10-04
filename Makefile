@@ -56,7 +56,7 @@ down:
 	azure/down.sh
 
 # Readies the VM (azure/up.sh), then tests it from here through an SSH tunnel. Creates and
-# deletes machines labeled hib-test=e2e.
+# deletes machines labeled hib-test=e2e or named e2e-*.
 e2e: up
 	go test -tags e2e -count=1 -v -timeout 40m ./e2e/...
 

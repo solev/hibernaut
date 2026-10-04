@@ -15,7 +15,6 @@ import (
 	"github.com/solev/hibernaut/internal/egress/swap"
 )
 
-// endpoint returns the endpoint that answers r on sni, if there is one.
 func (s *Server) endpoint(sni string, r *http.Request) (Endpoint, bool) {
 	for _, ep := range s.Endpoints {
 		if ep.Handle != nil && normalizeHost(ep.Site) == sni && ep.Method == r.Method && ep.Path == r.URL.Path {
@@ -25,8 +24,6 @@ func (s *Server) endpoint(sni string, r *http.Request) (Endpoint, bool) {
 	return Endpoint{}, false
 }
 
-// serveEndpoint answers r with ep, and never forwards it. The answer is scrubbed with the
-// secrets as they are after the handler, which may have just changed them.
 func (s *Server) serveEndpoint(w http.ResponseWriter, r *http.Request, sni string, ep Endpoint, identify *connIdentity) {
 	w.Header().Set("Cache-Control", "no-store")
 	body, status := s.readEndpointBody(w, r)
@@ -82,8 +79,6 @@ func writeEndpointResponse(w http.ResponseWriter, sw *swap.Swapper, resp Endpoin
 	_, _ = w.Write(body)
 }
 
-// readEndpointBody reads r's body within MaxEndpointBody and the endpoint read timeout. It
-// returns the status to answer with instead if it can't.
 func (s *Server) readEndpointBody(w http.ResponseWriter, r *http.Request) ([]byte, int) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetReadDeadline(time.Now().Add(s.readTimeout())); err != nil {
@@ -91,7 +86,7 @@ func (s *Server) readEndpointBody(w http.ResponseWriter, r *http.Request) ([]byt
 		return nil, http.StatusInternalServerError
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxEndpointBody))
-	// The deadline is for the body only. It must not touch the connection while the handler runs.
+
 	_ = rc.SetReadDeadline(time.Time{})
 	var tooLarge *http.MaxBytesError
 	var netErr net.Error
@@ -113,7 +108,6 @@ func (s *Server) readTimeout() time.Duration {
 	return EndpointReadTimeout
 }
 
-// rejected tells Rejected about each secret sw swapped into a request that got a 401.
 func (s *Server) rejected(sw *swap.Swapper, swapped []string) {
 	if s.Rejected == nil || sw == nil {
 		return

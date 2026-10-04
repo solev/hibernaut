@@ -96,7 +96,7 @@ func LoadProfile(path string) (*Profile, error) {
 	return &p, nil
 }
 
-// SaveProfile writes p to path atomically, with mode 0644: it holds nothing secret.
+// SaveProfile writes p to path atomically, with mode 0644.
 func SaveProfile(path string, p Profile) error {
 	if err := p.check(); err != nil {
 		return err

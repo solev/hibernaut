@@ -1,4 +1,3 @@
-# hibd waits out E2B being down, so this starts after E2B but doesn't require it.
 [Unit]
 Description=Hibernaut daemon: keeps busy machines running and cleans up their snapshots
 After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service

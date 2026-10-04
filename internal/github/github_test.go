@@ -72,7 +72,7 @@ func TestNoreply(t *testing.T) {
 }
 
 func TestCleanName(t *testing.T) {
-	long := strings.Repeat("é", 200) // 400 bytes
+	long := strings.Repeat("é", 200)
 	for _, tc := range []struct{ name, in, want string }{
 		{"plain", "The Octocat", "The Octocat"},
 		{"surrounding spaces", "  The Octocat \t", "The Octocat"},
@@ -122,8 +122,6 @@ func TestParseScopes(t *testing.T) {
 	}
 }
 
-// fakeAPI serves GET /user as GitHub does for testToken, and refuses other tokens with 401. It
-// sends X-OAuth-Scopes if scopes isn't nil.
 func fakeAPI(t *testing.T, body string, scopes *string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +268,7 @@ func TestGetUserFails(t *testing.T) {
 				tc.handler(w, r)
 			}))
 			defer srv.Close()
-			// The test server's client follows redirects. GetUser mustn't.
+
 			u, err := github.GetUser(t.Context(), srv.Client(), srv.URL, testToken)
 			if err == nil {
 				t.Fatalf("GetUser = %+v, want an error", u)

@@ -32,7 +32,7 @@ type host struct {
 	t          *testing.T
 	dir        string
 	env        map[string]string
-	lastActive int64 // seconds ago; -1 leaves the state file absent
+	lastActive int64
 }
 
 func newHost(t *testing.T) *host {
@@ -70,7 +70,6 @@ func (h *host) write(name, content string, mode os.FileMode) {
 	}
 }
 
-// run runs idle-deallocate and returns its exit code and the fakes' calls.
 func (h *host) run() (int, []string) {
 	h.t.Helper()
 	state := h.env["STATE_FILE"]
@@ -104,7 +103,6 @@ func (h *host) run() (int, []string) {
 	return code, strings.Split(strings.TrimSpace(string(calls)), "\n")
 }
 
-// secondsSinceActive reads the state file.
 func (h *host) secondsSinceActive() int64 {
 	h.t.Helper()
 	data, err := os.ReadFile(h.env["STATE_FILE"])
@@ -122,7 +120,7 @@ func TestIdleLongEnoughQuiescesThenDeallocates(t *testing.T) {
 	h := newHost(t)
 	h.lastActive = 31 * 60
 	code, calls := h.run()
-	// The idle time in the reason can be a second over 1860 s.
+
 	if code != 0 || len(calls) != 3 ||
 		calls[0] != "hibd ls --state running -q" ||
 		calls[1] != "quiesce" ||
@@ -241,7 +239,7 @@ func TestSSHSessionPattern(t *testing.T) {
 	if pattern == "" {
 		t.Fatal("can't read the default SSH_SESSION_PATTERN from the script")
 	}
-	// Process titles seen on the host (OpenSSH 9.6), plus OpenSSH 9.8's sshd-session.
+	// OpenSSH 9.6 process titles, plus OpenSSH 9.8's sshd-session.
 	for title, want := range map[string]bool{
 		"sshd: azureuser@pts/0":                                   true,
 		"sshd: azureuser@notty":                                   true,

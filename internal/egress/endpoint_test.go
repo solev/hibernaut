@@ -20,7 +20,6 @@ const (
 	rotatedValue = "gho_real_rotated_secret"
 )
 
-// endpointRecorder is an endpoint handler that keeps what it got.
 type endpointRecorder struct {
 	mu       sync.Mutex
 	requests []EndpointRequest
@@ -341,7 +340,6 @@ func TestEndpointAnswerIsScrubbedWithTheSecretsAfterTheHandler(t *testing.T) {
 		t.Fatalf("status %d, body scrubbed with the new value: %v", resp.StatusCode, string(data) == "new "+placeholder)
 	}
 
-	// With no secrets to scrub with, the proxy answers 503 rather than send the handler's answer.
 	gone.Store(true)
 	resp, err = client.Post(fx.url(endpointPath), "text/plain", strings.NewReader("x"))
 	if err != nil {

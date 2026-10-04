@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# Gets this host ready to lose power: pauses every machine, stops E2B, and flushes to disk. Pause
-# returns before a machine's snapshot is fully written; E2B's orchestrator finishes writing them
+# Pause returns before a machine's snapshot is fully written; E2B's orchestrator finishes writing them
 # before it exits.
-# Fails, leaving E2B running, if it can't pause every machine, so callers keep the VM up.
 set -euo pipefail
 
 HIBD="${HIBD:-/usr/local/bin/hibd}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 SYNC="${SYNC:-sync}"
-# While this exists, hibd starts no machine, so none can start after pause-all. It goes when
-# quiesce fails, when the pause-all guard starts (E2B is back) and when the VM boots (/run).
 QUIESCING="${QUIESCING:-/run/hibernaut/quiescing}"
 
 mkdir -p "$(dirname "$QUIESCING")"
@@ -19,11 +15,8 @@ trap 'status=$?; ((status == 0)) || rm -f "$QUIESCING"' EXIT
 if "$SYSTEMCTL" is-active -q e2b-orchestrator.service; then
   "$HIBD" pause-all --timeout 4m
   echo "Stopping E2B"
-  # Stops the pause-all guard, E2B's services and then its containers, in that order.
   "$SYSTEMCTL" stop e2b-infra.service
 else
   echo "E2B's orchestrator isn't running, so no machine is"
 fi
-# Snapshots may still be in the page cache, and a deallocate isn't guaranteed to be a clean
-# shutdown.
 "$SYNC"

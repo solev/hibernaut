@@ -22,8 +22,7 @@ func TestQuiescing(t *testing.T) {
 	}
 	mustSSH(t, ctx, "sudo mkdir -p /run/hibernaut && sudo touch /run/hibernaut/quiescing")
 	t.Cleanup(func() {
-		// A fresh context: the test's ctx is cancelled by the time cleanups run, and a lingering
-		// marker would make every later hib new fail.
+		// The test's ctx is cancelled by the time cleanups run.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		if _, err := vm.ssh(ctx, "sudo rm -f /run/hibernaut/quiescing"); err != nil {
@@ -46,7 +45,6 @@ func TestQuiescing(t *testing.T) {
 		t.Errorf("hib new didn't say the host is draining:\n%s", stderr)
 	}
 
-	// A refused new leaves no machine behind.
 	ms, err := vm.engine.List(ctx, engine.ListOptions{Metadata: map[string]string{"hib.name": name}})
 	if err != nil {
 		t.Fatalf("listing machines: %v", err)
@@ -55,7 +53,6 @@ func TestQuiescing(t *testing.T) {
 		t.Errorf("a refused hib new left %d machine(s) behind", len(ms))
 	}
 
-	// ls still answers while the host drains.
 	if _, _, code := runHib(ctx, "ls"); code != 0 {
 		t.Errorf("hib ls exited %d while the host was draining, want it to work", code)
 	}

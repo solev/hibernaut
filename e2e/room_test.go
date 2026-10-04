@@ -21,7 +21,6 @@ func TestHostFull(t *testing.T) {
 	paused := newHibMachine(t, ctx)
 	hib(t, ctx, "pause", paused)
 
-	// Start machines until hib ls says no more fit.
 	var running []string
 	for {
 		ls := hib(t, ctx, "ls")
@@ -65,7 +64,6 @@ func TestHostFull(t *testing.T) {
 		t.Errorf("the refused hib new made %d machines (%v)", len(ms), err)
 	}
 
-	// Pausing a running machine frees its memory, and then the paused one wakes.
 	hib(t, ctx, "pause", running[0])
 	waitFor(t, ctx, "hib ls to show room for a machine", time.Minute, func() bool {
 		return strings.Contains(hib(t, ctx, "ls"), "\nRoom for ")
@@ -75,8 +73,6 @@ func TestHostFull(t *testing.T) {
 	}
 }
 
-// wantNoRoom checks that a start was refused with the message for a full host, which names the
-// running machines and says what to do. The attempt must finish before its deadline.
 func wantNoRoom(t *testing.T, ctx context.Context, what, name string, running []string, attempt func(context.Context) (bool, string)) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)

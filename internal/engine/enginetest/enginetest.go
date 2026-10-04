@@ -1,5 +1,4 @@
-// Package enginetest is the contract every engine.Engine meets. It runs against the fake in unit
-// tests and against real E2B end to end (e2e TestEngineContract), so the fake can't drift.
+// Package enginetest is the contract every engine.Engine meets.
 package enginetest
 
 import (
@@ -66,7 +65,6 @@ func (s *suite) ctx(t *testing.T) context.Context {
 	return ctx
 }
 
-// labels returns the metadata that marks machines of one subtest.
 func (s *suite) labels(name string) map[string]string {
 	return map[string]string{runKey: s.runID, caseKey: name}
 }
@@ -166,7 +164,6 @@ func (s *suite) lifecycle(t *testing.T) {
 
 	s.mustExec(t, ctx, m.ID, "echo persisted > marker")
 
-	// SetTimeout moves EndAt either way.
 	before := got.EndAt
 	if err := e.SetTimeout(ctx, m.ID, 20*time.Minute); err != nil {
 		t.Fatalf("SetTimeout(20m): %v", err)
@@ -183,7 +180,6 @@ func (s *suite) lifecycle(t *testing.T) {
 		t.Errorf("SetTimeout(5m) after SetTimeout(20m) moved EndAt back by %v, want about 15m", d)
 	}
 
-	// Resume on a running machine only ever extends.
 	r, err := e.Resume(ctx, m.ID, time.Minute)
 	if err != nil {
 		t.Fatalf("Resume(running, 1m): %v", err)
@@ -200,7 +196,7 @@ func (s *suite) lifecycle(t *testing.T) {
 	if endAt := s.get(t, ctx, m.ID).EndAt; endAt.Before(shorter.Add(9 * time.Minute)) {
 		t.Errorf("Resume(running, 15m) moved EndAt from %v to %v, want about 10m later", shorter, endAt)
 	}
-	// Only a start moves StartedAt: hibd tells a resume by it.
+
 	if st := s.startedAt(t, ctx, labels, m.ID); !st.Equal(started) {
 		t.Errorf("StartedAt after SetTimeout and Resume(running) = %v, want it still %v", st, started)
 	}
@@ -358,8 +354,6 @@ func (s *suite) get(t *testing.T, ctx context.Context, id string) engine.Machine
 	return m
 }
 
-// startedAt returns when running machine id started, as Get says, and checks that List, which
-// hibd's setup delivery reads, says the same.
 func (s *suite) startedAt(t *testing.T, ctx context.Context, labels map[string]string, id string) time.Time {
 	t.Helper()
 	started := s.get(t, ctx, id).StartedAt
@@ -377,8 +371,6 @@ func (s *suite) startedAt(t *testing.T, ctx context.Context, labels map[string]s
 	return started
 }
 
-// mustExec runs script with sh -c and returns its stdout. It fails the test unless the script
-// exits 0.
 func (s *suite) mustExec(t *testing.T, ctx context.Context, id, script string) string {
 	t.Helper()
 	res, err := s.cfg.Engine.Exec(ctx, id, engine.ExecRequest{Cmd: "sh", Args: []string{"-c", script}})
@@ -391,7 +383,6 @@ func (s *suite) mustExec(t *testing.T, ctx context.Context, id, script string) s
 	return string(res.Stdout)
 }
 
-// wantListed checks that listing machines with labels in states returns exactly ids.
 func (s *suite) wantListed(t *testing.T, ctx context.Context, labels map[string]string, states []engine.State, ids ...string) {
 	t.Helper()
 	ms, err := s.cfg.Engine.List(ctx, engine.ListOptions{States: states, Metadata: labels})

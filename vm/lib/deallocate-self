@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Deallocates this Azure VM through its managed identity, which may only read and deallocate it.
-# Usage: deallocate-self <reason>
 set -euo pipefail
 
 reason="${1:?usage: deallocate-self <reason>}"

@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Deallocates this Azure VM after IDLE_MINUTES without activity. Activity is a logged-in SSH
-# session, a running machine, or load at or above MAX_LOAD. Pauses every machine and stops E2B
-# first (quiesce).
 set -euo pipefail
 
 IDLE_MINUTES="${IDLE_MINUTES:-30}"
 MAX_LOAD="${MAX_LOAD:-1.0}"
-# Overridable for tests.
 STATE_FILE="${STATE_FILE:-/run/idle-deallocate/last-active}"
 HIBD="${HIBD:-/usr/local/bin/hibd}"
 QUIESCE="${QUIESCE:-/usr/local/lib/hibernaut/quiesce}"
@@ -35,8 +31,6 @@ if awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l >= m) }'; then
   active
 fi
 
-# A running machine is activity. When E2B can't answer, one might be running, so that counts too;
-# the nightly timer still deallocates.
 if [[ -x "$HIBD" ]]; then
   if ! running=$("$HIBD" ls --state running -q); then
     echo "Can't list machines; counting that as activity"

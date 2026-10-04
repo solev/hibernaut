@@ -1,5 +1,4 @@
 #!/bin/bash
-# Installs the host's pinned Codex. CI uses the same installer.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"

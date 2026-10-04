@@ -24,8 +24,6 @@ func Base64End(enc *base64.Encoding, value []byte, alignment int) []byte {
 	return []byte(text[start:])
 }
 
-// encodeAligned encodes value between alignment and trailing zero bytes. The characters from start
-// to end hold bits from value only.
 func encodeAligned(enc *base64.Encoding, value []byte, alignment, trailing int) (text string, start, end int) {
 	alignment = (alignment%3 + 3) % 3
 	data := make([]byte, alignment+len(value)+trailing)

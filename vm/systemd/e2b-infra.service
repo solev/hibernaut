@@ -1,5 +1,3 @@
-# E2B's backing containers (Postgres, ClickHouse, Redis, telemetry) from its local-dev compose
-# file. Active once the databases accept connections. install-e2b.sh fills in @E2B_DIR@.
 [Unit]
 Description=E2B infrastructure containers
 Requires=docker.service

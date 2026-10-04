@@ -1,5 +1,4 @@
-# E2B's orchestrator: runs the Firecracker microVMs, so it needs root. Its storage paths are
-# overridden to /var/lib/e2b. install-e2b.sh fills in @E2B_DIR@.
+# E2B's orchestrator runs the Firecracker microVMs, so it needs root.
 [Unit]
 Description=E2B orchestrator
 Requires=e2b-infra.service
@@ -10,15 +9,12 @@ WorkingDirectory=@E2B_DIR@/packages/orchestrator
 EnvironmentFile=@E2B_DIR@/packages/orchestrator/.env.local
 EnvironmentFile=/etc/hibernaut/e2b-orchestrator.env
 Environment=NODE_ID=%H
-# Machines' TCP leaves through this process (E2B's egress proxy). It runs as root, which waagent's
-# WireServer rule lets through, so deny Azure's platform endpoints here. The nft table drops the
-# machines' other traffic to them; sandbox-firewall.nft explains why.
+# Machines' TCP leaves through this process (E2B's egress proxy).
 IPAddressDeny=168.63.129.16 169.254.169.254
 ExecStartPre=/usr/sbin/nft -f /etc/hibernaut/sandbox-firewall.nft
 ExecStart=@E2B_DIR@/packages/orchestrator/bin/orchestrator
 # On SIGTERM the orchestrator shuts its microVMs down itself: it waits for running ones to exit
-# and for paused ones' snapshots to finish writing. hibd-pause-all.service pauses every machine
-# before this unit stops; the timeout bounds the wait if that failed.
+# and for paused ones' snapshots to finish writing.
 KillMode=mixed
 TimeoutStopSec=3min
 Restart=on-failure
