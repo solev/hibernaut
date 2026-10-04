@@ -16,6 +16,7 @@ import (
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/egress"
 	"github.com/solev/hibernaut/internal/egress/hook"
+	"github.com/solev/hibernaut/internal/engine"
 	proxypkg "github.com/solev/hibernaut/internal/proxy"
 	"github.com/solev/hibernaut/internal/slots"
 )
@@ -53,64 +54,124 @@ func (a *App) proxy(ctx context.Context, args []string) int {
 	if err := a.needRoot("proxy"); err != nil {
 		return a.fail(false, "proxy", err)
 	}
+	var err error
 	if *unhook {
-		if err := hook.Remove(ctx, ""); err != nil {
-			return a.fail(false, "proxy", err)
-		}
-		return 0
+		err = a.proxyHook(0).Remove(ctx)
+	} else {
+		err = a.runProxy(ctx)
 	}
-	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
-		return a.fail(false, "proxy", err)
-	}
-	ca, err := capkg.Load(cfg.caCert, cfg.caKey)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			err = fmt.Errorf("CA is missing. Run sudo hibd ca init: %w", err)
-		}
-		return a.fail(false, "proxy", err)
-	}
-	port, err := strconv.Atoi(cfg.proxyPort)
-	if err != nil || port <= 0 || port > 65535 {
-		return a.fail(false, "proxy", fmt.Errorf("HIBD_PROXY_PORT must be a port from 1 to 65535"))
-	}
-	if err := os.MkdirAll(filepath.Dir(cfg.auditLogPath), 0o755); err != nil {
-		return a.fail(false, "proxy", err)
-	}
-	writer, err := audit.Open(cfg.auditLogPath, 10<<20)
-	if err != nil {
-		return a.fail(false, "proxy", err)
-	}
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		_ = writer.Close()
-		return a.fail(false, "proxy", err)
-	}
-	e, err := a.engine()
-	if err != nil {
-		_ = listener.Close()
-		_ = writer.Close()
-		return a.fail(false, "proxy", err)
-	}
-	logf := log.New(a.Stderr, "", log.LstdFlags).Printf
-	source := &proxypkg.VaultSource{Path: cfg.vaultPath, KeyPath: cfg.vaultKeyPath, Now: time.Now, Logf: logf}
-	identifier := &proxypkg.Identifier{
-		Context: ctx, Sandbox: (slots.Finder{Cgroups: cfg.cgroups}).Sandbox,
-		List: e.List, Now: time.Now, Logf: logf,
-	}
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	server := &egress.Server{
-		Swapper: source.Swapper, Leaf: ca.Leaf, Accept: hook.OnVeth, OriginalDst: hook.OriginalDst,
-		Identify: identifier.Identify, Dial: dialer.DialContext, Audit: writer.Write, Now: time.Now, Logf: logf,
-	}
-	a.serveCodex(server, cfg, logf)
-	service := &proxypkg.Service{
-		Server: server, Rule: proxyRule{hook.Rule{Port: port}}, Audit: writer, Logf: logf,
-	}
-	if err := service.Serve(ctx, listener); err != nil {
 		return a.fail(false, "proxy", err)
 	}
 	return 0
+}
+
+// proxySetup is what hibd proxy reads before it opens anything.
+type proxySetup struct {
+	cfg    config
+	ca     *capkg.CA
+	port   int
+	engine engine.Engine
+}
+
+// runProxy opens the audit log and the proxy's port, then serves machines' traffic until ctx
+// ends or serving fails. The service hooks machines' traffic into the proxy, and unhooks it on
+// every exit.
+func (a *App) runProxy(ctx context.Context) error {
+	setup, err := a.loadProxySetup()
+	if err != nil {
+		return err
+	}
+	writer, err := openAuditLog(setup.cfg.auditLogPath)
+	if err != nil {
+		return err
+	}
+	listener, err := a.listenProxy(setup.port)
+	if err != nil {
+		_ = writer.Close()
+		return err
+	}
+	logf := log.New(a.Stderr, "", log.LstdFlags).Printf
+	service := &proxypkg.Service{
+		Server: a.egressServer(ctx, setup, writer, logf), Rule: a.proxyHook(setup.port), Audit: writer, Logf: logf,
+	}
+	return service.Serve(ctx, listener)
+}
+
+// loadProxySetup reads hibd proxy's settings, CA and engine.
+func (a *App) loadProxySetup() (proxySetup, error) {
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		return proxySetup{}, err
+	}
+	ca, err := loadProxyCA(cfg)
+	if err != nil {
+		return proxySetup{}, err
+	}
+	port, err := proxyPort(cfg.proxyPort)
+	if err != nil {
+		return proxySetup{}, err
+	}
+	e, err := a.engine()
+	if err != nil {
+		return proxySetup{}, err
+	}
+	return proxySetup{cfg: cfg, ca: ca, port: port, engine: e}, nil
+}
+
+func loadProxyCA(cfg config) (*capkg.CA, error) {
+	ca, err := capkg.Load(cfg.caCert, cfg.caKey)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("CA is missing. Run sudo hibd ca init: %w", err)
+	}
+	return ca, err
+}
+
+func proxyPort(setting string) (int, error) {
+	port, err := strconv.Atoi(setting)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, errors.New("HIBD_PROXY_PORT must be a port from 1 to 65535")
+	}
+	return port, nil
+}
+
+func openAuditLog(path string) (*audit.Log, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return audit.Open(path, 10<<20)
+}
+
+func (a *App) listenProxy(port int) (net.Listener, error) {
+	listen := a.ProxyListen
+	if listen == nil {
+		listen = net.Listen
+	}
+	return listen("tcp", fmt.Sprintf(":%d", port))
+}
+
+// proxyHook returns the hook that sends machines' HTTPS traffic to port.
+func (a *App) proxyHook(port int) proxypkg.Rule {
+	if a.ProxyHook != nil {
+		return a.ProxyHook
+	}
+	return proxyRule{hook.Rule{Port: port}}
+}
+
+// egressServer returns the proxy for machines' traffic. It audits to writer.
+func (a *App) egressServer(ctx context.Context, setup proxySetup, writer *audit.Log, logf func(format string, args ...any)) *egress.Server {
+	source := &proxypkg.VaultSource{Path: setup.cfg.vaultPath, KeyPath: setup.cfg.vaultKeyPath, Now: time.Now, Logf: logf}
+	identifier := &proxypkg.Identifier{
+		Context: ctx, Sandbox: (slots.Finder{Cgroups: setup.cfg.cgroups}).Sandbox,
+		List: setup.engine.List, Now: time.Now, Logf: logf,
+	}
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	server := &egress.Server{
+		Swapper: source.Swapper, Leaf: setup.ca.Leaf, Accept: hook.OnVeth, OriginalDst: hook.OriginalDst,
+		Identify: identifier.Identify, Dial: dialer.DialContext, Audit: writer.Write, Now: time.Now, Logf: logf,
+	}
+	a.serveCodex(server, setup.cfg, logf)
+	return server
 }
 
 // serveCodex makes server answer Codex's refresh requests, with one Store and one Endpoint for
