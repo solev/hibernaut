@@ -291,11 +291,12 @@ func setCodexHealth(t *testing.T, a *App, health hibapi.CodexHealth, problem str
 	if err != nil {
 		t.Fatal(err)
 	}
-	var p codex.Profile
+	// A map keeps the fields the Store writes that Profile doesn't have.
+	var p map[string]any
 	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatal(err)
 	}
-	p.Health, p.Problem = health, problem
+	p["health"], p["problem"] = health, problem
 	if data, err = json.Marshal(p); err != nil {
 		t.Fatal(err)
 	}
