@@ -80,8 +80,8 @@ func TestGuardRenewsAfterSlowResume(t *testing.T) {
 		if err != nil {
 			return engine.TemplateInfo{}, err
 		}
-		if em.EndAt.Before(at.Add(2 * time.Minute)) {
-			return engine.TemplateInfo{}, errors.New("timeout wasn't renewed after resume")
+		if em.EndAt.Before(at.Add(10 * time.Minute)) {
+			t.Error("timeout wasn't renewed to the save window after resume")
 		}
 		return v.e.SaveTemplate(ctx, id, alias)
 	}

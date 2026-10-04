@@ -11,7 +11,10 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-const snapshotTimeout = 2 * time.Minute
+const (
+	snapshotTimeout = 2 * time.Minute
+	saveWindow      = 10 * time.Minute
+)
 
 type describedError struct {
 	cause   error
@@ -96,6 +99,11 @@ func (m *Manager) prepareSnapshot(ctx context.Context, em engine.Machine) error 
 	}
 	resumed, err := m.e.Resume(ctx, em.ID, timeout)
 	if err != nil {
+		if em.State == engine.Paused {
+			if restoration := m.restoreOrigin(ctx, em); restoration != nil {
+				err = errors.Join(err, fmt.Errorf("couldn't pause %s again: %w", name, restoration))
+			}
+		}
 		return describe(err, fmt.Sprintf("couldn't resume %s before saving: %v. %s Nothing was saved.", name, err, m.readOriginState(ctx, em, true)))
 	}
 	if err := Renew(ctx, m.e, resumed, timeout, m.now()); err != nil {
@@ -106,7 +114,7 @@ func (m *Manager) prepareSnapshot(ctx context.Context, em engine.Machine) error 
 
 func (m *Manager) saveTimeout(em engine.Machine) time.Duration {
 	idle, _ := Idle(em)
-	return max(timeoutFor(idle), snapshotTimeout)
+	return max(timeoutFor(idle), saveWindow)
 }
 
 func (m *Manager) restoreAfterFailure(ctx context.Context, em engine.Machine, cause error, safeSnapshot bool) error {

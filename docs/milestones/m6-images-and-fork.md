@@ -63,7 +63,8 @@ what it did since the save began, and `hibd` never claims a state it hasn't read
    last pause may still be landing. `Durable` waits until the origin's newest snapshot build is
    ready and its files are complete. `hibd` wires it with `leakscan.SnapshotBuild` and
    `leakscan.WaitBuild`, with a 2 minute limit.
-6. Resume it, and renew its timeout so E2B's idle pause can't land mid-save.
+6. Resume it, and renew its timeout to at least 10 minutes, so E2B's idle pause can't land during
+   a save that finishes in that time. Live saves of a 2 GB machine take seconds.
 7. Check again that the host isn't going to sleep, then save into the new alias.
 8. On failure, put the origin back first, running or paused as it was. Then look the new alias
    up and delete it by ID if found. E2B caches missing aliases, so a failed save's alias may be
@@ -94,7 +95,8 @@ If the guard itself fails, stop with nothing saved:
   written, as it does for any pause.
 - `Durable` fails or times out: resume the origin if it was running, and say `hibd` couldn't
   confirm its snapshot reached disk.
-- The resume fails: "web is paused at a safe snapshot. Wake it with: ssh web.hib".
+- The resume fails: if the origin was paused, pause it again in case the resume landed. Then
+  report its state as read, such as "web is paused at a safe snapshot. Wake it with: ssh web.hib".
 
 It costs one pause, a wait for its snapshot to land, and a resume: a few seconds for 2 GB. SSH
 sessions into the origin may drop. `hib image save -h` and `hib fork -h` say so.
@@ -222,6 +224,7 @@ Under sudo `HOME` is root's, so `setup-host.sh` names the login user's keys in
   window and reports removal as unconfirmed. `hibd` cannot tell it from a hidden alias.
 - The state lock stays held during cleanup. Create, Pause and Remove can wait behind a failed
   save for about 90 s longer. Dial and List do not take that lock.
+- On a machine with a shorter idle time, E2B may pause a save that takes longer than 10 minutes.
 - Nightly `pause-all` doesn't take the state lock. A save or fork that began before the quiesce
   may see its machines paused, and fails honestly. `hib new` has the same gap.
 
@@ -334,3 +337,6 @@ End-to-end:
   `make test-host` and `make test-host-remote` also run the machines `TestHost` tests as root.
   The first live fork found sudo's `HOME` pointing at root's keys, which Azure limits to a
   "log in as the user" message. `setup-host.sh` now names the login user's keys.
+- 2026-10-04: Guard failures put a paused origin back if a failed resume landed. The guard's
+  idle protection is at least 10 minutes, separate from the 2 minute snapshot durability
+  limit. Saves beyond that bound can still be paused by E2B.
