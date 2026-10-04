@@ -1,8 +1,9 @@
 //go:build e2e
 
 // Package e2e tests Hibernaut on the real VM (make e2e, make e2e-slow). The tests run on the
-// laptop and reach E2B through an SSH tunnel. Every machine they create is labeled hib-test=e2e,
-// and machines a crashed run left with that label are deleted before the tests start.
+// laptop and reach E2B through an SSH tunnel.
+// Machines are labeled hib-test=e2e or named e2e-*. Leftovers from crashed runs are deleted
+// before the tests start.
 package e2e
 
 import (
@@ -26,26 +27,19 @@ import (
 )
 
 const (
-	// localDevKey is E2B's fixed local-development API key (vm/lib/e2b.sh). E2B is only
-	// reachable through SSH.
+	// E2B's fixed local-development API key (vm/lib/e2b.sh).
 	localDevKey = "e2b_53ae1fed82754c17ad8077fbc8bcdd90"
 	template    = "base"
 )
 
-// labels mark every machine the tests create.
 var labels = map[string]string{"hib-test": "e2e"}
 
-// vm is the host under test. Tests use it one at a time.
 var vm *host
 
-// hib is the laptop CLI the tests drive. setUp builds it with the host's version and runs
-// hib init, so the tests go through the same CLI a user would. hibDir holds its config, the
-// ssh config for *.hib, and the pinned host keys.
 var (
 	hibBin string
 	hibDir string
 
-	// imageOnce builds the dev image the first time a test needs a machine.
 	imageOnce  sync.Once
 	imageErr   error
 	imageBuilt time.Duration
@@ -86,8 +80,6 @@ func setUp(m *testing.M) int {
 	return m.Run()
 }
 
-// setUpHib builds hib from this checkout and runs hib init against the host, as a user would
-// before their first machine.
 func setUpHib(ctx context.Context) error {
 	dir, err := os.MkdirTemp("", "hib-e2e-")
 	if err != nil {
@@ -109,8 +101,6 @@ func setUpHib(ctx context.Context) error {
 	return nil
 }
 
-// buildHib builds hib with the same version string the host's hibd has, so init doesn't warn
-// about a mismatch.
 func buildHib(ctx context.Context) (string, error) {
 	root := vm.root
 	ver, err := output(exec.CommandContext(ctx, "git", "-C", root, "describe", "--tags", "--always", "--dirty"))
@@ -128,8 +118,6 @@ func buildHib(ctx context.Context) (string, error) {
 	return bin, nil
 }
 
-// runHib runs hib with the test's config directory and returns its output and exit code. A
-// negative code means hib couldn't start.
 func runHib(ctx context.Context, args ...string) (stdout, stderr string, code int) {
 	cmd := exec.CommandContext(ctx, hibBin, append([]string{"-config", hibDir}, args...)...)
 	var o, e bytes.Buffer
@@ -144,7 +132,6 @@ func runHib(ctx context.Context, args ...string) (stdout, stderr string, code in
 	return o.String(), e.String(), code
 }
 
-// hib runs a hib command that must succeed and returns its stdout.
 func hib(t *testing.T, ctx context.Context, args ...string) string {
 	t.Helper()
 	stdout, stderr, code := runHib(ctx, args...)
@@ -154,7 +141,6 @@ func hib(t *testing.T, ctx context.Context, args ...string) string {
 	return stdout
 }
 
-// ensureImage builds the dev image once for the whole run.
 func ensureImage(t *testing.T) {
 	t.Helper()
 	imageOnce.Do(func() {
@@ -173,8 +159,6 @@ func ensureImage(t *testing.T) {
 	t.Logf("dev image ready (built in %v)", imageBuilt.Round(time.Second))
 }
 
-// newHibMachine creates a machine through the CLI, with hib new's flags, and removes it when the
-// test ends. The name is e2e-prefixed so deleteLeftovers finds it after a crash.
 func newHibMachine(t *testing.T, ctx context.Context, flags ...string) string {
 	t.Helper()
 	ensureImage(t)
@@ -184,8 +168,7 @@ func newHibMachine(t *testing.T, ctx context.Context, flags ...string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		runHib(ctx, "rm", name)
-		// Warn only if the machine is really still there, so a test that removes it itself
-		// doesn't look like a leak.
+
 		if ms, err := vm.engine.List(ctx, engine.ListOptions{Metadata: map[string]string{"hib.name": name}}); err != nil || len(ms) > 0 {
 			t.Logf("leaving machine %s for the next run to delete", name)
 		}
@@ -193,7 +176,6 @@ func newHibMachine(t *testing.T, ctx context.Context, flags ...string) string {
 	return name
 }
 
-// sshMachineCmd builds ssh -F <hib's config> NAME.hib [command], plus any extra ssh options.
 func sshMachineCmd(ctx context.Context, extra []string, name, command string) *exec.Cmd {
 	args := append([]string{"-F", filepath.Join(hibDir, "ssh_config"), "-o", "BatchMode=yes"}, extra...)
 	args = append(args, name+".hib")
@@ -203,7 +185,6 @@ func sshMachineCmd(ctx context.Context, extra []string, name, command string) *e
 	return exec.CommandContext(ctx, "ssh", args...)
 }
 
-// sshMachine runs a command in a machine over ssh NAME.hib and returns its stdout.
 func sshMachine(t *testing.T, ctx context.Context, name, command string) string {
 	t.Helper()
 	out, err := output(sshMachineCmd(ctx, nil, name, command))
@@ -213,13 +194,11 @@ func sshMachine(t *testing.T, ctx context.Context, name, command string) string 
 	return out
 }
 
-// host is the VM, reached over SSH.
 type host struct {
-	// root is this repository, for the azure/ scripts.
 	root string
-	// target is user@ip.
+
 	target string
-	// engine talks to E2B through the tunnel. It's nil while the tunnel is closed.
+
 	engine *e2b.Engine
 
 	tunnel *sshTunnel
@@ -247,8 +226,6 @@ var sshOptions = []string{
 	"-o", "ServerAliveCountMax=3",
 }
 
-// openTunnel forwards two free local ports to E2B's API and client-proxy on the VM, and points
-// h.engine at them once the API is healthy.
 func (h *host) openTunnel(ctx context.Context) error {
 	h.closeTunnel()
 	tunnel, err := startSSHTunnel(ctx, h.target, sshOptions, exec.Command)
@@ -273,7 +250,6 @@ func (h *host) closeTunnel() {
 	h.tunnel = nil
 }
 
-// ssh runs a shell command on the VM and returns its trimmed stdout.
 func (h *host) ssh(ctx context.Context, command string) (string, error) {
 	out, err := output(exec.CommandContext(ctx, "ssh", append(slices.Clone(sshOptions), h.target, command)...))
 	if err != nil {
@@ -282,7 +258,6 @@ func (h *host) ssh(ctx context.Context, command string) (string, error) {
 	return out, err
 }
 
-// azure runs one of the laptop's azure/ scripts and returns its trimmed stdout.
 func (h *host) azure(ctx context.Context, script string) (string, error) {
 	out, err := output(exec.CommandContext(ctx, filepath.Join(h.root, "azure", script)))
 	if err != nil {
@@ -307,7 +282,7 @@ func (h *host) deleteLeftovers(ctx context.Context) error {
 		return err
 	}
 	for _, m := range ms {
-		// The engine-level tests label their machines; the CLI tests name theirs e2e-*.
+
 		if !hasLabels(m.Metadata, labels) && !strings.HasPrefix(m.Metadata["hib.name"], "e2e-") {
 			continue
 		}
@@ -319,7 +294,6 @@ func (h *host) deleteLeftovers(ctx context.Context) error {
 	return nil
 }
 
-// hasLabels reports whether metadata contains every pair in want.
 func hasLabels(metadata, want map[string]string) bool {
 	for k, v := range want {
 		if metadata[k] != v {
@@ -329,7 +303,6 @@ func hasLabels(metadata, want map[string]string) bool {
 	return true
 }
 
-// newMachine creates a labeled machine that's deleted when the test ends.
 func newMachine(t *testing.T, ctx context.Context) engine.Machine {
 	t.Helper()
 	m, err := vm.engine.Create(ctx, engine.CreateOptions{Template: template, Timeout: 30 * time.Minute, Metadata: labels})
@@ -352,8 +325,6 @@ func newMachine(t *testing.T, ctx context.Context) engine.Machine {
 	return m
 }
 
-// sh runs script with sh -c in a machine and returns its stdout. It fails the test unless the
-// script exits 0.
 func sh(t *testing.T, ctx context.Context, id, script string) string {
 	t.Helper()
 	res, err := vm.engine.Exec(ctx, id, engine.ExecRequest{Cmd: "sh", Args: []string{"-c", script}})
@@ -381,7 +352,6 @@ func testContext(t *testing.T, d time.Duration) context.Context {
 	return ctx
 }
 
-// waitFor checks cond every 5 seconds until it's true, and fails the test after limit.
 func waitFor(t *testing.T, ctx context.Context, what string, limit time.Duration, cond func() bool) {
 	t.Helper()
 	start := time.Now()

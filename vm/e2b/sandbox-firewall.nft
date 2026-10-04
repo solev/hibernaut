@@ -1,11 +1,6 @@
-# Keeps machines away from Azure's platform endpoints: WireServer (168.63.129.16) hands out the
-# VM's certificates and extension settings, and IMDS (169.254.169.254) its managed identity's
-# tokens. E2B blocks private and link-local ranges inside each sandbox's network namespace, but
-# WireServer's address is public. A machine's TCP leaves through the orchestrator's egress proxy,
-# which IPAddressDeny= in e2b-orchestrator.service covers; the host forwards everything else, and
-# this table drops it. E2B names its sandbox veths veth-N; Docker's have no hyphen.
-#
-# e2b-orchestrator.service loads this file before it starts. Reloading it replaces the table.
+# IMDS (169.254.169.254) serves managed identity tokens.
+# E2B blocks private and link-local ranges inside each sandbox's network namespace, but
+# WireServer's address is public. E2B names its sandbox veths veth-N; Docker's have no hyphen.
 table inet hibernaut-sandboxes
 delete table inet hibernaut-sandboxes
 

@@ -255,8 +255,7 @@ func (s *scanner) scanWindow(window []byte, base int64, shouldEmit func(start, e
 // ScanBuild scans a snapshot build's logical memory, logical disk and raw artifact files.
 //
 // Guest memory is scanned in guest-physical order. If a value is split across guest pages that
-// are not adjacent in physical memory, the scan can miss it. The canary check covers the common
-// case.
+// are not adjacent in physical memory, the scan can miss it.
 func ScanBuild(storageDir, buildID string, needles []Needle) ([]Hit, error) {
 	if !buildIDRE.MatchString(buildID) {
 		return nil, fmt.Errorf("bad build ID %q", buildID)

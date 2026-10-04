@@ -1,4 +1,3 @@
-# Shared settings for the azure/ scripts. Override any of them with environment variables.
 # shellcheck shell=bash
 
 RESOURCE_GROUP="${RESOURCE_GROUP:-rg-e2b-test}"
@@ -7,7 +6,6 @@ LOCATION="${LOCATION:-swedencentral}"
 VM_SIZE="${VM_SIZE:-Standard_D4s_v5}"
 VM_USER="${VM_USER:-azureuser}"
 SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$HOME/.ssh/id_ed25519.pub}"
-# Backstop only: at 20:00 UTC the VM pauses every machine and deallocates itself.
 SHUTDOWN_UTC="${SHUTDOWN_UTC:-2100}"
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,7 +29,6 @@ wait_for_ssh() {
   return 1
 }
 
-# Starts the VM unless it's running and waits for SSH. Sets VM_IP.
 ensure_running() {
   local state
   state=$(vm_power_state)
@@ -43,8 +40,6 @@ ensure_running() {
   wait_for_ssh "$VM_IP"
 }
 
-# Copies the host scripts, the examples, Codex's pins and the Linux hibd binary to ~/hibernaut on
-# the VM.
 sync_to_vm() {
   local ip=$1
   rsync -az --delete "$PROJECT_ROOT/vm" "$PROJECT_ROOT/examples" "$VM_USER@$ip:hibernaut/"

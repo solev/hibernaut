@@ -1,8 +1,6 @@
 // Package e2b implements engine.Engine on a self-hosted E2B (spec D4).
 //
-// Machine lifecycle and template calls go to E2B's REST API. Exec goes to envd, the agent
-// inside each machine, and DialWebSocket to any port, both through E2B's client-proxy:
-// requests to a local or IP host are routed by the E2b-Sandbox-Id and E2b-Sandbox-Port headers.
+// Requests to a local or IP host are routed by the E2b-Sandbox-Id and E2b-Sandbox-Port headers.
 // envd checks X-Access-Token. Other ports check e2b-traffic-access-token, because machines are
 // created with public traffic off.
 package e2b
@@ -32,10 +30,8 @@ import (
 )
 
 const (
-	// envdPort is where envd listens inside every machine.
 	envdPort = 49983
-	// wsChunk caps the WebSocket messages a dialed connection writes: websocat, the guest end,
-	// drops messages over 64 KiB by default.
+
 	wsChunk = 32 << 10
 )
 
@@ -84,13 +80,7 @@ func New(cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	// guestHC shares hc's transport but refuses redirects. The far end of these calls — a
-	// machine's envd and its port 8081 — is attacker-controlled, so a redirect it returns must
-	// not become a host-side request to an address of the machine's choosing (SSRF past the
-	// orchestrator's IPAddressDeny), nor leak the call's headers to a redirect target.
-	// ErrUseLastResponse stops the client at the machine's own 3xx response instead of following
-	// it; the caller then fails on the non-success status. The REST API client keeps hc: its far
-	// end is E2B's trusted control plane, not a guest listener.
+
 	guestHC := *hc
 	guestHC.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Engine{
@@ -105,13 +95,12 @@ func New(cfg Config) (*Engine, error) {
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
 	body := e2bapi.NewSandboxV2{
 		TemplateID: opts.Template,
-		// A machine whose timeout runs out pauses, memory included, instead of being deleted.
+
 		AutoPause:       ptr(true),
 		AutoPauseMemory: ptr(true),
-		// Traffic to a paused machine doesn't wake it: hibd resumes machines itself, so that
-		// only its users can.
+
 		AutoResume: &e2bapi.SandboxAutoResumeConfig{Enabled: false},
-		// Every port but envd's then needs the machine's traffic access token.
+
 		Network: &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
 	}
 	if opts.Timeout > 0 {
@@ -233,8 +222,7 @@ func (e *Engine) Resume(ctx context.Context, id string, timeout time.Duration) (
 	return e.Get(ctx, id)
 }
 
-// connect resumes a paused machine, or extends a running one's timeout, and returns E2B's
-// answer. E2B waits out a pause in progress, then resumes.
+// E2B waits out a pause in progress, then resumes.
 func (e *Engine) connect(ctx context.Context, id string, timeout time.Duration) (*e2bapi.Sandbox, error) {
 	var body e2bapi.ConnectSandboxV2
 	if timeout > 0 {
@@ -310,7 +298,7 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 }
 
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
-	// Checking first keeps Exec from waking a paused machine through the proxy.
+
 	d, err := e.running(ctx, id)
 	if err != nil {
 		return engine.ExecResult{}, fmt.Errorf("exec: %w", err)
@@ -386,7 +374,6 @@ func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout
 	return chunkedConn{websocket.NetConn(context.Background(), c, websocket.MessageBinary)}, nil
 }
 
-// chunkedConn writes at most wsChunk bytes per WebSocket message.
 type chunkedConn struct{ net.Conn }
 
 func (c chunkedConn) Write(p []byte) (int, error) {
@@ -497,8 +484,7 @@ func buildError(name string, r *e2bapi.BuildStatusReason) error {
 	return fmt.Errorf("build template %s failed: %s", name, elide(r.Message))
 }
 
-// elide shortens s to its start and end. E2B quotes a step's whole command in logs and errors,
-// and a step that writes files is mostly their contents.
+// E2B quotes a step's whole command in logs and errors.
 func elide(s string) string {
 	const keep = 300
 	if len(s) <= 3*keep {
@@ -508,7 +494,6 @@ func elide(s string) string {
 		strings.ToValidUTF8(s[len(s)-keep:], ""))
 }
 
-// running returns the machine's details if it's running, and ErrNotRunning if it's paused.
 func (e *Engine) running(ctx context.Context, id string) (*e2bapi.SandboxDetail, error) {
 	d, err := e.detail(ctx, id)
 	if err != nil {
@@ -520,8 +505,6 @@ func (e *Engine) running(ctx context.Context, id string) (*e2bapi.SandboxDetail,
 	return d, nil
 }
 
-// apiError turns an unexpected E2B response into an error, mapping 404 to ErrNotFound and 409
-// (paused, or pausing or being deleted) to ErrNotRunning.
 func apiError(op, id string, status int, body []byte) error {
 	msg := string(body)
 	var apiErr e2bapi.Error
@@ -541,7 +524,6 @@ func apiError(op, id string, status int, body []byte) error {
 	return fmt.Errorf("%s: E2B returned %d: %s", subject, status, msg)
 }
 
-// seconds rounds d up to whole seconds, at least one.
 func seconds(d time.Duration) int32 {
 	s := math.Ceil(d.Seconds())
 	return int32(min(max(s, 1), math.MaxInt32))

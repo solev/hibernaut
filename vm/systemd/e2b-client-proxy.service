@@ -1,5 +1,3 @@
-# E2B's client proxy on :3002: routes traffic to machines. install-e2b.sh fills in @E2B_DIR@
-# and @E2B_USER@.
 [Unit]
 Description=E2B client proxy
 Requires=e2b-infra.service

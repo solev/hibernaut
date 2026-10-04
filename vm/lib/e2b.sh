@@ -1,11 +1,9 @@
-# Shared by install-e2b.sh and wait-e2b.sh.
 # shellcheck shell=bash
 
-# E2B's fixed local-development key from DEV-LOCAL.md. Azure's firewall only exposes SSH.
+# E2B's fixed local-development key from DEV-LOCAL.md.
 E2B_API_KEY="e2b_53ae1fed82754c17ad8077fbc8bcdd90"
 E2B_UNITS=(e2b-infra e2b-api e2b-orchestrator e2b-client-proxy)
 
-# The pause-all guard is installed with hibd (make deploy), so it's checked once it exists.
 e2b_units() {
   printf '%s\n' "${E2B_UNITS[@]}"
   [[ ! -f /etc/systemd/system/hibd-pause-all.service ]] || echo hibd-pause-all
@@ -26,8 +24,6 @@ base_template_ready() {
     jq -e '.[] | select((.aliases | index("base")) and .buildStatus == "ready")' >/dev/null
 }
 
-# wait_for_e2b <seconds>: waits until every unit is active and every service answers its health
-# check. Starts nothing, so after a reboot it shows whether E2B came up on its own.
 wait_for_e2b() {
   local deadline=$((SECONDS + $1)) unit
   until e2b_healthy; do

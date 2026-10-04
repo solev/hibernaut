@@ -302,8 +302,6 @@ set -eu
 	}
 }
 
-// Every file in an image's directory is installed by exactly one step, and every installed file
-// exists.
 func TestImageFilesInstalled(t *testing.T) {
 	for name, img := range catalog {
 		installed := map[string]int{}
@@ -327,8 +325,6 @@ func TestImageFilesInstalled(t *testing.T) {
 	}
 }
 
-// The install part of each step writes its files with the right contents and modes, and
-// writing them again replaces them.
 func TestInstallScript(t *testing.T) {
 	for name, img := range catalog {
 		for i, s := range img.steps {
@@ -457,9 +453,6 @@ func testLeafPEM(t *testing.T) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
 }
 
-// A login shell keeps a TERM the machine has terminfo for and falls back to xterm-256color for
-// one it hasn't, so clear, nano and tmux work from any terminal. With no terminal, TERM stays
-// unset.
 func TestTermFallback(t *testing.T) {
 	script, err := files.ReadFile("dev/hib-term.sh")
 	if err != nil {
@@ -470,7 +463,7 @@ func TestTermFallback(t *testing.T) {
 		{"hib-no-such-terminal", "TERM=xterm-256color"},
 		{"", ""},
 	} {
-		// env is a child process, so it shows TERM as programs started from the shell see it.
+
 		cmd := exec.Command("sh", "-c", string(script)+"\nenv")
 		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 		if c.term != "" {
@@ -492,8 +485,6 @@ func TestTermFallback(t *testing.T) {
 	}
 }
 
-// Machines are reachable only by key, as user, without forwarding anything back to the laptop.
-// E2B's own sshd settings allow root and empty passwords, so nothing may be included.
 func TestSSHDConfigHardened(t *testing.T) {
 	data, err := files.ReadFile("dev/sshd_config")
 	if err != nil {

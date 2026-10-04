@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-// fakeHibd fails unless quiesce has made its marker, which must come first.
 const fakeHibd = `#!/bin/sh
 echo "hibd $*" >>"$CALLS"
 [ -f "$QUIESCING" ] || { echo "no marker" >&2; exit 9; }
@@ -77,7 +76,7 @@ func TestQuiesce(t *testing.T) {
 			if got := strings.Split(strings.TrimSpace(string(data)), "\n"); !slices.Equal(got, tc.wantCalls) {
 				t.Errorf("calls %q, want %q", got, tc.wantCalls)
 			}
-			// Kept until the VM is gone, so hibd starts nothing; dropped if the VM stays up.
+
 			if _, err := os.Stat(marker); (err == nil) != tc.wantOK {
 				t.Errorf("marker after quiesce: %v; want it only after success", err)
 			}

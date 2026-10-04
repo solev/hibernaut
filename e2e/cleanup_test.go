@@ -45,7 +45,6 @@ func TestSnapshotCleanup(t *testing.T) {
 		return done && len(builds) >= 2 && dirs == len(builds)
 	})
 
-	// hibd cleans up at once only after a machine it saw is removed, and it looks every 15 s.
 	time.Sleep(time.Until(created.Add(20 * time.Second)))
 	hib(t, ctx, "rm", name)
 	waitFor(t, ctx, "hibd to delete the removed machine's snapshots", 2*time.Minute, func() bool {
@@ -64,9 +63,7 @@ func TestSnapshotCleanup(t *testing.T) {
 
 // TestPauseCycles pauses and resumes one machine 20 times, cleaning up after each pause, and
 // logs how long each resume takes, the disk its snapshots use, and how many of them its latest
-// snapshot needs. E2B never compacts a machine's chain of snapshot diffs, so if the resume time
-// or what the latest snapshot needs keeps growing, compaction needs planning. Cleanup keeps
-// every snapshot for an hour, so the disk used grows anyway.
+// snapshot needs.
 func TestPauseCycles(t *testing.T) {
 	if os.Getenv("HIB_E2E_SLOW") == "" {
 		t.Skip("takes about 10 minutes; run make e2e-slow")
@@ -76,7 +73,7 @@ func TestPauseCycles(t *testing.T) {
 	id := machineID(t, ctx, name)
 	sshMachine(t, ctx, name, "tmux new -d -s keep 'sleep 100000'")
 	for i := 1; i <= 20; i++ {
-		// The machine changes some memory and disk each time, as it would in use.
+
 		sshMachine(t, ctx, name, "head -c 64M /dev/urandom > /home/user/churn")
 		hib(t, ctx, "pause", name)
 		cleanUp(t, ctx)
@@ -91,7 +88,6 @@ func TestPauseCycles(t *testing.T) {
 	}
 }
 
-// cleanUp runs hibd cleanup on the host, again while E2B is still writing a build.
 func cleanUp(t *testing.T, ctx context.Context) {
 	t.Helper()
 	waitFor(t, ctx, "hibd cleanup to run", time.Minute, func() bool {
@@ -103,8 +99,6 @@ func cleanUp(t *testing.T, ctx context.Context) {
 	})
 }
 
-// snapshotBuilds returns the builds of machine id's snapshots from E2B's database on the host,
-// oldest first, and whether E2B is done writing them.
 func snapshotBuilds(t *testing.T, ctx context.Context, id string) (builds []string, done bool) {
 	t.Helper()
 	query := fmt.Sprintf("SELECT b.id, b.status_group FROM snapshots s "+
@@ -122,8 +116,6 @@ func snapshotBuilds(t *testing.T, ctx context.Context, id string) (builds []stri
 	return builds, done
 }
 
-// latestNeeds returns which of a machine's snapshot builds, oldest first, its latest one needs:
-// the ones its headers name.
 func latestNeeds(t *testing.T, ctx context.Context, builds []string) []string {
 	t.Helper()
 	if len(builds) == 0 {
@@ -154,7 +146,6 @@ func latestNeeds(t *testing.T, ctx context.Context, builds []string) []string {
 	return needs
 }
 
-// buildDirs returns how many of builds still have a directory on the host, and the disk they use.
 func buildDirs(t *testing.T, ctx context.Context, builds []string) (dirs int, used int64) {
 	t.Helper()
 	if len(builds) == 0 {

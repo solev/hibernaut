@@ -28,7 +28,6 @@ type tunnelOutput struct {
 }
 
 // OpenSSH enters its interactive loop only after setting up the requested forwards.
-// A different process on a chosen port must not satisfy the API health check.
 func (o *tunnelOutput) Write(p []byte) (int, error) {
 	n, err := o.buffer.Write(p)
 	if !o.announced && bytes.Contains(o.buffer.Bytes(), []byte("Entering interactive session.")) {

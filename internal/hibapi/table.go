@@ -75,8 +75,6 @@ func PrintCodex(w io.Writer, c Codex) {
 	tw.Flush()
 }
 
-// printCodex writes the Codex line, and a second line saying what's wrong unless the login is
-// ok.
 func printCodex(w io.Writer, c *Codex) {
 	if c == nil {
 		fmt.Fprintln(w, "Codex\tnot connected: run hib connect codex")
@@ -99,8 +97,6 @@ func printCodex(w io.Writer, c *Codex) {
 	fmt.Fprintf(w, "\t%s: %s\n", oneLine(string(c.Health)), fix)
 }
 
-// oneLine makes s safe for a terminal and one table cell: escapes as termsafe.String writes
-// them, runs of white space as one space, and "-" if nothing is left.
 func oneLine(s string) string {
 	s = strings.Join(strings.Fields(termsafe.String(s)), " ")
 	if s == "" {

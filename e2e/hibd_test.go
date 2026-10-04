@@ -22,7 +22,6 @@ func TestPauseAll(t *testing.T) {
 	}
 	sh(t, ctx, running.ID, "echo kept > marker")
 
-	// idle-deallocate's check for running machines.
 	const listRunning = "hibd ls --state running -q"
 	if out := mustSSH(t, ctx, listRunning); !slices.Equal(strings.Fields(out), []string{running.ID}) {
 		t.Errorf("%s = %q, want only %s", listRunning, out, running.ID)

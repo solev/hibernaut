@@ -1,4 +1,3 @@
-# E2B's REST API on :3000. install-e2b.sh fills in @E2B_DIR@ and @E2B_USER@.
 [Unit]
 Description=E2B API
 Requires=e2b-infra.service

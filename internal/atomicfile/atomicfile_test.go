@@ -13,7 +13,6 @@ import (
 	"testing"
 )
 
-// secret is in everything the tests write. No error may contain it.
 const secret = "tok-3f9c1a-SECRET"
 
 var (
@@ -30,7 +29,7 @@ var writers = []struct {
 }
 
 func TestWriteMakesFileWithContentAndExactMode(t *testing.T) {
-	// 0666 shows the umask doesn't apply. 0400 shows a read-only mode doesn't stop the write.
+
 	for _, perm := range []fs.FileMode{0o600, 0o644, 0o640, 0o400, 0o666} {
 		for _, w := range writers {
 			t.Run(w.name+"/"+perm.String(), func(t *testing.T) {
@@ -202,7 +201,7 @@ func TestWriteSyncsDirectoryAfterPublishing(t *testing.T) {
 					t.Errorf("directory synced before the file was published: %v", err)
 				}
 				synced = append(synced, d.Name())
-				// The real sync, so this test also shows directory syncs work on this platform.
+
 				err := real(d)
 				if err != nil {
 					t.Errorf("syncing the directory: %v", err)
@@ -342,7 +341,6 @@ func TestConcurrentWritersNeverMix(t *testing.T) {
 	assertOnly(t, dir, "vault.json")
 }
 
-// wrapTemp makes write's temp files go through wrap until the test ends.
 func wrapTemp(t *testing.T, wrap func(file) file) {
 	real := createTemp
 	t.Cleanup(func() { createTemp = real })
@@ -363,7 +361,6 @@ func failDirectorySync(t *testing.T, errno syscall.Errno) {
 	}
 }
 
-// faultyFile fails at step with err. A failing write writes half its data first.
 type faultyFile struct {
 	file
 	step string
@@ -400,8 +397,6 @@ func (f faultyFile) Close() error {
 	return err
 }
 
-// fileSpy records the temp file's mode when data is written, and whether path already had
-// the new content when the temp file was synced.
 type fileSpy struct {
 	file
 	path            string
@@ -443,7 +438,6 @@ func assertFile(t *testing.T, path string, want []byte, perm fs.FileMode) {
 	}
 }
 
-// assertOnly checks dir holds exactly names, so no temp file is left.
 func assertOnly(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)

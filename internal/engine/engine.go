@@ -1,8 +1,6 @@
 // Package engine is Hibernaut's seam over the microVM engine (E2B today, spec D4).
 //
-// Everything above this package talks to machines through Engine. The contract every
-// implementation must meet is the test suite in package enginetest, which runs against the
-// in-memory fake and, end to end, against real E2B.
+// The contract every implementation must meet is the test suite in package enginetest.
 package engine
 
 import (

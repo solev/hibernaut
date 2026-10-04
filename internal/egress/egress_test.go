@@ -671,8 +671,7 @@ func TestUnboundSiteOnOpenConnectionStillScrubsResponses(t *testing.T) {
 		}
 	})
 	defer fx.close()
-	// The client trusts only the Hibernaut CA, so the second request fails unless it reuses the
-	// intercepted connection.
+
 	client := fx.client(false)
 	for i := range 2 {
 		resp, err := client.Get(fx.url("/"))

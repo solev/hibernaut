@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Waits until E2B's databases accept connections. e2b-infra.service runs it from the compose
-# directory, bounded by its start timeout.
 set -euo pipefail
 
 ready() {

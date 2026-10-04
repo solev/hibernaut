@@ -22,7 +22,6 @@ type GitHub struct {
 	ScopesKnown bool     `json:"scopesKnown,omitempty"`
 }
 
-// How a GitHub token reached hibd.
 const (
 	// GitHubFromGH is hib connect github --from-gh: the laptop's gh login.
 	GitHubFromGH = "gh"

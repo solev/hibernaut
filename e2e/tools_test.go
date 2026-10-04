@@ -113,7 +113,7 @@ func requireToolOK(t *testing.T, ctx context.Context, name, command string) {
 		t.Fatal("the AI tool failed in the machine. Check hib status and the connected account's plan")
 	}
 	if stdout != "OK" {
-		// Do not print arbitrary model output. A broken proxy could have let a token into it.
+
 		t.Fatal("the AI tool didn't reply with exactly OK without a login prompt")
 	}
 }

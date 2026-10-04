@@ -23,7 +23,6 @@ func WriteNewFile(path string, data []byte, perm fs.FileMode) error {
 	return write(path, data, perm, link)
 }
 
-// file is the part of *os.File that write uses.
 type file interface {
 	Name() string
 	Chmod(fs.FileMode) error
@@ -32,7 +31,6 @@ type file interface {
 	Close() error
 }
 
-// The system calls whose failures tests can't cause for real.
 var (
 	createTemp = func(dir, pattern string) (file, error) {
 		f, err := os.CreateTemp(dir, pattern)
@@ -45,7 +43,6 @@ var (
 	syncDirectory = (*os.File).Sync
 )
 
-// write puts data in a temp file next to path, then publishes it at path.
 func write(path string, data []byte, perm fs.FileMode, publish func(tmp, path string) error) error {
 	dir := filepath.Dir(path)
 	f, err := createTemp(dir, "."+filepath.Base(path)+".tmp-*")
@@ -63,8 +60,6 @@ func write(path string, data []byte, perm fs.FileMode, publish func(tmp, path st
 	return syncDir(dir)
 }
 
-// fill sets f's mode before writing data, so f is never more readable than perm allows. Then
-// it flushes data to disk and closes f.
 func fill(f file, data []byte, perm fs.FileMode) error {
 	err := f.Chmod(perm)
 	if err == nil {
@@ -79,7 +74,6 @@ func fill(f file, data []byte, perm fs.FileMode) error {
 	return err
 }
 
-// link publishes tmp at path with a hard link, which unlike a rename fails if path exists.
 func link(tmp, path string) error {
 	if err := os.Link(tmp, path); err != nil {
 		return err
@@ -87,7 +81,6 @@ func link(tmp, path string) error {
 	return remove(tmp)
 }
 
-// syncDir flushes dir's entries to disk, so the published name survives a power cut.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
@@ -95,8 +88,7 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	err = syncDirectory(d)
-	// Some filesystems can't sync a directory, and say so with EINVAL or ENOTSUP. The file is
-	// in place by now. Failing would only tell the caller that it isn't.
+
 	if errors.Is(err, syscall.EINVAL) || errors.Is(err, errors.ErrUnsupported) {
 		return nil
 	}

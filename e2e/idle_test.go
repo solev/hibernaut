@@ -13,15 +13,12 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 )
 
-// Commands that keep a machine busy after the ssh session that starts them ends. setsid detaches
-// them from it. The agent is sleep named codex, so nothing else in the machine has codex in its
-// command line.
 const (
 	cpuLoop   = `setsid -f sh -c 'while :; do :; done' </dev/null >/dev/null 2>&1`
 	fakeAgent = `setsid -f bash -c 'exec -a codex sleep 6000' </dev/null >/dev/null 2>&1`
 )
 
-// TestIdlePauseWake is the milestone's main flow: a machine left idle pauses itself once its
+// TestIdlePauseWake checks that a machine left idle pauses itself once its
 // idle time is up, and connecting wakes it with its processes still running.
 func TestIdlePauseWake(t *testing.T) {
 	ctx := testContext(t, 15*time.Minute)
@@ -30,8 +27,6 @@ func TestIdlePauseWake(t *testing.T) {
 		t.Errorf("hib ls row for %s = %q, want idle time 1m", name, row)
 	}
 
-	// A counter in tmux ticks once a second. Then the ssh session ends, and nothing keeps the
-	// machine busy.
 	pid := strings.TrimSpace(sshMachine(t, ctx, name, `tmux new -d -s count `+
 		`'i=0; while :; do i=$((i+1)); echo $i >/tmp/count; sleep 1; done' && tmux list-panes -t count -F '#{pane_pid}'`))
 	left := time.Now()
@@ -94,7 +89,6 @@ func TestBusyStaysAwake(t *testing.T) {
 		sleepCtx(t, ctx, 10*time.Second)
 	}
 
-	// hibd's daemon says why it kept the CPU loop's and the agent's machines running.
 	log := mustSSH(t, ctx, "journalctl -u hibd --no-pager -o cat --since=-20min")
 	for _, want := range []string{busy[1].name + " is busy: using", busy[2].name + " is busy: a coding agent is running"} {
 		if !strings.Contains(log, want) {
@@ -127,7 +121,6 @@ func TestBusyPastAnHour(t *testing.T) {
 	}
 }
 
-// sleepCtx sleeps for d, and fails the test if ctx ends first.
 func sleepCtx(t *testing.T, ctx context.Context, d time.Duration) {
 	t.Helper()
 	select {

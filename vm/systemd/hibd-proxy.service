@@ -1,4 +1,3 @@
-# The root proxy needs the host network and read access to E2B's slot state.
 [Unit]
 Description=Hibernaut secret egress proxy
 After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service

@@ -37,7 +37,6 @@ func Sites() []string {
 	return []string{"github.com", "api.github.com", "uploads.github.com", "*.githubcopilot.com"}
 }
 
-// maxBody bounds an answer from GitHub's API.
 const maxBody = 1 << 20
 
 // ErrUnauthorized means GitHub refused the token (401): it was revoked or has expired.
@@ -72,7 +71,6 @@ func Noreply(id int64, login string) string {
 	return fmt.Sprintf("%d+%s@users.noreply.github.com", id, login)
 }
 
-// maxName bounds a cleaned name, in bytes.
 const maxName = 255
 
 // CleanName makes a profile's name fit for git's user.name. It drops control characters and
@@ -148,7 +146,7 @@ func GetUser(ctx context.Context, client *http.Client, baseURL, token string) (U
 	}
 	u, err := getUser(ctx, client, baseURL, token)
 	if err != nil && strings.Contains(err.Error(), token) {
-		// GitHub's answer shouldn't hold the token, but nothing may quote it.
+
 		return User{}, errors.New("GitHub's answer was unreadable")
 	}
 	return u, err
@@ -208,7 +206,6 @@ func getUser(ctx context.Context, client *http.Client, baseURL, token string) (U
 	return User{Login: user.Login, ID: user.ID, Name: CleanName(user.Name, user.Login), Scopes: scopes, ScopesKnown: known}, nil
 }
 
-// requestError says why a request to GitHub failed, briefly.
 func requestError(err error) error {
 	var timeout interface{ Timeout() bool }
 	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {

@@ -249,8 +249,6 @@ func TestVaultSourcePassesThroughUntilTheFilesChangeAfterAFailedReload(t *testin
 	}
 }
 
-// A failure to stat or open the files says nothing about what's in them, so the next call reads
-// them again even though they didn't change.
 func TestVaultSourceRecoversFromATransientFailure(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -297,7 +295,6 @@ func TestVaultSourcePassesThroughAnEmptyVault(t *testing.T) {
 	}
 }
 
-// reloadFixture is a vault and key that a VaultSource loaded once, in a directory a test can break.
 type reloadFixture struct {
 	path, keyPath string
 	key           vault.Key
@@ -343,8 +340,6 @@ func (f *reloadFixture) save(t *testing.T, value string) {
 	f.placeholder = s.Placeholder
 }
 
-// swap returns what the current swapper puts in place of the placeholder, or "" when it passes
-// placeholders through.
 func (f *reloadFixture) swap(t *testing.T) string {
 	t.Helper()
 	sw := f.source.Swapper()
@@ -406,8 +401,6 @@ func truncateKey(t *testing.T, f *reloadFixture) func() {
 	}
 }
 
-// duplicateSecret writes the vault with its one entry twice. Each copy decrypts, but the proxy
-// cannot swap two secrets with the same name and placeholder.
 func duplicateSecret(t *testing.T, f *reloadFixture) func() {
 	t.Helper()
 	data, err := os.ReadFile(f.path)

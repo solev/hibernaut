@@ -14,18 +14,15 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 )
 
-// startCounter starts a process that counts seconds into /tmp/counter, outliving Exec, and
-// prints its PID.
 const startCounter = `setsid nohup sh -c 'i=0; while :; do i=$((i+1)); echo $i > /tmp/counter; sleep 1; done' </dev/null >/dev/null 2>&1 & echo $!`
 
-// TestSurvivesHostRestart is spike S4: a machine that's running when the VM goes down resumes
+// TestSurvivesHostRestart checks that a machine that's running when the VM goes down resumes
 // afterwards with its files and processes, and E2B comes back up on its own.
 func TestSurvivesHostRestart(t *testing.T) {
 	if os.Getenv("HIB_E2E_SLOW") == "" {
 		t.Skip("restarts the VM; run make e2e-slow")
 	}
-	// A clean shutdown, as for Azure maintenance: the pause-all guard pauses machines while
-	// systemd stops E2B.
+
 	t.Run("reboot", func(t *testing.T) { survives(t, reboot) })
 }
 
@@ -44,7 +41,7 @@ func survives(t *testing.T, restart func(t *testing.T, ctx context.Context)) {
 
 	vm.closeTunnel()
 	restart(t, ctx)
-	// Without --start, wait-e2b.sh starts nothing.
+
 	if out, err := vm.ssh(ctx, "hibernaut/vm/wait-e2b.sh 2>&1"); err != nil {
 		t.Fatalf("E2B didn't come up on its own: %v\n%s", err, out)
 	}
@@ -93,7 +90,6 @@ func counter(t *testing.T, ctx context.Context, id string) int {
 	return n
 }
 
-// reboot restarts the VM cleanly.
 func reboot(t *testing.T, ctx context.Context) {
 	bootID := mustSSH(t, ctx, "cat /proc/sys/kernel/random/boot_id")
 	// Returns once the reboot is queued, though ssh may lose the connection first.
@@ -106,8 +102,6 @@ func reboot(t *testing.T, ctx context.Context) {
 	})
 }
 
-// deallocate runs the nightly unit, which pauses the machines and deallocates the VM, and waits
-// until the VM is asleep. It leaves the VM deallocated.
 func deallocate(t *testing.T, ctx context.Context) {
 	mustSSH(t, ctx, "sudo systemctl start --no-block hibernaut-nightly.service")
 	waitFor(t, ctx, "the VM to deallocate itself", 10*time.Minute, func() bool {
@@ -122,7 +116,7 @@ func deallocate(t *testing.T, ctx context.Context) {
 	})
 }
 
-// TestWakeOnSSH is the M1 headline: once the VM has deallocated itself, ssh NAME.hib wakes it
+// TestWakeOnSSH checks that once the VM has deallocated itself, ssh NAME.hib wakes it
 // through hib's bridge and connects, resuming the machine with its files and processes intact.
 func TestWakeOnSSH(t *testing.T) {
 	if os.Getenv("HIB_E2E_SLOW") == "" {
@@ -145,7 +139,6 @@ func TestWakeOnSSH(t *testing.T) {
 		})
 		before := counter(t, ctx, id)
 
-		// The nightly timer quiesces before deallocating. Leave the VM asleep for ssh to wake.
 		vm.closeTunnel()
 		deallocate(t, ctx)
 

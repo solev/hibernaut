@@ -13,11 +13,9 @@ import (
 
 const e2bServiceAddr = "192.0.2.1"
 
-// TestNoHostAccess is spike S8: a machine can't reach the host's own services or Azure's
+// TestNoHostAccess checks that a machine can't reach the host's own services or Azure's
 // endpoints. It tries every TCP port the host listens on, at every address a machine could use
-// for the host. E2B's firewall proxy accepts every connection a machine makes to a public
-// address, and closes it if the real destination doesn't answer, so a probe counts only when the
-// far end sends something back.
+// for the host.
 func TestNoHostAccess(t *testing.T) {
 	ctx := testContext(t, 15*time.Minute)
 	name := newHibMachine(t, ctx)
@@ -99,10 +97,6 @@ func e2bServicePorts(t *testing.T, ctx context.Context) []string {
 	return ports
 }
 
-// probe tries each host:port target from machine name, and returns the targets whose far end
-// sent at least one byte within 4 seconds. Port 22 gets an SSH identification, because GitHub's
-// SSH server closes on anything else without a reply. Other ports get a Postgres SSLRequest and a
-// CRLF, which HTTP, Postgres and Redis servers answer.
 func probe(t *testing.T, ctx context.Context, name string, targets []string) map[string]bool {
 	t.Helper()
 	script := `probe() {

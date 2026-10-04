@@ -201,7 +201,7 @@ func toolInstallFixture(t *testing.T, missing ...string) (func(string) ([]byte, 
 	if !ok {
 		t.Fatal("the last step must run tools")
 	}
-	// Run the public plan's install command under an isolated root.
+
 	install = strings.ReplaceAll(install, "put '/", "put '"+root+"/")
 	if out, err := exec.Command("bash", "-c", install).CombinedOutput(); err != nil {
 		t.Fatalf("install the tools step's files: %v: %s", err, out)

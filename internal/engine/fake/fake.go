@@ -1,5 +1,4 @@
-// Package fake is an in-memory engine.Engine for tests. The enginetest contract suite keeps it
-// honest against real E2B.
+// Package fake is an in-memory engine.Engine for tests.
 //
 // Timeouts are recorded but never fire: machines pause only when told to. Like a real engine's
 // requests, every method fails once its context is done.
@@ -95,7 +94,7 @@ type Engine struct {
 	homeRoot  string
 
 	mu        sync.Mutex
-	templates map[string]bool // nil: any
+	templates map[string]bool
 	machines  map[string]*engine.Machine
 	homes     map[string]string
 	built     []engine.TemplateSpec
@@ -249,7 +248,6 @@ func (e *Engine) Resume(ctx context.Context, id string, timeout time.Duration) (
 	return clone(m), nil
 }
 
-// resume must be called with e.mu held.
 func (e *Engine) resume(m *engine.Machine, timeout time.Duration) {
 	now := e.now()
 	endAt := now.Add(orDefault(timeout))
@@ -401,8 +399,7 @@ func localExec(ctx context.Context, _ engine.Machine, home string, req engine.Ex
 	return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes()}, nil
 }
 
-// capped buffers up to engine.MaxExecOutput bytes. The buffer isn't embedded: its ReadFrom
-// would get around Write.
+// The buffer isn't embedded: its ReadFrom would get around Write.
 type capped struct {
 	buf  bytes.Buffer
 	over bool
@@ -416,7 +413,6 @@ func (c *capped) Write(p []byte) (int, error) {
 	return c.buf.Write(p)
 }
 
-// running returns a copy of machine id and its home directory, or ErrNotRunning.
 func (e *Engine) running(id string) (engine.Machine, string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -430,7 +426,6 @@ func (e *Engine) running(id string) (engine.Machine, string, error) {
 	return clone(m), e.homes[id], nil
 }
 
-// lookup must be called with e.mu held.
 func (e *Engine) lookup(id string) (*engine.Machine, error) {
 	m, ok := e.machines[id]
 	if !ok {
