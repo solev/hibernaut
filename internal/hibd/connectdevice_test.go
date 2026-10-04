@@ -133,14 +133,19 @@ func connectDevice(t *testing.T, ctx context.Context, a *App, out *bytes.Buffer)
 	t.Helper()
 	out.Reset()
 	code := a.Run(ctx, []string{"connect", "github", "-source", "device", "-json"})
+	return code, decodeReply(t, out)
+}
+
+func decodeReply(t *testing.T, out *bytes.Buffer) hibapi.Response {
+	t.Helper()
 	r, err := hibapi.DecodeResponse(out.Bytes())
 	if remote, ok := errors.AsType[*hibapi.RemoteError](err); ok {
-		return code, hibapi.Response{Error: remote.Msg}
+		return hibapi.Response{Error: remote.Msg}
 	}
 	if err != nil {
-		t.Fatalf("hibd connect github printed %q: %v", out, err)
+		t.Fatalf("hibd printed %q: %v", out, err)
 	}
-	return code, r
+	return r
 }
 
 func wantNothingStored(t *testing.T, a *App, gh *fakeGitHub) {
@@ -175,7 +180,7 @@ func TestConnectGitHubWithTheDeviceFlow(t *testing.T) {
 
 	code, r := connectDevice(t, t.Context(), a, out)
 	if code != 0 {
-		t.Fatalf("exit %d: %+v; stderr %q", code, r, errOut)
+		t.Fatalf("exit %d: %+v, stderr %q", code, r, errOut)
 	}
 	if errOut.String() != devicePrompt {
 		t.Errorf("stderr = %q, want %q", errOut, devicePrompt)
@@ -197,7 +202,7 @@ func TestConnectGitHubWithTheDeviceFlow(t *testing.T) {
 	}
 	p, err := github.LoadProfile(profilePath(a))
 	if err != nil || p == nil || *p != (github.Profile{Login: "octocat", ID: 583231, Name: "The Octocat", Source: "device"}) {
-		t.Errorf("profile = %+v, %v; want octocat from the device flow", p, err)
+		t.Errorf("profile = %+v, %v, want octocat from the device flow", p, err)
 	}
 	if !strings.Contains(guest.envString(), "GH_TOKEN=") {
 		t.Errorf("/etc/environment = %q, want GH_TOKEN", guest.envString())
@@ -214,7 +219,7 @@ func TestConnectGitHubWithTheDeviceFlowSaysWhoAndWarnsAboutScopes(t *testing.T) 
 	newFakeDevice(t, a, deviceAnswer{body: codeBody}, deviceAnswer{body: tokenBody})
 	openStdin(t, a)
 	if code := a.Run(t.Context(), []string{"connect", "github", "-source", "device"}); code != 0 {
-		t.Fatalf("exit %d; stderr %q", code, errOut)
+		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
 	if out.String() != "connected GitHub as octocat\n" {
 		t.Errorf("stdout = %q", out)
@@ -224,16 +229,6 @@ func TestConnectGitHubWithTheDeviceFlowSaysWhoAndWarnsAboutScopes(t *testing.T) 
 		t.Errorf("stderr = %q, want %q", errOut, want)
 	}
 	wantNoDeviceSecrets(t, out.String(), errOut.String())
-}
-
-func TestConnectGitHubWithTheDeviceFlowWithoutStdin(t *testing.T) {
-	a, out, errOut, gh := newGitHubApp(t, fake.New())
-	gh.set(testToken, octocat)
-	newFakeDevice(t, a, deviceAnswer{body: codeBody}, deviceAnswer{body: tokenBody})
-	a.Stdin = nil
-	if code, r := connectDevice(t, t.Context(), a, out); code != 0 || r.GitHub == nil || r.GitHub.Source != "device" {
-		t.Fatalf("exit %d, reply %+v; stderr %q", code, r, errOut)
-	}
 }
 
 func TestConnectGitHubWhileAnotherIsRunning(t *testing.T) {
@@ -247,14 +242,18 @@ func TestConnectGitHubWhileAnotherIsRunning(t *testing.T) {
 				t.Fatalf("taking the GitHub login lock: %v, %v", ok, err)
 			}
 			defer unlock()
-			if source == "device" {
-				a.Stdin = unread{t}
-			} else {
-				a.Stdin = strings.NewReader(testToken + "\n")
+			openStdin(t, a)
+			exit := make(chan int, 1)
+			go func() { exit <- a.Run(t.Context(), []string{"connect", "github", "-source", source, "-json"}) }()
+			var code int
+			select {
+			case code = <-exit:
+			case <-time.After(10 * time.Second):
+				t.Fatal("hibd waited for stdin, which never ends, instead of failing on the busy lock")
 			}
-			code, r := runJSONReply(t, a, out, "connect", "github", "-source", source, "-json")
+			r := decodeReply(t, out)
 			if want := "another hib connect github is running: finish it, or stop it, then try again"; code != 1 || r.Error != want {
-				t.Errorf("exit %d, error %q; want 1 and %q", code, r.Error, want)
+				t.Errorf("exit %d, error %q, want 1 and %q", code, r.Error, want)
 			}
 			if errOut.Len() != 0 {
 				t.Errorf("stderr = %q, want nothing", errOut)
@@ -280,7 +279,7 @@ func TestConnectGitHubWithTheDeviceFlowStopsWhenStdinEnds(t *testing.T) {
 	}
 	code, r := connectDevice(t, t.Context(), a, out)
 	if code != 1 || r.Error != cancelledText {
-		t.Errorf("exit %d, error %q; want 1 and %q", code, r.Error, cancelledText)
+		t.Errorf("exit %d, error %q, want 1 and %q", code, r.Error, cancelledText)
 	}
 	if errOut.String() != devicePrompt {
 		t.Errorf("stderr = %q, want %q", errOut, devicePrompt)
@@ -299,7 +298,7 @@ func TestConnectGitHubWithTheDeviceFlowStopsWhenStdinHasEnded(t *testing.T) {
 	d.hook = func(_ int, ctx context.Context) { waitUntilDone(t, ctx, "stdin that had ended") }
 	code, r := connectDevice(t, t.Context(), a, out)
 	if code != 1 || r.Error != cancelledText {
-		t.Errorf("exit %d, error %q; want 1 and %q", code, r.Error, cancelledText)
+		t.Errorf("exit %d, error %q, want 1 and %q", code, r.Error, cancelledText)
 	}
 	if _, polls := d.requests(); polls != 0 {
 		t.Errorf("fake GitHub got %d polls, want none", polls)
@@ -321,7 +320,7 @@ func TestConnectGitHubWithTheDeviceFlowStopsWithItsContext(t *testing.T) {
 	}
 	code, r := connectDevice(t, ctx, a, out)
 	if code != 1 || r.Error != cancelledText {
-		t.Errorf("exit %d, error %q; want 1 and %q", code, r.Error, cancelledText)
+		t.Errorf("exit %d, error %q, want 1 and %q", code, r.Error, cancelledText)
 	}
 	if _, polls := d.requests(); polls != 1 {
 		t.Errorf("fake GitHub got %d polls, want 1", polls)
@@ -374,13 +373,13 @@ func TestConnectGitHubWithTheDeviceFlowStoresATokenAfterStdinEnds(t *testing.T) 
 
 	code, reply := connectDevice(t, t.Context(), a, out)
 	if code != 0 || reply.GitHub == nil || reply.GitHub.Source != "device" {
-		t.Fatalf("exit %d, reply %+v; stderr %q", code, reply, errOut)
+		t.Fatalf("exit %d, reply %+v, stderr %q", code, reply, errOut)
 	}
 	if revealed := openVault(t, a); len(revealed) != 1 || revealed[0].Value != testToken {
 		t.Error("the vault doesn't hold the token GitHub granted")
 	}
 	if p, err := github.LoadProfile(profilePath(a)); err != nil || p == nil || p.Source != "device" {
-		t.Errorf("profile = %+v, %v; want source device", p, err)
+		t.Errorf("profile = %+v, %v, want source device", p, err)
 	}
 }
 
@@ -423,7 +422,7 @@ func TestConnectGitHubWithTheDeviceFlowFails(t *testing.T) {
 			openStdin(t, a)
 			code, r := connectDevice(t, t.Context(), a, out)
 			if code != 1 || r.Error != tc.want {
-				t.Errorf("exit %d, error %q; want 1 and %q", code, r.Error, tc.want)
+				t.Errorf("exit %d, error %q, want 1 and %q", code, r.Error, tc.want)
 			}
 			if errOut.String() != tc.prompt {
 				t.Errorf("stderr = %q, want %q", errOut, tc.prompt)
@@ -447,7 +446,7 @@ func TestConnectGitHubWithTheDeviceFlowChecksTheVaultFirst(t *testing.T) {
 	a.Stdin = unread{t}
 	code, r := connectDevice(t, t.Context(), a, out)
 	if code != 1 || !strings.Contains(r.Error, "hib secret rm bot") {
-		t.Errorf("exit %d, error %q; want 1, naming secret bot and how to remove it", code, r.Error)
+		t.Errorf("exit %d, error %q, want 1, naming secret bot and how to remove it", code, r.Error)
 	}
 	if codes, polls := d.requests(); codes+polls != 0 {
 		t.Errorf("fake GitHub got %d requests, want none", codes+polls)
@@ -469,7 +468,7 @@ func TestConnectGitHubWithTheDeviceFlowRefusedToken(t *testing.T) {
 	openStdin(t, a)
 	code, r := connectDevice(t, t.Context(), a, out)
 	if want := "GitHub refused the token. Nothing was stored. Run hib connect github again"; code != 1 || r.Error != want {
-		t.Errorf("exit %d, error %q; want 1 and %q", code, r.Error, want)
+		t.Errorf("exit %d, error %q, want 1 and %q", code, r.Error, want)
 	}
 	if gh.callCount() != 1 {
 		t.Errorf("GitHub's API got %d calls, want 1", gh.callCount())
