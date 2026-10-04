@@ -424,6 +424,40 @@ func TestConnectCodex(t *testing.T) {
 	}
 }
 
+func TestConnectCodexWaitsTheFullTimeAfterWakingHost(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	h.states = []string{"VM deallocated"}
+	var deadlines []time.Time
+	run := c.ssh
+	c.ssh = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+		if strings.Contains(strings.Join(args, " "), "'connect' 'codex'") {
+			deadline, _ := ctx.Deadline()
+			deadlines = append(deadlines, deadline)
+		}
+		return run(ctx, args, stdin, stdout, stderr)
+	}
+	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+		if !slices.Contains(words, "codex") {
+			return 0, false
+		}
+		if len(deadlines) == 1 {
+			return 255, true
+		}
+		return writeTestResponse(stdout, hibapi.Response{Codex: &hibapi.Codex{
+			Email: "dev@example.com", Plan: "plus", AccountID: "acct-1234", Health: hibapi.CodexOK,
+		}}), true
+	}
+	code := c.hib("connect", "codex")
+	if code != 0 || len(deadlines) != 2 || !strings.Contains(c.errOut.String(), "the host is up after") {
+		t.Fatalf("exit %d, connect attempts %d, expected a wake and retry: %s", code, len(deadlines), c.errOut)
+	}
+	// hibd starts the login only once the host is up, so waking it mustn't eat into the code's time.
+	if !deadlines[1].After(deadlines[0]) {
+		t.Error("hib's 16 minutes for hibd started before the host woke, want them to start after")
+	}
+}
+
 func TestConnectCodexFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
