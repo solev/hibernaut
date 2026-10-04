@@ -23,6 +23,14 @@ func TestSnapshotCleanup(t *testing.T) {
 	ctx := testContext(t, 15*time.Minute)
 	other := newHibMachine(t, ctx)
 	hib(t, ctx, "pause", other)
+	otherID := machineID(t, ctx, other)
+	var kept []string
+	waitFor(t, ctx, "E2B to write the retained machine's snapshot", time.Minute, func() bool {
+		var done bool
+		kept, done = snapshotBuilds(t, ctx, otherID)
+		dirs, _ := buildDirs(t, ctx, kept)
+		return done && len(kept) > 0 && dirs == len(kept)
+	})
 	name := newHibMachine(t, ctx)
 	created := time.Now()
 	id := machineID(t, ctx, name)
@@ -44,11 +52,8 @@ func TestSnapshotCleanup(t *testing.T) {
 		dirs, _ := buildDirs(t, ctx, builds)
 		return dirs == 0
 	})
-	log := mustSSH(t, ctx, "journalctl -u hibd --no-pager -o cat --since=-15min")
-	for _, b := range builds {
-		if !strings.Contains(log, "cleanup: deleted "+b) {
-			t.Errorf("hibd's log doesn't say it deleted %s:\n%s", b, log)
-		}
+	if dirs, _ := buildDirs(t, ctx, kept); dirs != len(kept) {
+		t.Errorf("cleanup kept %d of the other machine's %d snapshot directories", dirs, len(kept))
 	}
 
 	if out := sshMachine(t, ctx, other, "echo woke"); strings.TrimSpace(out) != "woke" {

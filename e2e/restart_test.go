@@ -27,8 +27,6 @@ func TestSurvivesHostRestart(t *testing.T) {
 	// A clean shutdown, as for Azure maintenance: the pause-all guard pauses machines while
 	// systemd stops E2B.
 	t.Run("reboot", func(t *testing.T) { survives(t, reboot) })
-	// The nightly timer's path, which idle-deallocate shares: quiesce, then deallocate.
-	t.Run("nightly-deallocate", func(t *testing.T) { survives(t, nightlyDeallocate) })
 }
 
 func survives(t *testing.T, restart func(t *testing.T, ctx context.Context)) {
@@ -108,15 +106,6 @@ func reboot(t *testing.T, ctx context.Context) {
 	})
 }
 
-// nightlyDeallocate runs the nightly unit, which deallocates the VM, then starts the VM without
-// deploying or starting anything else.
-func nightlyDeallocate(t *testing.T, ctx context.Context) {
-	deallocate(t, ctx)
-	if out, err := vm.azure(ctx, "start.sh"); err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-}
-
 // deallocate runs the nightly unit, which pauses the machines and deallocates the VM, and waits
 // until the VM is asleep. It leaves the VM deallocated.
 func deallocate(t *testing.T, ctx context.Context) {
@@ -134,35 +123,61 @@ func deallocate(t *testing.T, ctx context.Context) {
 }
 
 // TestWakeOnSSH is the M1 headline: once the VM has deallocated itself, ssh NAME.hib wakes it
-// through hib's bridge and connects, resuming the machine with its files intact.
+// through hib's bridge and connects, resuming the machine with its files and processes intact.
 func TestWakeOnSSH(t *testing.T) {
 	if os.Getenv("HIB_E2E_SLOW") == "" {
 		t.Skip("deallocates the VM; run make e2e-slow")
 	}
-	ctx := testContext(t, 25*time.Minute)
-	if vm.engine == nil {
+	t.Run("nightly-deallocate", func(t *testing.T) {
+		ctx := testContext(t, 25*time.Minute)
+		if vm.engine == nil {
+			if err := vm.openTunnel(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		name := newHibMachine(t, ctx)
+		sshMachine(t, ctx, name, "echo woke > marker")
+		id := machineID(t, ctx, name)
+		pid := strings.TrimSpace(sh(t, ctx, id, startCounter))
+		waitFor(t, ctx, "the counter to write its first value", time.Minute, func() bool {
+			res, err := vm.engine.Exec(ctx, id, engine.ExecRequest{Cmd: "test", Args: []string{"-s", "/tmp/counter"}})
+			return err == nil && res.ExitCode == 0
+		})
+		before := counter(t, ctx, id)
+
+		// The nightly timer quiesces before deallocating. Leave the VM asleep for ssh to wake.
+		vm.closeTunnel()
+		deallocate(t, ctx)
+
+		start := time.Now()
+		got := sshMachine(t, ctx, name, "cat marker")
+		t.Logf("ssh woke the VM and connected in %v", time.Since(start).Round(time.Second))
+		if strings.TrimSpace(got) != "woke" {
+			t.Errorf("marker after waking = %q, want %q", got, "woke")
+		}
+
+		if out, err := vm.ssh(ctx, "hibernaut/vm/wait-e2b.sh 2>&1"); err != nil {
+			t.Fatalf("E2B didn't come up on its own: %v\n%s", err, out)
+		}
 		if err := vm.openTunnel(ctx); err != nil {
 			t.Fatal(err)
 		}
-	}
-	name := newHibMachine(t, ctx)
-	sshMachine(t, ctx, name, "echo woke > marker")
-
-	// Deallocate the VM, as the idle timer does, and leave it asleep. The harness tunnel goes
-	// with it; hib's bridge reaches the host over its public IP, so it still works.
-	vm.closeTunnel()
-	deallocate(t, ctx)
-
-	// A plain ssh wakes the host through hib and connects; the machine resumes with its marker.
-	start := time.Now()
-	got := sshMachine(t, ctx, name, "cat marker")
-	t.Logf("ssh woke the VM and connected in %v", time.Since(start).Round(time.Second))
-	if strings.TrimSpace(got) != "woke" {
-		t.Errorf("marker after waking = %q, want %q", got, "woke")
-	}
-
-	// Reopen the tunnel so the machine's cleanup can reach the engine.
-	if err := vm.openTunnel(ctx); err != nil {
-		t.Fatal(err)
-	}
+		paused := mustSSH(t, ctx, "journalctl -b -1 --no-pager -o short-iso -u hibd-pause-all -u hibernaut-nightly")
+		t.Logf("pause-all guard and nightly unit, previous boot:\n%s", paused)
+		t.Logf("end of the previous boot:\n%s", mustSSH(t, ctx, "journalctl -b -1 --no-pager -o short-iso -n 30"))
+		if !strings.Contains(paused, "paused "+id) {
+			t.Errorf("neither the pause-all guard nor the nightly unit logged pausing %s", id)
+		}
+		res, err := vm.engine.Exec(ctx, id, engine.ExecRequest{Cmd: "kill", Args: []string{"-0", pid}})
+		if err != nil || res.ExitCode != 0 {
+			t.Fatal("the counter process didn't survive the nightly deallocation")
+		}
+		after := counter(t, ctx, id)
+		if after < before {
+			t.Errorf("counter went from %d to %d, want it to carry on", before, after)
+		}
+		waitFor(t, ctx, "the resumed counter to advance", time.Minute, func() bool {
+			return counter(t, ctx, id) > after
+		})
+	})
 }

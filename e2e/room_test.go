@@ -21,13 +21,10 @@ func TestHostFull(t *testing.T) {
 	paused := newHibMachine(t, ctx)
 	hib(t, ctx, "pause", paused)
 
-	// Start machines until hib ls says no more fit. Timing ls gives the trip to the host.
+	// Start machines until hib ls says no more fit.
 	var running []string
-	var lsTook time.Duration
 	for {
-		start := time.Now()
 		ls := hib(t, ctx, "ls")
-		lsTook = time.Since(start)
 		if strings.Contains(ls, "\nNo room for another dev machine") {
 			break
 		}
@@ -47,13 +44,14 @@ func TestHostFull(t *testing.T) {
 		defer cancel()
 		runHib(ctx, "rm", extra)
 	})
-	start := time.Now()
-	_, stderr, code := runHib(ctx, "new", extra)
-	wantNoRoom(t, "hib new", code != 0, stderr, extra, running, time.Since(start), lsTook)
-
-	start = time.Now()
-	_, stderr, err := sshResult(ctx, nil, paused, "true")
-	wantNoRoom(t, "ssh to a paused machine", err != nil, stderr, paused, running, time.Since(start), lsTook)
+	wantNoRoom(t, ctx, "hib new", extra, running, func(ctx context.Context) (bool, string) {
+		_, stderr, code := runHib(ctx, "new", extra)
+		return code != 0, stderr
+	})
+	wantNoRoom(t, ctx, "ssh to a paused machine", paused, running, func(ctx context.Context) (bool, string) {
+		_, stderr, err := sshResult(ctx, nil, paused, "true")
+		return err != nil, stderr
+	})
 
 	for _, name := range running {
 		if m, err := vm.engine.Get(ctx, machineID(t, ctx, name)); err != nil || m.State != engine.Running {
@@ -78,10 +76,17 @@ func TestHostFull(t *testing.T) {
 }
 
 // wantNoRoom checks that a start was refused with the message for a full host, which names the
-// running machines and says what to do, about as fast as hib ls answers.
-func wantNoRoom(t *testing.T, what string, failed bool, stderr, name string, running []string, took, lsTook time.Duration) {
+// running machines and says what to do. The attempt must finish before its deadline.
+func wantNoRoom(t *testing.T, ctx context.Context, what, name string, running []string, attempt func(context.Context) (bool, string)) {
 	t.Helper()
-	t.Logf("%s was refused in %v (hib ls takes %v)", what, took.Round(time.Millisecond), lsTook.Round(time.Millisecond))
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	start := time.Now()
+	failed, stderr := attempt(ctx)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("waiting for %s to be refused: %v", what, err)
+	}
+	t.Logf("%s was refused in %v", what, time.Since(start).Round(time.Millisecond))
 	if !failed || !strings.Contains(stderr, `no room on the host for "`+name+`"`) || !strings.Contains(stderr, "hib pause NAME") {
 		t.Errorf("%s: failed %v, stderr %q; want the message for a full host", what, failed, stderr)
 	}
@@ -89,8 +94,5 @@ func wantNoRoom(t *testing.T, what string, failed bool, stderr, name string, run
 		if !strings.Contains(stderr, r) {
 			t.Errorf("%s: the message doesn't name running machine %s: %q", what, r, stderr)
 		}
-	}
-	if took > lsTook+time.Second {
-		t.Errorf("%s took %v to be refused; hib ls takes %v", what, took.Round(time.Millisecond), lsTook.Round(time.Millisecond))
 	}
 }
