@@ -18,7 +18,8 @@ The M5 code is built against this section. Code that has to differ updates it in
 | `/var/lib/hibernaut/codex.json` | root, 0644 | The Codex profile: account, plan, expiry, health, and the refresh in progress. No token. Written atomically. |
 | `/var/lib/hibernaut/codex-retired.json` | root, 0644 | Replaced real values that the leak scan still looks for, in the vault's format and sealed with its key. |
 | `/var/lib/hibernaut/codex.lock` | root, 0600 | Held for any refresh or login change, and always taken before the vault's lock. |
-| `/usr/local/bin/codex` | root, 0755 | The pinned Codex, used only by `hibd connect codex`. |
+| `/usr/local/lib/codex-0.160.0` | root, 0755 | Codex's package, helpers and resources. |
+| `/usr/local/bin/codex` | root, symlink | Entrypoint for `hibd connect codex`. |
 
 **Packages:**
 
@@ -169,13 +170,24 @@ placeholder, so every `refresh_token` grant gets the 401, without an audit entry
 
 **Pins and the image:**
 
-- `images/dev/versions` sets `CODEX_VERSION=0.160.0`, `CODEX_SHA256` (the x86_64 musl tarball),
+- `images/dev/versions` sets `CODEX_VERSION=0.160.0`, `CODEX_SHA256` (the x86_64 musl package),
   `COPILOT_VERSION=1.0.91` and `COPILOT_SHA256`. The image's `tools` step, `vm/setup-host.sh` and
   CI read it. A test checks that `CODEX_VERSION` is `codex.Version`.
+- Codex uses `codex-package-x86_64-unknown-linux-musl.tar.gz`, not the bare binary tarball. The
+  package carries `codex-code-mode-host` and its resources, so code mode works. Both the image
+  and the host extract the entire package with `--no-same-owner` into the root-owned
+  `/usr/local/lib/codex-$CODEX_VERSION`. The image's start command keeps that package root-owned.
+  They stage under `/usr/local/lib`, on the same filesystem, and replace `/usr/local/bin/codex`
+  with a temporary symlink to the package's `bin/codex`, then `mv -T`. They require `bin/codex`,
+  `bin/codex-code-mode-host` and `codex-package.json` before publishing. Other
+  `/usr/local/lib/codex-*` directories are removed only after the symlink points at the new
+  version. The host and CI use `vm/install-codex.sh`. It skips a complete package that reports the
+  pinned version in a clean environment. A bare binary is migrated even if its version matches.
 - The `tools` step is the last one. Builds reach `github.com` through the proxy, which intercepts
   it while GitHub is connected, so every download from there comes after `trust-ca`. websocat's
-  download moves from `packages` into this step for the same reason. The step installs Codex and
-  Copilot into `/usr/local/bin`, and writes `/home/user/.codex/config.toml`, owned by `user`:
+  download moves from `packages` into this step for the same reason. The step links Codex and
+  installs Copilot into `/usr/local/bin`. It writes `/home/user/.codex/config.toml`, owned by
+  `user`:
   `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`,
   `check_for_update_on_startup = false`, `[analytics] enabled = false` and
   `cli_auth_credentials_store = "file"`. Copilot's settings turn off the banner and updates, with
@@ -206,7 +218,9 @@ connected. No test reads or changes a real `~/.codex`.
 
 - [ ] `images/dev/versions` pins Codex 0.160.0 and the Copilot CLI 1.0.91 by version and SHA-256.
       The host reads the same file.
-- [ ] Both installed from their release tarballs into `/usr/local/bin`.
+- [ ] Codex's canonical package, with code-mode-host, installed under
+      `/usr/local/lib/codex-0.160.0`, with `/usr/local/bin/codex` linked to its `bin/codex`.
+      Copilot installed from its release tarball into `/usr/local/bin`.
 - [ ] Builds download from `github.com` only after `trust-ca`, since the proxy intercepts it.
       websocat's download moves there too.
 - [ ] `~/.codex/config.toml`: `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`,

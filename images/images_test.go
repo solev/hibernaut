@@ -11,11 +11,44 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/solev/hibernaut/internal/ca"
+	"github.com/solev/hibernaut/internal/codex"
 )
+
+func TestToolVersions(t *testing.T) {
+	data, err := files.ReadFile("dev/versions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{}
+	assignment := regexp.MustCompile(`^[A-Z_][A-Z0-9_]*=[a-z0-9.]+$`)
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !assignment.MatchString(line) || values[key] != "" {
+			t.Fatalf("versions must contain unique shell-sourceable KEY=VALUE lines: %q", line)
+		}
+		values[key] = value
+	}
+	if len(values) != 4 {
+		t.Errorf("versions must contain exactly the four Codex and Copilot pins")
+	}
+	if values["CODEX_VERSION"] != codex.Version {
+		t.Errorf("CODEX_VERSION = %q, want codex.Version %q", values["CODEX_VERSION"], codex.Version)
+	}
+	if values["COPILOT_VERSION"] != "1.0.91" {
+		t.Errorf("COPILOT_VERSION = %q, want 1.0.91", values["COPILOT_VERSION"])
+	}
+	for _, key := range []string{"CODEX_SHA256", "COPILOT_SHA256"} {
+		value := values[key]
+		if len(value) != 64 || strings.Trim(value, "0123456789abcdef") != "" {
+			t.Errorf("%s must be a lowercase SHA-256", key)
+		}
+	}
+}
 
 func TestSpecDev(t *testing.T) {
 	caPEM := testCAPEM(t)
@@ -35,7 +68,7 @@ func TestSpecDev(t *testing.T) {
 	if spec.Force {
 		t.Error("Force set")
 	}
-	if len(spec.Steps) != 3 {
+	if len(spec.Steps) != 4 {
 		t.Fatalf("%d steps", len(spec.Steps))
 	}
 	for i, s := range spec.Steps {
@@ -70,6 +103,23 @@ func TestSpecDev(t *testing.T) {
 	}
 	if !strings.Contains(caStep, base64.StdEncoding.EncodeToString(caPEM)) {
 		t.Error("CA step doesn't carry the CA as base64")
+	}
+	toolsStep := spec.Steps[len(spec.Steps)-1].Cmd
+	if !strings.HasSuffix(toolsStep, "; /usr/lib/hibernaut/tools") ||
+		!strings.Contains(toolsStep, "put '/usr/lib/hibernaut/versions' 644 '") {
+		t.Error("the last step must install the versions and run tools after trust-ca")
+	}
+	put := regexp.MustCompile(`put '[^']+' [0-7]+ '([^']+)';`)
+	for i, step := range spec.Steps[:2] {
+		for _, match := range put.FindAllStringSubmatch(step.Cmd, -1) {
+			data, err := base64.StdEncoding.DecodeString(match[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.HasPrefix(data, []byte("#!")) && bytes.Contains(data, []byte("github.com")) {
+				t.Errorf("step %d refers to github.com before trust-ca", i)
+			}
+		}
 	}
 }
 
@@ -171,10 +221,10 @@ set -eu
 		t.Fatal(err)
 	}
 
-	if _, _, ok := strings.Cut(spec.Steps[len(spec.Steps)-1].Cmd, "; /usr/lib/hibernaut/trust-ca"); !ok {
-		t.Fatalf("last step = %q, want it to run trust-ca", spec.Steps[len(spec.Steps)-1].Cmd)
+	if _, _, ok := strings.Cut(spec.Steps[2].Cmd, "; /usr/lib/hibernaut/trust-ca"); !ok {
+		t.Fatalf("CA step = %q, want it to run trust-ca", spec.Steps[2].Cmd)
 	}
-	catalogStep := catalog[Default].steps[len(catalog[Default].steps)-1]
+	catalogStep := catalog[Default].steps[2]
 	install, err := installStepScript(Default, root, catalogStep, caPEM)
 	if err != nil {
 		t.Fatal(err)

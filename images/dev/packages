@@ -8,8 +8,6 @@ export DEBIAN_FRONTEND=noninteractive
 
 NODE_VERSION=24.21.0
 NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
-WEBSOCAT_VERSION=1.14.1
-WEBSOCAT_SHA256=66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514
 
 apt-get update
 # ncurses-term and kitty-terminfo have the terminfo entries of terminals people ssh in from, such
@@ -33,9 +31,3 @@ tar -xJf "$tmp/node.tar.xz" -C /usr/local --strip-components=1 --no-same-owner \
 	"node-v$NODE_VERSION-linux-x64/lib" "node-v$NODE_VERSION-linux-x64/share"
 node --version
 npm --version
-
-install -d -m 755 /usr/lib/hibernaut
-fetch "https://github.com/vi/websocat/releases/download/v$WEBSOCAT_VERSION/websocat.x86_64-unknown-linux-musl" \
-	"$WEBSOCAT_SHA256" "$tmp/websocat"
-install -m 755 "$tmp/websocat" /usr/lib/hibernaut/websocat
-/usr/lib/hibernaut/websocat --version

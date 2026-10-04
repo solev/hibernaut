@@ -15,6 +15,16 @@ for dir in /usr/local /code; do
 	fi
 done
 
+# Codex finds its helpers and resources through this root-owned package.
+for package in /usr/local/lib/codex-*; do
+	if [[ -d "$package" ]]; then
+		chown -R root:root "$package"
+	fi
+done
+if [[ -L /usr/local/bin/codex ]]; then
+	chown -h root:root /usr/local/bin/codex
+fi
+
 systemctl stop ssh.service ssh.socket rpcbind.service rpcbind.socket 2>/dev/null || true
 systemctl start hib-sshd.socket hib-websocat.service
 

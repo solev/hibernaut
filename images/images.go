@@ -89,6 +89,13 @@ var catalog = map[string]image{
 				ca:    true,
 				run:   lib + "/trust-ca",
 			},
+			{
+				files: []file{
+					{"versions", lib + "/versions", 0o644},
+					{"tools", lib + "/tools", 0o755},
+				},
+				run: lib + "/tools",
+			},
 		},
 		// The start command runs as the template's default user, which has passwordless sudo.
 		startCmd: "sudo -n " + lib + "/start",
