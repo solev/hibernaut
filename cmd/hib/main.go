@@ -12,11 +12,14 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -33,7 +36,7 @@ commands:
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
   fork MACHINE      copy a machine (-count, default 1, most 10)
-  connect github    give machines your GitHub login (--from-gh, or --token on stdin)
+  connect github    open a browser to approve your GitHub login (--from-gh or --token instead)
   connect codex     give machines your Codex login on a ChatGPT plan, with a device code
   status            show the health of the host, E2B, each secret and the Codex login; never
                     wakes the host
@@ -75,6 +78,9 @@ func main() {
 		wakePoll:   5 * time.Second,
 		now:        time.Now,
 	}
+	if term.IsTerminal(int(os.Stderr.Fd())) {
+		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
+	}
 	os.Exit(a.run(ctx, os.Args[1:]))
 }
 
@@ -86,6 +92,7 @@ type app struct {
 	getenv         func(string) string
 	ssh            runFunc
 	gh             runFunc
+	browser        func(ctx context.Context, url string) error
 	execSSH        func(args []string) error
 	az             func(ctx context.Context, args ...string) ([]byte, error)
 	executable     func() (string, error)

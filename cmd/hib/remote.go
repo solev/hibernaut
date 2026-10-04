@@ -29,6 +29,7 @@ func (c *config) sshBase() []string {
 		"-o", "ForwardX11=no",
 		"-o", "PermitLocalCommand=no",
 		"-o", "RemoteCommand=none",
+		"-o", "StdinNull=no",
 		"-o", "ConnectTimeout=15",
 		"-o", "ServerAliveInterval=60",
 		"-o", "ServerAliveCountMax=3",
@@ -106,10 +107,19 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 	return a.call(ctx, cfg, timeout, sshArgs, callOptions{stdin: stdin, sudo: true, mayWake: true})
 }
 
+func (a *app) remoteSudoAttended(ctx context.Context, cfg *config, timeout time.Duration, args ...string) (hibapi.Response, error) {
+	sshArgs, err := cfg.sudoHibdArgs(args...)
+	if err != nil {
+		return hibapi.Response{}, err
+	}
+	return a.call(ctx, cfg, timeout, sshArgs, callOptions{holdStdin: true, sudo: true, mayWake: true})
+}
+
 type callOptions struct {
-	stdin   []byte
-	sudo    bool
-	mayWake bool
+	stdin     []byte
+	holdStdin bool
+	sudo      bool
+	mayWake   bool
 }
 
 func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, opts callOptions) (hibapi.Response, error) {
@@ -119,7 +129,20 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 		if opts.stdin != nil {
 			in = bytes.NewReader(opts.stdin)
 		}
+		var inR, inW *os.File
+		if opts.holdStdin {
+			var err error
+			inR, inW, err = os.Pipe()
+			if err != nil {
+				return hibapi.Response{}, fmt.Errorf("keeping hibd's stdin open: %w", err)
+			}
+			in = inR
+		}
 		code, err := a.runSSH(ctx, timeout, sshArgs, in, &out)
+		if opts.holdStdin {
+			inW.Close()
+			inR.Close()
+		}
 		if err != nil {
 			return hibapi.Response{}, err
 		}

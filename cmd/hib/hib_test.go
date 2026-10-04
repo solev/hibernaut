@@ -46,6 +46,7 @@ type host struct {
 	sshVersion string
 	override   func(words []string, stdout, stderr io.Writer) (int, bool)
 	lastStdin  io.Reader
+	sshInput   func(ctx context.Context, args []string, stdin io.Reader)
 
 	mu       sync.Mutex
 	calls    [][]string
@@ -161,6 +162,10 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 		fmt.Fprintf(stderr, "ssh: Could not resolve hostname %s\n", args[i+1])
 		return 255, nil
 	}
+	h.lastStdin = stdin
+	if h.sshInput != nil {
+		h.sshInput(ctx, args, stdin)
+	}
 	h.mu.Lock()
 	down := h.asleep || h.booting > 0
 	if !h.asleep && h.booting > 0 {
@@ -173,7 +178,6 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	}
 	// The host's shell splits the command into words.
 	words := shellFields(strings.Join(args[i+2:], " "))
-	h.lastStdin = stdin
 	if h.override != nil {
 		overrideWords := words
 		if len(words) > 0 && words[0] == "hibd" {

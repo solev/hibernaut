@@ -18,7 +18,7 @@ import (
 func TestImageAndFork(t *testing.T) {
 	ctx := testContext(t, 25*time.Minute)
 	ensureImage(t)
-	token, _ := connectGitHub(t, ctx)
+	token, _, _ := connectGitHub(t, ctx)
 	const origin = "e2e-web"
 	const fromImage = "e2e-web2"
 	image := fmt.Sprintf("e2e-image-%08x", rand.Uint32())

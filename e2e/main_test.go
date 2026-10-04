@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -121,9 +122,16 @@ func buildHib(ctx context.Context) (string, error) {
 }
 
 func runHib(ctx context.Context, args ...string) (stdout, stderr string, code int) {
+	return runHibStderr(ctx, nil, args...)
+}
+
+func runHibStderr(ctx context.Context, live io.Writer, args ...string) (stdout, stderr string, code int) {
 	cmd := exec.CommandContext(ctx, hibBin, append([]string{"-config", hibDir}, args...)...)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
+	if live != nil {
+		cmd.Stderr = io.MultiWriter(&e, live)
+	}
 	switch err := cmd.Run(); {
 	case err == nil:
 	case errors.As(err, new(*exec.ExitError)):
@@ -220,6 +228,7 @@ func newHost(ctx context.Context) (*host, error) {
 
 var sshOptions = []string{
 	"-o", "BatchMode=yes",
+	"-o", "StdinNull=no",
 	"-o", "ConnectTimeout=10",
 	"-o", "StrictHostKeyChecking=accept-new",
 	"-o", "ServerAliveInterval=10",
