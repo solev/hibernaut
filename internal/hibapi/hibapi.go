@@ -194,7 +194,7 @@ type Image struct {
 	Created time.Time `json:"created,omitzero"`
 	// Built says whether a built-in image is built. Saved images always are.
 	Built bool `json:"built"`
-	// Shadowed says a saved image has a built-in image's name. hib new -image NAME then makes
+	// Shadowed says a saved image has a built-in image's name. hib new --image NAME then makes
 	// the built-in one, and hib image rm NAME removes the saved one.
 	Shadowed bool `json:"shadowed,omitempty"`
 }
