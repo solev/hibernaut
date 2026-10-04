@@ -108,8 +108,8 @@ be sent to, and a **placeholder**.
   whitespace do not change identity.
 - **Delivery:** `hibd` writes a managed block of placeholders (`GH_TOKEN=…`, …) into each
   machine's `/etc/environment`. Tools that read a login file instead (Codex, §4.4) get that file
-  with placeholders in it. Their secrets have no env var. `hibd` writes both on create, on resume,
-  and whenever secrets change.
+  with placeholders in it. Their secrets have no env var. `hibd` writes both on create, after
+  every resume (at the daemon's next look, within 15 seconds), and whenever secrets change.
   SSH sessions, `hib exec` and tmux all see them. (Not E2B's `envVars`: those reach only processes
   E2B starts, not SSH logins, and can't be changed after create.)
 - **Swap:** the egress proxy replaces placeholders only in the `Authorization` request header,
@@ -274,10 +274,10 @@ come later.
   account ID is real.
   - Codex reads them without checking signatures. It refreshes only when a token is within
     5 minutes of expiring, or after a 401. So on its own it never refreshes.
-  - `hibd` owns the file while Codex is connected. It writes it on create, on resume, and when the
-    placeholders change. A refresh keeps the access and refresh placeholders, but the ID token's
-    claims include refresh times, so its placeholder changes. After `codex logout` in a machine,
-    pause and resume the machine to get the file back.
+  - `hibd` owns the file while Codex is connected. It writes it on create, after every resume, and
+    when the placeholders change. A refresh keeps the access and refresh placeholders, but the ID
+    token's claims include refresh times, so its placeholder changes. After `codex logout` in a
+    machine, pause and resume the machine, and the file is back within 15 seconds.
 - **Only `hibd` refreshes the real token**, on the host.
   - The daemon refreshes once half the access token's lifetime has passed (it lasts 10 days). It
     backs off while OpenAI can't be reached.

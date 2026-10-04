@@ -340,4 +340,7 @@ End-to-end:
 - 2026-10-04: After the M5 reviews: `hibd connect codex` takes `codex-login.lock`, so one login
   runs at a time. `hibd status` fails on a profile it can't read, and shows the `codex-` secrets
   as part of the login. `Force` still fails on a dead login, since only reconnecting helps. hib's
-  16 minutes for hibd start once the host is awake.
+  16 minutes for hibd start once the host is awake. The daemon writes the setup again at its
+  first look after each resume, which it tells by the machine's new `StartedAt`. So a pause and
+  resume between two looks restores Codex's login file and the rest of the setup. The engine
+  contract checks that a resume moves `StartedAt` and extending a timeout doesn't.
