@@ -28,7 +28,7 @@ func (a *app) fork(ctx context.Context, cfg *config, args []string) int {
 		fmt.Fprintf(a.stderr, "hib fork: bad copy count %d: use 1 to %d\n", *count, machines.MaxCopies)
 		return 2
 	}
-	r, err := a.remoteSudo(ctx, cfg, 0, nil, "fork", names[0], "-count", strconv.Itoa(*count), "-json")
+	r, err := a.remoteSudo(ctx, cfg, 0, callOptions{}, "fork", names[0], "-count", strconv.Itoa(*count), "-json")
 	var remote *hibapi.RemoteError
 	if err != nil && !errors.As(err, &remote) {
 		return a.fail(err)

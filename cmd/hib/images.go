@@ -30,7 +30,7 @@ func (a *app) imageSave(ctx context.Context, cfg *config, args []string) int {
 	if !a.checkNames(names...) {
 		return 2
 	}
-	r, err := a.remoteSudo(ctx, cfg, 0, nil, "image", "save", names[0], names[1], "-json")
+	r, err := a.remoteSudo(ctx, cfg, 0, callOptions{}, "image", "save", names[0], names[1], "-json")
 	if err != nil {
 		return a.fail(err)
 	}

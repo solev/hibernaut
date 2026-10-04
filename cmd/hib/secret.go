@@ -51,7 +51,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, []byte(value), "secret", "add", names[0], "--env", *env, "--bind", strings.Join(sites, ","), "--json")
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "secret", "add", names[0], "--env", *env, "--bind", strings.Join(sites, ","), "--json")
 	if err != nil {
 		return a.fail(err)
 	}
@@ -82,7 +82,7 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 	if err := hibapi.CheckName(names[0]); err != nil {
 		return a.fail(err)
 	}
-	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, nil, "secret", "rm", names[0], "--json"); err != nil {
+	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "secret", "rm", names[0], "--json"); err != nil {
 		return a.fail(err)
 	}
 	fmt.Fprintf(a.stdout, "removed %s\n", names[0])

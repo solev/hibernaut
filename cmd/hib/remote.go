@@ -99,20 +99,14 @@ func (a *app) remote(ctx context.Context, cfg *config, timeout time.Duration, ar
 	return a.call(ctx, cfg, timeout, cfg.sshArgs(args...), callOptions{mayWake: true})
 }
 
-func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration, stdin []byte, args ...string) (hibapi.Response, error) {
+func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration, opts callOptions, args ...string) (hibapi.Response, error) {
 	sshArgs, err := cfg.sudoHibdArgs(args...)
 	if err != nil {
 		return hibapi.Response{}, err
 	}
-	return a.call(ctx, cfg, timeout, sshArgs, callOptions{stdin: stdin, sudo: true, mayWake: true})
-}
-
-func (a *app) remoteSudoAttended(ctx context.Context, cfg *config, timeout time.Duration, args ...string) (hibapi.Response, error) {
-	sshArgs, err := cfg.sudoHibdArgs(args...)
-	if err != nil {
-		return hibapi.Response{}, err
-	}
-	return a.call(ctx, cfg, timeout, sshArgs, callOptions{holdStdin: true, sudo: true, mayWake: true})
+	opts.sudo = true
+	opts.mayWake = true
+	return a.call(ctx, cfg, timeout, sshArgs, opts)
 }
 
 type callOptions struct {

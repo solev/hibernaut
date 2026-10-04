@@ -21,27 +21,40 @@ import (
 const testGitHubToken = "gho_testOnlyToken1234567890"
 
 func TestConnectGitHubDefaultsToDeviceFlow(t *testing.T) {
-	for _, args := range [][]string{{"connect", "github"}, {"connect", "github", "--token=false"}} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		browser bool
+	}{
+		{"no flags", []string{"connect", "github"}, true},
+		{"false token flag", []string{"connect", "github", "--token=false"}, true},
+		{"nil browser", []string{"connect", "github"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)
 			c := initClient(t, h)
+			if tc.browser {
+				c.browser = func(context.Context, string) error { return nil }
+			}
+			prompt := hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute)
 			var deadline time.Time
 			run := c.ssh
 			c.ssh = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 				deadline, _ = ctx.Deadline()
 				return run(ctx, args, stdin, stdout, stderr)
 			}
-			h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+			h.override = func(words []string, stdout, stderr io.Writer) (int, bool) {
 				if want := []string{"sudo", "-n", "hibd", "connect", "github", "--source", "device", "--json"}; !slices.Equal(words, want) {
 					t.Error("connect didn't select the device source through sudo")
 				}
+				io.WriteString(stderr, prompt)
 				return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
 					Login: "octocat", Email: "1+octocat@users.noreply.github.com",
 					Source: hibapi.GitHubFromDevice, ScopesKnown: true, Scopes: []string{"repo", "read:org"},
 				}}), true
 			}
 			start := time.Now()
-			code := c.hib(args...)
+			code := c.hib(tc.args...)
 			end := time.Now()
 			if code != 0 {
 				t.Fatalf("device connect exited %d: %s", code, c.errOut)
@@ -51,6 +64,9 @@ func TestConnectGitHubDefaultsToDeviceFlow(t *testing.T) {
 			}
 			if !strings.Contains(c.errOut.String(), "run hib connect github again.") {
 				t.Error("device connect didn't show the scope warning")
+			}
+			if !strings.HasPrefix(c.errOut.String(), prompt) {
+				t.Error("device connect didn't stream the prompt")
 			}
 			calls := h.takeCalls()
 			if len(calls) != 1 || !slices.Contains(calls[0], "StdinNull=no") {
@@ -267,19 +283,6 @@ func TestConnectGitHubDeviceDoesNotOpenBrowserForOtherLines(t *testing.T) {
 				t.Error("non-prompt diagnostics weren't passed through")
 			}
 		})
-	}
-}
-
-func TestConnectGitHubDeviceBrowserIsOptional(t *testing.T) {
-	h := newHost(t)
-	c := initClient(t, h)
-	prompt := hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute)
-	h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
-		io.WriteString(stderr, prompt)
-		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}}), true
-	}
-	if code := c.hib("connect", "github"); code != 0 || c.errOut.String() != prompt {
-		t.Error("device login without an opener didn't stream the prompt")
 	}
 }
 
