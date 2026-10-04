@@ -13,6 +13,7 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/var/lib/e2b/local-template-storage
+ReadWritePaths=/var/lib/hibernaut
 
 [Install]
 WantedBy=multi-user.target

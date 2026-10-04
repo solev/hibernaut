@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/solev/hibernaut/internal/audit"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -163,15 +165,22 @@ func TestLeakScan(t *testing.T) {
 	}
 }
 
-func requireNoLeaks(t *testing.T, ctx context.Context, name string) {
+func requireNoLeaks(t *testing.T, ctx context.Context, name string, secrets ...string) hibapi.LeakScan {
 	t.Helper()
 	r := leakScanAllowingHits(t, ctx, name)
 	if r.SecretCount == 0 {
 		t.Errorf("the leak scan of %s had no secrets to look for", name)
 	}
-	for _, h := range r.Hits {
-		t.Errorf("%s holds secret %s (%s) in %s at %d", name, h.Secret, h.Encoding, h.Where, h.Offset)
+	for _, secret := range secrets {
+		if !slices.Contains(r.Secrets, secret) {
+			t.Errorf("the leak scan didn't cover %s", termsafe.String(secret))
+		}
 	}
+	for _, h := range r.Hits {
+		t.Errorf("%s holds secret %s (%s) in %s at %d", name, termsafe.String(h.Secret),
+			termsafe.String(h.Encoding), termsafe.String(h.Where), h.Offset)
+	}
+	return r
 }
 
 func leakScanAllowingHits(t *testing.T, ctx context.Context, args ...string) hibapi.LeakScan {

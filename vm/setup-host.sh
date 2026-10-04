@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs key-only SSH, hibd, its CA and egress proxy, the busy daemon, the pause-all guard,
+# Installs key-only SSH, hibd, pinned Codex, its CA and egress proxy, the busy daemon, the pause-all guard,
 # and the nightly and idle deallocate timers.
 # `make deploy` runs it after copying the repo and the hibd binary to the VM. Safe to re-run: it
 # never stops or restarts running machines.
@@ -17,6 +17,7 @@ systemctl reload ssh
 
 echo "==> $("$hibd" version)"
 install -m 755 "$hibd" /usr/local/bin/hibd
+"$here/install-codex.sh" "$here/../images/dev/versions"
 "$hibd" ca init
 # hibd runs as the user who ran this script (over ssh, from hib), and as root to pause every
 # machine. Its config holds E2B's API key; its state directory is that user's alone.

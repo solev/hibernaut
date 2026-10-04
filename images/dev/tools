@@ -1,0 +1,65 @@
+#!/bin/bash
+# Installs pinned tools after trust-ca, because the proxy may intercept github.com.
+set -euo pipefail
+export PATH=${PATH:-}:/usr/sbin:/usr/bin:/sbin:/bin
+
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+source "$here/versions"
+
+WEBSOCAT_VERSION=1.14.1
+WEBSOCAT_SHA256=66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514
+
+root="${1:-}"
+stage="$here/.tools-$$-${RANDOM}-${RANDOM}"
+env_file="${root}/etc/environment"
+env_tmp="${env_file}.hibernaut-$$-${RANDOM}-${RANDOM}"
+mkdir -m 700 "$stage"
+trap 'rm -rf "$stage"; rm -f "$env_tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+
+fetch() { # url sha256 dest
+	curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 3 -o "$3" "$1"
+	printf '%s  %s\n' "$2" "$3" | sha256sum -c -
+}
+
+fetch "https://github.com/openai/codex/releases/download/rust-v$CODEX_VERSION/codex-x86_64-unknown-linux-musl.tar.gz" \
+	"$CODEX_SHA256" "$stage/codex.tar.gz"
+fetch "https://github.com/github/copilot-cli/releases/download/v$COPILOT_VERSION/copilot-linux-x64.tar.gz" \
+	"$COPILOT_SHA256" "$stage/copilot.tar.gz"
+fetch "https://github.com/vi/websocat/releases/download/v$WEBSOCAT_VERSION/websocat.x86_64-unknown-linux-musl" \
+	"$WEBSOCAT_SHA256" "$stage/websocat"
+tar -xzf "$stage/codex.tar.gz" -C "$stage" --no-same-owner codex-x86_64-unknown-linux-musl
+tar -xzf "$stage/copilot.tar.gz" -C "$stage" --no-same-owner copilot
+install -d -m 755 "${root}/usr/local/bin" "${root}/usr/lib/hibernaut"
+install -m 755 "$stage/codex-x86_64-unknown-linux-musl" "${root}/usr/local/bin/codex"
+install -m 755 "$stage/copilot" "${root}/usr/local/bin/copilot"
+install -m 755 "$stage/websocat" "${root}/usr/lib/hibernaut/websocat"
+
+install -d -m 700 -o user -g user "${root}/home/user/.codex" "${root}/home/user/.copilot"
+cat >"$stage/config.toml" <<'EOF'
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+check_for_update_on_startup = false
+cli_auth_credentials_store = "file"
+
+[analytics]
+enabled = false
+EOF
+install -m 600 -o user -g user "$stage/config.toml" "${root}/home/user/.codex/config.toml"
+cat >"$stage/settings.json" <<'EOF'
+{
+  "autoUpdate": false,
+  "banner": "never"
+}
+EOF
+install -m 600 -o user -g user "$stage/settings.json" "${root}/home/user/.copilot/settings.json"
+
+install -d -m 755 "$(dirname "$env_file")"
+(set -o noclobber; : >"$env_tmp")
+if [[ -e "$env_file" ]]; then
+	awk '!/^COPILOT_AUTO_UPDATE=/' "$env_file" >"$env_tmp"
+fi
+printf '%s\n' COPILOT_AUTO_UPDATE=false >>"$env_tmp"
+chmod 644 "$env_tmp"
+mv -f "$env_tmp" "$env_file"

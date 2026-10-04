@@ -35,7 +35,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: 1.26.x
+      - name: Install pinned Codex
+        run: sudo vm/install-codex.sh "$PWD/images/dev/versions"
       - run: make test
+        env:
+          HIB_CODEX: /usr/local/bin/codex
+          HIB_REQUIRE_CODEX: "1"
 
   test-host:
     runs-on: ubuntu-24.04
