@@ -22,7 +22,7 @@ It can come any time after M2: it builds on M2's room check, and nothing else de
 - [ ] A machine keeps its size for life: E2B can't change a snapshot's RAM or CPUs. The README
       says how to move to another size (a new machine, then copy files over).
 - [ ] Saved images and forks (M6) keep the size of the machine they came from, so `--size`
-      together with `--from` is refused with an explanation.
+      together with a saved image's `--image` is refused with an explanation.
 
 ## Tests
 
