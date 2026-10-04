@@ -99,15 +99,19 @@ type Engine struct {
 	dial      DialFunc
 	homeRoot  string
 	// onlyKnown makes Create refuse the templates not in aliases: see WithTemplates.
-	onlyKnown bool
+	onlyKnown  bool
+	aliasCache bool
 
 	mu       sync.Mutex
 	aliases  map[string]*template
 	machines map[string]*machine
 	built    []engine.TemplateSpec
 	// saves numbers the directories SaveTemplate copies homes into, one per build.
-	saves    int
-	failSave error
+	saves      int
+	failSave   error
+	rejectSave error
+	saveDelay  time.Duration
+	missedAt   map[string]time.Time
 	// failCreates holds the metadata of the creates FailCreateAfterStart was armed for.
 	failCreates []map[string]string
 }
@@ -130,6 +134,7 @@ func New(opts ...Option) *Engine {
 		now:      time.Now,
 		aliases:  map[string]*template{},
 		machines: map[string]*machine{},
+		missedAt: map[string]time.Time{},
 	}
 	for _, o := range opts {
 		o(e)
@@ -393,6 +398,7 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 		MemoryMB: cmp.Or(spec.MemoryMB, DefaultMemoryMB),
 		Created:  e.now(),
 	}}
+	delete(e.missedAt, spec.Name)
 	e.mu.Unlock()
 	if logs != nil {
 		fmt.Fprintf(logs, "fake: built %s from %s in %d steps\n", spec.Name, spec.FromImage, len(spec.Steps))
