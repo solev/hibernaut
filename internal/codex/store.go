@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/egress/swap"
+	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -45,14 +46,17 @@ func (s *Store) readProfile() (Profile, error) {
 	return p.Profile, err
 }
 
-func (s *Store) load() (Profile, error) {
-	p, err := s.readProfile()
+// Load returns the profile, or ErrNotConnected. It never waits for the lock and never writes.
+// An interrupted refresh shows as published or stuck. An unpublished login keeps the old profile.
+func (s *Store) Load() (Profile, error) {
+	record, err := s.readDiskProfile()
+	p := record.Profile
 	if err != nil || p.Attempt == nil {
 		return p, err
 	}
 	lock, err := os.OpenFile(s.path(LockFile), os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
-		return s.recoverProfile(p)
+		return s.recoverProfile(record)
 	}
 	if err != nil {
 		return Profile{}, errors.New("checking codex refresh lock")
@@ -66,19 +70,37 @@ func (s *Store) load() (Profile, error) {
 		return Profile{}, errors.New("checking codex refresh lock")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	p, err = s.readProfile()
+	record, err = s.readDiskProfile()
+	p = record.Profile
 	if err != nil || p.Attempt == nil {
 		return p, err
 	}
-	return s.recoverProfile(p)
+	return s.recoverProfile(record)
 }
 
-func (s *Store) recoverProfile(p Profile) (Profile, error) {
-	t, err := s.tokens()
+func (s *Store) recoverProfile(record diskProfile) (Profile, error) {
+	f, err := vault.Load(s.cfg.VaultPath)
 	if err != nil {
+		return Profile{}, errors.New("reading codex vault")
+	}
+	return s.recoverProfileFrom(record, f)
+}
+
+func (s *Store) recoverProfileFrom(record diskProfile, f *vault.File) (Profile, error) {
+	p := record.Profile
+	t, err := s.openTokens(f)
+	if err != nil && !(p.Attempt.Login && errors.Is(err, ErrNotConnected)) {
 		return Profile{}, err
 	}
-	if swap.Fingerprint(t.RefreshToken) == p.Attempt.Generation {
+	generation := ""
+	if err == nil {
+		generation = swap.Fingerprint(t.RefreshToken)
+	}
+	if generation == p.Attempt.Generation {
+		if p.Attempt.Login {
+			p.Attempt = nil
+			return p, nil
+		}
 		p.Health = HealthStuck
 		if p.Problem == "" {
 			p.Problem = "a refresh was interrupted: run hib connect codex"
@@ -89,17 +111,15 @@ func (s *Store) recoverProfile(p Profile) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	record, err := s.readDiskProfile()
-	if err != nil {
-		return Profile{}, err
-	}
-	generation, err := s.placeholderGeneration()
-	if err != nil {
-		return Profile{}, err
-	}
-	changed := record.Placeholders != "" && record.Placeholders != generation
+	generation = placeholderGeneration(f)
+	changed := record.Placeholders != generation && (record.Placeholders != "" || p.Attempt.Login)
 	if changed || p.Email != updated.Email || p.Plan != updated.Plan || p.AccountID != updated.AccountID {
 		p.Published = p.Attempt.Started
+	}
+	if p.Attempt.Login {
+		updated.ConnectedAt, updated.LastRefresh = p.Attempt.Started, p.Attempt.Started
+		updated.Published = p.Published
+		return updated, nil
 	}
 	p.Email, p.Plan, p.AccountID, p.Expires = updated.Email, updated.Plan, updated.AccountID, updated.Expires
 	p.LastRefresh, p.Health, p.Problem = p.Attempt.Started, HealthOK, ""
@@ -107,30 +127,73 @@ func (s *Store) recoverProfile(p Profile) (Profile, error) {
 	return p, nil
 }
 
-func (s *Store) public() (PublicAuth, error) {
-	p, err := s.readProfile()
-	if err != nil {
-		return PublicAuth{}, err
-	}
-	f, err := vault.Load(s.cfg.VaultPath)
-	if err != nil {
-		return PublicAuth{}, errors.New("reading codex placeholders")
-	}
-	out := PublicAuth{AccountID: p.AccountID, LastRefresh: p.Published}
-	for _, secret := range f.Secrets() {
-		switch secret.Name {
-		case AccessName:
-			out.AccessToken = secret.Placeholder
-		case RefreshName:
-			out.RefreshToken = secret.Placeholder
-		case IDName:
-			out.IDToken = secret.Placeholder
+// Public returns what the login file holds, or ErrNotConnected. It needs no lock.
+// Only a pending attempt needs the vault key.
+func (s *Store) Public() (PublicAuth, error) {
+	for range 3 {
+		record, err := s.readDiskProfile()
+		if err != nil {
+			return PublicAuth{}, err
 		}
+		f, err := vault.Load(s.cfg.VaultPath)
+		if err != nil {
+			return PublicAuth{}, errors.New("reading codex placeholders")
+		}
+		current, err := s.readDiskProfile()
+		if err != nil {
+			return PublicAuth{}, err
+		}
+		if !sameDiskProfile(record, current) {
+			continue
+		}
+		p := record.Profile
+		if p.Attempt != nil {
+			p, err = s.recoverProfileFrom(record, f)
+			if err != nil {
+				return PublicAuth{}, err
+			}
+		}
+		out := placeholderTokens(f)
+		out.AccountID, out.LastRefresh = p.AccountID, p.Published
+		if out.AccessToken == "" || out.RefreshToken == "" || out.IDToken == "" {
+			return PublicAuth{}, ErrNotConnected
+		}
+		access, err := decodeClaims(out.AccessToken)
+		if err != nil {
+			return PublicAuth{}, errors.New("invalid codex placeholders: run hib connect codex")
+		}
+		if p.AccountID != termsafe.String(access.Auth.Account) ||
+			(record.Attempt == nil && record.Placeholders != "" && record.Placeholders != placeholderGeneration(f)) {
+			return PublicAuth{}, errors.New("codex profile does not match its vault: run hib connect codex")
+		}
+		return out, nil
 	}
-	if out.AccessToken == "" || out.RefreshToken == "" || out.IDToken == "" {
-		return PublicAuth{}, ErrNotConnected
+	return PublicAuth{}, errors.New("codex login changed while reading: try again")
+}
+
+func sameDiskProfile(a, b diskProfile) bool {
+	if (a.Attempt == nil) != (b.Attempt == nil) {
+		return false
 	}
-	return out, nil
+	if a.Attempt != nil && *a.Attempt != *b.Attempt {
+		return false
+	}
+	a.Attempt, b.Attempt = nil, nil
+	return a == b
+}
+
+func tokenValues(byName map[string]string) (access, id, refresh string) {
+	return byName[AccessName], byName[IDName], byName[RefreshName]
+}
+
+func placeholderTokens(f *vault.File) PublicAuth {
+	byName := make(map[string]string)
+	for _, secret := range f.Secrets() {
+		byName[secret.Name] = secret.Placeholder
+	}
+	var out PublicAuth
+	out.AccessToken, out.IDToken, out.RefreshToken = tokenValues(byName)
+	return out
 }
 
 func (s *Store) tokens() (Tokens, error) {
@@ -138,6 +201,10 @@ func (s *Store) tokens() (Tokens, error) {
 	if err != nil {
 		return Tokens{}, errors.New("reading codex vault")
 	}
+	return s.openTokens(f)
+}
+
+func (s *Store) openTokens(f *vault.File) (Tokens, error) {
 	if len(f.Secrets()) == 0 {
 		return Tokens{}, ErrNotConnected
 	}
@@ -149,17 +216,12 @@ func (s *Store) tokens() (Tokens, error) {
 	if err != nil {
 		return Tokens{}, errors.New("opening codex tokens: restore the vault key")
 	}
-	var t Tokens
+	byName := make(map[string]string)
 	for _, v := range values {
-		switch v.Name {
-		case AccessName:
-			t.AccessToken = v.Value
-		case RefreshName:
-			t.RefreshToken = v.Value
-		case IDName:
-			t.IDToken = v.Value
-		}
+		byName[v.Name] = v.Value
 	}
+	var t Tokens
+	t.AccessToken, t.IDToken, t.RefreshToken = tokenValues(byName)
 	if t.AccessToken == "" || t.RefreshToken == "" || t.IDToken == "" {
 		return Tokens{}, ErrNotConnected
 	}
@@ -254,24 +316,20 @@ func (s *Store) placeholderGeneration() (string, error) {
 	if err != nil {
 		return "", errors.New("reading codex placeholder generation")
 	}
-	values := make([]string, 3)
-	for _, secret := range f.Secrets() {
-		switch secret.Name {
-		case AccessName:
-			values[0] = secret.Placeholder
-		case IDName:
-			values[1] = secret.Placeholder
-		case RefreshName:
-			values[2] = secret.Placeholder
-		}
-	}
-	if slices.Contains(values, "") {
-		return "", nil
-	}
-	return swap.Fingerprint(strings.Join(values, "\x00")), nil
+	return placeholderGeneration(f), nil
 }
 
-func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
+func placeholderGeneration(f *vault.File) string {
+	t := placeholderTokens(f)
+	values := []string{t.AccessToken, t.IDToken, t.RefreshToken}
+	if slices.Contains(values, "") {
+		return ""
+	}
+	return swap.Fingerprint(strings.Join(values, "\x00"))
+}
+
+// CommitLogin replaces the login with a new device login's tokens. It may be another account.
+func (s *Store) CommitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	p, err := tokenProfile(t)
 	if err != nil {
 		return Profile{}, err
@@ -283,9 +341,32 @@ func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	defer unlock(lock)
 	now := s.cfg.Now().UTC()
 	p.ConnectedAt, p.LastRefresh, p.Published = now, now, now
-	previous, err := s.public()
+	previous, err := s.readDiskProfile()
 	if err != nil && !errors.Is(err, ErrNotConnected) {
 		return Profile{}, err
+	}
+	if err == nil {
+		if previous.Attempt != nil {
+			previous.Profile, err = s.recoverProfile(previous)
+			if err != nil {
+				return Profile{}, err
+			}
+			if err := s.saveProfile(previous.Profile); err != nil {
+				return Profile{}, err
+			}
+		}
+		old, err := s.tokens()
+		if err != nil && !errors.Is(err, ErrNotConnected) {
+			return Profile{}, err
+		}
+		generation := ""
+		if err == nil {
+			generation = swap.Fingerprint(old.RefreshToken)
+		}
+		previous.Attempt = &Attempt{Generation: generation, Started: now, Login: true}
+		if err := s.saveProfile(previous.Profile); err != nil {
+			return Profile{}, err
+		}
 	}
 	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
@@ -293,8 +374,8 @@ func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	if !changed && err == nil && !previous.LastRefresh.IsZero() {
-		p.Published = previous.LastRefresh
+	if !changed && !previous.Published.IsZero() {
+		p.Published = previous.Published
 	}
 	if err := s.saveProfile(p); err != nil {
 		return Profile{}, err
@@ -480,7 +561,8 @@ func (s *Store) retire(old, next Tokens, now time.Time) error {
 	return nil
 }
 
-func (s *Store) retired() ([]OldValue, error) {
+// Retired returns the replaced values kept for the leak scan.
+func (s *Store) Retired() ([]OldValue, error) {
 	f, err := vault.Load(s.path(RetiredFile))
 	if err != nil {
 		return nil, errors.New("reading retired codex values")

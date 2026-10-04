@@ -53,13 +53,26 @@ many goroutines and processes at once. All of them run as root.
 
 - `Load` returns the profile, or `ErrNotConnected`. It never waits and never writes. An attempt
   left in the profile is in progress while another process holds the lock. Otherwise it shows as
-  published if the vault's refresh token is no longer the one the attempt sent, and as stuck if it
-  still is. The next holder of the lock records the same verdict.
-- `Public` returns the placeholders and the account, for the login file. It needs no lock and no
-  key.
+  published if the vault's refresh token is no longer the one the attempt sent or replaced.
+  An unpublished refresh is stuck. An unpublished login keeps the old profile and drops the
+  attempt, because it sent nothing to OpenAI. A published login recovers a new profile from the
+  tokens, with `ConnectedAt` and `LastRefresh` from the attempt's start and no old failure,
+  retry, rejection or client-refresh state. The next holder of the lock records the same verdict.
+- `Public` returns the placeholders and the account, for the login file. It needs no lock and
+  normally no key. A pending attempt needs the key to recover the profile against the same vault
+  snapshot as the placeholders, even while the publisher holds the lock. It never writes.
+  It checks that the profile stayed the same while reading the vault, and tries again if not.
+  After three changing reads it returns an error asking the caller to try again.
+  An unmarked profile whose account or recorded placeholder fingerprint disagrees with the vault
+  is refused with a hint to run `hib connect codex`.
 - `EnsureFresh(ctx, reason)` refreshes if the reason calls for it, then returns `Public`.
 - `CommitLogin(ctx, tokens)` replaces the login under the lock: it retires the old values, puts the
-  new ones, and starts a new profile. Another account is fine.
+  new ones, and starts a new profile. Another account is fine. It recovers any previous attempt
+  first. Before replacing an existing profile, it writes and fsyncs a login attempt in the old
+  profile, with the fingerprint of the refresh token being replaced, or empty if there are no
+  Codex tokens. Recovery keeps `Published` unless a placeholder changed, as a completed login
+  does. A first connect needs no attempt. A failure before its profile is saved leaves it not
+  connected.
 - `Retired` returns the replaced values under their original names, for the leak scan.
 
 **When `EnsureFresh` refreshes:**

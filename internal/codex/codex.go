@@ -4,7 +4,6 @@
 package codex
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -103,12 +102,6 @@ type PublicAuth struct {
 	LastRefresh time.Time
 }
 
-// RenderAuthFile returns the login file machines get, byte for byte in the layout Codex writes.
-func RenderAuthFile(p PublicAuth) ([]byte, error) { return renderAuthFile(p) }
-
-// ParseAuthFile reads the tokens from a login file codex login wrote.
-func ParseAuthFile(data []byte) (Tokens, error) { return parseAuthFile(data) }
-
 // Profile is the login as hibd keeps it in codex.json. It never holds a token.
 type Profile struct {
 	Email       string    `json:"email"`
@@ -124,7 +117,7 @@ type Profile struct {
 	Health    Health    `json:"health"`
 	// Problem says why the login is dead or stuck. It's safe to show.
 	Problem string `json:"problem,omitempty"`
-	// Attempt is the refresh in progress. It's written before the request goes out.
+	// Attempt is a refresh or login in progress. It's written before sending or publishing.
 	Attempt *Attempt `json:"attempt,omitempty"`
 	// RetryAt is when Background may try again after a transient failure.
 	RetryAt  time.Time `json:"retryAt,omitzero"`
@@ -133,11 +126,13 @@ type Profile struct {
 	ClientRefreshAt time.Time `json:"clientRefreshAt,omitzero"`
 }
 
-// Attempt is a refresh that started.
+// Attempt is a refresh or replacement login that started.
 type Attempt struct {
-	// Generation is the fingerprint of the refresh token the attempt sends.
+	// Generation is the fingerprint of the refresh token being sent or replaced.
 	Generation string    `json:"generation"`
 	Started    time.Time `json:"started"`
+	// Login means a device login is replacing the profile, not refreshing it.
+	Login bool `json:"login,omitempty"`
 }
 
 // API returns the login as hib shows it.
@@ -208,23 +203,6 @@ func NewStore(cfg Config) *Store {
 	return &Store{cfg: cfg}
 }
 
-// Load returns the profile, or ErrNotConnected. It never waits for the lock and never writes.
-// An interrupted attempt shows as published or stuck.
-func (s *Store) Load() (Profile, error) { return s.load() }
-
-// Public returns what the login file holds, or ErrNotConnected. It needs no lock.
-func (s *Store) Public() (PublicAuth, error) { return s.public() }
-
-// EnsureFresh refreshes the real login if reason calls for it, then returns Public.
-func (s *Store) EnsureFresh(ctx context.Context, reason Reason) (PublicAuth, error) {
-	return s.ensureFresh(ctx, reason)
-}
-
-// CommitLogin replaces the login with a new device login's tokens. It may be another account.
-func (s *Store) CommitLogin(ctx context.Context, t Tokens) (Profile, error) {
-	return s.commitLogin(ctx, t)
-}
-
 // OldValue is a replaced real value the leak scan still looks for. It never prints its value.
 type OldValue struct {
 	// Name is the secret the value was in.
@@ -245,6 +223,3 @@ func (o OldValue) Format(s fmt.State, verb rune) { fmt.Fprint(s, o.String()) }
 func (OldValue) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("codex old values cannot be marshaled")
 }
-
-// Retired returns the replaced values kept for the leak scan.
-func (s *Store) Retired() ([]OldValue, error) { return s.retired() }

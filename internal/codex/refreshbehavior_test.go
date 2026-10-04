@@ -251,7 +251,7 @@ func TestRefreshPublishingFinishesAfterCallerCancels(t *testing.T) {
 
 func TestRefreshLostAnswerAndCrashNeverRetryByThemselves(t *testing.T) {
 	for _, crash := range []bool{false, true} {
-		t.Run(strconvBool(crash), func(t *testing.T) {
+		t.Run(refreshInterruptionName(crash), func(t *testing.T) {
 			now := time.Now().UTC()
 			s, cfg := newStore(t, now)
 			initial := codextest.Tokens("account", "person@example.com", "plus", now.Add(-time.Hour), now.Add(time.Minute))
@@ -300,8 +300,8 @@ func TestRefreshLostAnswerAndCrashNeverRetryByThemselves(t *testing.T) {
 	}
 }
 
-func strconvBool(b bool) string {
-	if b {
+func refreshInterruptionName(crash bool) string {
+	if crash {
 		return "crash"
 	}
 	return "lost answer"

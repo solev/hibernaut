@@ -25,7 +25,8 @@ type authFile struct {
 	LastRefresh string      `json:"last_refresh,omitempty"`
 }
 
-func renderAuthFile(p PublicAuth) ([]byte, error) {
+// RenderAuthFile returns the login file machines get, byte for byte in the layout Codex writes.
+func RenderAuthFile(p PublicAuth) ([]byte, error) {
 	t := p.LastRefresh.UTC()
 	precision := 0
 	if ns := t.Nanosecond(); ns != 0 {
@@ -76,7 +77,8 @@ func renderAuthFile(p PublicAuth) ([]byte, error) {
 	return rendered.Bytes(), nil
 }
 
-func parseAuthFile(data []byte) (Tokens, error) {
+// ParseAuthFile reads the tokens from a login file codex login wrote.
+func ParseAuthFile(data []byte) (Tokens, error) {
 	var f authFile
 	if len(data) > 1<<20 || json.Unmarshal(data, &f) != nil || f.Mode != "chatgpt" || f.APIKey != nil || f.Tokens == nil {
 		return Tokens{}, errors.New("invalid codex login file: run hib connect codex")
