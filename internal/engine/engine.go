@@ -159,7 +159,8 @@ type Engine interface {
 	// engine has none yet.
 	Metrics(ctx context.Context, id string) (Metrics, error)
 	// Exec runs a command in a running machine and waits for it to exit. It returns
-	// ErrNotRunning for a paused machine, and never wakes it.
+	// ErrNotRunning for a paused machine, and never wakes it. It returns an error wrapping
+	// ErrConnectionLost if the connection broke before the command's exit was reported.
 	Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error)
 	// DialWebSocket connects to the WebSocket server listening on port inside the machine and
 	// returns the connection as a byte stream carried in binary messages. It resumes a paused
@@ -203,4 +204,8 @@ var (
 	ErrNoTemplate    = errors.New("template not found")
 	ErrCheckpoint    = errors.New("checkpoint failed")
 	ErrTemplateInUse = errors.New("template in use")
+	// ErrConnectionLost means Exec's connection broke before the command's exit was reported.
+	// The command may not have run, may have run in whole or in part, and may still be running.
+	// Retry only commands that are safe to run twice, even at the same time.
+	ErrConnectionLost = errors.New("connection lost before the command finished")
 )
