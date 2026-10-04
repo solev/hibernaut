@@ -17,7 +17,6 @@ import (
 	"math"
 	"net"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -25,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
@@ -137,36 +137,8 @@ func CreateKey(path string, rand io.Reader) (Key, error) {
 	if err != nil {
 		return Key{}, err
 	}
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".vault-key-*")
-	if err != nil {
+	if err := atomicfile.WriteNewFile(path, k.b[:], 0o600); err != nil {
 		return Key{}, fmt.Errorf("creating vault key: %w", err)
-	}
-	defer os.Remove(f.Name())
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return Key{}, err
-	}
-	n, err := f.Write(k.b[:])
-	if err != nil || n != len(k.b) {
-		f.Close()
-		if err == nil {
-			err = io.ErrShortWrite
-		}
-		return Key{}, err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return Key{}, err
-	}
-	if err := f.Close(); err != nil {
-		return Key{}, err
-	}
-	if err := os.Link(f.Name(), path); err != nil {
-		return Key{}, fmt.Errorf("creating vault key: %w", err)
-	}
-	if err := syncDir(dir); err != nil {
-		return Key{}, err
 	}
 	return k, nil
 }
@@ -362,35 +334,13 @@ func (f *File) Open(key Key) ([]Revealed, error) {
 
 // Save writes the vault atomically with mode 0644.
 func (f *File) Save(path string) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".vault-*")
+	d := diskFile{Version: fileVersion, Secrets: slices.Clone(f.secrets)}
+	slices.SortFunc(d.Secrets, func(a, b entry) int { return strings.Compare(a.Name, b.Name) })
+	data, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
-	}
-	d := diskFile{Version: fileVersion, Secrets: slices.Clone(f.secrets)}
-	slices.SortFunc(d.Secrets, func(a, b entry) int { return strings.Compare(a.Name, b.Name) })
-	enc := json.NewEncoder(tmp)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(d); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return err
-	}
-	return syncDir(dir)
+	return atomicfile.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 // Update locks the vault, loads or makes its key, runs fn, then saves the vault.
@@ -553,15 +503,6 @@ func additionalData(s Secret) []byte {
 		panic(err)
 	}
 	return b
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
 }
 
 var envRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)

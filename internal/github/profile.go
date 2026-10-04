@@ -7,8 +7,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
@@ -108,38 +108,5 @@ func SaveProfile(path string, p Profile) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".github-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return err
-	}
-	return syncDir(dir)
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return atomicfile.WriteFile(path, append(data, '\n'), 0o644)
 }
