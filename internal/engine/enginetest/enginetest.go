@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,10 @@ func Run(t *testing.T, cfg Config) {
 	t.Run("Lifecycle", s.lifecycle)
 	t.Run("Exec", s.exec)
 	t.Run("KillPaused", s.killPaused)
+	t.Run("SaveTemplate", s.saveTemplate)
+	t.Run("SavePaused", s.savePaused)
+	t.Run("DeleteTemplateInUse", s.deleteTemplateInUse)
+	t.Run("MissingTemplate", s.missingTemplate)
 }
 
 type suite struct {
@@ -55,8 +60,9 @@ type suite struct {
 }
 
 const (
-	runKey  = "hib-contract-run"
-	caseKey = "hib-contract-case"
+	runKey    = "hib-contract-run"
+	caseKey   = "hib-contract-case"
+	originKey = "hib-contract-origin"
 )
 
 func (s *suite) ctx(t *testing.T) context.Context {
@@ -69,16 +75,25 @@ func (s *suite) labels(name string) map[string]string {
 	return map[string]string{runKey: s.runID, caseKey: name}
 }
 
-func (s *suite) create(t *testing.T, ctx context.Context, name string, timeout time.Duration) engine.Machine {
-	t.Helper()
+func (s *suite) metadata(name string) map[string]string {
 	md := maps.Clone(s.cfg.Metadata)
 	if md == nil {
 		md = map[string]string{}
 	}
 	maps.Copy(md, s.labels(name))
-	m, err := s.cfg.Engine.Create(ctx, engine.CreateOptions{Template: s.cfg.Template, Timeout: timeout, Metadata: md})
+	return md
+}
+
+func (s *suite) create(t *testing.T, ctx context.Context, name string, timeout time.Duration) engine.Machine {
+	t.Helper()
+	return s.createFrom(t, ctx, s.cfg.Template, s.metadata(name), timeout)
+}
+
+func (s *suite) createFrom(t *testing.T, ctx context.Context, template string, md map[string]string, timeout time.Duration) engine.Machine {
+	t.Helper()
+	m, err := s.cfg.Engine.Create(ctx, engine.CreateOptions{Template: template, Timeout: timeout, Metadata: md})
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("Create from %s: %v", template, err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -122,12 +137,7 @@ func (s *suite) unknownMachine(t *testing.T) {
 func (s *suite) unknownTemplate(t *testing.T) {
 	t.Parallel()
 	ctx := s.ctx(t)
-	md := maps.Clone(s.cfg.Metadata)
-	if md == nil {
-		md = map[string]string{}
-	}
-	maps.Copy(md, s.labels("UnknownTemplate"))
-	m, err := s.cfg.Engine.Create(ctx, engine.CreateOptions{Template: "hib-contract-none-" + RandomID(), Metadata: md})
+	m, err := s.cfg.Engine.Create(ctx, engine.CreateOptions{Template: "hib-contract-none-" + RandomID(), Metadata: s.metadata("UnknownTemplate")})
 	if err == nil {
 		s.cfg.Engine.Kill(ctx, m.ID)
 	}
@@ -345,6 +355,172 @@ func (s *suite) killPaused(t *testing.T) {
 	s.wantListed(t, ctx, labels, nil)
 }
 
+func (s *suite) saveTemplate(t *testing.T) {
+	t.Parallel()
+	ctx := s.ctx(t)
+	e := s.cfg.Engine
+	md := s.metadata("save-template")
+	md[originKey] = s.runID
+	origin := s.createFrom(t, ctx, s.cfg.Template, md, 10*time.Minute)
+	s.mustExec(t, ctx, origin.ID, "echo saved > marker")
+
+	alias := s.alias("save")
+	s.deleteTemplateLater(t, alias)
+	info, err := e.SaveTemplate(ctx, origin.ID, alias)
+	if err != nil {
+		t.Fatalf("SaveTemplate: %v", err)
+	}
+	if info.ID == "" || info.Alias != alias || info.CPUs < 1 || info.MemoryMB != origin.MemoryMB || info.Created.IsZero() {
+		t.Errorf("SaveTemplate = %+v, want an ID, alias %s, CPUs, the origin's %d MiB and a time", info, alias, origin.MemoryMB)
+	}
+	if got, err := e.Template(ctx, alias); err != nil || !sameTemplate(got, info) {
+		t.Errorf("Template(%s) = %+v, %v; want %+v", alias, got, err, info)
+	}
+	if st := s.get(t, ctx, origin.ID).State; st != engine.Running {
+		t.Errorf("origin after SaveTemplate is %s, want still running", st)
+	}
+	s.wantSaved(t, ctx, info, origin)
+
+	want := s.metadata("save-template-copy")
+	cp := s.createFrom(t, ctx, alias, want, 10*time.Minute)
+	if cp.State != engine.Running || cp.Template != info.ID || cp.MemoryMB != origin.MemoryMB {
+		t.Errorf("Create from %s = %+v, want running from template %s with the origin's %d MiB", alias, cp, info.ID, origin.MemoryMB)
+	}
+	if !maps.Equal(cp.Metadata, want) {
+		t.Errorf("copy's metadata = %v, want only its own %v", cp.Metadata, want)
+	}
+	if out := s.mustExec(t, ctx, cp.ID, "cat marker"); out != "saved\n" {
+		t.Errorf("copy's marker = %q, want the origin's %q", out, "saved\n")
+	}
+	s.mustExec(t, ctx, cp.ID, "echo copy > marker")
+	if out := s.mustExec(t, ctx, origin.ID, "cat marker"); out != "saved\n" {
+		t.Errorf("origin's marker after the copy changed its own = %q, want %q", out, "saved\n")
+	}
+}
+
+func (s *suite) wantSaved(t *testing.T, ctx context.Context, info engine.TemplateInfo, origin engine.Machine) {
+	t.Helper()
+	e := s.cfg.Engine
+	saved, err := e.SavedTemplates(ctx)
+	if err != nil {
+		t.Fatalf("SavedTemplates: %v", err)
+	}
+	if i := slices.IndexFunc(saved, func(x engine.TemplateInfo) bool { return x.ID == info.ID }); i < 0 || !sameTemplate(saved[i], info) {
+		t.Errorf("SavedTemplates has %d templates, want them to include %+v", len(saved), info)
+	}
+	if !slices.IsSortedFunc(saved, func(a, b engine.TemplateInfo) int { return strings.Compare(a.Alias, b.Alias) }) {
+		t.Error("SavedTemplates isn't sorted by alias")
+	}
+
+	built, err := e.Template(ctx, s.cfg.Template)
+	if err != nil {
+		t.Fatalf("Template(%s): %v", s.cfg.Template, err)
+	}
+	if built.ID != origin.Template || built.MemoryMB != origin.MemoryMB {
+		t.Errorf("Template(%s) = %+v, want the template %s that made a machine of %d MiB", s.cfg.Template, built, origin.Template, origin.MemoryMB)
+	}
+	if slices.ContainsFunc(saved, func(x engine.TemplateInfo) bool { return x.ID == built.ID }) {
+		t.Errorf("SavedTemplates lists built template %s", s.cfg.Template)
+	}
+}
+
+func (s *suite) savePaused(t *testing.T) {
+	t.Parallel()
+	ctx := s.ctx(t)
+	e := s.cfg.Engine
+	m := s.create(t, ctx, "save-paused", 10*time.Minute)
+	if err := e.Pause(ctx, m.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	alias := s.alias("save-paused")
+	s.deleteTemplateLater(t, alias)
+	if _, err := e.SaveTemplate(ctx, m.ID, alias); !errors.Is(err, engine.ErrNotRunning) {
+		t.Errorf("SaveTemplate(paused) = %v, want ErrNotRunning", err)
+	}
+	if _, err := e.Template(ctx, alias); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("Template after a refused save = %v, want ErrNoTemplate", err)
+	}
+	if st := s.get(t, ctx, m.ID).State; st != engine.Paused {
+		t.Errorf("state after a refused save = %s, want still paused", st)
+	}
+}
+
+func (s *suite) deleteTemplateInUse(t *testing.T) {
+	t.Parallel()
+	ctx := s.ctx(t)
+	e := s.cfg.Engine
+	origin := s.create(t, ctx, "delete-template", 10*time.Minute)
+
+	alias := s.alias("delete")
+	s.deleteTemplateLater(t, alias)
+	info, err := e.SaveTemplate(ctx, origin.ID, alias)
+	if err != nil {
+		t.Fatalf("SaveTemplate: %v", err)
+	}
+	cp := s.createFrom(t, ctx, alias, s.metadata("delete-template-copy"), 10*time.Minute)
+
+	if err := e.DeleteTemplate(ctx, info.ID); !errors.Is(err, engine.ErrTemplateInUse) {
+		t.Errorf("DeleteTemplate with a running copy = %v, want ErrTemplateInUse", err)
+	}
+	if err := e.Pause(ctx, cp.ID); err != nil {
+		t.Fatalf("Pause(copy): %v", err)
+	}
+	if err := e.DeleteTemplate(ctx, info.ID); !errors.Is(err, engine.ErrTemplateInUse) {
+		t.Errorf("DeleteTemplate with a paused copy = %v, want ErrTemplateInUse", err)
+	}
+	if err := e.Kill(ctx, cp.ID); err != nil {
+		t.Fatalf("Kill(copy): %v", err)
+	}
+	if err := e.DeleteTemplate(ctx, info.ID); err != nil {
+		t.Fatalf("DeleteTemplate with no copies left: %v", err)
+	}
+
+	if _, err := e.Template(ctx, alias); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("Template after DeleteTemplate = %v, want ErrNoTemplate", err)
+	}
+	if err := e.DeleteTemplate(ctx, info.ID); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("second DeleteTemplate = %v, want ErrNoTemplate", err)
+	}
+	saved, err := e.SavedTemplates(ctx)
+	if err != nil {
+		t.Fatalf("SavedTemplates: %v", err)
+	}
+	if slices.ContainsFunc(saved, func(x engine.TemplateInfo) bool { return x.ID == info.ID }) {
+		t.Errorf("SavedTemplates lists deleted template %s", alias)
+	}
+}
+
+func (s *suite) missingTemplate(t *testing.T) {
+	t.Parallel()
+	ctx := s.ctx(t)
+	e := s.cfg.Engine
+	if info, err := e.Template(ctx, "hib-contract-none-"+RandomID()); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("Template(unknown) = %+v, %v; want ErrNoTemplate", info, err)
+	}
+	if err := e.DeleteTemplate(ctx, RandomID()); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("DeleteTemplate(unknown) = %v, want ErrNoTemplate", err)
+	}
+}
+
+func (s *suite) alias(name string) string {
+	return "hib-contract-" + s.runID + "-" + name
+}
+
+func (s *suite) deleteTemplateLater(t *testing.T, alias string) {
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		info, err := s.cfg.Engine.Template(ctx, alias)
+		if err == nil {
+			err = s.cfg.Engine.DeleteTemplate(ctx, info.ID)
+		}
+		if err != nil && !errors.Is(err, engine.ErrNoTemplate) {
+			t.Errorf("cleanup: delete template %s: %v", alias, err)
+		}
+	})
+}
+
 func (s *suite) get(t *testing.T, ctx context.Context, id string) engine.Machine {
 	t.Helper()
 	m, err := s.cfg.Engine.Get(ctx, id)
@@ -415,6 +591,10 @@ func RandomID() string {
 		b[i] = alphabet[int(b[i])%len(alphabet)]
 	}
 	return string(b)
+}
+
+func sameTemplate(a, b engine.TemplateInfo) bool {
+	return a.ID == b.ID && a.Alias == b.Alias && a.CPUs == b.CPUs && a.MemoryMB == b.MemoryMB && a.Created.Equal(b.Created)
 }
 
 func hasAll(have, want map[string]string) bool {
