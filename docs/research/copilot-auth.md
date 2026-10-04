@@ -1,6 +1,10 @@
 # GitHub Copilot CLI auth for Hibernaut
 
-**Date checked:** 2026-09-30.
+**Date checked:** 2026-09-30. **Live trace:** 2026-10-04, Copilot CLI 1.0.91 (§9).
+
+**Update (2026-10-04):** the live trace in §9 answers the main open question. Copilot CLI 1.0.91
+does no token exchange. It sends the `GH_TOKEN` value itself to `api.github.com` and to the
+plan's Copilot API host, and a placeholder swapped on those hosts works.
 
 **Summary:** GitHub Copilot CLI can run headlessly from `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`, and GitHub's docs explicitly list OAuth tokens from the GitHub CLI app (`gho_`) as supported. The CLI stores interactive OAuth tokens in the OS keychain, or plaintext `~/.copilot/config.json` on headless Linux without a credential store, but env-var auth is documented as the automation path. The npm package is a thin Node loader plus per-platform native executable; the binary contains Node/undici/SEA strings and honors Copilot's documented proxy/custom-CA paths. Official docs list `api.github.com/copilot_internal/*` and `*.githubcopilot.com`/plan-specific Copilot hosts as required, but I did **not** verify the CLI's exact token-exchange response format or cache from readable bundled code. OpenCode is officially supported by GitHub Copilot, but the pinned OpenCode source uses its own device-flow OAuth app and sends the stored OAuth token directly to `api.githubcopilot.com`.
 
@@ -145,12 +149,33 @@ COPILOT_GITHUB_TOKEN="$GH_TOKEN" COPILOT_AUTO_UPDATE=false COPILOT_ALLOW_ALL=tru
 
 Expected output should be exactly or visibly `OK`; any prompt, login URL, cert error, or immediate silent exit should fail the smoke test.
 
+## 9. Live trace (2026-10-04)
+
+- **Setup** — Copilot CLI 1.0.91 on the laptop (macOS) ran
+  `copilot -p "Reply with exactly OK." -s --allow-all-tools --no-ask-user` through mitmproxy, with
+  `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` set to the mitm CA, a temp `COPILOT_HOME` and
+  `COPILOT_AUTO_UPDATE=false`. The addon printed only hosts, methods, paths without queries,
+  statuses, header names and token shapes. It wrote no flow file, and the temp files were deleted.
+- **Verified live** — There is no token exchange. No request went to `copilot_internal/v2/token`
+  or any other exchange endpoint. The `gho_` token from `GH_TOKEN` went, in the `Authorization`
+  header, straight to:
+  - `api.github.com`: `/copilot_internal/user` and `/copilot/mcp_registry`.
+  - `api.enterprise.githubcopilot.com`: `/models`, `/mcp/readonly` and `/v1/messages`. The API
+    host depends on the plan. This account's plan is enterprise.
+- **Verified live** — A placeholder works. With `GH_TOKEN` set to a placeholder made by
+  Hibernaut's `vault.Placeholder`, and the addon swapping it for the real token on `api.github.com`
+  and `*.githubcopilot.com`, the run printed OK.
+- **Verified live** — `COPILOT_HOME` held no token after the run.
+- **Implication** — Copilot needs no token endpoint in the proxy. Binding `*.githubcopilot.com`
+  to the GitHub secret, next to `github.com`, `api.github.com` and `uploads.github.com`, is enough.
+
 ## Gaps
 
 - **Not found** — Copilot CLI OAuth client ID.
-- **Not found** — Official CLI's exact `copilot_internal` exchange endpoint, request headers, response schema, token lifetime, refresh threshold, and cache location.
-- **Not found** — Whether env-var tokens are ever persisted; docs imply runtime use but do not state a negative.
+- **Answered (§9)** — The official CLI does no `copilot_internal` exchange in 1.0.91. It sends the
+  GitHub token to the Copilot API host directly.
+- **Answered (§9)** — An env-var token was not written to `COPILOT_HOME` in the traced run.
 - **Not found** — CLI-specific support for `SSL_CERT_FILE`.
-- **Not found** — Certificate pinning evidence; custom-CA docs suggest normal trust-store behavior but do not prove every path.
-- **Not verified live** — A real GitHub CLI `gho_` token from this user's laptop was not tested against Copilot CLI; conclusion is based on official token-type docs.
-- **Needs e2e trace** — Before implementing derived-token placeholdering, run the pinned CLI through Hibernaut's TLS intercept with debug logs enabled and capture hosts, headers, exchange bodies, token lifetimes, and cache writes.
+- **Not found** — Certificate pinning evidence. Custom-CA docs suggest normal trust-store behavior but do not prove every path. The traced run trusted the mitm CA from `NODE_EXTRA_CA_CERTS`.
+- **Answered (§9)** — A real `gho_` token from gh works as `GH_TOKEN`, and so does a placeholder
+  swapped for it.

@@ -108,12 +108,15 @@ be sent to, and a **placeholder**.
   whitespace do not change identity.
 - **Delivery:** `hibd` writes a managed block of placeholders (`GH_TOKEN=…`, …) into each
   machine's `/etc/environment`. Tools that read a login file instead (Codex, §4.4) get that file
-  with placeholders in it. `hibd` writes both on create, on resume, and whenever secrets change.
+  with placeholders in it. Their secrets have no env var. `hibd` writes both on create, on resume,
+  and whenever secrets change.
   SSH sessions, `hib exec` and tmux all see them. (Not E2B's `envVars`: those reach only processes
   E2B starts, not SSH logins, and can't be changed after create.)
 - **Swap:** the egress proxy replaces placeholders only in the `Authorization` request header,
   and only for that secret's bound sites. Basic auth is decoded before swapping and re-encoded.
   Other headers, URLs, and bodies keep the placeholder. Sent elsewhere, it is meaningless.
+  A **scrub-only** secret is never swapped. Its sites are still intercepted, and responses are
+  still scrubbed of it. Codex's refresh and ID tokens are scrub-only (§4.4).
 - **Health:** `hib status` checks each secret bound to `api.github.com` with `GET /user`, and shows
   whether it still works. There's no general way to test other keys, so they show as unchecked.
 
@@ -175,15 +178,16 @@ git clone https://github.com/solev/private-repo
     This includes gzip on Range requests and encodings such as br, zstd, and deflate.
   - If the audit log write fails, the request fails closed before forwarding.
 - **WebSocket:** the upgrade request's `Authorization` is swapped and its response headers are
-  scrubbed. After the upgrade, frames are neither swapped nor scrubbed.
-- **Token endpoints:** some tools trade their login for fresh tokens: Codex refreshes, and Copilot
-  may exchange (S9). The proxy handles these few endpoints itself, so a new real token never
-  reaches a machine. It either answers the request with placeholders, or keeps the new real token
-  on the host and passes the machine a placeholder for it (§4.4).
-  Authorization-only swapping does not handle refresh-token bodies. The token endpoint handler
-  in M5 handles Codex's refresh-token body on the host.
-- **Audit log:** every swap is logged as time, machine, site, method, path and secret name. View it
-  with `hib log`.
+  scrubbed. After the upgrade, frames are neither swapped nor scrubbed. Codex's model stream is a
+  WebSocket. The S6 trace found no token in its frames in either direction, but that holds only
+  for the pinned version, so the trace is repeated whenever the pin moves (§4.4).
+- **Token endpoints:** Codex refreshes its login. (Copilot has no exchange, S9.) The proxy
+  answers `POST auth.openai.com/oauth/token` itself, so a new real token never reaches a machine
+  (§4.4). It's the only request whose body the proxy reads: at most 64 KiB, within 10 seconds.
+  The answer is scrubbed against the vault as it is after the refresh. Everything else on
+  `auth.openai.com` passes through with nothing swapped.
+- **Audit log:** every swap is logged as time, machine, site, method, path and secret name, and
+  so is every refresh request the proxy answers. View it with `hib log`.
 - **Trust inside the image:**
   - Our CA goes into `/usr/local/share/ca-certificates/` and `update-ca-certificates` runs. That
     covers git, curl, `gh` and other Go tools, and apt.
@@ -237,8 +241,9 @@ git clone https://github.com/solev/private-repo
   (`<id>+<login>@users.noreply.github.com`), so no email scope is needed and commits still link to
   you. `hibd` writes both into each machine's `/etc/gitconfig` when it's made, and again whenever
   they change.
-- Bound sites: `github.com`, `api.github.com` and `uploads.github.com`. Copilot's hosts join in M5
-  (§4.4).
+- Bound sites: `github.com`, `api.github.com`, `uploads.github.com` and `*.githubcopilot.com`,
+  for the Copilot CLI (§4.4). A GitHub connection made before M5 gets the Copilot hosts when
+  `hibd daemon` starts.
 
 ### 4.4 AI tools
 
@@ -247,31 +252,62 @@ come later.
 
 | Tool | Connect once with | Inside the machine | Bound sites |
 | --- | --- | --- | --- |
-| Codex | `hib connect codex`: approve a code in the browser | A placeholder login file, `~/.codex/auth.json` | `chatgpt.com`, `auth.openai.com` |
-| Copilot CLI | Nothing extra: it uses the GitHub connection | The same `GH_TOKEN` placeholder | Copilot's hosts (`*.githubcopilot.com`, `api.github.com`). Exact list from the S9 trace. |
+| Codex | `hib connect codex`: approve a code in the browser | A placeholder login file, `~/.codex/auth.json` | `chatgpt.com`. `auth.openai.com` is intercepted for refreshes only. |
+| Copilot CLI | Nothing extra: it uses the GitHub connection | The same `GH_TOKEN` placeholder | `api.github.com` and `*.githubcopilot.com` (S9) |
 
 **Codex on your ChatGPT plan** (S6, [codex-chatgpt-auth](research/codex-chatgpt-auth.md)):
 
 - **The host gets its own login.** `hib connect codex` runs the official `codex login --device-auth`
   on the host, and you approve the code in the browser. Device login is in beta: turn it on in
   ChatGPT's security settings first.
+  - The host has the same pinned Codex as the image, used only for this login. It runs with a
+    throwaway `CODEX_HOME` and a clean environment. The tokens go into the vault, then the
+    directory is deleted.
   - We can't copy the laptop's login the way we copy gh's. ChatGPT refresh tokens are single-use,
     so whichever side refreshed first would log the other one out.
+  - Connecting again replaces the login, even with another account.
+- **Three managed secrets:** `codex-access` holds the access token and is swapped on
+  `chatgpt.com`. `codex-refresh` and `codex-id` are scrub-only and bound to `auth.openai.com`.
+  None has an env var. `hib secret` can't set or remove names that start with `codex-`.
 - **Machines get a placeholder login file.** Its JWTs carry your real claims (account, plan,
-  email), a far-future expiry and a fake signature.
+  email), a far-future expiry and a fake signature. Its refresh token is a placeholder too. The
+  account ID is real.
   - Codex reads them without checking signatures. It refreshes only when a token is within
     5 minutes of expiring, or after a 401. So on its own it never refreshes.
-- **Only `hibd` refreshes the real token**, on the host, one refresh at a time.
-  - The proxy swaps the placeholder access token on `chatgpt.com` for the current real one.
-  - If Codex refreshes anyway (after a 401), the proxy answers that request itself with the same
-    placeholders, once `hibd` has a fresh real token. It never goes to OpenAI.
+  - `hibd` owns the file while Codex is connected. It writes it on create, on resume, and when the
+    placeholders change. A refresh keeps the access and refresh placeholders, but the ID token's
+    claims include refresh times, so its placeholder changes. After `codex logout` in a machine,
+    pause and resume the machine to get the file back.
+- **Only `hibd` refreshes the real token**, on the host.
+  - The daemon refreshes once half the access token's lifetime has passed (it lasts 10 days). It
+    backs off while OpenAI can't be reached.
+  - One refresh at a time, across the daemon, the proxy and `hib connect codex`. The new tokens
+    are in the vault before anything uses them. Old values stay in the leak scan until they expire.
+  - A refresh whose outcome is unknown is never retried by itself: the host crashed during it, or
+    the request went out and the answer was a 5xx or never came. OpenAI may have used the refresh
+    token, and using it again could end the login. The current access token keeps working until it
+    expires, and `hib status` says to run `hib connect codex` before then.
+  - `hib status` shows the account, the plan, when the token expires, and whether the login is
+    dead (OpenAI refused the refresh token) or stuck (an unknown outcome). Either way the fix is
+    `hib connect codex`.
+- **The proxy answers Codex's refresh request itself** (§4.2 Token endpoints). It never goes to
+  OpenAI.
+  - It carries the machine's placeholder refresh token: the proxy logs it, then answers 200 with
+    the current placeholders. First it refreshes for real, but only if a site answered 401 to the
+    current real access token, or the token expires within 5 minutes. That's at most once every
+    10 minutes. Past that it answers 503, and Codex tries again later.
+  - The login is dead or stuck: 401 with an error that names `hib connect codex`. Codex stops and
+    shows it.
+  - Any other grant, such as a login inside the machine or another refresh token: 403. While Codex
+    is connected, machines can't log in to ChatGPT themselves.
 - **Later: Business/Enterprise workspaces** could use a Codex access token instead
   (`hib connect codex --access-token`). It's a static `at-…` token, swapped like an API key through
   a `CODEX_ACCESS_TOKEN` placeholder. Plus and Pro accounts can't create one. Our account is Plus,
   so v1 leaves this out: we'd have nothing to test it against (D7).
 - **Unattended:** the image's `~/.codex/config.toml` sets `approval_policy = "never"` and
   `sandbox_mode = "danger-full-access"`. The microVM is the sandbox, and Codex's own (bubblewrap)
-  sandbox may not work inside it. Update checks and analytics are off.
+  sandbox may not work inside it. Update checks and analytics are off, and
+  `cli_auth_credentials_store = "file"` keeps the login in the file.
 
 **GitHub Copilot CLI** (S9, [copilot-auth](research/copilot-auth.md)):
 
@@ -281,11 +317,10 @@ come later.
     Classic `ghp_` tokens don't work.
 - It trusts the system certificate store and `NODE_EXTRA_CA_CERTS`, so it trusts our CA. GitHub
   documents intercepting proxies with custom certificates as supported.
-- **Open (S9):** Copilot may trade the GitHub token for a short-lived Copilot token (through
-  `api.github.com/copilot_internal/…`) and send that to its model hosts. That token would reach
-  the machine in a response. If so, the proxy captures it (§4.2 Token endpoints): the real one
-  stays on the host, the machine gets a placeholder, and the proxy swaps it back on the model
-  hosts. A traffic trace settles this before M5.
+- **No exchange** (S9, live trace): Copilot sends the `GH_TOKEN` value itself to `api.github.com`
+  (`/copilot_internal/user`) and to its plan's API host, such as
+  `api.enterprise.githubcopilot.com`. The proxy swaps it there like any GitHub request, so no new
+  token reaches the machine. Copilot's config directory holds no token.
 - **Unattended:** `COPILOT_AUTO_UPDATE=false`. Scripted runs use
   `copilot -p "…" --allow-all-tools --no-ask-user`. Prompt mode requires allowing all tools.
 
@@ -307,7 +342,8 @@ come later.
 | makes a bound site store or echo a value | only Authorization is swapped. See the limits below. |
 | gets credentials echoed in WebSocket frames | frames are not scrubbed after upgrade (§4.2) |
 | uses a credential against the real site (e.g. deletes a repo, or spends your AI quota) | **not prevented in v1.** It shows in the audit log. Mitigation: narrower tokens (fine-grained, GitHub App). |
-| triggers a token refresh or exchange | the proxy handles it on the host (§4.2 Token endpoints). New real tokens never reach the machine. |
+| triggers a token refresh | the proxy answers it on the host (§4.2 Token endpoints). New real tokens never reach the machine, and a machine can make the host refresh at most once every 10 minutes. |
+| sends another refresh token or a login through the proxy | refused with 403 while Codex is connected (§4.4) |
 | gets hold of a golden image | it only contains placeholders (multi-user will need a per-machine identity check) |
 | connects to the host's own services (E2B API, databases, `hibd`) or Azure's metadata endpoint | blocked: E2B's firewall drops traffic to private, loopback and link-local addresses, including `169.254.169.254`. Azure's WireServer (`168.63.129.16`) is a public address E2B doesn't block, so the orchestrator runs with `IPAddressDeny` for it and an nft rule drops it on the sandbox veth. Still reachable: E2B's internal service address (`192.0.2.1`) and the host's public IP, where the NSG allows only key-based SSH. `hibd` listens on localhost, apart from the interception port, which accepts only machine interfaces. Verified live in M1 (`TestMachineNetwork`) and M3 (`TestNoHostAccess`, S8). |
 
@@ -608,10 +644,10 @@ repo (see the README).
 | S3 | Can E2B fork a machine or turn it into a template? | **Yes, natively** (§5 Images and fork). |
 | S4 | Do paused machines survive a host reboot? | **Yes, tested live in M0** (`TestSurvivesHostRestart`). A running machine is paused on the way down, by the guard on a reboot or by `quiesce` before the nightly deallocate, and resumes afterwards with its files and processes. E2B's pause returns before the snapshot is written, so E2B must stop cleanly before power-off (§5 Idle and wake). |
 | S5 | Does Claude Code work with a placeholder `CLAUDE_CODE_OAUTH_TOKEN` through the proxy? | **Deferred.** Claude Code comes after v1 ([milestones → Later](milestones/README.md#later-not-v1)). |
-| S6 | Can Codex on a ChatGPT plan work with no real token in the machine? | **Yes, per Codex's source** ([codex-chatgpt-auth](research/codex-chatgpt-auth.md)). Codex reads the JWTs in its login file without checking signatures, and refreshes only near expiry or after a 401. So a placeholder login file plus host-only refresh works (§4.4). `CODEX_ACCESS_TOKEN` is simpler, but only Business/Enterprise workspaces can create one. Live test in M5. |
+| S6 | Can Codex on a ChatGPT plan work with no real token in the machine? | **Yes, checked live** with codex-cli 0.160.0 ([codex-chatgpt-auth](research/codex-chatgpt-auth.md) §11). A placeholder login file made by `vault.Placeholder` works with only the `Authorization` bearer swapped on `chatgpt.com`. Codex never refreshed on its own, and sent no token outside `Authorization`, including in WebSocket frames. Its refresh calls and error handling were traced too (§4.4). `CODEX_ACCESS_TOKEN` is simpler, but only Business/Enterprise workspaces can create one. |
 | S7 | Which env vars and config does each tool need to trust our CA and run unattended? | **Answered** (§4.2 Trust, §4.4). |
 | S8 | Can machines reach host services or the Azure metadata endpoint? | **No, tested live in M3** (`TestNoHostAccess`). A machine probed every port the host listens on, at every host address, the gateway, `169.254.169.254` and `168.63.129.16`. Only SSH on the host's public IP and E2B's service endpoint at `192.0.2.1` answered (§4.5). |
-| S9 | Does the Copilot CLI trade the GitHub token for its own short-lived token? Which hosts get which token? | **Open.** GitHub's docs confirm `GH_TOKEN` with gh's `gho_` token, and list `api.github.com/copilot_internal/*` and `*.githubcopilot.com` as required hosts ([copilot-auth](research/copilot-auth.md)). The exchange isn't documented, and the CLI ships as a compiled binary. Trace one `copilot -p` run through an intercepting proxy at the start of M5. |
+| S9 | Does the Copilot CLI trade the GitHub token for its own short-lived token? Which hosts get which token? | **No exchange, traced live** with Copilot CLI 1.0.91 ([copilot-auth](research/copilot-auth.md) §9). The `gho_` token goes straight to `api.github.com` (`/copilot_internal/user`, `/copilot/mcp_registry`) and the plan's API host (`api.enterprise.githubcopilot.com` for this account). A placeholder swapped on those hosts works. So `*.githubcopilot.com` joins the GitHub secret's sites (§4.3). |
 
 Research: [e2b-capabilities](research/e2b-capabilities.md) (§10 covers egress, `caBundle` and SSH) ·
 [agent-auth](research/agent-auth.md) · [codex-chatgpt-auth](research/codex-chatgpt-auth.md) ·

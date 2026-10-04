@@ -1,6 +1,7 @@
 # Codex ChatGPT-plan auth — S6 research notes
 
-**Date checked:** 2026-09-30.
+**Date checked:** 2026-09-30. **Live checks:** 2026-10-04 with codex-cli 0.160.0, the version
+Hibernaut pins (§11). Where §11 and the source notes disagree, §11 wins for that version.
 **Primary code source:** `openai/codex` release tag `rust-v0.159.2`, annotated tag object `8b9fa496bbf2c47aebd62e85a080b9a522a455b5`, commit `ff6aec96948b70d94983af2641a6b67c94faeff5`. All Codex source links below are pinned to that commit. **Code wins over docs where they disagree.**
 **Docs checked:** `developers.openai.com/codex/*` / `learn.chatgpt.com/docs/*`, OpenAI Help, and OpenAI policy pages where fetchable.
 
@@ -177,6 +178,53 @@ codex exec --skip-git-repo-check --sandbox danger-full-access "Reply with exactl
 - **Operational constraints:** Use only one runner/machine per token family or serialize use; persist refreshed file; reseed on refresh failure.
 - **Recommendation:** Keep as emergency/manual fallback only, with a clear warning and no golden-image capture of the real file.
 
+## 11. Live checks (2026-10-04, codex-cli 0.160.0)
+
+- **Setup** — codex-cli 0.160.0 from npm, in a temp prefix on the laptop (macOS), ran
+  `codex exec --skip-git-repo-check "Reply with exactly OK."` with a temp `CODEX_HOME`,
+  `HTTPS_PROXY` set to mitmproxy and `CODEX_CA_CERTIFICATE` set to a bundle with the mitm CA. The
+  addon printed only hosts, methods, paths, statuses, header names and token shapes, and held the
+  real tokens in memory only. It answered `auth.openai.com` itself and never forwarded it, so the
+  laptop's own refresh token was never used. The temp files were deleted.
+- **Verified live (S6)** — A placeholder login file works. Its access and ID tokens were made by
+  Hibernaut's `vault.Placeholder` (the real header and claims, `exp` 2100, a random signature),
+  with a random `rt.` refresh token. With only the `Authorization` bearer swapped for the real
+  access token on `chatgpt.com`, the run printed OK. Codex didn't refresh and didn't rewrite
+  `auth.json`.
+- **Verified live** — Hosts. Every request with a token went to `chatgpt.com`, under
+  `/backend-api/`: `codex/models`, `codex/responses`, `codex/analytics-events/events`,
+  `plugins/featured`, `ps/plugins/…`, `ps/mcp` and `wham/…`. Requests without a token went to
+  `ab.chatgpt.com/otlp/v1/metrics`, to `*.oaiusercontent.com` for files, and to the MCP connectors
+  of the ChatGPT account, on their own hosts.
+- **Verified live** — The model stream is a WebSocket: `GET …/codex/responses` upgraded over
+  HTTP/1.1, with an HTTPS POST as the fallback. §6 found Server-Sent Events in the rust-v0.159.2
+  source. Both exist. 0.160.0 tries the WebSocket first.
+- **Verified live** — Tokens appear only in `Authorization`. No real or placeholder token was in
+  any other header, any request or response body, or any WebSocket frame in either direction. The
+  ID token and the refresh token were never sent in normal use.
+- **Verified live** — Refresh behaviour, driven by 401s from the addon:
+  - One 401 on the WebSocket connect: Codex reconnects without refreshing.
+  - Two 401s: Codex sends `POST auth.openai.com/oauth/token` with `Content-Type:
+    application/json` and `{client_id, grant_type: "refresh_token", refresh_token}`, with no
+    `scope`.
+  - A 200 answer with the same three placeholders: Codex retries and succeeds. It rewrites only
+    `last_refresh` in `auth.json`. The tokens and `account_id` stay the same.
+  - A 401 on every model request: Codex refreshes about every third attempt, falls back to HTTPS
+    after five WebSocket reconnects, then exits 1 with "Could not parse your authentication token.
+    Please try signing in again."
+  - A refresh answered 401 with `{"error":{"code":"refresh_token_reused"}}`: exactly one refresh
+    call. Codex caches the failure for the rest of the process, prints its canned "refresh token
+    was already used" message, and leaves `auth.json` alone.
+  - A refresh answered 503: not cached. One run sent 13 refresh calls.
+- **Implications for Hibernaut:**
+  - Bind the access token to `chatgpt.com` only. Intercept `auth.openai.com` only to answer the
+    refresh. Never swap the refresh or ID token: neither is sent in normal use.
+  - The token endpoint must not pass every refresh call on to OpenAI: a 503 brings a dozen more.
+  - Codex keeps `account_id` from the file, so a new account needs a new file, not just a refresh
+    answer.
+  - The proxy doesn't scrub WebSocket frames. This check found no token in them for 0.160.0, so
+    re-run it whenever the pin moves.
+
 ## Minimal v1 bake-in
 
 - **Files:**
@@ -193,4 +241,5 @@ codex exec --skip-git-repo-check --sandbox danger-full-access "Reply with exactl
 - **Not found:** Exact access-token server-side lifetime beyond docs saying finite windows, shortest custom window one day, scoped tokens must expire, older Codex-only dialog may allow no expiration.
 - **Not found:** A complete production host allowlist for every optional Codex feature. Verified core: `auth.openai.com`, `chatgpt.com/backend-api/codex`, backend config/usage/files/analytics paths under ChatGPT backend.
 - **Not found:** Clean plaintext extraction of OpenAI Terms/Service Terms pages with this tooling; policy/legal conclusions beyond official Codex docs and Help account-sharing page need manual legal review.
-- **Needs empirical test:** Does the installed release in Hibernaut honor `HTTPS_PROXY` exactly as expected in the Firecracker guest, or does its route-aware client bypass env proxy in some sandbox modes? Source indicates proxy support, but v1 should run a live MITM smoke test.
+- **Answered (§11):** codex-cli 0.160.0 honours `HTTPS_PROXY`. In machines the proxy is
+  transparent anyway, so Codex needs no proxy setting there.
