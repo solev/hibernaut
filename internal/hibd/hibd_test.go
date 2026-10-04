@@ -647,8 +647,14 @@ func TestImageBuild(t *testing.T) {
 	if len(built) != 2 || built[0].Name != "hib-dev" || built[0].Force || !built[1].Force {
 		t.Errorf("built %+v, want hib-dev, then hib-dev forced", built)
 	}
-	if got := built[0].Steps[len(built[0].Steps)-1].Cmd; !strings.Contains(got, base64.StdEncoding.EncodeToString(caPEM)) {
-		t.Errorf("built spec did not include the configured CA in the last step")
+	withCA := 0
+	for _, step := range built[0].Steps {
+		if strings.Contains(step.Cmd, base64.StdEncoding.EncodeToString(caPEM)) {
+			withCA++
+		}
+	}
+	if withCA != 1 {
+		t.Errorf("%d of the built spec's steps include the configured CA, want 1", withCA)
 	}
 	code, _, err = runJSON(t, a, out, "image", "build", "nope", "-json")
 	if code != 1 || err == nil || !strings.Contains(err.Error(), `no image "nope"`) {
