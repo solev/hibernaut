@@ -51,11 +51,13 @@ The M7 code is built against this section. Code that has to differ updates it in
 - GitHub's answer is checked before use. `user_code` must match
   `^[A-Za-z0-9]{1,16}(-[A-Za-z0-9]{1,16}){0,3}$`, `verification_uri` must be exactly
   `hibapi.GitHubDeviceURL`, and `device_code` must match `^[A-Za-z0-9_-]{1,255}$`. `expires_in`
-  must be 1 to 3600 and `interval` 0 to 900, checked as integers. An interval of 0 means 5 s.
+  must be 1 to 3600 and `interval` 0 to 900, checked as integers. An interval of 0, or none,
+  means 5 s.
 - The deadline is fixed when the code arrives, at that time plus `expires_in`. Each round waits
   the interval, cut short at the deadline, then checks the deadline again before it polls.
 - `authorization_pending` keeps the interval. `slow_down` makes it the larger of the interval
-  plus 5 s and GitHub's new `interval`. GitHub's interval is never capped.
+  plus 5 s and GitHub's new `interval`, which counts only if it's a whole number of seconds.
+  GitHub's interval isn't held to 900 s, only to an hour, which no code outlives.
 - A transport error, a timeout, a 5xx or a 429 is retried until the deadline. The wait doubles,
   from the interval up to a minute, and drops back to the interval after any other answer. If the
   code expires after a failed poll, the error says why the poll failed.

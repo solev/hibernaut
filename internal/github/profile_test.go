@@ -34,12 +34,14 @@ func TestProfileRoundTrip(t *testing.T) {
 	if email := got.Email(); email != "583231+octocat@users.noreply.github.com" {
 		t.Errorf("Email() = %q", email)
 	}
-	want.Source = hibapi.GitHubFromGH
-	if err := github.SaveProfile(path, want); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := github.LoadProfile(path); err != nil || *got != want {
-		t.Fatalf("LoadProfile after overwriting = %+v, %v, want %+v", got, err, want)
+	for _, source := range []string{hibapi.GitHubFromGH, hibapi.GitHubFromDevice} {
+		want.Source = source
+		if err := github.SaveProfile(path, want); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := github.LoadProfile(path); err != nil || *got != want {
+			t.Fatalf("LoadProfile after overwriting = %+v, %v, want %+v", got, err, want)
+		}
 	}
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil {
