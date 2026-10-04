@@ -17,14 +17,17 @@ import (
 
 const environmentPath = "/etc/environment"
 
-// BlockFromSecrets renders the managed /etc/environment block for secrets.
+// BlockFromSecrets renders the managed /etc/environment block for secrets. It skips secrets
+// without a variable.
 func BlockFromSecrets(secrets []vault.Secret) ([]byte, error) {
-	if len(secrets) == 0 {
-		return nil, nil
+	var vars []envblock.Var
+	for _, s := range secrets {
+		if s.Env != "" {
+			vars = append(vars, envblock.Var{Name: s.Env, Value: s.Placeholder})
+		}
 	}
-	vars := make([]envblock.Var, len(secrets))
-	for i, s := range secrets {
-		vars[i] = envblock.Var{Name: s.Env, Value: s.Placeholder}
+	if len(vars) == 0 {
+		return nil, nil
 	}
 	slices.SortFunc(vars, func(a, b envblock.Var) int { return strings.Compare(a.Name, b.Name) })
 	return envblock.Render(vars)

@@ -14,6 +14,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/envblock"
 	"github.com/solev/hibernaut/internal/machines"
+	"github.com/solev/hibernaut/internal/vault"
 )
 
 type envFileGuest struct {
@@ -22,6 +23,8 @@ type envFileGuest struct {
 	requests          []engine.ExecRequest
 	// git runs the script that sets git's identity. Nil answers as if sh were missing.
 	git func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
+	// codex runs the script that writes Codex's login file. Nil answers as if sh were missing.
+	codex func(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error)
 }
 
 func (g *envFileGuest) exec(ctx context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
@@ -37,6 +40,9 @@ func (g *envFileGuest) exec(ctx context.Context, _ engine.Machine, _ string, req
 	case "sh":
 		if len(req.Args) == 5 && req.Args[0] == "-c" && req.Args[2] == "hibd-git" && g.git != nil {
 			return g.git(ctx, req)
+		}
+		if len(req.Args) == 5 && req.Args[0] == "-c" && req.Args[2] == "hibd-codex" && g.codex != nil {
+			return g.codex(ctx, req)
 		}
 		if len(req.Args) == 5 && req.Args[0] == "-c" && req.Args[2] == "hibd-env" {
 			if g.casMismatchesLeft > 0 {
@@ -124,5 +130,25 @@ func TestWriteBlockReportsMergeErrorWithoutOverwriting(t *testing.T) {
 	}
 	if !bytes.Equal(guest.content, original) {
 		t.Fatalf("corrupt environment = %q, want original %q", guest.content, original)
+	}
+}
+
+func TestBlockFromSecretsSkipsSecretsWithoutAVariable(t *testing.T) {
+	block, err := machines.BlockFromSecrets([]vault.Secret{
+		{Name: "github", Env: "GH_TOKEN", Placeholder: "gho_hibplaceholder1234567890"},
+		{Name: "codex-refresh", Placeholder: "rt.hibplaceholder1234567890"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := envblock.Render([]envblock.Var{{Name: "GH_TOKEN", Value: "gho_hibplaceholder1234567890"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(block, want) {
+		t.Errorf("block = %q, want %q", block, want)
+	}
+	if block, err := machines.BlockFromSecrets([]vault.Secret{{Name: "codex-id", Placeholder: "x"}}); err != nil || block != nil {
+		t.Errorf("block of secrets without variables = %q, %v; want none, as with no secrets", block, err)
 	}
 }

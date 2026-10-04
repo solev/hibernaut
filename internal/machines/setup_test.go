@@ -73,18 +73,7 @@ func (s shell) run(ctx context.Context, req engine.ExecRequest) (engine.ExecResu
 // calls returns the argument lists git was called with.
 func (s shell) calls(t *testing.T) [][]string {
 	t.Helper()
-	data, err := os.ReadFile(s.log)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out [][]string
-	for line := range strings.SplitSeq(strings.TrimSuffix(string(data), "\n"), "\n") {
-		out = append(out, strings.Split(strings.TrimSuffix(line, "\x00"), "\x00"))
-	}
-	return out
+	return readCalls(t, s.log)
 }
 
 func runningMachine(guest *envFileGuest) *fake.Engine {
@@ -210,6 +199,11 @@ func TestSetupHash(t *testing.T) {
 		"block and identity":  {EnvBlock: block, Git: &machines.GitIdentity{Name: "ab", Email: "c"}},
 		"name in the block":   {EnvBlock: []byte("ab"), Git: &machines.GitIdentity{Email: "c"}},
 		"block and empty git": {EnvBlock: []byte("ab"), Git: &machines.GitIdentity{}},
+		"codex":               {CodexAuth: []byte("ab")},
+		"other codex":         {CodexAuth: []byte("ab ")},
+		"codex and git":       {CodexAuth: []byte("ab"), Git: &machines.GitIdentity{}},
+		"block and codex":     {EnvBlock: block, CodexAuth: []byte("ab")},
+		"codex in the email":  {Git: &machines.GitIdentity{Email: "ab"}},
 	}
 	seen := map[[32]byte]string{}
 	for name, s := range setups {
@@ -225,6 +219,9 @@ func TestSetupHash(t *testing.T) {
 	}
 	if (machines.Setup{EnvBlock: []byte{}}).Hash() != (machines.Setup{}).Hash() {
 		t.Error("an empty block and no block hash differently, but both write the same")
+	}
+	if (machines.Setup{CodexAuth: []byte{}}).Hash() != (machines.Setup{}).Hash() {
+		t.Error("an empty login file and none hash differently, but both leave the file alone")
 	}
 }
 
@@ -270,5 +267,183 @@ func TestCreateKillsAMachineWhoseSetupFails(t *testing.T) {
 	}
 	if ms := v.machines(t); len(ms) != 0 {
 		t.Errorf("machines = %+v, want the failed one killed", ms)
+	}
+}
+
+// codexHome runs the script that writes Codex's login file for real, in a temporary directory
+// that plays /home/user. A chown in bin logs its arguments, each ending in a NUL byte, to the
+// file log, and fails for paths matching failOn.
+type codexHome struct {
+	root, bin, log string
+}
+
+func newCodexHome(t *testing.T, failOn string) codexHome {
+	t.Helper()
+	dir := t.TempDir()
+	h := codexHome{root: filepath.Join(dir, "home", "user"), bin: filepath.Join(dir, "bin"), log: filepath.Join(dir, "chown.log")}
+	for _, d := range []string{h.root, h.bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done >> \"$CHOWN_LOG\"\nprintf '\\n' >> \"$CHOWN_LOG\"\n" +
+		"case \"$2\" in " + failOn + ") exit 1;; esac\n"
+	if failOn == "" {
+		script = strings.Replace(script, "case \"$2\" in ) exit 1;; esac\n", "", 1)
+	}
+	if err := os.WriteFile(filepath.Join(h.bin, "chown"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func (h codexHome) dir() string { return filepath.Join(h.root, ".codex") }
+
+func (h codexHome) run(ctx context.Context, req engine.ExecRequest) (engine.ExecResult, error) {
+	if req.Args[3] != "/home/user/.codex" {
+		return engine.ExecResult{ExitCode: 64, Stderr: []byte("unexpected directory " + req.Args[3])}, nil
+	}
+	args := slices.Clone(req.Args)
+	args[3] = h.dir()
+	cmd := exec.CommandContext(ctx, "/bin/sh", args...)
+	cmd.Env = []string{"PATH=" + h.bin + ":/usr/bin:/bin", "CHOWN_LOG=" + h.log}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
+		return engine.ExecResult{}, err
+	}
+	return engine.ExecResult{ExitCode: cmd.ProcessState.ExitCode(), Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, nil
+}
+
+func (h codexHome) chowns(t *testing.T) [][]string {
+	t.Helper()
+	return readCalls(t, h.log)
+}
+
+func readCalls(t *testing.T, path string) [][]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out [][]string
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(data), "\n"), "\n") {
+		out = append(out, strings.Split(strings.TrimSuffix(line, "\x00"), "\x00"))
+	}
+	return out
+}
+
+func codexRequests(guest *envFileGuest) []engine.ExecRequest {
+	var out []engine.ExecRequest
+	for _, req := range guest.requests {
+		if len(req.Args) > 2 && req.Args[2] == "hibd-codex" {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("%s has mode %v, want %v", filepath.Base(path), got, want)
+	}
+}
+
+func TestSetupWriteWritesCodexLoginFile(t *testing.T) {
+	home := newCodexHome(t, "")
+	guest := &envFileGuest{content: []byte("PATH=/usr/bin\n"), codex: home.run}
+	e := runningMachine(guest)
+	auth := []byte("{\n  \"tokens\": {\"access_token\": \"$(touch pwned) 'x'\"}\n}")
+	s := machines.Setup{EnvBlock: testBlock(t), CodexAuth: auth}
+	if err := s.Write(t.Context(), e, "app1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(home.dir(), "auth.json")); err != nil || !bytes.Equal(got, auth) {
+		t.Fatalf("auth.json = %q, %v; want %q", got, err, auth)
+	}
+	assertMode(t, home.dir(), 0o700)
+	assertMode(t, filepath.Join(home.dir(), "auth.json"), 0o600)
+	if entries, _ := os.ReadDir(home.dir()); len(entries) != 1 {
+		t.Errorf("~/.codex holds %v, want only auth.json", entries)
+	}
+	chowns := home.chowns(t)
+	if len(chowns) != 2 || !slices.Equal(chowns[0], []string{"user:user", home.dir()}) || chowns[1][0] != "user:user" ||
+		filepath.Dir(chowns[1][1]) != home.dir() || filepath.Base(chowns[1][1]) == "auth.json" {
+		t.Errorf("chown calls = %q, want the directory, then a temporary file beside auth.json", chowns)
+	}
+	reqs := codexRequests(guest)
+	if len(reqs) != 1 || reqs[0].Cmd != "sh" || reqs[0].User != "root" || len(reqs[0].Args) != 5 || reqs[0].Args[0] != "-c" {
+		t.Fatalf("codex execs = %+v, want one sh -c SCRIPT hibd-codex DIR DATA as root", reqs)
+	}
+	if strings.Contains(reqs[0].Args[1], "tokens") {
+		t.Errorf("the script holds the file, not only positional arguments: %q", reqs[0].Args[1])
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(home.bin), "pwned")); err == nil {
+		t.Error("the file's content ran a command")
+	}
+
+	next := []byte(`{"tokens": {}}`)
+	if err := (machines.Setup{CodexAuth: next}).Write(t.Context(), e, "app1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(home.dir(), "auth.json")); err != nil || !bytes.Equal(got, next) {
+		t.Errorf("auth.json after a second write = %q, %v; want %q", got, err, next)
+	}
+}
+
+func TestSetupWriteWithoutCodexLeavesTheFileAlone(t *testing.T) {
+	home := newCodexHome(t, "")
+	guest := &envFileGuest{content: []byte("PATH=/usr/bin\n"), codex: home.run}
+	e := runningMachine(guest)
+	for _, s := range []machines.Setup{{EnvBlock: testBlock(t)}, {}, {CodexAuth: []byte{}}} {
+		if err := s.Write(t.Context(), e, "app1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reqs := codexRequests(guest); len(reqs) != 0 {
+		t.Errorf("codex execs = %+v, want none", reqs)
+	}
+}
+
+func TestSetupWriteReportsCodexFailingAndLeavesNoTemporaryFile(t *testing.T) {
+	home := newCodexHome(t, "*/.auth.json.*")
+	guest := &envFileGuest{codex: home.run}
+	e := runningMachine(guest)
+	err := (machines.Setup{CodexAuth: []byte(`{"tokens": {}}`)}).Write(t.Context(), e, "app1")
+	if err == nil || !strings.Contains(err.Error(), "exited 1") || !strings.Contains(err.Error(), "Codex") {
+		t.Fatalf("Write = %v, want an error saying writing Codex's login file exited 1", err)
+	}
+	if entries, _ := os.ReadDir(home.dir()); len(entries) != 0 {
+		t.Errorf("~/.codex holds %v after a failure, want nothing", entries)
+	}
+}
+
+func TestCreateWritesCodexLoginFile(t *testing.T) {
+	v := newEnv(t)
+	home := newCodexHome(t, "")
+	guest := &envFileGuest{content: []byte("PATH=/usr/bin\n"), codex: home.run}
+	v.e = fake.New(fake.WithTemplates("hib-dev"), fake.WithExec(func(ctx context.Context, m engine.Machine, home string, req engine.ExecRequest) (engine.ExecResult, error) {
+		if req.Cmd == images.MachineInit {
+			return v.g.exec(ctx, m, home, req)
+		}
+		return guest.exec(ctx, m, home, req)
+	}))
+	auth := []byte(`{"tokens": {}}`)
+	m := machines.New(machines.Config{Engine: v.e, StateDir: v.dir, AuthorizedKeys: v.keys, ReadRoom: roomy,
+		Setup: machines.Setup{CodexAuth: auth}})
+	if _, err := m.Create(t.Context(), "app", "dev", machines.DefaultIdle); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(home.dir(), "auth.json")); err != nil || !bytes.Equal(got, auth) {
+		t.Errorf("auth.json = %q, %v; want %q", got, err, auth)
 	}
 }
