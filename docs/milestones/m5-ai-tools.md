@@ -1,6 +1,6 @@
 # M5 AI tools
 
-Status: **not started** · Spec: §4.2 (Token endpoints), §4.4 · Spikes: S9 (first), S6
+Status: **in progress** · Spec: §4.2 (Token endpoints), §4.4 · Spikes: S9 (first), S6
 
 **Goal:** `codex` and `copilot` work in every machine with no login, and no real ChatGPT, GitHub
 or Copilot token ever enters a machine.

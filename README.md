@@ -28,7 +28,7 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
   M1 (machines), M2 (idle and wake), M3 (vault and egress proxy) and M4 (GitHub) are done. M5
-  (AI tools) is next. Progress: [docs/milestones](docs/milestones/README.md).
+  (AI tools) is in progress. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 
@@ -142,7 +142,7 @@ examples/
 
 docs/
   spec.md                  v1 plan: machines, SSH, credential swap, testing, open spikes
-  milestones/              M0–M7: tasks, tests and status for each milestone
+  milestones/              M0–M10: tasks, tests and status for each milestone
   research/                Cited research behind the spec (E2B internals, agent/GitHub auth)
 ```
 

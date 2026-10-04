@@ -517,6 +517,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | M7 | **GitHub device flow** (own OAuth App) | Approve once in the browser, then the M4 test passes on the new token |
 | M8 | **Machine sizes** (`hib new --size small`) | A small machine has 1 vCPU and 1 GiB. One made without `--size` still has 2 vCPUs and 2 GiB |
 | M9 | **Snapshot compaction** | An idle machine paused 20 times needs no more disk than a bound, and resumes as fast as after one pause |
+| M10 | **CLI friendliness:** help for every command, suggestions for typos, `hib rm` asks first, completions, `--json` | No new one: help and mistakes are unit-tested, and the existing tests pass with `hib rm --yes` |
 
 Repo layout:
 

@@ -3,7 +3,7 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**Next: [M5 AI tools](m5-ai-tools.md).**
+**In progress: [M5 AI tools](m5-ai-tools.md).**
 [M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md),
 [M2 Idle and wake](m2-idle-and-wake.md),
 [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md) and [M4 GitHub](m4-github.md) are
@@ -16,14 +16,16 @@ done.
 | M2 | [Idle and wake](m2-idle-and-wake.md) | done | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestWakeOnExec`, `TestHostFull`, `TestSnapshotCleanup`, `TestPauseCycles` |
 | M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | done | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
 | M4 | [GitHub](m4-github.md) | done | `TestGitHubFullFlow`, `TestWorkflowPush` |
-| M5 | [AI tools](m5-ai-tools.md) | not started | `TestCodex`, `TestCodexRefresh`, `TestCopilot` |
+| M5 | [AI tools](m5-ai-tools.md) | in progress | `TestCodex`, `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | not started | `TestImageAndFork`, `TestImageLeakScan` |
 | M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
 | M8 | [Machine sizes](m8-machine-sizes.md) | not started | `TestSizes` |
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | not started | `TestPauseCycles` (bounded) |
+| M10 | [CLI friendliness](m10-cli-friendliness.md) | not started | none new (unit tests in `cmd/hib`) |
 
 M8 and M9 came last but need only M2, so either can be pulled forward any time after M2. M9
 should come before the host's disk fills: until then, every pause adds to a machine's disk.
+M10 needs nothing, so it can be pulled forward any time.
 
 ## How we track
 
