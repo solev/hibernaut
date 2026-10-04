@@ -143,12 +143,15 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 }
 
 func (a *app) runSSH(ctx context.Context, timeout time.Duration, args []string, stdin io.Reader, stdout io.Writer) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	stderr := termsafe.NewWriter(a.stderr)
 	defer stderr.Flush()
 	code, err := a.ssh(ctx, args, stdin, stdout, stderr)
-	if errors.Is(err, context.DeadlineExceeded) {
+	if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
 		return code, fmt.Errorf("gave up on hibd after %v", timeout)
 	}
 	return code, err

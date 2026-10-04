@@ -268,7 +268,7 @@ func TestGetUserFails(t *testing.T) {
 				tc.handler(w, r)
 			}))
 			defer srv.Close()
-
+			// The test server's client follows redirects.
 			u, err := github.GetUser(t.Context(), srv.Client(), srv.URL, testToken)
 			if err == nil {
 				t.Fatalf("GetUser = %+v, want an error", u)

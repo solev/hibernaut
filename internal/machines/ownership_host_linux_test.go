@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestRootSharedStateOwnership(t *testing.T) {
+func TestHostRootSharedStateOwnership(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to create state owned by another UID")
 	}

@@ -442,7 +442,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 		t.Fatalf("ls exit %d: %s", code, c.errOut)
 	}
 	lines := tableLines(c.out.String())
-	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "IDLE", "PAUSES", "IN", "STARTED", "ID"}; !slices.Equal(got, want) {
+	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "IDLE", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
 		t.Errorf("ls header = %q, want %q", got, want)
 	}
 	want := map[string][2]string{
@@ -458,7 +458,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	for _, line := range lines[1:] {
 		f := strings.Fields(line)
 		w, ok := want[f[0]]
-		if !ok || len(f) != 8 {
+		if !ok || len(f) != 9 {
 			t.Errorf("unexpected ls line %q", line)
 			continue
 		}
@@ -523,7 +523,7 @@ func TestBadNamesNeverReachTheHost(t *testing.T) {
 		{"exec", "app", "id"},
 		{"exec", "app", "--"},
 		{"image", "build", "../dev"},
-		{"image", "rm", "dev"},
+		{"image", "rm", "../dev"},
 		{"bridge", "app"},
 		{"bridge", "App.hib"},
 		{"bridge", "../x.hib"},

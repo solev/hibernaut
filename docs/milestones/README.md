@@ -56,3 +56,15 @@ M10 needs nothing, so it can be pulled forward any time.
 - Images and fork (M6): `hib image save --replace`, and a new `/etc/machine-id` for each copy.
   An image whose save `hibd` didn't live to finish can be left behind with no listing showing it.
   Nightly `pause-all` doesn't wait for a save, fork or `hib new` in progress, which then fails.
+- Encode the constraints the comment cleanup deleted, which no test or type holds yet: the
+  functions that need a lock held (the fake engine's `resume` and `lookup`, hibd's Codex login
+  lock, a test's `setGit`), a checked type for hib's remote arguments, a test that retiring a
+  Codex login creates no keys, an egress test that a slow body outlives the header timeout, and
+  e2e checks that the real GitHub token never enters an SSH command and model output never
+  enters diagnostics.
+- Remove the e2b engine's `chunkedConn` after a large-write test. websocat 1.14.1 splits
+  oversized messages itself unless run with `-S`.
+- Inject clocks where tests read the wall clock (the CA's `testNow`, idle-deallocate's test), and
+  a barrier for the fixed sleep in the snapshot cleanup e2e test.
+- idle-deallocate counts an inspection error as activity. Type the outcome as active, idle or
+  unknown.

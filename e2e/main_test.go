@@ -24,10 +24,12 @@ import (
 
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const (
-	// E2B's fixed local-development API key (vm/lib/e2b.sh).
+	// localDevKey is E2B's fixed local-development API key (vm/lib/e2b.sh). E2B is only
+	// reachable through SSH.
 	localDevKey = "e2b_53ae1fed82754c17ad8077fbc8bcdd90"
 	template    = "base"
 )
@@ -66,7 +68,7 @@ func setUp(m *testing.M) int {
 		defer os.RemoveAll(hibDir)
 	}
 	if err := vm.deleteLeftovers(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "e2e:", err)
+		fmt.Fprintln(os.Stderr, "e2e:", termsafe.String(err.Error()))
 		return 1
 	}
 	if err := deleteLeftoverSecrets(ctx); err != nil {
@@ -285,6 +287,19 @@ func (h *host) deleteLeftovers(ctx context.Context) error {
 		}
 		fmt.Fprintf(os.Stderr, "e2e: deleting %s machine %s, left by an earlier run\n", m.State, m.ID)
 		if err := h.engine.Kill(ctx, m.ID); err != nil && !errors.Is(err, engine.ErrNotFound) {
+			return err
+		}
+	}
+	saved, err := h.engine.SavedTemplates(ctx)
+	if err != nil {
+		return err
+	}
+	for _, tmpl := range saved {
+		if !strings.HasPrefix(tmpl.Alias, "hib-contract-") && !strings.HasPrefix(tmpl.Alias, "hibimg-e2e-") {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "e2e: deleting saved template %s, left by an earlier run\n", termsafe.String(tmpl.Alias))
+		if err := h.engine.DeleteTemplate(ctx, tmpl.ID); err != nil && !errors.Is(err, engine.ErrNoTemplate) {
 			return err
 		}
 	}

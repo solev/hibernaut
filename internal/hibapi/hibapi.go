@@ -88,8 +88,8 @@ func FormatMB(mb int64) string {
 	return fmt.Sprintf("%d GiB", mb/1024)
 }
 
-// Response is what a hibd command prints with --json: one object, then the command exits. A
-// failed command prints only Error, and exits 1.
+// Response is what a hibd command prints with -json: one object, then the command exits. A
+// failed command carries Error, may carry partial results, and exits 1.
 type Response struct {
 	V        int        `json:"v"`
 	Error    string     `json:"error,omitempty"`
@@ -208,8 +208,8 @@ type RemoteError struct{ Msg string }
 
 func (e *RemoteError) Error() string { return e.Msg }
 
-// DecodeResponse parses hibd's output. It returns a *RemoteError for a response that reports
-// one, and an error wrapping ErrVersion for a response of another version.
+// DecodeResponse parses hibd's output. It returns the response with a *RemoteError when hibd
+// reports an error, keeping partial results. Another version returns an error wrapping ErrVersion.
 func DecodeResponse(data []byte) (Response, error) {
 	var r Response
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -219,7 +219,7 @@ func DecodeResponse(data []byte) (Response, error) {
 		return Response{}, versionError(r.V)
 	}
 	if r.Error != "" {
-		return Response{}, &RemoteError{r.Error}
+		return r, &RemoteError{r.Error}
 	}
 	return r, nil
 }

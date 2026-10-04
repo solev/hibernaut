@@ -47,6 +47,7 @@ commands:
   ls                list machines (-state running|paused, -q for IDs only)
   rm NAME           delete a machine for good
   pause NAME        pause a machine
+  fork MACHINE      copy a machine, as root (-count, default 1, most 10)
   bridge NAME       connect stdin and stdout to a machine's SSH server
   secret add NAME   store a bound secret from stdin (-env VAR -bind SITE[,SITE...])
   secret ls         list bound secrets
@@ -62,6 +63,10 @@ commands:
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image (-force rebuilds every step)
+  image save MACHINE NAME
+                    save a machine as an image, memory included, as root
+  image ls          list built-in and saved images
+  image rm NAME     remove a saved image not used by any machine
   ready             wait until E2B answers (-timeout)
   pause-all         pause every running machine; wait until none is running
   leakscan          scan a paused machine or image for real secrets, as root. Running machines
@@ -73,7 +78,8 @@ commands:
                     root
   version           print the version
 
-new, ls, rm, pause, image build, connect github, connect codex, codex refresh, status and version
+new, ls, rm, pause, fork, image build|save|ls|rm, connect github, connect codex, codex refresh,
+status and version
 print JSON with -json.
 
 hibd reads its settings from ` + defaultConfig + ` ($HIBD_CONFIG overrides the path).
@@ -91,7 +97,7 @@ Environment variables of the same names override the file:
   HIBD_CA_CERT          CA certificate for the proxy and image builds, default /etc/hibernaut/ca.crt
   HIBD_CA_KEY           CA private key, default /etc/hibernaut/ca.key
   HIBD_PROXY_PORT       interception port, default 5443
-  HIBD_QUIESCING        new, bridge and image build refuse while it exists, and daemon leaves
+  HIBD_QUIESCING        new, bridge, fork and image build|save refuse while it exists. daemon leaves
                         machines and the Codex login alone; default /run/hibernaut/quiescing,
                         which quiesce makes before pausing everything
   HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
@@ -143,6 +149,10 @@ type App struct {
 	ProxyHook proxypkg.Rule
 	// ProxyListen opens hibd proxy's port, for tests only. If it's nil, App uses net.Listen.
 	ProxyListen func(network, address string) (net.Listener, error)
+	// Now supplies the daemon's clock. If it's nil, App uses time.Now.
+	Now func() time.Time
+	// DaemonTicks supplies the daemon's ticks. If it's nil, App uses a ticker at -every.
+	DaemonTicks <-chan time.Time
 
 	codexEvery time.Duration
 }
@@ -164,6 +174,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.byName(ctx, "rm", args, (*machines.Manager).Remove)
 	case "pause":
 		return a.byName(ctx, "pause", args, (*machines.Manager).Pause)
+	case "fork":
+		return a.fork(ctx, args)
 	case "bridge":
 		return a.bridge(ctx, args)
 	case "secret":
@@ -356,8 +368,20 @@ func (a *App) bridge(ctx context.Context, args []string) int {
 }
 
 func (a *App) image(ctx context.Context, args []string) int {
-	if len(args) == 0 || args[0] != "build" {
-		fmt.Fprintln(a.Stderr, "usage: hibd image build NAME [-force] [-json]")
+	if len(args) == 0 {
+		fmt.Fprintln(a.Stderr, imageUsage)
+		return 2
+	}
+	switch args[0] {
+	case "save":
+		return a.imageSave(ctx, args[1:])
+	case "ls":
+		return a.imageList(ctx, args[1:])
+	case "rm":
+		return a.imageRemove(ctx, args[1:])
+	case "build":
+	default:
+		fmt.Fprintln(a.Stderr, imageUsage)
 		return 2
 	}
 	fl := a.flags("image build")
@@ -516,12 +540,12 @@ type sweeper struct {
 func (s *sweeper) look(ctx context.Context, now time.Time) {
 	lctx, cancel := context.WithTimeout(ctx, sweepTimeout)
 	defer cancel()
-	machines, err := s.engine.List(lctx, engine.ListOptions{})
+	listed, err := s.engine.List(lctx, engine.ListOptions{})
 	if err != nil {
 		return
 	}
 	seen := map[string]bool{}
-	for _, m := range machines {
+	for _, m := range listed {
 		seen[m.ID] = true
 	}
 	for id := range s.seen {
@@ -535,7 +559,7 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	}
 	err = s.clean(lctx, now)
 	retry := time.Hour
-	if errors.Is(err, cleanup.ErrBusy) {
+	if errors.Is(err, cleanup.ErrBusy) || errors.Is(err, machines.ErrBusy) {
 		retry = time.Minute
 	}
 	s.next = now.Add(retry)
@@ -575,8 +599,16 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(false, "daemon", err)
 	}
-	s := &sweeper{engine: e, logf: func(format string, args ...any) { logger.Printf("cleanup: "+format, args...) }}
-	s.clean = func(ctx context.Context, now time.Time) error { return a.clean(ctx, e, now, false, s.logf) }
+	s := &sweeper{engine: e, logf: func(format string, args ...any) {
+		logger.Printf("cleanup: %s", termsafe.String(fmt.Sprintf(format, args...)))
+	}}
+	m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir})
+	s.clean = func(ctx context.Context, now time.Time) error {
+		if err := m.SweepForks(ctx); err != nil {
+			return err
+		}
+		return a.clean(ctx, e, now, false, s.logf)
+	}
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
 	removeLeftoverCodexLogins(cfg.stateDir, logger.Printf)
@@ -587,8 +619,16 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	case changed:
 		logger.Printf("github: bound secret github to %s, so the Copilot CLI works too", strings.Join(github.Sites(), ", "))
 	}
-	t := time.NewTicker(*every)
-	defer t.Stop()
+	ticks := a.DaemonTicks
+	if ticks == nil {
+		t := time.NewTicker(*every)
+		defer t.Stop()
+		ticks = t.C
+	}
+	at := time.Now()
+	if a.Now != nil {
+		at = a.Now()
+	}
 	sweeping := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	refresher := &codexRefresher{store: a.codexStore(cfg, nil), logf: func(format string, args ...any) { logger.Printf("codex: "+format, args...) }}
@@ -604,8 +644,9 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		default:
 			select {
 			case sweeping <- struct{}{}:
+				sweepAt := at
 				wg.Go(func() {
-					s.look(ctx, time.Now())
+					s.look(ctx, sweepAt)
 					<-sweeping
 				})
 			default:
@@ -628,7 +669,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 			wg.Wait()
 			logger.Printf("stopping")
 			return 0
-		case <-t.C:
+		case at = <-ticks:
 		}
 	}
 }
@@ -731,7 +772,13 @@ func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) 
 	if err != nil {
 		return nil, err
 	}
-	return machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys, ReadRoom: a.ReadRoom, Setup: setup}), nil
+	return machines.New(machines.Config{
+		Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys,
+		ReadRoom: a.ReadRoom, Setup: setup, Awake: a.awake,
+		Durable: func(ctx context.Context, id string) error {
+			return a.durableSnapshot(ctx, cfg, id)
+		},
+	}), nil
 }
 
 func (a *App) engine() (engine.Engine, error) {

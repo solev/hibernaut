@@ -74,6 +74,7 @@ func fill(f file, data []byte, perm fs.FileMode) error {
 	return err
 }
 
+// link publishes tmp at path with a hard link, which unlike a rename fails if path exists.
 func link(tmp, path string) error {
 	if err := os.Link(tmp, path); err != nil {
 		return err
@@ -88,7 +89,7 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	err = syncDirectory(d)
-
+	// Some filesystems can't sync a directory, and say so with EINVAL or ENOTSUP.
 	if errors.Is(err, syscall.EINVAL) || errors.Is(err, errors.ErrUnsupported) {
 		return nil
 	}
