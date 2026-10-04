@@ -29,6 +29,7 @@ run_logged() {
 [[ -e /dev/kvm ]] || { echo "/dev/kvm is missing: this VM size has no nested virtualization" >&2; exit 1; }
 
 log "Base packages"
+# Wait for unattended-upgrades instead of failing, here and in the vendor scripts below.
 echo 'DPkg::Lock::Timeout "600";' | sudo tee /etc/apt/apt.conf.d/90hibernaut-lock-timeout >/dev/null
 echo "\$nrconf{restart} = 'a';" | sudo tee /etc/needrestart/conf.d/90-auto.conf >/dev/null
 sudo apt-get update -qq
@@ -57,6 +58,8 @@ fi
 log "Google Cloud CLI (gsutil, for E2B's public artifact bucket)"
 command -v gsutil >/dev/null || sudo snap install google-cloud-cli --classic >/dev/null
 
+# Firecracker keeps a running machine's memory in 2 MiB huge pages, and E2B holds about 75 of them
+# itself: 3200 (6.25 GiB) runs three 2 GiB dev machines at once. Paused machines need none.
 log "Kernel prep: nbd module and 3200 huge pages, persisted across reboots"
 echo nbd | sudo tee /etc/modules-load.d/nbd.conf >/dev/null
 echo "options nbd nbds_max=64" | sudo tee /etc/modprobe.d/nbd.conf >/dev/null
@@ -118,6 +121,7 @@ log "Containers, database migrations and seed data"
 run_logged make -C packages/local-dev clickhouse-config-generated.xml
 sudo systemctl restart e2b-infra
 run_logged make -C packages/db migrate-local
+# ClickHouse accepts connections a little before it can run migrations.
 for attempt in 1 2 3 4 5; do
   run_logged make -C packages/clickhouse migrate-local && break
   ((attempt == 5)) && exit 1
@@ -127,7 +131,9 @@ run_logged make -C packages/local-dev seed-database
 
 log "Bigger machines than the base tier's defaults: 30-day runs and 10 GiB of disk"
 # E2B pauses a sandbox max_length_hours after it starts or resumes, even while hibd renews its
-# timeout for a connected ssh session.
+# timeout for a connected ssh session. disk_mb is the rootfs the template build runs in and the
+# machine then boots with; the base tier's 512 MiB can't even install the dev image's packages,
+# and upstream's post-build free-disk growth is behind a feature flag that's off here.
 read -r hours disk < <(sudo docker compose -f packages/local-dev/docker-compose.yaml exec -T postgres \
   psql -qAt -F' ' -v ON_ERROR_STOP=1 -U postgres -d postgres \
   -c "UPDATE tiers SET max_length_hours = 720, disk_mb = 10240 WHERE id = 'base_v1' RETURNING max_length_hours, disk_mb")

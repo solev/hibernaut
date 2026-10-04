@@ -1,6 +1,8 @@
 // Package e2b implements engine.Engine on a self-hosted E2B (spec D4).
 //
-// Requests to a local or IP host are routed by the E2b-Sandbox-Id and E2b-Sandbox-Port headers.
+// Machine lifecycle and template calls go to E2B's REST API. Exec goes to envd, the agent
+// inside each machine, and DialWebSocket to any port, both through E2B's client-proxy:
+// requests to a local or IP host are routed by the E2b-Sandbox-Id and E2b-Sandbox-Port headers.
 // envd checks X-Access-Token. Other ports check e2b-traffic-access-token, because machines are
 // created with public traffic off.
 package e2b
@@ -79,7 +81,8 @@ func New(cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	// ErrUseLastResponse stops the client at the machine's own 3xx response instead of following
+	// it; the caller then fails on the non-success status.
 	guestHC := *hc
 	guestHC.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Engine{
@@ -93,11 +96,13 @@ func New(cfg Config) (*Engine, error) {
 
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
 	body := e2bapi.NewSandboxV2{
-		TemplateID:      opts.Template,
+		TemplateID: opts.Template,
+		// A machine whose timeout runs out pauses, memory included, instead of being deleted.
 		AutoPause:       ptr(true),
 		AutoPauseMemory: ptr(true),
 		AutoResume:      &e2bapi.SandboxAutoResumeConfig{Enabled: false},
-		Network:         &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
+		// Every port but envd's then needs the machine's traffic access token.
+		Network: &e2bapi.SandboxNetworkConfig{AllowPublicTraffic: ptr(false)},
 	}
 	if opts.Timeout > 0 {
 		body.Timeout = ptr(seconds(opts.Timeout))
@@ -479,7 +484,8 @@ func buildError(name string, r *e2bapi.BuildStatusReason) error {
 	return fmt.Errorf("build template %s failed: %s", name, elide(r.Message))
 }
 
-// E2B quotes a step's whole command in logs and errors.
+// E2B quotes a step's whole command in logs and errors, and a step that writes files is mostly
+// their contents.
 func elide(s string) string {
 	const keep = 300
 	if len(s) <= 3*keep {
