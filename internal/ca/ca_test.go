@@ -97,7 +97,7 @@ func TestInitMakesTheCAOnce(t *testing.T) {
 	if got, err := os.ReadFile(certPath); err != nil || !bytes.Equal(got, certPEM) {
 		t.Fatalf("cert changed on second Init")
 	}
-	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(certPath), ".hibernaut-ca-*")); len(left) > 0 {
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(certPath), ".*.tmp-*")); len(left) > 0 {
 		t.Errorf("temp files left: %v", left)
 	}
 }
@@ -111,7 +111,7 @@ func TestInitRecoversAfterTheKeyWasPublished(t *testing.T) {
 	if err := os.Remove(certPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(certPath), ".hibernaut-ca-interrupted"), []byte("partial certificate"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(certPath), "."+filepath.Base(certPath)+".tmp-interrupted"), []byte("partial certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

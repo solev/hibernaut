@@ -201,7 +201,7 @@ func TestCreate(t *testing.T) {
 	if fi, err := os.Stat(filepath.Join(v.dir, "host-keys")); err != nil || fi.Mode().Perm() != 0o700 {
 		t.Errorf("host-keys mode = %v, %v; want 0700", fi.Mode(), err)
 	}
-	if left, _ := filepath.Glob(filepath.Join(v.dir, "host-keys", ".pin-*")); len(left) > 0 {
+	if left, _ := filepath.Glob(filepath.Join(v.dir, "host-keys", ".*.tmp-*")); len(left) > 0 {
 		t.Errorf("temp files left: %v", left)
 	}
 }

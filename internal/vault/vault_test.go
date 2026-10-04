@@ -501,7 +501,7 @@ func TestUpdateRecoversAnInterruptedKeyForAnEmptyVault(t *testing.T) {
 			if err := os.WriteFile(keyPath, bytes.Repeat([]byte{1}, size), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, ".vault-key-interrupted"), []byte("partial key"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, ".vault.key.tmp-interrupted"), []byte("partial key"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			value := "gho_" + strings.Repeat("az", 20)
@@ -643,7 +643,7 @@ func TestCreateKeyRemovesPartialFileOnFailure(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("key path exists after failed CreateKey: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".vault-key-interrupted"), []byte("partial key"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".vault.key.tmp-interrupted"), []byte("partial key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	key, err := vault.CreateKey(path, seededRand())
