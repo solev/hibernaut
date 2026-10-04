@@ -19,7 +19,8 @@ import (
 
 const refreshTimeout = 30 * time.Second
 
-func (s *Store) ensureFresh(ctx context.Context, reason Reason) (PublicAuth, error) {
+// EnsureFresh refreshes the real login if reason calls for it, then returns Public.
+func (s *Store) EnsureFresh(ctx context.Context, reason Reason) (PublicAuth, error) {
 	p, err := s.readProfile()
 	if err != nil {
 		return PublicAuth{}, err

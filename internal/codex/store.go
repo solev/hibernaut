@@ -45,7 +45,9 @@ func (s *Store) readProfile() (Profile, error) {
 	return p.Profile, err
 }
 
-func (s *Store) load() (Profile, error) {
+// Load returns the profile, or ErrNotConnected. It never waits for the lock and never writes.
+// An interrupted refresh shows as published or stuck. An unpublished login keeps the old profile.
+func (s *Store) Load() (Profile, error) {
 	record, err := s.readDiskProfile()
 	p := record.Profile
 	if err != nil || p.Attempt == nil {
@@ -124,7 +126,9 @@ func (s *Store) recoverProfileFrom(record diskProfile, f *vault.File) (Profile, 
 	return p, nil
 }
 
-func (s *Store) public() (PublicAuth, error) {
+// Public returns what the login file holds, or ErrNotConnected. It needs no lock.
+// Only a pending attempt needs the vault key.
+func (s *Store) Public() (PublicAuth, error) {
 	for range 3 {
 		record, err := s.readDiskProfile()
 		if err != nil {
@@ -315,7 +319,8 @@ func placeholderGeneration(f *vault.File) string {
 	return swap.Fingerprint(strings.Join(values, "\x00"))
 }
 
-func (s *Store) commitLogin(ctx context.Context, t Tokens) (Profile, error) {
+// CommitLogin replaces the login with a new device login's tokens. It may be another account.
+func (s *Store) CommitLogin(ctx context.Context, t Tokens) (Profile, error) {
 	p, err := tokenProfile(t)
 	if err != nil {
 		return Profile{}, err
@@ -547,7 +552,8 @@ func (s *Store) retire(old, next Tokens, now time.Time) error {
 	return nil
 }
 
-func (s *Store) retired() ([]OldValue, error) {
+// Retired returns the replaced values kept for the leak scan.
+func (s *Store) Retired() ([]OldValue, error) {
 	f, err := vault.Load(s.path(RetiredFile))
 	if err != nil {
 		return nil, errors.New("reading retired codex values")
