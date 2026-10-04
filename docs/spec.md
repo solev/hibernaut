@@ -544,7 +544,9 @@ and refuses a paused machine, so Hibernaut doesn't use it
   machine paused at its last good snapshot, losing what it did since. So `hibd` first pauses the
   machine, waits until that snapshot is on disk, and resumes it. A failed save then costs at most
   what the machine did since the save began. `hibd` resumes it, says nothing was saved, and never
-  retries on its own. The pause may drop SSH sessions into the machine.
+  retries on its own. E2B can hide the failed save's template for a few minutes, so `hibd` looks
+  for it for up to 90 s and deletes it. If it can't confirm it's gone, it says so instead, and how
+  to remove an image. The pause may drop SSH sessions into the machine.
 - **Fork** names copies `app-1`, `app-2` and so on with the lowest free numbers, 1 to 10 at a
   time. It keeps the copies it made and stops at the first failure. `hibd` deletes the hidden
   template once its last copy is gone.
