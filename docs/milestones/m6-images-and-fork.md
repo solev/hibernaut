@@ -176,6 +176,11 @@ meanwhile.
 - Whether the host is going to sleep is checked at the start, before the save, and before each
   copy.
 
+Image save and fork run as root to confirm snapshot files reached disk. The state directory stays
+owned by the login user. Root can use this trusted state only while it and `host-keys` are privately
+writable and share an owner. New directories, locks and pins keep the state owner's UID and GID.
+Pins and locks get their owner before they are published, so ordinary user commands still work.
+
 **Packages** (the contract commit adds the types, the stubs and the fake engine):
 
 - `internal/engine`: `TemplateInfo`, and `Engine` gains `SaveTemplate`, `Template`,
