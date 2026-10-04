@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/solev/hibernaut/images"
@@ -90,8 +89,8 @@ func (a *App) leakscan(ctx context.Context, args []string) int {
 	}
 	var target leakscanTarget
 	if *image != "" {
-		if !slices.Contains(images.Names(), *image) {
-			fmt.Fprintf(a.Stderr, "hibd leakscan: no image %q (there is: %s)\n", *image, strings.Join(images.Names(), ", "))
+		if err := hibapi.CheckName(*image); err != nil {
+			fmt.Fprintf(a.Stderr, "hibd leakscan: %s\n", termsafe.String(err.Error()))
 			return 2
 		}
 		target = imageScanTarget{name: *image}
