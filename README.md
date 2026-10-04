@@ -212,6 +212,42 @@ says what it would delete, and why it keeps the rest. A machine's own snapshots 
 pauses (3.6 GiB after 20 pauses of an idle one): each is a diff on the one before, and E2B never
 merges them. Compaction is planned ([M9](docs/milestones/m9-snapshot-compaction.md)).
 
+### Images and fork
+
+Save a set-up machine as an image, or copy it straight away. Files, installed packages and running
+processes come with it, so a dev server answers in each copy without restarting:
+
+```bash
+hib image save app myimg      # save app as image myimg, memory included
+hib image ls                 # built-in and saved images, their memory and creation time
+hib new task -image myimg     # start with everything that was in app
+hib fork app -count 2         # app-1 and app-2. The default is one copy, the most is ten.
+hib ls                       # FROM shows which machine a copy came from
+hib rm task
+hib image rm myimg
+```
+
+**An image carries everything in the machine.** `hib` puts only placeholders and your public key
+there, not real secrets. But a secret you typed into the machine yourself goes into the image too.
+Treat an image as you would that machine.
+
+Saving and forking pause the origin for a few seconds while its snapshot reaches disk, then
+resume it. SSH sessions into it may drop. A paused origin is put back to sleep afterwards.
+They need extra memory and disk for the checkpoint and copies. If there isn't room, `hib` says
+what to pause or remove. A large save can take minutes. If E2B's checkpoint fails, `hib` reports the
+origin's state and keeps a safe snapshot from when the save began. It never retries automatically.
+
+Copies get fresh SSH host keys, the current placeholder setup and your authorized public keys.
+Forks keep the origin's image and idle policy. Their names use the lowest free suffix, starting at
+`app-1`. If a later copy fails, the whole copies already made stay, and `hib` names them before
+printing the error.
+
+Saved names can't replace a built-in image or an existing saved one. If a later built-in image
+takes a saved name, `image ls` marks the saved one as shadowed. `new -image` uses the built-in one.
+`image rm` always means the saved one, and refuses while any running or paused machine uses it.
+Remove those machines first. E2B keeps a deleted image's snapshot files until `hibd`'s cleanup can
+free them.
+
 ### Secrets (`hib secret`, `hib log`)
 
 Real credentials never enter a machine. You store a secret on the host and bind it to the sites
@@ -449,6 +485,5 @@ included, also stops the `hibd-pause-all` guard, which pauses sandboxes before E
 
 - **Custom templates** with our own toolchains (Node, Python, Rocket's stack) baked in.
 - **Coding-agent workspaces**: give an agent a sandbox, pause it overnight, resume it tomorrow.
-- **Fork**: resume one snapshot into several sandboxes to try things in parallel.
 - **Public URLs** per sandbox through the client-proxy + a domain (hibernaut.sh / hibernaut.dev
   looked available).

@@ -33,7 +33,7 @@ func TestLeakscanArgErrorsAndRootCheck(t *testing.T) {
 		"machine and image": {"leakscan", "-image", "dev", "app"},
 		"canary and image":  {"leakscan", "-canary", "-image", "dev"},
 		"two machines":      {"leakscan", "app", "other"},
-		"bad image":         {"leakscan", "-image", "nope"},
+		"bad image":         {"leakscan", "-image", "bad;name"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a, _, errOut, _ := newLeakscanApp(t, fake.New())
