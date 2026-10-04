@@ -259,6 +259,11 @@ Integration (the fake engine, through Manager and through `hibd`):
 - [ ] `image rm` while copies use the image, then after they're gone.
 - [ ] `hib pause` waits for a fork.
 
+Host (as root, through `make test-host-remote`):
+
+- [ ] Root's first sweep, then a create, a save and a fork, leave the lock, `host-keys` and pins
+      owned by the state's owner.
+
 Engine contract (against the fake, and against E2B in e2e):
 
 - [ ] Saving a running machine works, and saving a paused one is refused.
@@ -297,3 +302,6 @@ End-to-end:
   takes saved images. `TestImageLeakScan` became step 2 of `TestImageAndFork`. Images aren't
   recorded in a store: E2B holds them, and the alias is the record. Later:
   `hib image save --replace`, and a new `/etc/machine-id` for copies.
+- 2026-10-04: Save and fork run as root, but the state directory belongs to the login user. So
+  root may use that state while it stays private, and gives what it creates to the state's owner.
+  `make test-host` and `make test-host-remote` also run the machines `TestHost` tests as root.
