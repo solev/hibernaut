@@ -1,7 +1,8 @@
 # M5 AI tools
 
 Status: **in progress** · Spec: §4.1, §4.2 (Token endpoints), §4.3, §4.4 · Spikes: S6 and S9,
-both answered
+both answered · Left: `TestCodex`, `TestCodexRefresh` and the leak scan after them, which need a
+live `hib connect codex`
 
 **Goal:** `codex` and `copilot` work in every machine with no login, and no real ChatGPT or GitHub
 token ever enters a machine.
@@ -325,7 +326,9 @@ End-to-end:
 
 ## Done when
 
-- [ ] `make lint test`, `make test-host-remote`, CI and `make e2e` are green.
+- [x] `make lint test`, `make test-host-remote`, CI and `make e2e` are green. CI is parked, so
+      `make lint test` and a clean `make generate` stand in for it. `make e2e-slow` passed too.
+      `TestCodex` and `TestCodexRefresh` skipped there, since Codex wasn't connected yet.
 - [x] Spec: S6 and S9 marked answered, and bound sites updated.
 - [x] README: `hib connect codex`, and Copilot working through the GitHub connection.
 

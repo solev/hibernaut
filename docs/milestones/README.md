@@ -3,7 +3,9 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**In progress: [M5 AI tools](m5-ai-tools.md).**
+**In progress: [M5 AI tools](m5-ai-tools.md).** It's built, and every check is green. Only the
+live Codex tests are left: they wait for `hib connect codex`, which needs someone to approve the
+code in a browser.
 [M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md),
 [M2 Idle and wake](m2-idle-and-wake.md),
 [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md) and [M4 GitHub](m4-github.md) are
