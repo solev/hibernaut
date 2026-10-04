@@ -104,7 +104,6 @@ func TestSSHTunnelWithOpenSSH(t *testing.T) {
 	options := []string{
 		"-F", "/dev/null", "-p", strconv.Itoa(listener.Addr().(*net.TCPAddr).Port),
 		"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-		"-o", "StdinNull=no",
 		"-o", "UserKnownHostsFile=/dev/null", "-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "IdentityAgent=none", "-o", "IdentityFile=none", "-o", "IdentitiesOnly=yes",
 	}
