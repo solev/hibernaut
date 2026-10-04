@@ -17,12 +17,23 @@ import (
 )
 
 func TestContract(t *testing.T) {
-	enginetest.Run(t, enginetest.Config{
-		Engine:   fake.New(fake.WithLocalExec(t.TempDir()), fake.WithTemplates("base")),
-		Template: "base",
-		Metadata: map[string]string{"hib-test": "unit"},
-		Wait:     time.Second,
-	})
+	for _, tc := range []struct {
+		name string
+		opts []fake.Option
+	}{
+		{"WithoutAliasCache", nil},
+		{"WithAliasCache", []fake.Option{fake.WithAliasCache()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]fake.Option{fake.WithLocalExec(t.TempDir()), fake.WithTemplates("base")}, tc.opts...)
+			enginetest.Run(t, enginetest.Config{
+				Engine:   fake.New(opts...),
+				Template: "base",
+				Metadata: map[string]string{"hib-test": "unit"},
+				Wait:     time.Second,
+			})
+		})
+	}
 }
 
 func TestKillRemovesHome(t *testing.T) {

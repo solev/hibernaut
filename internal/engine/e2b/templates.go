@@ -29,6 +29,9 @@ func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.Tem
 	return info, nil
 }
 
+// saveError maps a failed save. E2B answers 404 and 409 only before it creates anything, so only
+// they become ErrNotFound or ErrNotRunning. Its 409 means the machine is pausing, being killed or
+// already being saved.
 func (e *Engine) saveError(ctx context.Context, id string, status int, body []byte) error {
 	saveErr := apiError("save", id, status, body)
 	switch status {

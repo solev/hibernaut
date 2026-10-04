@@ -52,6 +52,7 @@ func Run(t *testing.T, cfg Config) {
 	t.Run("SavePaused", s.savePaused)
 	t.Run("DeleteTemplateInUse", s.deleteTemplateInUse)
 	t.Run("MissingTemplate", s.missingTemplate)
+	t.Run("SaveAfterMiss", s.saveAfterMiss)
 }
 
 type suite struct {
@@ -503,15 +504,40 @@ func (s *suite) missingTemplate(t *testing.T) {
 	}
 }
 
+func (s *suite) saveAfterMiss(t *testing.T) {
+	t.Parallel()
+	ctx := s.ctx(t)
+	e := s.cfg.Engine
+	origin := s.create(t, ctx, "save-after-miss", 10*time.Minute)
+
+	alias := s.alias("save-after-miss")
+	s.deleteTemplateLater(t, alias)
+	if info, err := e.Template(ctx, alias); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Fatalf("Template before the save = %+v, %v; want ErrNoTemplate", info, err)
+	}
+	info, err := e.SaveTemplate(ctx, origin.ID, alias)
+	if err != nil {
+		t.Fatalf("SaveTemplate after a missed lookup: %v", err)
+	}
+	if got, err := e.Template(ctx, alias); err != nil || !sameTemplate(got, info) {
+		t.Errorf("Template right after the save = %+v, %v; want %+v", got, err, info)
+	}
+}
+
 func (s *suite) alias(name string) string {
 	return "hib-contract-" + s.runID + "-" + name
 }
 
+// deleteTemplateLater deletes the template called alias when t ends. If t failed, a save may have
+// failed too, and left alias hidden from Template for a minute or more, so it looks for longer.
 func (s *suite) deleteTemplateLater(t *testing.T, alias string) {
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		info, err := s.cfg.Engine.Template(ctx, alias)
+		if errors.Is(err, engine.ErrNoTemplate) && t.Failed() {
+			info, err = s.hiddenTemplate(ctx, alias)
+		}
 		if err == nil {
 			err = s.cfg.Engine.DeleteTemplate(ctx, info.ID)
 		}
@@ -519,6 +545,21 @@ func (s *suite) deleteTemplateLater(t *testing.T, alias string) {
 			t.Errorf("cleanup: delete template %s: %v", alias, err)
 		}
 	})
+}
+
+func (s *suite) hiddenTemplate(ctx context.Context, alias string) (engine.TemplateInfo, error) {
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		select {
+		case <-ctx.Done():
+			return engine.TemplateInfo{}, ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+		info, err := s.cfg.Engine.Template(ctx, alias)
+		if !errors.Is(err, engine.ErrNoTemplate) || time.Now().After(deadline) {
+			return info, err
+		}
+	}
 }
 
 func (s *suite) get(t *testing.T, ctx context.Context, id string) engine.Machine {
