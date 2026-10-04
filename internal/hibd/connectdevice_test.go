@@ -242,7 +242,7 @@ func TestConnectGitHubWhileAnotherIsRunning(t *testing.T) {
 			a, out, errOut, gh := newGitHubApp(t, fake.New())
 			gh.set(testToken, octocat)
 			d := newFakeDevice(t, a, deviceAnswer{body: codeBody}, deviceAnswer{body: tokenBody})
-			unlock, ok, err := tryLock(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "github-login.lock"), "test")
+			unlock, ok, err := lockGitHubLogins(a.Getenv("HIBD_STATE_DIR"))
 			if err != nil || !ok {
 				t.Fatalf("taking the GitHub login lock: %v, %v", ok, err)
 			}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -77,7 +76,7 @@ func (a *App) loginGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 	if err != nil {
 		return hibapi.GitHub{}, err
 	}
-	unlock, ok, err := tryLock(filepath.Join(cfg.stateDir, githubLoginLock), "GitHub login")
+	unlock, ok, err := lockGitHubLogins(cfg.stateDir)
 	if err != nil {
 		return hibapi.GitHub{}, err
 	}
@@ -98,6 +97,10 @@ func (a *App) loginGitHub(ctx context.Context, source string) (hibapi.GitHub, er
 		}
 	}
 	return a.storeGitHub(ctx, cfg, source, token)
+}
+
+func lockGitHubLogins(stateDir string) (unlock func(), ok bool, err error) {
+	return tryLock(stateDir, githubLoginLock, "GitHub login")
 }
 
 func (a *App) githubDeviceLogin(ctx context.Context) (string, error) {

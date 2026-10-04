@@ -175,7 +175,7 @@ func readCodexAuth(path string) ([]byte, error) {
 }
 
 func lockCodexLogins(stateDir string) (unlock func(), ok bool, err error) {
-	return tryLock(filepath.Join(stateDir, codexLoginLock), "codex login")
+	return tryLock(stateDir, codexLoginLock, "codex login")
 }
 
 func removeCodexLogins(stateDir string, logf func(format string, args ...any)) {
