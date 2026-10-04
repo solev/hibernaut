@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -192,4 +193,227 @@ func TestVaultReloadsSameSizeAndMtimeReplacement(t *testing.T) {
 	if req.Header.Get("Authorization") != "sk-nextx-value" {
 		t.Fatal("inode replacement was not detected")
 	}
+}
+
+func TestVaultSourcePassesThroughUntilTheFilesChangeAfterAFailedReload(t *testing.T) {
+	cases := []struct {
+		name, stage  string
+		needsNonRoot bool
+		retries      bool
+		breakFiles   func(t *testing.T, f *reloadFixture) (fix func())
+	}{
+		{name: "state directory replaced by a file", stage: "stat", retries: true, breakFiles: replaceStateDir},
+		{name: "vault unreadable", stage: "open vault", needsNonRoot: true, retries: true,
+			breakFiles: func(t *testing.T, f *reloadFixture) func() { return chmod(t, f.path, 0, 0o644) }},
+		{name: "key unreadable", stage: "open key", needsNonRoot: true, retries: true,
+			breakFiles: func(t *testing.T, f *reloadFixture) func() { return chmod(t, f.keyPath, 0, 0o600) }},
+		{name: "key readable by others", stage: "load key",
+			breakFiles: func(t *testing.T, f *reloadFixture) func() { return chmod(t, f.keyPath, 0o644, 0o600) }},
+		{name: "key truncated", stage: "load key", breakFiles: truncateKey},
+		{name: "vault holds a secret twice", stage: "compile swapper", breakFiles: duplicateSecret},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.needsNonRoot && os.Geteuid() == 0 {
+				t.Skip("root opens files whatever their mode")
+			}
+			f := newReloadFixture(t)
+			fix := tc.breakFiles(t, f)
+			if f.swap(t) != "" {
+				t.Fatal("a failed reload kept the last good swapper")
+			}
+			line := fmt.Sprintf("proxy: cannot load secrets (%s). Passing placeholders through until the files change\n", tc.stage)
+			if got := f.logs.String(); got != line {
+				t.Fatalf("logs = %q, want %q", got, line)
+			}
+			f.now = f.now.Add(time.Minute)
+			if f.swap(t) != "" {
+				t.Fatal("a broken vault or key activated secrets")
+			}
+			want := 1
+			if tc.retries {
+				want = 2
+			}
+			if got := strings.Count(f.logs.String(), line); got != want {
+				t.Fatalf("logged the failure %d times a minute later, want %d: %q", got, want, f.logs.String())
+			}
+			fix()
+			f.save(t, "sk-reload-fixed-value")
+			if got := f.swap(t); got != "sk-reload-fixed-value" {
+				t.Fatal("secrets did not come back after the files changed")
+			}
+			if strings.Contains(f.logs.String(), "sk-reload") || strings.Contains(f.logs.String(), "reload-token") {
+				t.Fatal("a value or name reached the logs")
+			}
+		})
+	}
+}
+
+func TestVaultSourceWaitsForAChangeAfterATransientFailure(t *testing.T) {
+	f := newReloadFixture(t)
+	fix := replaceStateDir(t, f)
+	if f.swap(t) != "" {
+		t.Fatal("a failed stat kept the last good swapper")
+	}
+	fix()
+	if f.swap(t) != "" {
+		t.Fatal("restoring the same files counted as a change")
+	}
+	f.save(t, "sk-reload-fixed-value")
+	if got := f.swap(t); got != "sk-reload-fixed-value" {
+		t.Fatal("secrets did not come back after the files changed")
+	}
+}
+
+func TestVaultSourcePassesThroughAnEmptyVault(t *testing.T) {
+	f := newReloadFixture(t)
+	if err := f.vault.Remove("reload-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.vault.Save(f.path); err != nil {
+		t.Fatal(err)
+	}
+	if f.source.Swapper() != nil {
+		t.Fatal("an empty vault made a swapper")
+	}
+	if f.logs.Len() != 0 {
+		t.Fatalf("an empty vault logged a failure: %q", f.logs.String())
+	}
+}
+
+// reloadFixture is a vault and key that a VaultSource loaded once, in a directory a test can break.
+type reloadFixture struct {
+	path, keyPath string
+	key           vault.Key
+	vault         *vault.File
+	placeholder   string
+	source        *proxy.VaultSource
+	now           time.Time
+	logs          bytes.Buffer
+}
+
+func newReloadFixture(t *testing.T) *reloadFixture {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &reloadFixture{path: filepath.Join(dir, "vault.json"), keyPath: filepath.Join(dir, "key"), now: time.Unix(0, 0)}
+	key, err := vault.CreateKey(f.keyPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.key, f.vault = key, new(vault.File)
+	f.source = &proxy.VaultSource{
+		Path: f.path, KeyPath: f.keyPath, Now: func() time.Time { return f.now },
+		Logf: func(format string, args ...any) { fmt.Fprintf(&f.logs, format+"\n", args...) },
+	}
+	f.save(t, "sk-reload-first-value")
+	if got := f.swap(t); got != "sk-reload-first-value" {
+		t.Fatal("the first load did not swap the placeholder")
+	}
+	return f
+}
+
+func (f *reloadFixture) save(t *testing.T, value string) {
+	t.Helper()
+	s, err := f.vault.Put(f.key, "reload-token", "RELOAD_TOKEN", []string{"example.com"}, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.vault.Save(f.path); err != nil {
+		t.Fatal(err)
+	}
+	f.placeholder = s.Placeholder
+}
+
+// swap returns what the current swapper puts in place of the placeholder, or "" when it passes
+// placeholders through.
+func (f *reloadFixture) swap(t *testing.T) string {
+	t.Helper()
+	sw := f.source.Swapper()
+	if sw == nil {
+		return ""
+	}
+	req := httptest.NewRequest("GET", "https://example.com/", nil)
+	req.Header.Set("Authorization", "Bearer "+f.placeholder)
+	if _, err := sw.Request(req, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+}
+
+func replaceStateDir(t *testing.T, f *reloadFixture) func() {
+	t.Helper()
+	dir := filepath.Dir(f.path)
+	if err := os.Rename(dir, dir+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := os.Remove(dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(dir+".saved", dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func chmod(t *testing.T, path string, broken, fixed os.FileMode) func() {
+	t.Helper()
+	if err := os.Chmod(path, broken); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := os.Chmod(path, fixed); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func truncateKey(t *testing.T, f *reloadFixture) func() {
+	t.Helper()
+	key, err := os.ReadFile(f.keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(f.keyPath, int64(len(key)-1)); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := os.WriteFile(f.keyPath, key, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// duplicateSecret writes the vault with its one entry twice. Each copy decrypts, but the proxy
+// cannot swap two secrets with the same name and placeholder.
+func duplicateSecret(t *testing.T, f *reloadFixture) func() {
+	t.Helper()
+	data, err := os.ReadFile(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk map[string]json.RawMessage
+	if err := json.Unmarshal(data, &disk); err != nil {
+		t.Fatal(err)
+	}
+	var secrets []json.RawMessage
+	if err := json.Unmarshal(disk["secrets"], &secrets); err != nil || len(secrets) != 1 {
+		t.Fatalf("vault does not hold exactly one secret: %v", err)
+	}
+	if disk["secrets"], err = json.Marshal(append(secrets, secrets[0])); err != nil {
+		t.Fatal(err)
+	}
+	if data, err = json.Marshal(disk); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return func() {}
 }
