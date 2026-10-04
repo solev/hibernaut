@@ -40,8 +40,8 @@ type source struct {
 var aliasRE = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // FailNextSave makes the next SaveTemplate of a running machine fail with err. If err wraps
-// engine.ErrNotRunning or engine.ErrNotFound, the save creates nothing, as E2B's 404 comes before
-// it creates the alias. Any other err leaves a new alias behind with no build, as E2B can. If err
+// engine.ErrNotRunning or engine.ErrNotFound, the save creates nothing, as E2B's 404 and 409 come
+// before it creates the alias. Any other err leaves a new alias behind with no build, as E2B can. If err
 // wraps engine.ErrCheckpoint, the machine stops as E2B stops it: it's left paused if it was paused
 // or saved before, and removed with its home directory if not, since it has no snapshot to fall
 // back on. The fake doesn't roll the machine's files back.
@@ -52,8 +52,8 @@ func (e *Engine) FailNextSave(err error) {
 }
 
 // RejectNextSave makes the next SaveTemplate of a running machine fail with err before it creates
-// anything, as E2B's save does when the machine is busy or the save can't be recorded. The machine
-// keeps running.
+// anything, as E2B's save does when it can't reach the machine's node or record the save. The
+// machine keeps running.
 func (e *Engine) RejectNextSave(err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -177,8 +177,22 @@ func TestSaveTemplateErrors(t *testing.T) {
 			name:    "pausing",
 			replies: map[string]reply{save: e2bError(409, "Sandbox 'origin00000000000000' cannot be snapshotted while in 'pausing' state")},
 			want:    engine.ErrNotRunning,
-			notWant: []error{engine.ErrCheckpoint},
+			notWant: []error{engine.ErrCheckpoint, engine.ErrNotFound},
 			msg:     "cannot be snapshotted while in 'pausing' state",
+		},
+		{
+			name:    "being killed",
+			replies: map[string]reply{save: e2bError(409, "Sandbox 'origin00000000000000' cannot be snapshotted while in 'killing' state")},
+			want:    engine.ErrNotRunning,
+			notWant: []error{engine.ErrCheckpoint, engine.ErrNotFound},
+			msg:     "cannot be snapshotted while in 'killing' state",
+		},
+		{
+			name:    "already being saved",
+			replies: map[string]reply{save: e2bError(409, "Sandbox 'origin00000000000000' cannot be snapshotted while in 'snapshotting' state")},
+			want:    engine.ErrNotRunning,
+			notWant: []error{engine.ErrCheckpoint, engine.ErrNotFound},
+			msg:     "cannot be snapshotted while in 'snapshotting' state",
 		},
 		{
 			name:    "checkpoint failed, paused at its last snapshot",
