@@ -256,13 +256,13 @@ End-to-end:
       after every resume, reading the disk one after dropping the guest's page cache. It stays a
       measurement.
 - [ ] `TestTrim` (slow). Machine A, with the sentinels, pauses 10 times with the random
-      workload. Machine B pauses twice, and an image is saved from it. Then the test calls
-      `t.Parallel()`, so the hour passes while the rest of `make e2e-slow` runs
-      (`TestBusyPastAnHour` takes 65 minutes). Afterwards, on fresh contexts, holding an SSH
-      session so the host doesn't deallocate:
+      workload. Machine B pauses twice, and an image is saved from it. The test records each of
+      A's and B's build files: size, allocated blocks, and the SHA-256 of headers, snapfile and
+      metadata. Then it calls `t.Parallel()`, so the hour passes while the rest of
+      `make e2e-slow` runs (`TestBusyPastAnHour` takes 65 minutes). Afterwards, on fresh
+      contexts, holding an SSH session so the host doesn't deallocate:
       1. It runs `hibd cleanup -n` until A's old builds are candidates, or the daemon has
-         trimmed them, with a deadline. It records each of A's and B's build files: size,
-         allocated blocks, and the SHA-256 of headers, snapfile and metadata.
+         trimmed them, with a deadline.
       2. It runs `hibd cleanup`, and checks the result, not the run. A's builds take less than
          half the disk they took after the pauses, and no more than the latest snapshot maps,
          plus headers, snapfiles and rounding. Every file keeps its size, and headers, snapfiles
@@ -289,3 +289,6 @@ End-to-end:
   and protects what a running machine may read for as long as it runs. The third review added a
   machine E2B is still pausing, native forks, warm template caches, and builds an e2e machine
   shares with a saved image.
+- 2026-10-05: `TestTrim` records A's and B's build files before it calls `t.Parallel()`, not
+  after its `hibd cleanup -n` wait. The daemon's hourly sweep may trim during the wait, and the
+  check needs the sizes from before any trim.
