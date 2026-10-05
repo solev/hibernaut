@@ -208,7 +208,7 @@ func TestTrim(t *testing.T) {
 	}
 	holdHostSession(t)
 
-	giveUp := lastPause.Add(cleanup.MinAge + 20*time.Minute)
+	giveUp := lastPause.Add(trimmableAfter + 20*time.Minute)
 	waitTrimmable(t, testContext(t, max(time.Until(giveUp), 0)+10*time.Minute), subjects.A, before.disk(subjects.A), lastPause, giveUp)
 
 	ctx = testContext(t, 10*time.Minute)
@@ -254,10 +254,12 @@ func TestTrim(t *testing.T) {
 	checkSentinels(t, ctx, newHibMachine(t, ctx, "-image", imageA), sums)
 }
 
+const trimmableAfter = max(cleanup.MinAge, cleanup.SelectionGrace)
+
 func waitTrimmable(t *testing.T, ctx context.Context, a []string, before int64, lastPause, giveUp time.Time) {
 	t.Helper()
 	old := a[:len(a)-1]
-	aged := lastPause.Add(cleanup.MinAge + time.Minute)
+	aged := lastPause.Add(trimmableAfter + time.Minute)
 	for {
 		out := hibdCleanup(t, ctx, "-n")
 		t.Logf("hibd cleanup -n:\n%s", termsafe.String(out))
