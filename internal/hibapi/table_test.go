@@ -28,6 +28,16 @@ func TestPrintSecrets(t *testing.T) {
 				"oa\\x1b  KEY\\x00   c.co\\x7f   sk-hib\\x1bvalue\n",
 		},
 		{
+			name: "tabs, newlines and carriage returns stay in their cells",
+			secrets: []hibapi.Secret{
+				{Name: "gh", Env: "GH_TOKEN", Sites: []string{"a.co"}, Placeholder: "ph"},
+				{Name: "a\tb", Env: "K\nE", Sites: []string{"c.co\r"}, Placeholder: "p\tq"},
+			},
+			want: "NAME    ENV       SITES     PLACEHOLDER\n" +
+				"gh      GH_TOKEN  a.co      ph\n" +
+				"a\\x09b  K\\x0aE    c.co\\x0d  p\\x09q\n",
+		},
+		{
 			name: "no secrets",
 			want: "NAME  ENV  SITES  PLACEHOLDER\n",
 		},

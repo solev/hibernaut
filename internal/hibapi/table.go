@@ -120,7 +120,7 @@ func PrintSecrets(w io.Writer, secrets []Secret) {
 		if s == "" {
 			return "-"
 		}
-		return termsafe.String(s)
+		return termsafe.Line(s)
 	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tENV\tSITES\tPLACEHOLDER")

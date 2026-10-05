@@ -101,11 +101,11 @@ func printLogEntries(w io.Writer, entries []hibapi.LogEntry) {
 	for _, e := range entries {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			e.Time.Local().Format(time.RFC3339),
-			termsafe.String(e.Machine),
-			termsafe.String(e.Site),
-			termsafe.String(e.Method),
-			termsafe.String(e.Path),
-			termsafe.String(strings.Join(e.Secrets, ",")))
+			termsafe.Line(e.Machine),
+			termsafe.Line(e.Site),
+			termsafe.Line(e.Method),
+			termsafe.Line(e.Path),
+			termsafe.Line(strings.Join(e.Secrets, ",")))
 	}
 	tw.Flush()
 }

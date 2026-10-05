@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -199,6 +200,41 @@ func TestLogWarnsAboutCorruptLinesAndEscapesEntries(t *testing.T) {
 	}
 	if !strings.Contains(c.out.String(), "example.com") {
 		t.Fatalf("hib log stdout = %q, want the entry", c.out.String())
+	}
+}
+
+func TestLogKeepsEachEntryOnOneAlignedRow(t *testing.T) {
+	h := newHost(t)
+	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+		return writeTestResponse(stdout, hibapi.Response{Logs: []hibapi.LogEntry{
+			{Time: time.Unix(0, 0), Machine: "dev\tx", Site: "a.co\nb", Method: "GE\rT", Path: "/p\tq", Secrets: []string{"one\n", "two"}},
+			{Time: time.Unix(0, 0), Machine: "app", Site: "api.github.com", Method: "GET", Path: "/user", Secrets: []string{"github"}},
+		}}), true
+	}
+	c := initClient(t, h)
+	if code := c.hib("log"); code != 0 {
+		t.Fatalf("hib log exit %d, stderr %s", code, c.errOut)
+	}
+	lines := strings.Split(strings.TrimSuffix(c.out.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("hib log printed %d lines, want a header and one row per entry: %q", len(lines), c.out)
+	}
+	if want := `dev\x09x`; !strings.Contains(lines[1], want) || !strings.Contains(lines[1], `a.co\x0ab`) ||
+		!strings.Contains(lines[1], `GE\x0dT`) || !strings.Contains(lines[1], `/p\x09q`) || !strings.Contains(lines[1], `one\x0a,two`) {
+		t.Errorf("row %q, want each cell's tab, newline and carriage return escaped", lines[1])
+	}
+	cell := regexp.MustCompile(`\S+`)
+	header := cell.FindAllStringIndex(lines[0], -1)
+	for _, line := range lines[1:] {
+		row := cell.FindAllStringIndex(line, -1)
+		if len(row) != len(header) {
+			t.Fatalf("row %q has %d cells, want %d", line, len(row), len(header))
+		}
+		for i := range row {
+			if row[i][0] != header[i][0] {
+				t.Errorf("row %q: cell %d starts at %d, want %d under its header", line, i, row[i][0], header[i][0])
+			}
+		}
 	}
 }
 
