@@ -269,6 +269,12 @@ origin's state and keeps a safe snapshot from when the save began. It never retr
 E2B can hide a failed save's template for a few minutes. If `hib` can't confirm it's gone, it
 says so, and for an image it says how to remove it.
 
+Ctrl-C still stops a save or fork before dispatch. Once E2B starts saving, hibd no longer cancels
+that call when the client disconnects. It has a ten-minute backstop. Losing SSH can still end the
+host process, so an image is not guaranteed to appear. Check `hib image ls` and `hib ls` before
+retrying. A fork's leftover hidden template is swept as before. Persistent save records stop
+snapshot cleanup until the save is known to be over.
+
 Copies get fresh SSH host keys, the current placeholder setup and your authorized public keys.
 Forks keep the origin's image, size and idle policy. Their names use the lowest free suffix,
 starting at `app-1`. If a later copy fails, the whole copies already made stay, and `hib` names

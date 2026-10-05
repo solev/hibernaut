@@ -61,6 +61,13 @@ may yet resume from: `keepHistory` on the machine's slot, from a time `since`.
   build created after it started that's in no image's slot, and for an hour after that build
   finished. An image save puts its build in the machine's slot as well as the image's, and the
   machine keeps running.
+- E2B's listing skips a machine in `snapshotting` and shows its last pause instead, with that
+  pause's run start. Before E2B records the save's pending build, that stale start can hide the
+  older snapshot its current run reads. Saves and forks first pause, confirm durability and
+  resume the origin, so this is a stale pause, not an unlisted new machine. Cleanup reads under
+  `hibd.lock`, which saves and forks hold through the whole save. Persistent save records cover
+  a save interrupted after dispatch. A GET recheck cannot prove safety because E2B falls back
+  to its database snapshot on any live-store error.
 - Otherwise `since` is an hour ago: a replaced snapshot stays a root for an hour.
 
 After an image save, E2B resumes the machine from the save's build. With E2B's
@@ -81,6 +88,55 @@ does the same for images.
 
 The hour is `SelectionGrace`, a constant of its own beside `MinAge`. Deletion keeps these builds
 too. Roots never depend on the trim scope below.
+
+**Read under the save lock.** Cleanup takes `cleanup.lock`, then `hibd.lock`. It holds the
+second across E2B's listing, both SQL queries, the layer cache, build directories and save-record
+evaluation. It releases it before deletion and trimming, on every exit path. No machine operation
+takes `cleanup.lock`. A sweep never waits for `hibd.lock`. It returns `machines.ErrBusy` and
+retries in a minute, without a `not trimming` message. The command waits cancellably and says
+`waiting for an image save or fork to finish` once. This excludes saves, not the whole machine
+lifecycle. SSH wake stays unlocked. A resume during or after the read still uses a paused root,
+including the replaced roots kept by `SelectionGrace`.
+
+**Save records.** After preparing the origin, and a final cancellation check, hibd publishes a
+private, state-owner-owned JSON file in its state directory's `saves` directory before dispatch.
+Each save has a unique file. It records the engine ID, name, wall-clock start, boot ID, zero end
+and `answered: false`. Files are opened without following symlinks. Publication syncs the file
+and directories. The save POST and readback use `context.WithoutCancel`, with a ten-minute
+`saveCallTimeout` backstop. Ctrl-C after dispatch no longer cancels that save in hibd. Losing SSH
+can still end hibd, so this does not promise an image appears. Check `hib image ls` and `hib ls`
+before retrying. Fork templates left without copies are swept as before.
+
+Immediately after the call, before restoring the origin or cleaning an alias, hibd deletes the
+record for a 404 or 409 that created nothing. Otherwise it writes the end time and whether E2B
+answered the POST. Every HTTP status counts as answered, including a 201 followed by a failed
+readback or an invalid response body. A transport failure without an HTTP answer does not. A
+record write or removal failure fails the operation and leaves cleanup inhibited.
+
+Cleanup settles a record only when one of these is proved by its locked read:
+
+- E2B answered, and the listing shows the machine running.
+- The machine's slot has a ready build in no image's slot, created after the recorded end.
+  With no end, it must be created after start plus `saveCallTimeout`. Removed images count
+  as images when checking the build's assignments.
+- The machine has a slot, and every slot of it is deleted.
+- Both boot IDs are known and differ. Nothing the old host boot ran survives.
+
+An unanswered record never settles just because the listing says running. Cleanup checks every
+record before deleting settled ones. A dry run only says it would clear them. Any unsettled or
+unreadable record stops deletion and trimming, naming the machine and start when readable.
+The sweep retries in a minute and logs the problem only when it changes. A readable record clears
+when one of the proofs holds. An unreadable record must be repaired first. An unknown current boot
+ID is not proof of a restart.
+
+**Save-safety residue.** Hibd's E2B client must reach the API directly, as the default
+`http://127.0.0.1:3000` does. A dropped connection must cancel E2B's handler, not leave it running
+behind a proxy. This design relies on the handler finishing its save transition before answering,
+pauses being unable to start during a save, kill soft-deleting the machine's slot, and E2B's
+70-second request deadline. Its write deadline is 75 seconds. The ten-minute client bound is a
+backstop. SIGPIPE on closed stdout or stderr can still end hibd. The persisted record, not process
+survival, protects cleanup. Host clock jumps between a recorded end and a later pause build can
+defeat that time comparison. Save records do not serialize external direct API saves.
 
 **Candidates** are the build directories cleanup keeps that aren't roots and hold only a
 machine's pauses: ready, unchanged for `MinAge`, put in at least one slot and only in machines'
@@ -174,6 +230,10 @@ trimmed 2.4 GiB in 18 files
 `hibd cleanup -n` prints a `would trim` line per file and the total, `nothing to trim`, or `not
 trimming`. A real run prints a line per file it trims or leaves, and the total if it trimmed any.
 A dry run's sizes are estimates from the files' extents. A real run's are the blocks it freed.
+Before those lines, the command may say `waiting for another cleanup` or
+`waiting for an image save or fork to finish`. Settled save records produce
+`cleared settled save record <file>`, or `would clear settled save record <file>` in a dry run.
+An unsettled or unreadable save record instead stops cleanup with the record's problem.
 
 **Why it's safe.**
 
@@ -206,7 +266,10 @@ until `test` resumes after a real trim and a host restart.
 - [x] Measure (S0): `TestPauseCycles` rewriting a 64 MiB file of random data before each pause,
       synced to disk or not. Its numbers are in Why.
 - [ ] `internal/snapheader`: the strict parser.
-- [ ] Cleanup: the machine roots, root accounting, candidates and the scope.
+- [ ] Cleanup: the machine roots, root accounting, candidates and the scope. Read under
+      `hibd.lock` and settle persistent save records before deleting or trimming.
+- [ ] Saves: uncancellable dispatched calls with a ten-minute backstop, POST answer accounting,
+      and private save records written before dispatch and ended before restoration.
 - [ ] hib's E2B client without E2B's fork endpoint: an overlay `make generate` applies.
 - [ ] The plan, and punching on Linux (`trim_linux.go`, with a `trim_stub.go` that says trimming
       needs Linux). `hibd cleanup -n` says what it would trim.
@@ -235,6 +298,22 @@ Unit:
       snapshot of its own runs, as a native fork would, every other machine's slot that isn't
       removed keeps its builds from an hour before it started. Startup history, saved images and
       the layer cache stay roots in every scope. Deletion keeps the roots.
+- [ ] Locked reads: listing, SQL, cache, directories and records happen under `hibd.lock`.
+      Deletion and trimming happen after release. Both locks release on errors and cancelled
+      waits. Sweep contention retries in a minute without `not trimming`. The command logs its
+      wait once. An unlocked resume during the read keeps the latest and warm-cache roots whole.
+- [ ] Save outcomes: pre-dispatch cancellation writes nothing and sends nothing. Cancellation
+      during the call leaves a live, bounded context. The record exists before dispatch and ends
+      before restoration. Success, an HTTP error and a 201 with failed readback are answered.
+      A no-answer transport failure is not. A 404 or 409 removes its record. Write failures
+      inhibit cleanup. The ten-minute backstop leaves an ended, unanswered record.
+- [ ] Record settlement: each proof above, no running-only proof for unanswered records, no
+      proof from a paused listing, an image save, an older build or a pending build. Interrupted
+      saves use start plus the call timeout. Dry runs keep records. New Managers and Apps still
+      see records after a process restart. Unreadable and unsettled records stop all changes.
+- [ ] Cross-process, with real flock on macOS and Linux: one process saves against a gated E2B
+      handler while another runs cleanup on the same state directory. Cleanup logs its wait
+      once, makes no List call until the save ends, then clears the settled record and completes.
 - [ ] Root accounting: a root without a directory stops trimming, however old. So does a root
       header missing or invalid, a headerless legacy build, a filesystem-only snapshot, or a
       source missing, short or with an invalid header. A root whose header maps nothing to its
@@ -303,3 +382,9 @@ End-to-end:
   and protects what a running machine may read for as long as it runs. The third review and its
   follow-up added a machine E2B is still pausing, image saves and native forks, warm template
   caches, builds an e2e machine shares with a saved image, and a baseline taken before the hour.
+- 2026-10-05: The v4 re-review found the GET recheck unsafe because E2B falls back to its stale
+  database snapshot on any store error. Replaced it with a read under the save lock and persistent
+  per-save records. Dispatched saves no longer inherit caller cancellation, and the engine
+  distinguishes an HTTP answer from no answer. Records inhibit cleanup until a later lifecycle
+  fact proves the save over. Documented direct API access, E2B's deadlines, process death and
+  host clock jumps as the remaining assumptions.

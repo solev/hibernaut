@@ -566,6 +566,11 @@ and refuses a paused machine, so Hibernaut doesn't use it
   template once its last copy is gone.
 - A save or fork takes turns with `hib pause` and `hib rm` of any machine. Waking by SSH doesn't
   wait.
+- Ctrl-C stops a save or fork before dispatch. Once E2B starts saving, hibd no longer cancels
+  that call on client disconnect. The POST and readback have a ten-minute backstop. SSH loss or
+  SIGPIPE can still end hibd, so this does not promise an image appears. Check `hib image ls` and
+  `hib ls` before retrying. A fork's hidden template is swept as before. Persistent per-save
+  records inhibit snapshot cleanup until a later lifecycle fact proves the save over.
 
 ## 6. Decisions
 
