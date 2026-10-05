@@ -548,7 +548,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 		t.Fatalf("ls exit %d: %s", code, c.errOut)
 	}
 	lines := tableLines(c.out.String())
-	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "IDLE", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
+	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "SIZE", "IDLE", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
 		t.Errorf("ls header = %q, want %q", got, want)
 	}
 	want := map[string][2]string{
@@ -564,12 +564,12 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	for _, line := range lines[1:] {
 		f := strings.Fields(line)
 		w, ok := want[f[0]]
-		if !ok || len(f) != 9 {
+		if !ok || len(f) != 10 {
 			t.Errorf("unexpected ls line %q", line)
 			continue
 		}
-		if f[3] != w[0] || f[4] != w[1] {
-			t.Errorf("%s: IDLE %q, PAUSES IN %q; want %q, %q", f[0], f[3], f[4], w[0], w[1])
+		if f[4] != w[0] || f[5] != w[1] {
+			t.Errorf("%s: IDLE %q, PAUSES IN %q; want %q, %q", f[0], f[4], f[5], w[0], w[1])
 		}
 		delete(want, f[0])
 	}
@@ -595,9 +595,10 @@ func TestLsShowsRoomOnTheHost(t *testing.T) {
 		readRoom func() (room.Host, error)
 		want     string
 	}{
-		{"room", reading(2101), "Room for 2 more dev machines: 4.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
-		{"one", reading(1077), "Room for 1 more dev machine: 2.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
-		{"full", reading(53), "No room for another dev machine: 106 MiB of 6.2 GiB memory free, 79 GiB disk free. " +
+		{"room", reading(2101), "Room for more machines: 4 small, 2 medium or 1 large. 4.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
+		{"no large", reading(1077), "Room for more machines: 2 small or 1 medium. 2.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
+		{"small only", reading(600), "Room for more machines: 1 small. 1.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
+		{"full", reading(53), "No room for another machine: 106 MiB of 6.2 GiB memory free, 79 GiB disk free. " +
 			"hib pause NAME frees memory, hib rm NAME frees disk."},
 		{"unreadable", func() (room.Host, error) { return room.Host{}, errors.New("no /proc/meminfo") }, ""},
 	} {
@@ -654,10 +655,10 @@ func TestImageBuild(t *testing.T) {
 	if code := c.hib("image", "build", "dev"); code != 0 {
 		t.Fatalf("exit %d: %s", code, c.errOut)
 	}
-	if !strings.HasPrefix(c.out.String(), "built image dev (template ") || !strings.Contains(c.out.String(), images.Template("dev")) {
+	if c.out.String() != "built image dev in sizes medium, small and large\n" {
 		t.Errorf("printed %q", c.out)
 	}
-	if !strings.Contains(c.errOut.String(), "built dev in") {
+	if !strings.Contains(c.errOut.String(), "built dev (medium) in") || !strings.Contains(c.errOut.String(), "built dev (large) in") {
 		t.Errorf("stderr = %q, want hibd's build log", c.errOut)
 	}
 	if code := c.hib("image", "build", "-force", "dev"); code != 0 {
@@ -667,8 +668,8 @@ func TestImageBuild(t *testing.T) {
 		t.Errorf("remote commands = %q, want %q", got, want)
 	}
 	built := h.engine.Built()
-	if len(built) != 2 || built[0].Force || !built[1].Force {
-		t.Errorf("built %+v, want a build and then a forced one", built)
+	if len(built) != 6 || built[0].Force || built[2].Force || !built[3].Force || !built[5].Force {
+		t.Errorf("built %d templates, want every size and then every size forced", len(built))
 	}
 }
 

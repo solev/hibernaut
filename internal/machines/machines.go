@@ -44,6 +44,7 @@ const (
 	labelImage = "hib.image"
 	labelIdle  = "hib.idle"
 	labelFork  = "hib.forkof"
+	labelSize  = "hib.size"
 
 	maxKeysFile    = 64 << 10
 	initTimeout    = 2 * time.Minute
@@ -156,14 +157,23 @@ func timeoutFor(idle time.Duration) time.Duration {
 	return idle
 }
 
-// Create makes a machine called name from image, lets in the keys from Config.AuthorizedKeys,
-// and pins its host key. The machine pauses once it has been idle for idle; 0 means never. A
-// machine that can't be set up is killed again.
+// Create makes a machine called name from image at the image's own size. It's CreateSize with
+// the zero Size.
 func (m *Manager) Create(ctx context.Context, name, image string, idle time.Duration) (hibapi.Machine, error) {
+	return m.CreateSize(ctx, name, image, images.Size{}, idle)
+}
+
+// CreateSize makes a machine called name from image at size, lets in the keys from
+// Config.AuthorizedKeys, and pins its host key. The zero Size is the image's own size: the
+// default for a built-in image, and the size of the machine a saved image was saved from. A
+// saved image's machines keep that size, so any other Size with a saved image is refused. The
+// machine pauses once it has been idle for idle; 0 means never. A machine that can't be set up is
+// killed again.
+func (m *Manager) CreateSize(ctx context.Context, name, image string, size images.Size, idle time.Duration) (hibapi.Machine, error) {
 	if err := hibapi.CheckName(name); err != nil {
 		return hibapi.Machine{}, err
 	}
-	memoryMB, err := m.imageMemory(ctx, image)
+	plan, err := m.planMachine(ctx, image, size)
 	if err != nil {
 		return hibapi.Machine{}, err
 	}
@@ -189,25 +199,26 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	case !errors.Is(err, ErrNoMachine):
 		return hibapi.Machine{}, err
 	}
-	if err := m.checkRoom(ctx, name, memoryMB); err != nil {
+	builtIn := images.IsBuiltIn(image)
+	if err := m.checkRoom(ctx, name, plan.memoryMB, builtIn); err != nil {
 		return hibapi.Machine{}, err
 	}
 
-	em, err := m.e.Create(ctx, engine.CreateOptions{
-		Template: images.Template(image),
-		Timeout:  timeoutFor(idle),
-		Metadata: map[string]string{labelName: name, labelImage: image, labelIdle: idle.String()},
-	})
+	labels := map[string]string{labelName: name, labelImage: image, labelIdle: idle.String()}
+	if plan.size != (images.Size{}) {
+		labels[labelSize] = plan.size.Name()
+	}
+	em, err := m.e.Create(ctx, engine.CreateOptions{Template: plan.template, Timeout: timeoutFor(idle), Metadata: labels})
 	if err != nil {
 		cause := fmt.Errorf("creating %q: %w", name, safeError(err))
-		if errors.Is(err, engine.ErrNoTemplate) && images.IsBuiltIn(image) {
-			cause = describe(err, fmt.Sprintf("image %q isn't built yet (run: hib image build %s)", image, image))
+		if errors.Is(err, engine.ErrNoTemplate) && builtIn {
+			cause = describe(err, notBuilt(image, plan.size))
 		}
-		cause = m.refused(ctx, name, memoryMB, cause)
+		cause = m.refused(ctx, name, plan.memoryMB, builtIn, cause)
 		return hibapi.Machine{}, m.failedCreate(ctx, name, cause)
 	}
 	setup := m.setupMachine
-	if !images.IsBuiltIn(image) {
+	if !builtIn {
 		setup = m.setupCopy
 	}
 	if err := setup(ctx, em.ID, keys); err != nil {
@@ -343,12 +354,12 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		}
 	}
 	if paused {
-		if err := m.checkRoom(ctx, name, em.MemoryMB); err != nil {
+		if err := m.checkRoom(ctx, name, em.MemoryMB, false); err != nil {
 			return nil, err
 		}
 	}
 	fail := func(err error) (*Conn, error) {
-		return nil, m.refused(ctx, name, em.MemoryMB, err)
+		return nil, m.refused(ctx, name, em.MemoryMB, false, err)
 	}
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -372,7 +383,7 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	}}, nil
 }
 
-func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int) error {
+func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int, suggestSizes bool) error {
 	ems, h, err := m.roomNow(ctx)
 	if err != nil {
 		return err
@@ -380,7 +391,29 @@ func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int) erro
 	if slices.ContainsFunc(ems, func(em engine.Machine) bool { return Name(em) == name }) {
 		return nil
 	}
-	return h.Check(name, memoryMB, roomMachines(ems))
+	running := roomMachines(ems)
+	err = h.Check(name, memoryMB, running)
+	if err == nil || !suggestSizes {
+		return err
+	}
+	var fit []string
+	for _, s := range sizesRoom(h, running) {
+		if s.Fits > 0 {
+			fit = append(fit, s.Size)
+		}
+	}
+	if len(fit) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w. Sizes that still fit: %s", err, strings.Join(fit, ", "))
+}
+
+func sizesRoom(h room.Host, running []room.Machine) []hibapi.SizeRoom {
+	var out []hibapi.SizeRoom
+	for _, s := range images.Sizes() {
+		out = append(out, hibapi.SizeRoom{Size: s.Name(), Fits: h.Fits(s.MemoryMB(), running)})
+	}
+	return out
 }
 
 // Room returns the room on the host for more machines of image.
@@ -394,12 +427,14 @@ func (m *Manager) Room(ctx context.Context, image string) (hibapi.Room, error) {
 		return hibapi.Room{}, err
 	}
 	free, total := h.MemoryMB()
+	running := roomMachines(ems)
 	return hibapi.Room{
-		Fits:         h.Fits(memoryMB, roomMachines(ems)),
+		Fits:         h.Fits(memoryMB, running),
 		Image:        image,
 		MemoryFreeMB: free,
 		MemoryMB:     total,
 		DiskFreeMB:   h.DiskFree >> 20,
+		Sizes:        sizesRoom(h, running),
 	}, nil
 }
 
@@ -423,8 +458,8 @@ func roomMachines(ems []engine.Machine) []room.Machine {
 	return ms
 }
 
-func (m *Manager) refused(ctx context.Context, name string, memoryMB int, err error) error {
-	if rerr := m.checkRoom(ctx, name, memoryMB); errors.Is(rerr, room.ErrFull) {
+func (m *Manager) refused(ctx context.Context, name string, memoryMB int, suggestSizes bool, err error) error {
+	if rerr := m.checkRoom(ctx, name, memoryMB, suggestSizes); errors.Is(rerr, room.ErrFull) {
 		return rerr
 	}
 	return err
@@ -674,10 +709,12 @@ func toAPI(em engine.Machine) hibapi.Machine {
 		s := int64((idle + time.Second - 1) / time.Second)
 		idleSeconds = &s
 	}
+	size, _ := machineSize(em)
 	return hibapi.Machine{
 		Name:        name,
 		ID:          termsafe.String(em.ID),
 		Image:       image,
+		Size:        size.Name(),
 		ForkOf:      forkOf,
 		State:       termsafe.String(string(em.State)),
 		StartedAt:   em.StartedAt,

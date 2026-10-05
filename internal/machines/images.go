@@ -52,7 +52,7 @@ func (m *Manager) SaveImage(ctx context.Context, machine, name string) (hibapi.I
 	if em.State == engine.Paused {
 		running = 2
 	}
-	if err := m.checkPlan(ctx, machine, room.Plan{MemoryMB: em.MemoryMB, Running: running, Snapshots: 2}); err != nil {
+	if err := m.checkPlan(ctx, machine, room.Plan{MemoryMB: em.MemoryMB, Running: running, Snapshots: 2, Peak: 2}); err != nil {
 		return hibapi.Image{}, err
 	}
 	tmpl, err := m.saveOrigin(ctx, em, alias)

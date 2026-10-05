@@ -37,7 +37,7 @@ func TestFork(t *testing.T) {
 				if copy.Name != want || copy.ForkOf != "web" || copy.Image != "dev" || copy.State != "running" || *copy.IdleSeconds != 45*60 {
 					t.Errorf("copy = %+v", copy)
 				}
-				if em.Metadata["hib.forkof"] != "web" || em.Metadata["hib.idle"] != "45m0s" || len(em.Metadata) != 4 {
+				if em.Metadata["hib.forkof"] != "web" || em.Metadata["hib.idle"] != "45m0s" || em.Metadata["hib.size"] != "medium" || len(em.Metadata) != 5 {
 					t.Errorf("copy labels = %+v", em.Metadata)
 				}
 				if got := em.EndAt.Sub(em.StartedAt); got != 45*time.Minute {

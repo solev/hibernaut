@@ -43,7 +43,8 @@ const defaultConfig = "/etc/hibernaut/hibd.env"
 const usage = `usage: hibd <command> [flags]
 
 commands:
-  new NAME          make a machine (-image, default ` + images.Default + `; -idle, default 15m)
+  new NAME          make a machine (-image, default ` + images.Default + `; -size small, medium or large,
+                    default medium; -idle, default 15m)
   ls                list machines (-state running|paused, -q for IDs only)
   rm NAME           delete a machine for good
   pause NAME        pause a machine
@@ -64,7 +65,7 @@ commands:
   status            check E2B, every secret and the Codex login, as root
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
-  image build NAME  build an image (-force rebuilds every step)
+  image build NAME  build an image in every size (-force rebuilds every step)
   image save MACHINE NAME
                     save a machine as an image, memory included, as root
   image ls          list built-in and saved images
@@ -222,11 +223,20 @@ func (a *App) Run(ctx context.Context, args []string) int {
 func (a *App) new(ctx context.Context, args []string) int {
 	fl := a.flags("new")
 	image := fl.String("image", images.Default, "the image to make the machine from")
+	sizeName := fl.String("size", "", "the machine's size: small, medium or large (default medium, or a saved image's size)")
 	idle := fl.Duration("idle", machines.DefaultIdle, "pause the machine once it has been idle this long; 0 means never")
 	asJSON := fl.Bool("json", false, "print JSON")
 	names, ok := a.parse(fl, args, 1, "new NAME")
 	if !ok {
 		return 2
+	}
+	var size images.Size
+	if isSet(fl, "size") {
+		s, err := images.SizeNamed(*sizeName)
+		if err != nil {
+			return a.fail(*asJSON, "new", err)
+		}
+		size = s
 	}
 	if *idle != 0 && (*idle < minIdle || *idle > machines.MaxRun) {
 		return a.fail(*asJSON, "new", fmt.Errorf("bad idle time %v: want 0 (never pause), or %s to %s",
@@ -249,7 +259,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(ctx, createTimeout)
 	defer cancel()
-	mach, err := m.Create(ctx, names[0], *image, *idle)
+	mach, err := m.CreateSize(ctx, names[0], *image, size, *idle)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
@@ -297,9 +307,9 @@ func (a *App) ls(ctx context.Context, args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(a.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tIDLE\tSTARTED\tENDS")
+	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tSIZE\tIDLE\tSTARTED\tENDS")
 	for _, m := range ms {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image), orDash(m.Size),
 			hibapi.FormatIdle(m.IdleSeconds), m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
 	}
 	tw.Flush()
@@ -407,11 +417,16 @@ func (a *App) image(ctx context.Context, args []string) int {
 		}
 		return a.fail(*asJSON, "image build", err)
 	}
-	spec, err := images.Spec(names[0], caPEM)
-	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+	sizes := images.BuildSizes()
+	specs := make([]engine.TemplateSpec, len(sizes))
+	for i, size := range sizes {
+		spec, err := images.Spec(names[0], size, caPEM)
+		if err != nil {
+			return a.fail(*asJSON, "image build", err)
+		}
+		spec.Force = *force
+		specs[i] = spec
 	}
-	spec.Force = *force
 	if err := a.awake(); err != nil {
 		return a.fail(*asJSON, "image build", err)
 	}
@@ -419,22 +434,66 @@ func (a *App) image(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "image build", err)
 	}
+	m, err := a.manager()
+	if err != nil {
+		return a.fail(*asJSON, "image build", err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
-	start := time.Now()
 
+	var template string
+	var built []string
+	for i, size := range sizes {
+		id, err := a.buildSize(ctx, e, m, names[0], size, specs[i])
+		if err != nil {
+			return a.fail(*asJSON, "image build", buildFailed(err, sizes, i))
+		}
+		if size == images.DefaultSize() {
+			template = id
+		}
+		built = append(built, size.Name())
+	}
+	if *asJSON {
+		return a.reply(hibapi.Response{Template: template, Sizes: built})
+	}
+	fmt.Fprintln(a.Stdout, template)
+	return 0
+}
+
+func (a *App) buildSize(ctx context.Context, e engine.Engine, m *machines.Manager, image string, size images.Size, spec engine.TemplateSpec) (string, error) {
+	if err := m.CheckBuildRoom(ctx, image, size); err != nil {
+		return "", err
+	}
+	start := time.Now()
 	buildLog := termsafe.NewWriter(a.Stderr)
 	id, err := e.BuildTemplate(ctx, spec, buildLog)
 	buildLog.Flush()
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return "", fmt.Errorf("building %s (%s): %w", image, size.Name(), err)
 	}
-	fmt.Fprintf(a.Stderr, "built %s in %v\n", names[0], time.Since(start).Round(time.Second))
-	if *asJSON {
-		return a.reply(hibapi.Response{Template: id})
+	fmt.Fprintf(a.Stderr, "built %s (%s) in %v\n", image, size.Name(), time.Since(start).Round(time.Second))
+	return id, nil
+}
+
+func buildFailed(err error, sizes []images.Size, failed int) error {
+	names := func(sizes []images.Size) string {
+		var out []string
+		for _, s := range sizes {
+			out = append(out, s.Name())
+		}
+		return cmp.Or(strings.Join(out, ", "), "none")
 	}
-	fmt.Fprintln(a.Stdout, id)
-	return 0
+	err = fmt.Errorf("%w. Built: %s. Failed: %s", err, names(sizes[:failed]), sizes[failed].Name())
+	if rest := sizes[failed+1:]; len(rest) > 0 {
+		err = fmt.Errorf("%w. Not tried: %s", err, names(rest))
+	}
+	return err
+}
+
+func isSet(fl *flag.FlagSet, name string) bool {
+	set := false
+	fl.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 func (a *App) ready(ctx context.Context, args []string) int {

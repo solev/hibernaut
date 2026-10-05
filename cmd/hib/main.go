@@ -31,7 +31,8 @@ const usage = `usage: hib [-config DIR] <command> [flags]
 
 commands:
   init              set this laptop up (-host USER@HOST; see hib init -h)
-  new NAME          make a machine (-image, default ` + images.Default + `; -idle, default 15m); then: ssh NAME.hib
+  new NAME          make a machine (-image, default ` + images.Default + `; --size small, medium or large,
+                    default medium; -idle, default 15m); then: ssh NAME.hib
   ls                list machines, and when each pauses unless it's busy
   rm NAME           delete a machine for good
   pause NAME        pause a machine; connecting wakes it
@@ -45,7 +46,7 @@ commands:
   secret rm NAME    remove a bound secret
   log               show secret swap audit entries (-n, default 50)
   exec NAME -- CMD  run CMD on a machine, as ssh NAME.hib -- CMD does
-  image build NAME  build an image on the host (-force rebuilds every step)
+  image build NAME  build an image on the host, in every size (-force rebuilds every step)
   image save MACHINE NAME
                     save a machine as an image, memory included
   image ls          list built-in and saved images
@@ -176,18 +177,28 @@ func (a *app) run(ctx context.Context, args []string) int {
 func (a *app) newMachine(ctx context.Context, cfg *config, args []string) int {
 	fl := a.flags("new")
 	image := fl.String("image", images.Default, "the image to make the machine from")
+	size := fl.String("size", "", "the machine's size: small, medium or large (default medium, or a saved image's size)")
 	idle := fl.Duration("idle", 0, "pause the machine once it has been idle this long, e.g. 1h (default 15m; 0 means never)")
-	names, ok := a.parse(fl, args, 1, "new NAME [-image IMAGE] [-idle 15m]")
+	names, ok := a.parse(fl, args, 1, "new NAME [-image IMAGE] [--size SIZE] [-idle 15m]")
 	if !ok || !a.checkNames(names[0], *image) {
 		return 2
 	}
 	words := []string{"new", names[0], "--image", *image}
 
+	var badSize error
 	fl.Visit(func(f *flag.Flag) {
-		if f.Name == "idle" {
+		switch f.Name {
+		case "size":
+			_, badSize = images.SizeNamed(*size)
+			words = append(words, "--size", *size)
+		case "idle":
 			words = append(words, "--idle", idle.String())
 		}
 	})
+	if badSize != nil {
+		fmt.Fprintln(a.stderr, "hib:", termsafe.String(badSize.Error()))
+		return 2
+	}
 	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
 	if err != nil {
 		return a.fail(err)
@@ -212,9 +223,9 @@ func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
 	})
 	now := a.now()
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
+	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
 	for _, m := range r.Machines {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image), safe(m.Size),
 			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID), safe(m.ForkOf))
 	}
 	tw.Flush()
@@ -227,6 +238,18 @@ func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
 func roomLine(r hibapi.Room) string {
 	free := fmt.Sprintf("%s of %s memory free, %s disk free.", hibapi.FormatMB(r.MemoryFreeMB), hibapi.FormatMB(r.MemoryMB),
 		hibapi.FormatMB(r.DiskFreeMB))
+	if len(r.Sizes) > 0 {
+		var fits []string
+		for _, s := range r.Sizes {
+			if s.Fits > 0 {
+				fits = append(fits, fmt.Sprintf("%d %s", s.Fits, safe(s.Size)))
+			}
+		}
+		if len(fits) == 0 {
+			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", free)
+		}
+		return fmt.Sprintf("Room for more machines: %s. %s", joinList(fits, "or"), free)
+	}
 	image := safe(r.Image)
 	switch {
 	case r.Fits <= 0:
@@ -338,8 +361,23 @@ func (a *app) image(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	fmt.Fprintf(a.stdout, "built image %s (template %s)\n", names[0], safe(r.Template))
+	if len(r.Sizes) == 0 {
+		fmt.Fprintf(a.stdout, "built image %s (template %s)\n", names[0], safe(r.Template))
+		return 0
+	}
+	sizes := make([]string, len(r.Sizes))
+	for i, s := range r.Sizes {
+		sizes[i] = safe(s)
+	}
+	fmt.Fprintf(a.stdout, "built image %s in sizes %s\n", names[0], joinList(sizes, "and"))
 	return 0
+}
+
+func joinList(items []string, conj string) string {
+	if len(items) <= 1 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " " + conj + " " + items[len(items)-1]
 }
 
 func (a *app) bridgeCmd(ctx context.Context, cfg *config, args []string) int {

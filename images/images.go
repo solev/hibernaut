@@ -42,8 +42,6 @@ var files embed.FS
 
 type image struct {
 	from          string
-	cpus          int
-	memoryMB      int
 	minFreeDiskMB int
 	steps         []step
 	startCmd      string
@@ -66,8 +64,6 @@ type file struct {
 var catalog = map[string]image{
 	"dev": {
 		from:          "ubuntu:24.04",
-		cpus:          2,
-		memoryMB:      2048,
 		minFreeDiskMB: 10240,
 		steps: []step{
 			{
@@ -162,31 +158,34 @@ func IsForkTemplate(alias string) bool {
 	return strings.HasPrefix(alias, forkPrefix)
 }
 
-// MemoryMB returns the memory image name needs on the host.
+// MemoryMB returns the memory a machine of image name needs on the host at the default size.
 func MemoryMB(name string) (int, error) {
-	img, err := lookup(name)
-	if err != nil {
+	if _, err := lookup(name); err != nil {
 		return 0, err
 	}
-	return img.memoryMB, nil
+	return DefaultSize().MemoryMB(), nil
 }
 
-// Spec returns how to build image name with the Hibernaut CA trusted inside it.
-func Spec(name string, caPEM []byte) (engine.TemplateSpec, error) {
+// Spec returns how to build image name at size s with the Hibernaut CA trusted inside it. Every
+// size of an image has the same steps.
+func Spec(name string, s Size, caPEM []byte) (engine.TemplateSpec, error) {
 	img, err := lookup(name)
 	if err != nil {
 		return engine.TemplateSpec{}, err
+	}
+	if s.name == "" {
+		return engine.TemplateSpec{}, fmt.Errorf("no size for image %s (there is: %s)", name, strings.Join(SizeNames(), ", "))
 	}
 	if err := validateCA(caPEM); err != nil {
 		return engine.TemplateSpec{}, err
 	}
 	spec := engine.TemplateSpec{
-		Name:          Template(name),
+		Name:          SizeTemplate(name, s),
 		FromImage:     img.from,
 		StartCmd:      img.startCmd,
 		ReadyCmd:      img.readyCmd,
-		CPUs:          img.cpus,
-		MemoryMB:      img.memoryMB,
+		CPUs:          s.cpus,
+		MemoryMB:      s.memoryMB,
 		MinFreeDiskMB: img.minFreeDiskMB,
 	}
 	for _, s := range img.steps {

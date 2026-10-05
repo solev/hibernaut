@@ -24,10 +24,12 @@ func TestHostFull(t *testing.T) {
 	var running []string
 	for {
 		ls := hib(t, ctx, "ls")
-		if strings.Contains(ls, "\nNo room for another dev machine") {
+		line := roomLine(ls)
+		if strings.HasPrefix(line, "No room for another machine") ||
+			strings.HasPrefix(line, "Room for more machines: ") && !strings.Contains(line, " medium") {
 			break
 		}
-		if !strings.Contains(ls, "\nRoom for ") || len(running) == 6 {
+		if !strings.HasPrefix(line, "Room for more machines: ") || len(running) == 6 {
 			t.Fatalf("after %d more machines, hib ls says:\n%s", len(running), ls)
 		}
 		running = append(running, newHibMachine(t, ctx))
@@ -65,12 +67,18 @@ func TestHostFull(t *testing.T) {
 	}
 
 	hib(t, ctx, "pause", running[0])
-	waitFor(t, ctx, "hib ls to show room for a machine", time.Minute, func() bool {
-		return strings.Contains(hib(t, ctx, "ls"), "\nRoom for ")
+	waitFor(t, ctx, "hib ls to show room for a medium machine", time.Minute, func() bool {
+		line := roomLine(hib(t, ctx, "ls"))
+		return strings.HasPrefix(line, "Room for more machines: ") && strings.Contains(line, " medium")
 	})
 	if out := sshMachine(t, ctx, paused, "echo woke"); strings.TrimSpace(out) != "woke" {
 		t.Errorf("ssh to %s once there's room printed %q, want woke", paused, out)
 	}
+}
+
+func roomLine(ls string) string {
+	_, line, _ := strings.Cut(ls, "\n\n")
+	return strings.TrimSpace(line)
 }
 
 func wantNoRoom(t *testing.T, ctx context.Context, what, name string, running []string, attempt func(context.Context) (bool, string)) {

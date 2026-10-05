@@ -51,7 +51,7 @@ func (m *Manager) Fork(ctx context.Context, machine string, count int) ([]hibapi
 	if em.State == engine.Paused {
 		running = max(2, count)
 	}
-	if err := m.checkPlan(ctx, machine, room.Plan{MemoryMB: em.MemoryMB, Running: running, Snapshots: 2 + count}); err != nil {
+	if err := m.checkPlan(ctx, machine, room.Plan{MemoryMB: em.MemoryMB, Running: running, Snapshots: 2 + count, Peak: max(2, count)}); err != nil {
 		return nil, err
 	}
 	alias, err := m.forkAlias(ctx, em.ID)
