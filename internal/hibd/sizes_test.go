@@ -67,6 +67,28 @@ func TestNewSize(t *testing.T) {
 	}
 }
 
+func TestOldHibGetsMediumMachines(t *testing.T) {
+	e := newEngine(newKey(t), fake.WithTemplates())
+	for _, s := range images.Sizes() {
+		spec := engine.TemplateSpec{Name: images.SizeTemplate("dev", s), FromImage: "ubuntu:24.04", CPUs: s.CPUs(), MemoryMB: s.MemoryMB()}
+		if _, err := e.BuildTemplate(t.Context(), spec, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, out, errOut := newApp(t, e)
+	code, r, err := runJSON(t, a, out, "new", "app", "--image", "dev", "--idle", "1h0m0s", "--json")
+	if code != 0 || err != nil || r.Machine == nil || r.Machine.Size != "medium" {
+		t.Fatalf("new as an older hib sends it = %d, %+v, %v; stderr %s", code, r.Machine, err, errOut)
+	}
+	em, err := e.Get(t.Context(), r.Machine.ID)
+	if err != nil || em.MemoryMB != 2048 || em.Metadata["hib.size"] != "medium" {
+		t.Errorf("app = %+v, %v; want 2048 MiB and hib.size medium", em, err)
+	}
+	if mt, err := e.Metrics(t.Context(), em.ID); err != nil || mt.CPUCount != 2 {
+		t.Errorf("app metrics = %+v, %v; want 2 CPUs", mt, err)
+	}
+}
+
 func TestNewSizeNotBuilt(t *testing.T) {
 	a, out, _ := newApp(t, newEngine(newKey(t)))
 	code, _, err := runJSON(t, a, out, "new", "app", "-size", "small", "-json")
