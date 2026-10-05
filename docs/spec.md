@@ -491,8 +491,6 @@ Planned for M9.
 
 ### Sizes
 
-Planned for M8.
-
 - A machine's size is picked at `hib new` (`--size small|medium|large`, default `medium`) and
   kept for life. E2B fixes CPU and RAM per image build, because a machine's memory snapshot is
   that size, so each size of an image is its own E2B template (`hib-dev`, `hib-dev-small`, …).

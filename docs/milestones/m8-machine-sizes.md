@@ -1,6 +1,6 @@
 # M8 Machine sizes
 
-Status: **in progress** · Spec: §5 (Sizes) · Needs: M2 (room on the host)
+Status: **done** · Spec: §5 (Sizes) · Needs: M2 (room on the host)
 
 **Goal:** pick a machine's size when you make it: `hib new app --size small`. Smaller machines
 mean more of them at once, for example several AI agents side by side.
@@ -85,52 +85,53 @@ first, then small and large.
 
 ## Tasks
 
-- [ ] Sizes in `images/images.go`: `small` (1 vCPU, 1 GiB), `medium` (2 vCPU, 2 GiB: the
+- [x] Sizes in `images/images.go`: `small` (1 vCPU, 1 GiB), `medium` (2 vCPU, 2 GiB: the
       default, and today's `dev`), `large` (4 vCPU, 4 GiB). E2B fixes CPU and RAM per image
       build, because a machine's memory snapshot is that size, so each size of an image is its
       own E2B template: `hib-dev` stays medium, next to `hib-dev-small` and `hib-dev-large`.
-- [ ] `hib image build dev` builds every size. They share the build steps, so the extra sizes
+- [x] `hib image build dev` builds every size. They share the build steps, so the extra sizes
       should come mostly from E2B's step cache. Check that, and log each size's build time.
-- [ ] `hib new app --size small`. The size goes into E2B metadata (`hib.size`).
-- [ ] `hib ls` shows each machine's size.
-- [ ] The room check (M2) uses each machine's own RAM, and the "no room" message says which
+- [x] `hib new app --size small`. The size goes into E2B metadata (`hib.size`).
+- [x] `hib ls` shows each machine's size.
+- [x] The room check (M2) uses each machine's own RAM, and the "no room" message says which
       sizes still fit.
-- [ ] A machine keeps its size for life: E2B can't change a snapshot's RAM or CPUs. The README
+- [x] A machine keeps its size for life: E2B can't change a snapshot's RAM or CPUs. The README
       says how to move to another size (a new machine, then copy files over).
-- [ ] Saved images and forks (M6) keep the size of the machine they came from, so `--size`
+- [x] Saved images and forks (M6) keep the size of the machine they came from, so `--size`
       together with a saved image's `--image` is refused with an explanation.
-- [ ] An operation that can't fit even with every machine paused, such as saving or forking a
+- [x] An operation that can't fit even with every machine paused, such as saving or forking a
       large machine on today's host, says so instead of suggesting `hib pause`.
 
 ## Tests
 
 Unit:
 
-- [ ] Each size name maps to its CPUs, RAM and template name. An unknown size is an error that
+- [x] Each size name maps to its CPUs, RAM and template name. An unknown size is an error that
       lists the sizes.
-- [ ] The room check with mixed sizes: what still fits.
+- [x] The room check with mixed sizes: what still fits.
 
 Integration:
 
-- [ ] `hibd new --size small` against the fake engine starts `hib-dev-small` and records
+- [x] `hibd new --size small` against the fake engine starts `hib-dev-small` and records
       `hib.size`. With no `--size`, a machine is medium.
-- [ ] A machine made before M8, with no `hib.size`, resumes, lists and forks as medium.
-- [ ] `hib image build dev` builds medium, small and large in that order. A failure in one says
+- [x] A machine made before M8, with no `hib.size`, resumes, lists and forks as medium.
+- [x] `hib image build dev` builds medium, small and large in that order. A failure in one says
       which sizes are built.
-- [ ] hib without `--size` works with a hibd from before M8, and hib from before M8 gets medium
+- [x] hib without `--size` works with a hibd from before M8, and hib from before M8 gets medium
       machines.
 
 End-to-end:
 
-- [ ] `TestSizes`: in a machine made with `hib new --size small`, `nproc` is 1 and `MemTotal` is
+- [x] `TestSizes`: in a machine made with `hib new --size small`, `nproc` is 1 and `MemTotal` is
       about 1 GiB, and `hib ls` says `small`. It still is after a pause and a wake. A machine made
       without `--size` still has 2 vCPUs and 2 GiB. The three templates have their size's CPUs
       and RAM, checked without starting a large machine.
 
 ## Done when
 
-- [ ] `make lint test`, CI and `make e2e` are green.
-- [ ] README: the sizes, how many of each fit at once, and that a machine keeps its size. A large
+- [x] `make lint test`, CI and `make e2e` are green. CI is parked, so `make lint test` stands in
+      for it.
+- [x] README: the sizes, how many of each fit at once, and that a machine keeps its size. A large
       machine can't be saved or forked on today's host.
 
 ## Changes
@@ -138,3 +139,7 @@ End-to-end:
 - 2026-10-05: Added the Design section, after an advisor's review of the plan. New from it: an
   operation that can never fit says so (a large machine's save or fork needs 8 GiB at once),
   `hib image build` checks room before each size, and tests for machines and hib from before M8.
+- 2026-10-05: Done. On the host, fresh builds of all three sizes took 7 to 10 s each, mostly from
+  E2B's step cache: small 10 s, medium 7 s, large 9 s. The Spec review found that `TestHostFull`
+  could wake its paused medium machine while only a small one's room was free, so it now waits
+  until medium fits.
