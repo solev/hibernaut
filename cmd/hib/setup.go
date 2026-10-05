@@ -146,7 +146,7 @@ func (a *app) init(ctx context.Context, dir string, o initOptions) int {
 			return a.mistake("missing --host USER@HOST")
 		}
 		fmt.Fprintf(a.stderr, "hib init: this laptop is already set up for %s\n", saved.Host)
-		fmt.Fprintln(a.stderr, "next: hib new NAME; ssh NAME.hib")
+		fmt.Fprintln(a.stderr, "next: hib new NAME. Then ssh NAME.hib")
 		fmt.Fprintf(a.stderr, "to set it up again: %s\n", a.command.synopsis())
 		return 2
 	}
@@ -211,7 +211,7 @@ func (a *app) init(ctx context.Context, dir string, o initOptions) int {
 	}
 	fmt.Fprintf(a.stdout, "%s runs hibd %s\n", cfg.Host, safe(r.Version))
 	if r.Version != version.Version {
-		fmt.Fprintf(a.stdout, "note: this is hib %s; deploy the same release to the host\n", version.Version)
+		fmt.Fprintf(a.stdout, "note: this is hib %s. Deploy the same release to the host\n", version.Version)
 	}
 	if added {
 		fmt.Fprintf(a.stdout, "added hib's settings to %s\n", includer)

@@ -136,7 +136,7 @@ func TestInitVersion(t *testing.T) {
 			if warned := strings.Contains(c.out.String(), "note:"); warned != tc.warning {
 				t.Errorf("init warned %v, want %v: %s", warned, tc.warning, c.out)
 			}
-			if tc.warning && !strings.Contains(c.out.String(), "this is hib "+version.Version+"; deploy the same release to the host") {
+			if tc.warning && !strings.Contains(c.out.String(), "note: this is hib "+version.Version+". Deploy the same release to the host\n") {
 				t.Errorf("init didn't say which release to deploy: %s", c.out)
 			}
 		})
@@ -227,7 +227,7 @@ func TestInitWithoutHost(t *testing.T) {
 	h.takeCalls()
 	code := c.hib("init")
 	if stderr := c.errOut.String(); code != 2 || !strings.Contains(stderr, "already set up for "+testHost) ||
-		!strings.Contains(stderr, "hib new NAME") {
+		!strings.Contains(stderr, "\nnext: hib new NAME. Then ssh NAME.hib\n") {
 		t.Errorf("init without -host once set up: exit %d, stderr %q; want 2, the saved host and what's next", code, stderr)
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
