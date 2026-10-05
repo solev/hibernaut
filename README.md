@@ -182,6 +182,7 @@ hib new app                # create a machine named app
 hib new tiny --size small  # a small one (or medium, the default, or large)
 hib new big --idle 2h      # one that pauses after 2 idle hours (default 15m; 0 = never)
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
+hib ssh app                # the same as ssh app.hib; hib ssh app -- CMD runs CMD there
 hib exec app -- uname -a   # run one command, no interactive shell
 hib ls                     # machines, running and paused, their size, when they pause, room left
 hib pause app              # pause it now; ssh app.hib resumes it

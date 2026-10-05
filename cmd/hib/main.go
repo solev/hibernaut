@@ -363,10 +363,14 @@ func (a *app) byName(ctx context.Context, cfg *config, cmd, doing, done, name st
 	return 0
 }
 
-func (a *app) exec(_ context.Context, cfg *config, args []string) int {
+func (a *app) exec(ctx context.Context, cfg *config, args []string) int {
 	if len(args) < 3 {
 		return a.mistake("missing CMD")
 	}
+	return a.sshTo(ctx, cfg, args)
+}
+
+func (a *app) sshTo(_ context.Context, cfg *config, args []string) int {
 	if !a.checkNames(args[0]) {
 		return 2
 	}
@@ -375,7 +379,10 @@ func (a *app) exec(_ context.Context, cfg *config, args []string) int {
 		sshArgs = append(sshArgs, "-F", cfg.SSHConfig)
 	}
 	sshArgs = append(sshArgs, "--", args[0]+".hib")
-	if err := a.execSSH(append(sshArgs, args[2:]...)); err != nil {
+	if len(args) > 2 {
+		sshArgs = append(sshArgs, args[2:]...)
+	}
+	if err := a.execSSH(sshArgs); err != nil {
 		return a.fail(err)
 	}
 	return 0

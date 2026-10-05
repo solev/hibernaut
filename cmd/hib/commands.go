@@ -94,7 +94,7 @@ func commandTable() *command {
 				name: "ssh", args: "NAME [-- CMD]", summary: "log in to a machine, or run CMD there",
 				about:    "Runs ssh NAME.hib, with CMD if you give one. It wakes the machine if it's paused.",
 				examples: []string{"hib ssh app", "hib ssh app -- uptime"},
-				nargs:    1, takesCommand: true, flags: noFlags(unbuilt),
+				nargs:    1, takesCommand: true, flags: noFlags(configured((*app).sshTo)),
 			},
 			{
 				name: "exec", args: "NAME -- CMD [ARG...]", summary: "run CMD on a machine",

@@ -92,7 +92,6 @@ func TestUnbuiltCommandsSaySo(t *testing.T) {
 	h := newHost(t)
 	c := initClient(t, h)
 	for _, args := range [][]string{
-		{"ssh", "app"}, {"ssh", "app", "--", "uptime"},
 		{"completion", "bash"}, {"completion", "zsh"}, {"completion", "fish"},
 		{"disconnect", "codex"}, {"disconnect", "github"},
 		{"__complete", "hib", "n"},
