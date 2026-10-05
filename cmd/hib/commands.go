@@ -136,14 +136,14 @@ func commandTable() *command {
 						about: "Removes the Codex login from the host. Codex in machines stops working until hib connect\n" +
 							"codex. Revoke the login itself in ChatGPT's settings.",
 						examples: []string{"hib disconnect codex"},
-						flags:    noFlags(unbuilt),
+						flags:    noFlags(disconnect("codex")),
 					},
 					{
 						name: "github", summary: "remove the GitHub login from the host",
 						about: "Removes the GitHub login from the host. Revoke the login itself in GitHub's authorized\n" +
 							"OAuth Apps, or on the token's page.",
 						examples: []string{"hib disconnect github"},
-						flags:    noFlags(unbuilt),
+						flags:    noFlags(disconnect("github")),
 					},
 				},
 			},
@@ -369,11 +369,6 @@ func configured(run func(a *app, ctx context.Context, cfg *config, args []string
 		}
 		return run(a, ctx, cfg, args)
 	}
-}
-
-func unbuilt(_ context.Context, a *app, _ []string) int {
-	fmt.Fprintf(a.stderr, "%s isn't built yet\n", a.command.title())
-	return 1
 }
 
 func printVersion(_ context.Context, a *app, _ []string) int {
