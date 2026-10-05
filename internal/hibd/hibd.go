@@ -407,7 +407,7 @@ func (a *App) image(ctx context.Context, args []string) int {
 		}
 		return a.fail(*asJSON, "image build", err)
 	}
-	spec, err := images.Spec(names[0], caPEM)
+	spec, err := images.Spec(names[0], images.DefaultSize(), caPEM)
 	if err != nil {
 		return a.fail(*asJSON, "image build", err)
 	}
