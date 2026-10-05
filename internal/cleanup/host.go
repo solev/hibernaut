@@ -32,19 +32,94 @@ type Host struct {
 	// Query runs SQL in E2B's database and returns its rows, each a list of fields.
 	Query  func(ctx context.Context, sql string) ([][]string, error)
 	Engine engine.Engine
+	// TrimScope limits trimming to off, e2e (the default), or all.
+	TrimScope string
+	// ListingTimeout and TrimTimeout are independent budgets. Zero leaves a phase unbounded.
+	ListingTimeout, TrimTimeout time.Duration
+	// Timeout supplies phase contexts. Nil uses context.WithTimeout.
+	Timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	// OpenTrim supplies local storage. Nil uses OpenTrimStorage.
+	OpenTrim func(string) (TrimStorage, error)
+	// ReadGuard holds the save lock for all cleanup inputs. Nil leaves reads unguarded.
+	ReadGuard func(context.Context) (func(), error)
+	// CheckSaves accounts for save records against the listing while ReadGuard is held.
+	CheckSaves func(context.Context, Listing, bool, func(string, ...any)) error
 }
 
 // Clean deletes the directories Garbage plans to, logging each, and then what it freed. With
-// dryRun, it only logs what it would delete, and why it keeps the rest.
+// dryRun, it only logs what it would delete or trim, and why it keeps the rest.
 func (h Host) Clean(ctx context.Context, now time.Time, dryRun bool, logf func(format string, args ...any)) error {
-	l, err := h.read(ctx)
+	listCtx, cancel := h.phase(ctx, h.ListingTimeout)
+	defer cancel()
+	return h.clean(ctx, listCtx, cancel, now, dryRun, logf)
+}
+
+// CleanWithListing uses listingCtx for listing and deletion, but ctx for trimming.
+func (h Host) CleanWithListing(ctx, listingCtx context.Context, now time.Time, dryRun bool, logf func(string, ...any)) error {
+	return h.clean(ctx, listingCtx, func() {}, now, dryRun, logf)
+}
+
+func (h Host) clean(ctx, listCtx context.Context, cancel context.CancelFunc, now time.Time, dryRun bool, logf func(string, ...any)) error {
+	l, err := h.read(listCtx, dryRun, logf)
 	if err != nil {
 		return err
 	}
 	p, err := Garbage(l, now)
 	if err != nil {
+		if !errors.Is(err, ErrBusy) {
+			logf("not trimming: %s", err)
+		}
 		return err
 	}
+	if err := h.delete(listCtx, l, p, dryRun, logf); err != nil {
+		return err
+	}
+	cancel()
+	switch h.TrimScope {
+	case "off":
+		return nil
+	case "", "e2e", "all":
+	default:
+		logf("not trimming: HIBD_TRIM is %q, not off, e2e or all", h.TrimScope)
+		return nil
+	}
+	trimCtx, trimCancel := h.phase(ctx, h.TrimTimeout)
+	defer trimCancel()
+	open := h.OpenTrim
+	if open == nil {
+		open = OpenTrimStorage
+	}
+	storage, err := open(h.Storage)
+	if err != nil {
+		logf("not trimming: %s", err)
+		if h.TrimTimeout > 0 && trimCtx.Err() != nil && ctx.Err() == nil {
+			logf("trimmed %s in 0 files", hibapi.FormatMB(0))
+			return ErrTrimTimeout
+		}
+		return nil
+	}
+	defer storage.Close()
+	err = (Trimmer{Storage: storage, Scope: h.TrimScope}).Trim(trimCtx, l, p, now, dryRun, logf)
+	if h.TrimTimeout > 0 && trimCtx.Err() != nil && ctx.Err() == nil {
+		return ErrTrimTimeout
+	}
+	return err
+}
+
+// ErrTrimTimeout means the next sweep should continue trimming in a minute.
+var ErrTrimTimeout = errors.New("snapshot trimming ran out of time")
+
+func (h Host) phase(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		return ctx, func() {}
+	}
+	if h.Timeout != nil {
+		return h.Timeout(ctx, budget)
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+func (h Host) delete(ctx context.Context, l Listing, p Plan, dryRun bool, logf func(string, ...any)) error {
 	modified := map[string]time.Time{}
 	for _, d := range l.Dirs {
 		modified[d.Build] = d.Modified
@@ -92,14 +167,21 @@ func (h Host) Clean(ctx context.Context, now time.Time, dryRun bool, logf func(f
 
 func (h Host) path(build string) string { return filepath.Join(h.Storage, build) }
 
-func (h Host) read(ctx context.Context) (Listing, error) {
+func (h Host) read(ctx context.Context, dryRun bool, logf func(string, ...any)) (Listing, error) {
+	if h.ReadGuard != nil {
+		release, err := h.ReadGuard(ctx)
+		if err != nil {
+			return Listing{}, err
+		}
+		defer release()
+	}
 	var l Listing
 	machines, err := h.Engine.List(ctx, engine.ListOptions{})
 	if err != nil {
 		return Listing{}, err
 	}
 	for _, m := range machines {
-		l.Machines = append(l.Machines, Machine{ID: m.ID, Started: m.StartedAt, Paused: m.State == engine.Paused})
+		l.Machines = append(l.Machines, Machine{ID: m.ID, Started: m.StartedAt, Paused: m.State == engine.Paused, Metadata: m.Metadata})
 	}
 	rows, err := h.query(ctx, 3, `SELECT e.id,
 		coalesce((SELECT s.sandbox_id FROM snapshots s WHERE s.env_id = e.id LIMIT 1), ''),
@@ -154,6 +236,11 @@ func (h Host) read(ctx context.Context) (Listing, error) {
 	}
 	if l.Dirs, err = readDirs(h.Storage); err != nil {
 		return Listing{}, err
+	}
+	if h.CheckSaves != nil {
+		if err := h.CheckSaves(ctx, l, dryRun, logf); err != nil {
+			return Listing{}, err
+		}
 	}
 	return l, nil
 }

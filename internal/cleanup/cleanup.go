@@ -71,8 +71,9 @@ type Assignment struct {
 
 // Machine is a machine E2B lists.
 type Machine struct {
-	ID      string
-	Started time.Time
+	ID       string
+	Started  time.Time
+	Metadata map[string]string
 	// Paused is true for a paused machine, and for one E2B is still pausing.
 	Paused bool
 }
@@ -83,6 +84,8 @@ type Plan struct {
 	Delete []string
 	// Keep says why each other directory stays.
 	Keep map[string]string
+	// Roots are builds E2B may use whole, even when their directories are missing.
+	Roots map[string]string
 }
 
 // Garbage plans which directories to delete. It keeps the current build of each image tag and
@@ -90,11 +93,11 @@ type Plan struct {
 // changed in the last MinAge but removed images' and machines', and every build their headers
 // name.
 func Garbage(l Listing, now time.Time) (Plan, error) {
-	return garbagePlan(l, retentionPolicy{MinAge, StuckAfter}, now)
+	return garbagePlan(l, retentionPolicy{MinAge, StuckAfter, SelectionGrace}, now)
 }
 
 type retentionPolicy struct {
-	minAge, stuckAfter time.Duration
+	minAge, stuckAfter, selectionGrace time.Duration
 }
 
 func garbagePlan(l Listing, policy retentionPolicy, now time.Time) (Plan, error) {
@@ -108,8 +111,9 @@ func garbagePlan(l Listing, policy retentionPolicy, now time.Time) (Plan, error)
 	})
 	roots := protection{}
 	roots.keepCurrent(slots, order, envs)
-	since := startupSince(l.Machines, snapshotted, now).Add(-policy.minAge)
+	since := startupSince(l.Machines, snapshotted, now).Add(-policy.selectionGrace)
 	roots.keepStartupBuilds(slots, order, envs, since)
+	roots.keepMachineBuilds(l.Machines, slots, order, envs, snapshotted, policy.selectionGrace, now)
 	for _, id := range l.Cached {
 		roots.keep(id, "E2B's layer cache points to it")
 	}
@@ -156,9 +160,10 @@ func readySlots(builds []Build, envs map[string]Env) (map[slot][]placed, map[str
 		if b.Status != "ready" {
 			continue
 		}
+		inImage := slices.ContainsFunc(b.In, func(a Assignment) bool { return envs[a.Env].Machine == "" })
 		for _, a := range b.In {
 			s := slot{a.Env, a.Tag}
-			slots[s] = append(slots[s], placed{b.ID, a.At, finished(b)})
+			slots[s] = append(slots[s], placed{build: b.ID, at: a.At, finished: finished(b), created: b.Created, recordedFinish: b.Finished, inImage: inImage})
 			if m := envs[a.Env].Machine; m != "" {
 				snapshotted[m] = true
 			}
@@ -236,6 +241,51 @@ func (p protection) keepHistory(ps []placed, since time.Time) {
 	p.keepLatest(before, "a machine may have started from it")
 }
 
+func (p protection) keepMachineBuilds(machines []Machine, slots map[slot][]placed, order []slot, envs map[string]Env, snapshotted map[string]bool, grace time.Duration, now time.Time) {
+	byID := map[string]Machine{}
+	hedge := now
+	hasHedge := false
+	for _, m := range machines {
+		byID[m.ID] = m
+		if !snapshotted[m.ID] {
+			hasHedge = true
+			if m.Started.Before(hedge) {
+				hedge = m.Started
+			}
+		}
+	}
+	for _, s := range order {
+		e := envs[s.env]
+		if e.Machine == "" || !e.Deleted.IsZero() {
+			continue
+		}
+		if m, ok := byID[e.Machine]; ok {
+			since := m.Started.Add(-grace)
+			if m.Paused && pauseSettled(slots[s], m.Started, grace, now) {
+				since = now.Add(-grace)
+			}
+			p.keepHistory(slots[s], since)
+		}
+		if hasHedge {
+			p.keepHistory(slots[s], hedge.Add(-grace))
+		}
+	}
+}
+
+func pauseSettled(ps []placed, started time.Time, grace time.Duration, now time.Time) bool {
+	if started.IsZero() {
+		return false
+	}
+	var latest *placed
+	for i := range ps {
+		p := &ps[i]
+		if !p.inImage && p.created.After(started) && (latest == nil || p.created.After(latest.created)) {
+			latest = p
+		}
+	}
+	return latest != nil && !latest.recordedFinish.IsZero() && !now.Before(latest.recordedFinish.Add(grace))
+}
+
 func removedBuilds(builds []Build, envs map[string]Env) map[string]bool {
 	removed := map[string]bool{}
 	for _, b := range builds {
@@ -259,8 +309,10 @@ func (p protection) keepRecent(dirs []Dir, removed map[string]bool, minAge time.
 type slot struct{ env, tag string }
 
 type placed struct {
-	build        string
-	at, finished time.Time
+	build                   string
+	at, finished            time.Time
+	created, recordedFinish time.Time
+	inImage                 bool
 }
 
 func later(a, b time.Time) time.Time {
@@ -282,7 +334,7 @@ func plan(dirs []Dir, roots map[string]string) (Plan, error) {
 	for _, d := range dirs {
 		byID[d.Build] = d
 	}
-	p := Plan{Keep: map[string]string{}}
+	p := Plan{Keep: map[string]string{}, Roots: maps.Clone(roots)}
 	var todo []string
 	for id, why := range roots {
 		if _, ok := byID[id]; ok {
@@ -329,6 +381,9 @@ var Headers = []string{"memfile.header", "rootfs.ext4.header"}
 // images and machines use its build: E2B may still be writing it.
 const MinAge = time.Hour
 
+// SelectionGrace protects builds E2B may select from a warm cache or during a pause.
+const SelectionGrace = time.Hour
+
 // StuckAfter is how long after a build started E2B must have stopped writing it, if it's still
 // not done: image builds time out after an hour, and pauses take seconds. E2B never finishes a
 // build it stopped writing, say when it crashed mid-pause.
@@ -346,23 +401,53 @@ const (
 // ParseHeader returns the builds a header names: its own, its base, and every build holding a
 // range of its data. It reads only E2B's uncompressed headers, versions 1 to 3.
 func ParseHeader(b []byte) ([]string, error) {
-	if len(b) < metadataSize {
-		return nil, fmt.Errorf("header is %d bytes, too short", len(b))
+	stats, err := ParseHeaderStats(b)
+	if err != nil {
+		return nil, err
 	}
-	// The low 16 bits are the format; the rest are flags.
-	if v := binary.LittleEndian.Uint64(b) & 0xFFFF; v < 1 || v > 3 {
-		return nil, fmt.Errorf("header version %d isn't supported", v)
-	}
-	if (len(b)-metadataSize)%mappingSize != 0 {
-		return nil, fmt.Errorf("header is %d bytes: its mappings are cut short", len(b))
-	}
-	ids := []string{uuid(b[32:48]), uuid(b[48:64])}
-	for m := b[metadataSize:]; len(m) > 0; m = m[mappingSize:] {
-		ids = append(ids, uuid(m[16:32]))
-	}
+	ids := append([]string{stats.Build, stats.BaseBuild}, slices.Collect(maps.Keys(stats.BytesByBuild))...)
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
 	return slices.DeleteFunc(ids, func(id string) bool { return id == nilUUID }), nil
+}
+
+// HeaderStats describes a header's metadata and the bytes mapped to each nonzero source UUID.
+type HeaderStats struct {
+	Version, BlockSize, Size, Generation uint64
+	Build, BaseBuild                     string
+	BytesByBuild                         map[string]uint64
+	Mappings                             int
+}
+
+// ParseHeaderStats reads metadata and mappings from E2B's uncompressed headers, versions 1 to 3.
+func ParseHeaderStats(b []byte) (HeaderStats, error) {
+	if len(b) < metadataSize {
+		return HeaderStats{}, fmt.Errorf("header is %d bytes, too short", len(b))
+	}
+	// The low 16 bits are the format; the rest are flags.
+	version := binary.LittleEndian.Uint64(b) & 0xFFFF
+	if version < 1 || version > 3 {
+		return HeaderStats{}, fmt.Errorf("header version %d isn't supported", version)
+	}
+	if (len(b)-metadataSize)%mappingSize != 0 {
+		return HeaderStats{}, fmt.Errorf("header is %d bytes: its mappings are cut short", len(b))
+	}
+	stats := HeaderStats{
+		Version:      version,
+		BlockSize:    binary.LittleEndian.Uint64(b[8:]),
+		Size:         binary.LittleEndian.Uint64(b[16:]),
+		Generation:   binary.LittleEndian.Uint64(b[24:]),
+		Build:        uuid(b[32:48]),
+		BaseBuild:    uuid(b[48:64]),
+		BytesByBuild: map[string]uint64{},
+		Mappings:     (len(b) - metadataSize) / mappingSize,
+	}
+	for m := b[metadataSize:]; len(m) > 0; m = m[mappingSize:] {
+		if id := uuid(m[16:32]); id != nilUUID {
+			stats.BytesByBuild[id] += binary.LittleEndian.Uint64(m[8:])
+		}
+	}
+	return stats, nil
 }
 
 const nilUUID = "00000000-0000-0000-0000-000000000000"

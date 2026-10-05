@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const startCounter = `setsid nohup sh -c 'i=0; while :; do i=$((i+1)); echo $i > /tmp/counter; sleep 1; done' </dev/null >/dev/null 2>&1 & echo $!`
@@ -39,15 +40,7 @@ func survives(t *testing.T, restart func(t *testing.T, ctx context.Context)) {
 	time.Sleep(2 * time.Second)
 	before := counter(t, ctx, m.ID)
 
-	vm.closeTunnel()
-	restart(t, ctx)
-
-	if out, err := vm.ssh(ctx, "hibernaut/vm/wait-e2b.sh 2>&1"); err != nil {
-		t.Fatalf("E2B didn't come up on its own: %v\n%s", err, out)
-	}
-	if err := vm.openTunnel(ctx); err != nil {
-		t.Fatal(err)
-	}
+	restartHost(t, ctx, restart)
 
 	paused := mustSSH(t, ctx, "journalctl -b -1 --no-pager -o short-iso -u hibd-pause-all -u hibernaut-nightly")
 	t.Logf("pause-all guard and nightly unit, previous boot:\n%s", paused)
@@ -77,6 +70,18 @@ func survives(t *testing.T, restart func(t *testing.T, ctx context.Context)) {
 	time.Sleep(2 * time.Second)
 	if later := counter(t, ctx, m.ID); later <= after {
 		t.Errorf("counter stayed at %d after resuming, want it counting", later)
+	}
+}
+
+func restartHost(t *testing.T, ctx context.Context, restart func(t *testing.T, ctx context.Context)) {
+	t.Helper()
+	vm.closeTunnel()
+	restart(t, ctx)
+	if out, err := vm.ssh(ctx, "hibernaut/vm/wait-e2b.sh 2>&1"); err != nil {
+		t.Fatalf("E2B didn't come up on its own: %s\n%s", termsafe.String(err.Error()), termsafe.String(out))
+	}
+	if err := vm.openTunnel(ctx); err != nil {
+		t.Fatal(termsafe.String(err.Error()))
 	}
 }
 

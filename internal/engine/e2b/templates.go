@@ -15,7 +15,14 @@ import (
 // SaveTemplate saves with E2B's named snapshot, then reads the template back, because E2B's
 // answer names the template without giving its ID.
 func (e *Engine) SaveTemplate(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
-	resp, err := e.api.PostSandboxesSandboxIDSnapshotsWithResponse(ctx, id, e2bapi.SandboxSnapshotRequest{Name: &alias})
+	answer, err := e.api.PostSandboxesSandboxIDSnapshots(ctx, id, e2bapi.SandboxSnapshotRequest{Name: &alias})
+	if err != nil {
+		if answer == nil {
+			err = errors.Join(engine.ErrNoAnswer, err)
+		}
+		return engine.TemplateInfo{}, fmt.Errorf("save %s: %w", id, err)
+	}
+	resp, err := e2bapi.ParsePostSandboxesSandboxIDSnapshotsResponse(answer)
 	if err != nil {
 		return engine.TemplateInfo{}, fmt.Errorf("save %s: %w", id, err)
 	}

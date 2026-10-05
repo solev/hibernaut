@@ -193,6 +193,7 @@ type Engine interface {
 	// other failure may leave alias behind with no build, unusable, and hidden from Template the
 	// way a missed lookup hides it. Saving into a hidden alias fails with a plain error, and the
 	// machine keeps running.
+	// ErrNoAnswer means no HTTP answer to the save request arrived. The save may still finish.
 	SaveTemplate(ctx context.Context, id, alias string) (TemplateInfo, error)
 	// Template returns the template called alias, built or saved, or an error wrapping
 	// ErrNoTemplate. It also finds an alias a failed save left behind. The engine remembers a
@@ -217,6 +218,8 @@ var (
 	ErrNoTemplate    = errors.New("template not found")
 	ErrCheckpoint    = errors.New("checkpoint failed")
 	ErrTemplateInUse = errors.New("template in use")
+	// ErrNoAnswer means a save request failed before an HTTP answer arrived.
+	ErrNoAnswer = errors.New("no answer to the save request")
 	// ErrConnectionLost means Exec's connection broke before the command's exit was reported.
 	// The command may not have run, may have run in whole or in part, and may still be running.
 	// Retry only commands that are safe to run twice, even at the same time.

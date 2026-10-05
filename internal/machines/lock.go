@@ -24,3 +24,8 @@ func (m *Manager) tryLock(ctx context.Context) (func(), error) {
 	}
 	return func() { f.Close() }, nil
 }
+
+// TryCleanupRead holds the state lock without waiting. Release it after reading cleanup inputs.
+func (m *Manager) TryCleanupRead(ctx context.Context) (func(), error) {
+	return m.tryLock(ctx)
+}

@@ -7,8 +7,8 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 [M1 Machines](m1-machines.md), [M2 Idle and wake](m2-idle-and-wake.md),
 [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md), [M4 GitHub](m4-github.md),
 [M5 AI tools](m5-ai-tools.md), [M6 Golden images and fork](m6-images-and-fork.md),
-[M8 Machine sizes](m8-machine-sizes.md) and [M10 CLI friendliness](m10-cli-friendliness.md) are
-done.
+[M8 Machine sizes](m8-machine-sizes.md), [M9 Snapshot compaction](m9-snapshot-compaction.md) and
+[M10 CLI friendliness](m10-cli-friendliness.md) are done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -21,12 +21,10 @@ done.
 | M6 | [Golden images and fork](m6-images-and-fork.md) | done | `TestImageAndFork` |
 | M7 | [GitHub device flow](m7-github-device-flow.md) | in progress | `TestDeviceFlow` |
 | M8 | [Machine sizes](m8-machine-sizes.md) | done | `TestSizes` |
-| M9 | [Snapshot compaction](m9-snapshot-compaction.md) | not started | `TestPauseCycles` (bounded) |
+| M9 | [Snapshot compaction](m9-snapshot-compaction.md) | done | `TestTrim`, `TestPauseCycles` (sentinels) |
 | M10 | [CLI friendliness](m10-cli-friendliness.md) | done | none new (unit tests in `cmd/hib`) |
 
-M8 and M9 came last but need only M2, so either can be pulled forward any time after M2. M9
-should come before the host's disk fills: until then, every pause adds to a machine's disk.
-M10 needs nothing, so it can be pulled forward any time.
+M8, M9 and M10 came last. M8 and M9 needed only M2, and M10 nothing.
 
 ## How we track
 
@@ -58,6 +56,12 @@ M10 needs nothing, so it can be pulled forward any time.
   holds the state lock for about 90 s while it looks, so `hib new`, `hib pause` and `hib rm`
   wait. E2B may pause a save that takes over 10 minutes on a machine with a shorter idle time.
   Nightly `pause-all` doesn't wait for a save, fork or `hib new` in progress, which then fails.
+- Snapshot compaction (M9) trims old snapshots but keeps their directories, one a pause. Merge a
+  machine's chain into one build so those stop adding up too. E2B's own options
+  (`memfile-diff-dedup`, `guest-pause-reclaim` and `collapse-envd-heap`) are untried.
+- The unit tests assume a umask of 022. Under the host's 002, `t.TempDir()` is group-writable and
+  hibd refuses it as a state directory, so tests in `internal/hibd` and `internal/machines` fail
+  on Linux. Set the umask in their `TestMain`, or tighten the directories they make.
 - Encode the constraints the comment cleanup deleted, which no test or type holds yet: the
   functions that need a lock held (the fake engine's `resume` and `lookup`, hibd's Codex login
   lock, a test's `setGit`), a checked type for hib's remote arguments, a test that retiring a

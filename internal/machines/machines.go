@@ -89,6 +89,8 @@ type Config struct {
 	// Awake returns why, if the host is going to sleep. SaveImage and Fork call it when they
 	// start, before they save, and before each copy. Default: always awake.
 	Awake func() error
+	// BootID reads the host boot ID. An unreadable ID is the empty string.
+	BootID func() string
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -105,6 +107,7 @@ type Manager struct {
 	euid      func() int
 	chownFile func(*os.File, int, int) error
 	waitCut   func(context.Context, time.Duration) error
+	bootID    func() string
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -121,11 +124,16 @@ func New(cfg Config) *Manager {
 	if awake == nil {
 		awake = func() error { return nil }
 	}
+	bootID := cfg.BootID
+	if bootID == nil {
+		bootID = readBootID
+	}
 	return &Manager{
 		e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom,
 		setup: cfg.Setup, durable: cfg.Durable, awake: awake,
 		euid: os.Geteuid, chownFile: (*os.File).Chown,
 		waitCut: waitCut,
+		bootID:  bootID,
 	}
 }
 

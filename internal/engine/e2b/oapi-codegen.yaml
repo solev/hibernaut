@@ -5,6 +5,9 @@ generate:
   client: true
   models: true
 output-options:
+  overlay:
+    path: overlay.yaml
+    strict: true
   include-tags:
     - sandboxes
     - snapshots

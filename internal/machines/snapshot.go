@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/termsafe"
@@ -14,6 +15,7 @@ import (
 const (
 	snapshotTimeout = 2 * time.Minute
 	saveWindow      = 10 * time.Minute
+	saveCallTimeout = saveWindow
 )
 
 type describedError struct {
@@ -60,9 +62,19 @@ func (m *Manager) saveOrigin(ctx context.Context, em engine.Machine, alias strin
 	if err := m.awake(); err != nil {
 		return engine.TemplateInfo{}, m.restoreAfterFailure(ctx, em, err, true)
 	}
-	tmpl, err := m.e.SaveTemplate(ctx, em.ID, alias)
+	if err := ctx.Err(); err != nil {
+		return engine.TemplateInfo{}, m.restoreAfterFailure(ctx, em, err, true)
+	}
+	key, record, err := m.startSave(em.ID, Name(em))
 	if err != nil {
-		return engine.TemplateInfo{}, m.failedSave(ctx, em, alias, err)
+		return engine.TemplateInfo{}, m.restoreAfterFailure(ctx, em, safeError(err), true)
+	}
+	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), saveCallTimeout)
+	defer cancel()
+	tmpl, err := m.e.SaveTemplate(call, em.ID, alias)
+	recordErr := m.finishSave(key, record, err)
+	if err != nil {
+		return engine.TemplateInfo{}, errors.Join(m.failedSave(ctx, em, alias, err), m.saveEndFailure(em, record, recordErr))
 	}
 	if em.State == engine.Paused {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
@@ -71,13 +83,31 @@ func (m *Manager) saveOrigin(ctx context.Context, em engine.Machine, alias strin
 			cleanup := m.cleanAlias(ctx, alias, nil)
 			state := m.readOriginState(ctx, em, true)
 			if cleanup == nil {
-				return engine.TemplateInfo{}, describe(err, fmt.Sprintf("couldn't pause %s again: %v. %s Nothing was saved.", Name(em), err, state))
+				cause := describe(err, fmt.Sprintf("couldn't pause %s again: %v. %s Nothing was saved.", Name(em), err, state))
+				return engine.TemplateInfo{}, errors.Join(cause, m.saveEndFailure(em, record, recordErr))
 			}
 			message := fmt.Sprintf("saved %s, but couldn't pause %s again: %v. %s", alias, Name(em), err, state)
-			return tmpl, describe(errors.Join(err, cleanup), message+aliasRemovalMessage(alias, cleanup))
+			cause := describe(errors.Join(err, cleanup), message+aliasRemovalMessage(alias, cleanup))
+			return tmpl, errors.Join(cause, m.saveEndFailure(em, record, recordErr))
 		}
 	}
+	if failure := m.saveEndFailure(em, record, recordErr); failure != nil {
+		return tmpl, describe(failure, fmt.Sprintf("saved %s, but %v", alias, failure))
+	}
 	return tmpl, nil
+}
+
+func (m *Manager) saveEndFailure(em engine.Machine, record cleanup.SaveRecord, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	now := m.now()
+	message := fmt.Sprintf("recording the save's end failed for %s: %v. ", Name(em), cause)
+	after := record.Started.Add(saveCallTimeout)
+	if !now.Before(after) {
+		message += fmt.Sprintf("Snapshot cleanup needs a pause after %s. ", after.UTC().Format(time.RFC3339))
+	}
+	return describe(cause, message+saveRecovery(record, em.State == engine.Running, now))
 }
 
 func (m *Manager) prepareSnapshot(ctx context.Context, em engine.Machine) error {

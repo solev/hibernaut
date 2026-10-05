@@ -5,8 +5,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -16,6 +19,36 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/room"
 )
+
+type saveOwnerInfo struct {
+	fs.FileInfo
+	stat syscall.Stat_t
+}
+
+func (f saveOwnerInfo) Sys() any { return &f.stat }
+
+func TestSaveDebrisOwnerClassification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debris")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ".web-" + strings.Repeat("a", 32) + ".tmp-" + strings.Repeat("b", 32)
+	for _, tc := range []struct {
+		uid  uint32
+		want saveEntryKind
+	}{{1000, savePublicationDebris}, {0, savePublicationDebris}, {1001, unexpectedSaveFile}} {
+		stat := *fi.Sys().(*syscall.Stat_t)
+		stat.Uid = tc.uid
+		kind, machine := classifySaveEntry(key, saveOwnerInfo{fi, stat}, 1000, 0)
+		if kind != tc.want || machine != "web" {
+			t.Fatalf("uid %d: kind %v, machine %s", tc.uid, kind, machine)
+		}
+	}
+}
 
 func sharedStateManager(t *testing.T) (*Manager, *fake.Engine) {
 	t.Helper()
