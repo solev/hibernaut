@@ -111,6 +111,7 @@ func TestSaveRecordsOutcomesBeforeRestoration(t *testing.T) {
 		answered bool
 		deleted  bool
 	}{
+		{"success", nil, true, false},
 		{"answered failure", errors.New("E2B returned 503"), true, false},
 		{"no answer", errors.Join(engine.ErrNoAnswer, errors.New("connection lost")), false, false},
 		{"404", engine.ErrNotFound, false, true},
@@ -125,21 +126,26 @@ func TestSaveRecordsOutcomesBeforeRestoration(t *testing.T) {
 			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 			e := &faultEngine{Engine: v.e}
 			e.save = func(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
+				var info engine.TemplateInfo
 				if !tc.deleted {
-					if _, err := v.e.SaveTemplate(ctx, id, alias); err != nil {
+					var err error
+					info, err = v.e.SaveTemplate(ctx, id, alias)
+					if err != nil {
 						t.Fatal(err)
 					}
 				}
 				now = now.Add(time.Minute)
-				return engine.TemplateInfo{}, tc.cause
+				return info, tc.cause
 			}
+			restored := false
 			e.pause = func(ctx context.Context, id string) error {
+				restored = true
 				records := saveRecords(t, v.dir)
 				if tc.deleted {
 					if len(records) != 0 {
 						t.Fatal("404/409 record survived")
 					}
-				} else if len(records) != 1 || records[0].Ended.IsZero() || records[0].Answered != tc.answered {
+				} else if len(records) != 1 || !records[0].Ended.Equal(now) || records[0].Answered != tc.answered {
 					t.Fatalf("record not ended before restoration: %+v", records)
 				}
 				return v.e.Pause(ctx, id)
@@ -149,6 +155,9 @@ func TestSaveRecordsOutcomesBeforeRestoration(t *testing.T) {
 			})
 			if _, err := m.SaveImage(t.Context(), "web", "myimg"); !errors.Is(err, tc.cause) {
 				t.Fatalf("save error = %v", err)
+			}
+			if !restored {
+				t.Fatal("save did not restore the paused origin")
 			}
 		})
 	}
