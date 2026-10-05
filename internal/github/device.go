@@ -22,8 +22,8 @@ const (
 	// OAuthBase is GitHub's site, where the device flow asks for a code and polls for the token.
 	OAuthBase = "https://github.com"
 	// ClientID is the client ID of the Hibernaut OAuth App, which the device flow logs in to. It
-	// isn't secret. It's "" until the app exists, and until then the device flow can't start.
-	ClientID = ""
+	// isn't secret, and the device flow needs no client secret.
+	ClientID = "Ov23li7DEIl4LNsMzS1o"
 )
 
 // DeviceScopes returns the scopes the device flow asks for: repo to clone and push, read:org for

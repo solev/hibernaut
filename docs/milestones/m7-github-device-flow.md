@@ -72,7 +72,7 @@ The M7 code is built against this section. Code that has to differ updates it in
   `ErrExpiringToken`, because hibd can't refresh tokens.
 - Requests send `Accept: application/json` and `User-Agent: hibernaut-hibd/VERSION`, read at most
   1 MiB, and never follow a redirect, even with an injected client.
-- An empty client ID is `ErrNoClientID`. `github.ClientID` is empty until the OAuth App exists.
+- An empty client ID is `ErrNoClientID`. `github.ClientID` holds the Hibernaut OAuth App's ID.
   `App.GitHubDeviceFlow` replaces the flow in tests.
 
 **Cancelling:**
@@ -114,7 +114,7 @@ code expires, holding its lock. The same stdin watch would stop it.
 
 ## Tasks
 
-- [ ] Create the "Hibernaut" GitHub OAuth App by hand, with Device Flow enabled. Its client ID
+- [x] Create the "Hibernaut" GitHub OAuth App by hand, with Device Flow enabled. Its client ID
       goes into `hibd`, as `github.ClientID`. It isn't secret, and the device flow needs no
       client secret.
 - [x] `hibd` runs the flow, and `hib` shows the code and opens `github.com/login/device`. The
@@ -166,3 +166,5 @@ End-to-end:
   decide before an OAuth error: a redirect is final, and a 5xx or 429 is retried whatever the body
   says. The login locks refuse a symlink or anything that isn't a regular file, because Go's
   `os.Root` follows a symlink inside the root even with `O_NOFOLLOW`.
+- 2026-10-05: The "Hibernaut" OAuth App exists, with Device Flow on. Its client ID,
+  `Ov23li7DEIl4LNsMzS1o`, is `github.ClientID`.

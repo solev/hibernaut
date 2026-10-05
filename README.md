@@ -313,8 +313,8 @@ hib status                     # the host, E2B, GitHub and each secret, without 
   laptop. It asks for `repo`, `read:org` and `workflow`.
 - Ctrl-C cancels the login. If you cancelled, run `hib status` to see whether GitHub is connected.
   GitHub may have granted the token just before you cancelled.
-- `hib connect github --from-gh` takes the token from `gh auth token` on your laptop instead.
-  Use it if this build has no Hibernaut OAuth App client ID yet, or to reuse your existing login.
+- `hib connect github --from-gh` takes the token from `gh auth token` on your laptop instead, to
+  reuse your existing login.
 - `hib connect github --token` takes a token you made, such as a fine-grained one limited to some
   repos. It asks for it hidden, or reads stdin. Never pass it as an argument.
 - Every source checks the token with GitHub (`GET /user`) and stores it as secret `github`:
