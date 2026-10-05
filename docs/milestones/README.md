@@ -18,7 +18,7 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 | M5 | [AI tools](m5-ai-tools.md) | done | `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | done | `TestImageAndFork` |
 | M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
-| M8 | [Machine sizes](m8-machine-sizes.md) | not started | `TestSizes` |
+| M8 | [Machine sizes](m8-machine-sizes.md) | done | `TestSizes` |
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | not started | `TestPauseCycles` (bounded) |
 | M10 | [CLI friendliness](m10-cli-friendliness.md) | not started | none new (unit tests in `cmd/hib`) |
 
