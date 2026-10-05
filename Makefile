@@ -30,6 +30,7 @@ test:
 test-host:
 	go test -tags host -exec sudo ./internal/egress/hook/
 	go test -tags host -exec sudo -run '^TestHost' ./internal/machines/
+	go test -tags host -exec sudo -run '^TestHost' ./internal/cleanup/
 
 # Cross-compiles the host tests, runs them on the Azure host and removes the binaries.
 test-host-remote:
@@ -39,11 +40,13 @@ test-host-remote:
 	trap 'rm -rf "$$dir"' EXIT; \
 	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/hook.test" ./internal/egress/hook; \
 	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/machines.test" ./internal/machines; \
+	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/cleanup.test" ./internal/cleanup; \
 	azure/start.sh || { echo "Azure host is not reachable. Run azure/start.sh and retry." >&2; exit 1; }; \
 	target=$$(bash -c 'source azure/common.sh; printf "%s@%s" "$$VM_USER" "$$(vm_ip)"'); \
 	scp -r "$$dir" "$$target:$$remote"; \
 	azure/ssh.sh "status=0; sudo $$remote/hook.test -test.v || status=1; \
 		sudo $$remote/machines.test -test.v -test.run '^TestHost' || status=1; \
+		sudo $$remote/cleanup.test -test.v -test.run '^TestHost' || status=1; \
 		rm -rf $$remote; exit \$$status"
 
 generate:
