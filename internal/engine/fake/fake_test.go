@@ -79,6 +79,33 @@ func TestPauseHookFailureKeepsMachineRunning(t *testing.T) {
 	}
 }
 
+func TestBuildHookFailureBuildsNothing(t *testing.T) {
+	boom := errors.New("boom")
+	var seen []string
+	e := fake.New(fake.WithTemplates(), fake.WithBuildHook(func(_ context.Context, spec engine.TemplateSpec) error {
+		seen = append(seen, spec.Name)
+		if spec.Name == "hib-bad" {
+			return boom
+		}
+		return nil
+	}))
+	ctx := t.Context()
+	for name, want := range map[string]error{"hib-good": nil, "hib-bad": boom} {
+		if _, err := e.BuildTemplate(ctx, engine.TemplateSpec{Name: name, FromImage: "ubuntu:24.04"}, nil); !errors.Is(err, want) {
+			t.Errorf("BuildTemplate(%s) = %v, want %v", name, err, want)
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("hook saw %v, want both builds", seen)
+	}
+	if built := e.Built(); len(built) != 1 || built[0].Name != "hib-good" {
+		t.Errorf("Built() = %+v, want only hib-good", built)
+	}
+	if _, err := e.Template(ctx, "hib-bad"); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Errorf("Template(hib-bad) = %v, want ErrNoTemplate", err)
+	}
+}
+
 func TestExecWithoutRunner(t *testing.T) {
 	e := fake.New()
 	ctx := t.Context()
