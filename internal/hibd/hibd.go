@@ -745,7 +745,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
-		return a.reply(hibapi.Response{Version: version.Version})
+		return a.reply(hibapi.Response{Version: version.Version, Features: []string{}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
 	return 0

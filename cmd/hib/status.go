@@ -42,7 +42,7 @@ func (a *app) status(ctx context.Context, cfg *config, args []string) int {
 	if r.Status == nil {
 		return a.fail(errors.New("hibd didn't report a status"))
 	}
-	hibapi.PrintStatus(a.stdout, cfg.Host, *r.Status)
+	hibapi.PrintStatus(a.stdout, cfg.Host, *r.Status, nil)
 	if !r.Status.OK() {
 		return 1
 	}

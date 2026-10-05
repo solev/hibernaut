@@ -42,7 +42,7 @@ func (a *App) status(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Status: &s})
 	}
-	hibapi.PrintStatus(a.Stdout, "", s)
+	hibapi.PrintStatus(a.Stdout, "", s, nil)
 	if !s.OK() {
 		return 1
 	}

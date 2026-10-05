@@ -292,7 +292,7 @@ func TestPrintStatus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			hibapi.PrintStatus(&out, tc.host, tc.status)
+			hibapi.PrintStatus(&out, tc.host, tc.status, nil)
 			if got := out.String(); got != tc.want {
 				t.Errorf("PrintStatus =\n%s\nwant\n%s\n(%q)", got, tc.want, got)
 			}
@@ -303,7 +303,7 @@ func TestPrintStatus(t *testing.T) {
 func TestPrintCodex(t *testing.T) {
 	var out bytes.Buffer
 	hibapi.PrintCodex(&out, hibapi.Codex{Email: "octo@example.com", Plan: "pro", Health: hibapi.CodexStuck,
-		Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)})
+		Expires: time.Date(2026, 10, 14, 6, 30, 0, 0, time.UTC)}, nil)
 	want := "Codex  octo@example.com, pro plan, token expires 2026-10-14 06:30 UTC\n" +
 		"       stuck: run hib connect codex\n"
 	if out.String() != want {

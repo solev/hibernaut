@@ -48,7 +48,7 @@ func (a *App) codexRefresh(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Codex: &c})
 	}
-	hibapi.PrintCodex(a.Stdout, c)
+	hibapi.PrintCodex(a.Stdout, c, nil)
 	if c.Health != hibapi.CodexOK {
 		return 1
 	}

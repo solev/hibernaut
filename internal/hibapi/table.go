@@ -1,6 +1,7 @@
 package hibapi
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
@@ -9,6 +10,71 @@ import (
 
 	"github.com/solev/hibernaut/internal/termsafe"
 )
+
+// Style styles a state word, such as running or ok, for a terminal. It gets the word escaped,
+// and returns it with styling such as colour around it. A nil Style leaves words plain.
+type Style func(state string) string
+
+// Table lays rows out in columns, as text/tabwriter does with two spaces between columns. It
+// styles state words after padding them, so styling never moves a column.
+type Table struct {
+	w     io.Writer
+	style Style
+	buf   bytes.Buffer
+	tw    *tabwriter.Writer
+}
+
+// stateMark brackets a state word in what Table writes to tabwriter, which counts only the word
+// towards the width. Escaped text never holds the byte, since it isn't UTF-8.
+const stateMark = "\xff"
+
+// NewTable returns a Table that writes to w when flushed. style may be nil.
+func NewTable(w io.Writer, style Style) *Table {
+	t := &Table{w: w, style: style}
+	t.tw = tabwriter.NewWriter(&t.buf, 0, 4, 2, ' ', 0)
+	return t
+}
+
+// Write adds terminal-safe text to the table: tabs end cells and newlines end rows.
+func (t *Table) Write(p []byte) (int, error) {
+	return t.tw.Write(p)
+}
+
+// State returns word, which must be terminal-safe, marked as a cell's state for the style.
+func (t *Table) State(word string) string {
+	if t.style == nil {
+		return word
+	}
+	return stateMark + word + stateMark
+}
+
+// Flush lays out the rows written so far, styles their states and writes them on.
+func (t *Table) Flush() error {
+	if err := t.tw.Flush(); err != nil {
+		return err
+	}
+	out := t.buf.Bytes()
+	if t.style != nil {
+		out = t.styleStates(out)
+	}
+	_, err := t.w.Write(out)
+	t.buf.Reset()
+	return err
+}
+
+func (t *Table) styleStates(text []byte) []byte {
+	var out []byte
+	for {
+		before, rest, found := bytes.Cut(text, []byte(stateMark))
+		out = append(out, before...)
+		if !found {
+			return out
+		}
+		word, after, _ := bytes.Cut(rest, []byte(stateMark))
+		out = append(out, t.style(string(word))...)
+		text = after
+	}
+}
 
 // PrintSavedImage writes a terminal-safe saved-image confirmation and how to use it.
 func PrintSavedImage(w io.Writer, img Image) {
@@ -66,20 +132,21 @@ func PrintSecrets(w io.Writer, secrets []Secret) {
 }
 
 // PrintStatus writes the host's health for people, terminal-safe, one line per field. host is
-// what the first line calls the host. "" leaves that line out.
-func PrintStatus(w io.Writer, host string, s Status) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+// what the first line calls the host. "" leaves that line out. style styles the states: E2B's,
+// the Codex login's when it isn't ok, and each secret's. It may be nil.
+func PrintStatus(w io.Writer, host string, s Status, style Style) {
+	tw := NewTable(w, style)
 	if host != "" {
 		fmt.Fprintf(tw, "host\t%s\n", oneLine(host))
 	}
 	fmt.Fprintf(tw, "hibd\t%s\n", oneLine(s.Version))
 	switch {
 	case s.E2B.OK:
-		fmt.Fprintln(tw, "E2B\tok")
+		fmt.Fprintf(tw, "E2B\t%s\n", tw.State("ok"))
 	case s.E2B.Detail == "":
-		fmt.Fprintln(tw, "E2B\tdown")
+		fmt.Fprintf(tw, "E2B\t%s\n", tw.State("down"))
 	default:
-		fmt.Fprintf(tw, "E2B\tdown: %s\n", oneLine(s.E2B.Detail))
+		fmt.Fprintf(tw, "E2B\t%s: %s\n", tw.State("down"), oneLine(s.E2B.Detail))
 	}
 	if g := s.GitHub; g != nil {
 		fmt.Fprintf(tw, "GitHub\t%s, commits as %s\n", oneLine(g.Who()), oneLine(g.Email))
@@ -97,24 +164,23 @@ func PrintStatus(w io.Writer, host string, s Status) {
 	}
 	tw.Flush()
 	fmt.Fprintln(w)
-	tw = tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "SECRET\tSITES\tSTATE\tDETAIL")
 	for _, sec := range s.Secrets {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", oneLine(sec.Name), oneLine(strings.Join(sec.Sites, ",")),
-			oneLine(string(sec.State)), oneLine(sec.Detail))
+			tw.State(oneLine(string(sec.State))), oneLine(sec.Detail))
 	}
 	tw.Flush()
 }
 
 // PrintCodex writes the Codex login as PrintStatus does, terminal-safe: the account, the plan
-// and the token's expiry, then what's wrong unless the login is ok.
-func PrintCodex(w io.Writer, c Codex) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+// and the token's expiry, then what's wrong unless the login is ok. style may be nil.
+func PrintCodex(w io.Writer, c Codex, style Style) {
+	tw := NewTable(w, style)
 	printCodex(tw, &c)
 	tw.Flush()
 }
 
-func printCodex(w io.Writer, c *Codex) {
+func printCodex(w *Table, c *Codex) {
 	if c == nil {
 		fmt.Fprintln(w, "Codex\tnot connected: run hib connect codex")
 		return
@@ -133,7 +199,7 @@ func printCodex(w io.Writer, c *Codex) {
 	} else if c.Problem != "" {
 		fix = oneLine(c.Problem)
 	}
-	fmt.Fprintf(w, "\t%s: %s\n", oneLine(string(c.Health)), fix)
+	fmt.Fprintf(w, "\t%s: %s\n", w.State(oneLine(string(c.Health))), fix)
 }
 
 func oneLine(s string) string {
