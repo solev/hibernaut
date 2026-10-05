@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · put your machine to sleep, keep your place</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hero.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  .hero { text-align: center; display: flex; flex-direction: column; align-items: center; padding-top: 20px; }
+  h1 { font-size: clamp(38px, 4.8vw, 66px); max-width: none; }
+  .sub { margin-inline: auto; }
+  .ctas, .micro { justify-content: center; }
+
+  .stage {
+    margin-top: 36px; width: 100%; display: grid; grid-template-columns: 1fr 220px 1fr; align-items: center; gap: 28px;
+    text-align: left;
+  }
+  .card { border: 1px solid var(--line); background: var(--surface); border-radius: 16px; padding: 14px 16px; font-size: 12.5px; }
+  .card h3 { margin: 0 0 10px; font: 500 11px "JetBrains Mono"; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); display: flex; justify-content: space-between; }
+  .procs { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 14px; transition: opacity .6s ease, filter .6s ease; }
+  .procs .pid { color: var(--muted); }
+  .procs .up { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+  .frozen .procs { opacity: .55; }
+  .frozen .procs .up { color: var(--accent); }
+  .botwrap { position: relative; }
+  .botwrap hib-bot { width: 100%; }
+  .status { display: grid; gap: 8px; }
+  .status .row { display: flex; justify-content: space-between; gap: 12px; }
+  .status .row span:first-child { color: var(--muted); }
+  .status .big { font: 600 20px/1.2 "Oxanium"; color: var(--fg); margin-bottom: 4px; }
+  .status .big b { color: var(--accent); font-weight: 600; }
+
+  .timeline { margin-top: 18px; width: 100%; max-width: 760px; position: relative; height: 34px; }
+  .timeline .track { position: absolute; left: 0; right: 0; top: 8px; height: 2px; background: var(--line); border-radius: 2px; }
+  .timeline .fill { position: absolute; left: 0; top: 8px; height: 2px; width: 0; background: var(--accent); border-radius: 2px; transition: width .5s linear; }
+  .timeline .tick { white-space: nowrap; position: absolute; top: 0; transform: translateX(-50%); font-size: 11px; color: var(--muted); display: grid; justify-items: center; gap: 6px; transition: color .3s; }
+  .timeline .tick::before { content: ""; width: 10px; height: 10px; border-radius: 3px; border: 2px solid var(--line-2); background: var(--bg); margin-top: 2px; transition: border-color .3s, background .3s; }
+  .timeline .tick.on { color: var(--fg); }
+  .timeline .tick.on::before { border-color: var(--accent); background: var(--accent); }
+  .skip {
+    position: absolute; left: 50%; top: -6px; transform: translate(-50%, -100%); font-size: 11px; color: var(--accent);
+    border: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent); border-radius: 8px; padding: 2px 8px;
+    opacity: 0; transition: opacity .3s; white-space: nowrap;
+  }
+
+  @media (max-width: 900px) {
+    h1 br { display: none; }
+    .stage { grid-template-columns: 1fr; gap: 16px; max-width: 420px; }
+    .botwrap { width: 200px; margin: 0 auto; order: -1; }
+    .timeline { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Docs</a><a href="#">Roadmap</a></nav>
+  <a class="gh" href="https://github.com/solev/hibernaut">GitHub</a>
+</header>
+
+<main class="hero">
+  <span class="eyebrow">Self-hosted machines that hibernate</span>
+  <h1>Put your machine to sleep. <br>Keep your place.</h1>
+  <p class="sub">Hibernaut snapshots an idle machine's memory and disk, then switches your server off when nothing is awake. <code>ssh app.hib</code> brings it back with every process where you left it.</p>
+  <div class="ctas">
+    <a class="btn primary" href="#">Build your first machine <span class="arr">→</span></a>
+    <a class="btn ghost" href="#">How hibernation works</a>
+  </div>
+  <div class="micro"><span>resumes in 340–380 ms</span><span>survives host reboots</span><span>open source</span></div>
+
+  <section class="stage" id="stage" aria-label="Illustration: a machine hibernates and resumes">
+    <div class="card">
+      <h3><span>app.hib · processes</span><span id="frozen-label"></span></h3>
+      <div class="procs">
+        <span class="pid">412</span><span>node dev-server :3000</span><span class="up" data-s="7920">2h 12m</span>
+        <span class="pid">530</span><span>codex · refactor auth</span><span class="up" data-s="1260">21m</span>
+        <span class="pid">611</span><span>tmux · 3 windows</span><span class="up" data-s="26100">7h 15m</span>
+        <span class="pid">702</span><span>vim src/auth.ts</span><span class="up" data-s="540">9m</span>
+      </div>
+    </div>
+    <div class="botwrap"><hib-bot id="bot" state="working"></hib-bot></div>
+    <div class="card status">
+      <div class="big" id="big">awake</div>
+      <div class="row"><span>cpu</span><span id="cpu">2 vCPU</span></div>
+      <div class="row"><span>memory</span><span id="mem">512 MB in RAM</span></div>
+      <div class="row"><span>host</span><span id="host">running</span></div>
+    </div>
+  </section>
+
+  <div class="timeline" aria-hidden="true">
+    <div class="track"></div><div class="fill" id="fill"></div>
+    <span class="skip" id="skip">15 idle minutes later</span>
+    <span class="tick" style="left:0%" data-k="0">working</span>
+    <span class="tick" style="left:33%" data-k="1">snapshot</span>
+    <span class="tick" style="left:66%" data-k="2">asleep</span>
+    <span class="tick" style="left:100%" data-k="3">ssh app.hib</span>
+  </div>
+</main>
+
+<nav class="switcher"><a href="index.html">all</a><a href="01-fleet.html">01</a><a href="02-save-point.html" aria-current="page">02</a><a href="03-boundary.html">03</a><a href="04-fork.html">04</a><a href="05-address.html">05</a></nav>
+
+<script type="module">
+  import { story, $, $$ } from './hero.js';
+  const bot = $('#bot'), stage = $('#stage');
+  const ups = $$('.procs .up');
+  let ticking = true;
+  const fmt = (s) => { const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60; return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s % 60).padStart(2, '0')}s`; };
+  setInterval(() => {
+    if (!ticking) return;
+    for (const u of ups) { u.dataset.s = +u.dataset.s + 1; u.textContent = fmt(+u.dataset.s); }
+  }, 1000);
+  ups.forEach((u) => (u.textContent = fmt(+u.dataset.s)));
+
+  const set = (big, cpu, mem, host) => {
+    $('#big').innerHTML = big; $('#cpu').textContent = cpu; $('#mem').textContent = mem; $('#host').textContent = host;
+  };
+  const step = (k, pct) => {
+    $$('.tick').forEach((t) => t.classList.toggle('on', +t.dataset.k <= k));
+    $('#fill').style.width = pct + '%';
+  };
+
+  story(async (s) => {
+    ticking = true; stage.classList.remove('frozen'); $('#frozen-label').textContent = '';
+    s.bot(bot, 'working'); set('awake', '2 vCPU', '512 MB in RAM', 'running'); step(0, 0);
+    await s.wait(3200);
+
+    $('#skip').style.opacity = 1;
+    s.bot(bot, 'idle');
+    await s.wait(1400);
+    $('#skip').style.opacity = 0;
+    s.bot(bot, 'hibernate'); step(1, 33);
+    set('snapshotting…', '2 vCPU', 'writing 512 MB to disk', 'running');
+    ticking = false; stage.classList.add('frozen'); $('#frozen-label').textContent = 'frozen';
+    await s.settled(bot);
+    step(2, 66);
+    set('asleep', '0 vCPU', 'on disk', 'free to switch off');
+    await s.wait(3600);
+
+    step(3, 100);
+    set('waking…', '2 vCPU', 'loading pages lazily', 'starting');
+    s.bot(bot, 'wake');
+    await s.settled(bot);
+    set('awake <b>· resumed in 0.34 s</b>', '2 vCPU', '512 MB in RAM', 'running');
+    stage.classList.remove('frozen'); $('#frozen-label').textContent = ''; ticking = true;
+    s.bot(bot, 'working');
+    await s.wait(3600);
+  }, { gap: 400 });
+</script>
+</body>
+</html>

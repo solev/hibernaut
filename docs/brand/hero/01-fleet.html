@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · self-hosted machines for coding agents</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hero.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 56px; align-items: center; }
+  .host {
+    position: relative; border: 1px solid var(--line-2); border-radius: 22px; padding: 18px;
+    background: radial-gradient(120% 80% at 50% 0%, var(--glow), transparent 60%), var(--surface);
+  }
+  .host-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); padding: 2px 4px 14px; }
+  .host-head b { color: var(--fg); font-weight: 500; }
+  .host-head .count b { color: var(--accent); }
+  .machines { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .m {
+    border: 1px solid var(--line); border-radius: 16px; background: var(--bg); padding: 10px 12px 14px;
+    display: grid; gap: 4px; transition: border-color .4s ease;
+  }
+  .m[data-awake="true"] { border-color: var(--line-2); }
+  .m hib-bot { width: 100%; margin: -4px 0 -6px; }
+  .m .name { font-weight: 500; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+  .m .state { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .m .state::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s; }
+  .m[data-awake="true"] .state::before { background: var(--accent); }
+  .m .task { font-size: 11.5px; color: var(--muted); min-height: 2.9em; line-height: 1.45; transition: opacity .3s; }
+  .host .term { margin-top: 12px; padding: 12px 14px; background: var(--bg); min-height: 70px; }
+  .term .line { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  .tag {
+    position: absolute; font-size: 10.5px; color: var(--muted); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; opacity: 0; transition: opacity .3s;
+  }
+  @media (max-width: 960px) {
+    .hero { grid-template-columns: 1fr; gap: 40px; }
+  }
+  @media (max-width: 520px) {
+    .machines { gap: 8px; }
+    .m { padding: 8px 8px 10px; }
+    .m .task { display: none; }
+    .host { padding: 12px; }
+    .host-head .spec { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Docs</a><a href="#">Roadmap</a></nav>
+  <a class="gh" href="https://github.com/solev/hibernaut">GitHub</a>
+</header>
+
+<main class="hero">
+  <div>
+    <span class="eyebrow">Self-hosted machines for coding agents</span>
+    <h1>Run coding agents on your server. Let idle machines <em>sleep</em>.</h1>
+    <p class="sub">Each agent gets its own hardware-isolated VM with GitHub connected and the real tokens kept on your host. Idle machines snapshot to disk and wake over SSH with their processes intact.</p>
+    <div class="ctas">
+      <a class="btn primary" href="#">Set up your host <span class="arr">→</span></a>
+      <a class="btn ghost" href="https://github.com/solev/hibernaut">Read the source</a>
+    </div>
+    <div class="micro"><span>Firecracker microVMs</span><span>wakes in ~340 ms</span><span>open source</span></div>
+  </div>
+
+  <section class="host" aria-label="Illustration: three agent machines on one host">
+    <div class="host-head">
+      <span><b>your host</b> <span class="spec">· 4 vCPU · 16 GB</span></span>
+      <span class="count"><b id="awake">2</b> awake · <span id="asleep">1</span> asleep</span>
+    </div>
+    <div class="machines">
+      <article class="m" id="api">
+        <hib-bot state="working"></hib-bot>
+        <div class="name">api.hib</div>
+        <div class="state">working</div>
+        <div class="task">codex · add a /health endpoint</div>
+      </article>
+      <article class="m" id="docs">
+        <hib-bot state="asleep"></hib-bot>
+        <div class="name">docs.hib</div>
+        <div class="state">asleep</div>
+        <div class="task">paused 2h ago · 0 vCPU</div>
+      </article>
+      <article class="m" id="tests">
+        <hib-bot state="thinking"></hib-bot>
+        <div class="name">tests.hib</div>
+        <div class="state">thinking</div>
+        <div class="task">copilot · why is CI red</div>
+      </article>
+    </div>
+    <div class="term" aria-hidden="true">
+      <div class="line"><span class="p">~ $</span> <span id="cmd"></span><span class="caret"></span></div>
+      <div class="line dim" id="out"></div>
+    </div>
+  </section>
+</main>
+
+<nav class="switcher"><a href="index.html">all</a><a href="01-fleet.html" aria-current="page">01</a><a href="02-save-point.html">02</a><a href="03-boundary.html">03</a><a href="04-fork.html">04</a><a href="05-address.html">05</a></nav>
+
+<script type="module">
+  import { story, $ } from './hero.js';
+  const SLEEP = new Set(['asleep', 'hibernate']);
+  const M = Object.fromEntries(['api', 'docs', 'tests'].map((id) => {
+    const el = $('#' + id);
+    return [id, { el, bot: $('hib-bot', el), state: $('.state', el), task: $('.task', el) }];
+  }));
+  const cmd = $('#cmd'), out = $('#out');
+
+  function count() {
+    const awake = Object.values(M).filter((m) => !SLEEP.has(m.bot.state)).length;
+    $('#awake').textContent = awake;
+    $('#asleep').textContent = 3 - awake;
+  }
+  for (const m of Object.values(M)) {
+    m.bot.addEventListener('statechange', (e) => {
+      m.el.dataset.awake = !SLEEP.has(e.detail);
+      m.state.textContent = e.detail === 'hibernate' ? 'snapshotting' : e.detail;
+      count();
+    });
+    m.el.dataset.awake = !SLEEP.has(m.bot.getAttribute('state'));
+  }
+  const task = (m, t) => { m.task.textContent = t; };
+
+  story(async (s) => {
+    s.bot(M.api.bot, 'working'); task(M.api, 'codex · add a /health endpoint');
+    s.bot(M.tests.bot, 'thinking'); task(M.tests, 'copilot · why is CI red');
+    cmd.textContent = ''; out.textContent = '';
+    await s.wait(1600);
+
+    await s.type(cmd, 'ssh docs.hib');
+    await s.wait(350);
+    out.textContent = 'waking docs… resumed in 0.34 s';
+    s.bot(M.docs.bot, 'wake'); task(M.docs, 'ssh · you');
+    await s.settled(M.docs.bot);
+    s.bot(M.docs.bot, 'working');
+    await s.wait(2600);
+
+    s.bot(M.tests.bot, 'working'); task(M.tests, 'copilot · fixing flaky test');
+    await s.wait(2400);
+    s.bot(M.tests.bot, 'happy'); task(M.tests, 'done · pushed fix/flaky-ci');
+    await s.settled(M.tests.bot);
+    await s.wait(1400);
+    task(M.tests, 'idle 15 min · going to sleep');
+    s.bot(M.tests.bot, 'hibernate');
+    await s.settled(M.tests.bot);
+    task(M.tests, 'paused · state on disk');
+    await s.wait(1800);
+
+    cmd.textContent = ''; out.textContent = '';
+    await s.type(cmd, 'exit');
+    await s.wait(300);
+    out.textContent = 'Connection to docs.hib closed.';
+    s.bot(M.docs.bot, 'idle'); task(M.docs, 'idle');
+    await s.wait(1600);
+    s.bot(M.docs.bot, 'hibernate');
+    await s.settled(M.docs.bot);
+    task(M.docs, 'paused just now · 0 vCPU');
+    await s.wait(1500);
+
+    cmd.textContent = ''; out.textContent = '';
+    await s.type(cmd, 'hib exec tests -- codex exec "fix lint"', 38);
+    await s.wait(300);
+    out.textContent = 'waking tests… resumed in 0.36 s';
+    s.bot(M.tests.bot, 'wake'); task(M.tests, 'codex · fix lint');
+    await s.settled(M.tests.bot);
+    s.bot(M.tests.bot, 'thinking');
+    await s.wait(2200);
+  });
+</script>
+</body>
+</html>

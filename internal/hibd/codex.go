@@ -32,7 +32,7 @@ func (a *App) codexStore(cfg config, logf func(format string, args ...any)) *cod
 		KeyPath:   cfg.vaultKeyPath,
 		TokenURL:  a.CodexTokenURL,
 		Client:    a.CodexClient,
-		Now:       time.Now,
+		Now:       a.now,
 		Logf:      logf,
 	})
 }

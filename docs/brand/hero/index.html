@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · hero explorations</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hero.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  main { width: 100%; max-width: 1480px; margin: 0 auto; padding: 8px 32px 64px; }
+  h1 { font-size: 34px; margin: 0; }
+  h2 { font-size: 24px; margin: 72px 0 0; }
+  .lead { color: var(--muted); font-size: 13px; margin: 8px 0 28px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 28px; }
+  .card { display: grid; gap: 12px; text-decoration: none; }
+  .frame { position: relative; aspect-ratio: 1440 / 900; overflow: hidden; border: 1px solid var(--line-2); border-radius: 14px; background: var(--surface); }
+  .frame iframe { position: absolute; inset: 0; width: 1440px; height: 900px; border: 0; transform-origin: 0 0; pointer-events: none; }
+  .card:hover .frame { border-color: var(--accent); }
+  .cap { display: flex; justify-content: space-between; gap: 16px; font-size: 12.5px; }
+  .cap b { font-weight: 500; }
+  .cap span { color: var(--muted); }
+  .cap .rank { color: var(--accent); }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } main { padding: 8px 16px 48px; } }
+</style>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <span class="dim" style="color:var(--muted);font-size:12px">hero explorations · round 2</span>
+</header>
+<main>
+  <h1>Round 2 · one message, three executions</h1>
+  <p class="lead">Same copy in all three: “Your machines sleep. Your work stays intact.” Click a card to open it full size.</p>
+  <div class="grid">
+    <a class="card" href="06-lamplight.html"><div class="frame"><iframe src="06-lamplight.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>06 · Lamplight</b><span>six machines on one server, hover to wake · lamplight <span class="rank">· Astra's lead</span></span></div></a>
+    <a class="card" href="07-perch.html"><div class="frame"><iframe src="07-perch.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>07 · Perch</b><span>a real session, same PID after sleep · lamplight</span></div></a>
+    <a class="card" href="08-specimen.html"><div class="frame"><iframe src="08-specimen.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>08 · Specimen</b><span>one machine, its record kept across pauses · paper</span></div></a>
+  </div>
+
+  <h2>Round 1 · five angles</h2>
+  <p class="lead">Each one tests a different positioning angle.</p>
+  <div class="grid">
+    <a class="card" href="01-fleet.html"><div class="frame"><iframe src="01-fleet.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>01 · The quiet fleet</b><span>agents on your server · lamplight <span class="rank">· Astra's #1</span></span></div></a>
+    <a class="card" href="02-save-point.html"><div class="frame"><iframe src="02-save-point.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>02 · The save point</b><span>sleep and resume · lamplight</span></div></a>
+    <a class="card" href="03-boundary.html"><div class="frame"><iframe src="03-boundary.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>03 · The host boundary</b><span>tokens stay on your host · paper</span></div></a>
+    <a class="card" href="04-fork.html"><div class="frame"><iframe src="04-fork.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>04 · The warm fork</b><span>parallel agents from one machine · lamplight</span></div></a>
+    <a class="card" href="05-address.html"><div class="frame"><iframe src="05-address.html" loading="lazy" tabindex="-1"></iframe></div>
+      <div class="cap"><b>05 · Your project address</b><span>a dev box per project · paper</span></div></a>
+  </div>
+</main>
+<script>
+  const fit = () => document.querySelectorAll('.frame').forEach((f) => {
+    f.querySelector('iframe').style.transform = `scale(${f.clientWidth / 1440})`;
+  });
+  new ResizeObserver(fit).observe(document.body);
+  fit();
+</script>
+</body>
+</html>

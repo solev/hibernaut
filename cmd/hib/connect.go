@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,7 +20,6 @@ import (
 )
 
 const (
-	connectUsage       = "connect github [--from-gh | --token]\n       hib connect codex"
 	githubCodeLifetime = 15 * time.Minute
 	githubLoginTimeout = githubCodeLifetime + 2*time.Minute
 	// codexLoginTimeout is how long hib connect codex waits for hibd: a minute longer than
@@ -27,43 +27,17 @@ const (
 	codexLoginTimeout = 16 * time.Minute
 )
 
-func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
-	if err := checkConnectArgs(args); err != nil {
-		a.fail(err)
-		fmt.Fprintf(a.stderr, "usage: hib %s\n", connectUsage)
-		return 2
+func (a *app) connectGitHub(ctx context.Context, cfg *config, fromGH, token bool) int {
+	if fromGH && token {
+		return a.mistake("choose at most one of --from-gh and --token")
 	}
-	fl := a.flags("connect")
-	fromGH := fl.Bool("from-gh", false, "use this laptop's gh login")
-	token := fl.Bool("token", false, "read a token from a hidden prompt or stdin")
-	providers, ok := a.parse(fl, args, 1, connectUsage)
-	if !ok {
-		return 2
-	}
-	switch providers[0] {
-	case "github":
-	case "codex":
-		if fl.NFlag() > 0 {
-			fmt.Fprintf(a.stderr, "hib connect: hib connect codex takes no flags\nusage: hib %s\n", connectUsage)
-			return 2
-		}
-		return a.connectCodex(ctx, cfg)
-	default:
-		a.fail(errors.New("only GitHub and Codex are supported: run hib connect github or hib connect codex"))
-		fmt.Fprintf(a.stderr, "usage: hib %s\n", connectUsage)
-		return 2
-	}
-	if *fromGH && *token {
-		fmt.Fprintf(a.stderr, "hib connect: choose at most one of --from-gh and --token\nusage: hib %s\n", connectUsage)
-		return 2
-	}
-	if !*fromGH && !*token {
+	if !fromGH && !token {
 		return a.connectGitHubDevice(ctx, cfg)
 	}
 	source := hibapi.GitHubFromToken
 	var value string
 	var err error
-	if *fromGH {
+	if fromGH {
 		source = hibapi.GitHubFromGH
 		value, err = a.readGitHubToken(ctx)
 	} else {
@@ -72,14 +46,9 @@ func (a *app) connect(ctx context.Context, cfg *config, args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	stdout := &secretWriter{w: a.stdout, value: []byte(value)}
-	stderr := &secretWriter{w: a.stderr, value: []byte(value)}
-	defer stdout.Flush()
-	defer stderr.Flush()
-	connected := *a
-	connected.stdout, connected.stderr = stdout, stderr
-	a = &connected
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "connect", "github", "--source", source, "--json")
+	a, flush := a.hidingSecret(value)
+	defer flush()
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{secret: []byte(value)}, "connect", "github", "--source", source, "--json")
 	if err != nil {
 		return a.fail(err)
 	}
@@ -124,25 +93,25 @@ func (a *app) connectGitHubDevice(ctx context.Context, cfg *config) int {
 
 func (a *app) connectedGitHub(r hibapi.Response) int {
 	if r.GitHub == nil {
-		return a.fail(errors.New("hibd didn't say which account it connected"))
+		return a.fail(errors.New("hibd didn't say which account it connected: run hib status to see what's connected"))
 	}
 	g := r.GitHub
-	fmt.Fprintf(a.stdout, "connected GitHub as %s. Machines commit as %s\n", termsafe.String(g.Who()), termsafe.String(g.Email))
+	fmt.Fprintf(a.stdout, "connected GitHub as %s. Machines commit as %s\n", termsafe.Line(g.Who()), termsafe.Line(g.Email))
 	if warning := g.ScopeWarning(); warning != "" {
 		fmt.Fprintf(a.stderr, "hib: warning: %s\n", termsafe.String(warning))
 	}
 	return 0
 }
 
-func (a *app) connectCodex(ctx context.Context, cfg *config) int {
+func (a *app) connectCodex(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remoteSudo(ctx, cfg, codexLoginTimeout, callOptions{}, "connect", "codex", "--json")
 	if err != nil {
 		return a.fail(err)
 	}
 	if r.Codex == nil {
-		return a.fail(errors.New("hibd didn't say which account it connected"))
+		return a.fail(errors.New("hibd didn't say which account it connected: run hib status to see what's connected"))
 	}
-	fmt.Fprintf(a.stdout, "connected Codex as %s, on the %s plan\n", termsafe.String(r.Codex.Email), termsafe.String(r.Codex.Plan))
+	fmt.Fprintf(a.stdout, "connected Codex as %s, on the %s plan\n", termsafe.Line(r.Codex.Email), termsafe.Line(r.Codex.Plan))
 	return 0
 }
 
@@ -154,7 +123,7 @@ func (a *app) readGitHubToken(ctx context.Context) (string, error) {
 	defer stderr.Flush()
 	code, err := a.gh(ctx, []string{"auth", "token", "--hostname", "github.com"}, nil, &out, &diagnostics)
 	value, valueErr := vault.ReadValue(bytes.NewReader(out.buffer.Bytes()))
-	redacted := &secretWriter{w: stderr, value: []byte(value)}
+	redacted := newSecretWriter(stderr, printedForms(value)...)
 	redacted.Write(diagnostics.buffer.Bytes())
 	redacted.Flush()
 	if diagnostics.overflow {
@@ -190,7 +159,10 @@ func (w *cappedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// checkConnectArgs keeps a pasted token out of flag's errors, which quote invalid values.
+var commandWord = regexp.MustCompile(`^[a-z][a-z-]{0,15}$`)
+
+// checkConnectArgs keeps a pasted token out of flag's errors, which quote invalid values, and out
+// of "unknown command" mistakes.
 func checkConnectArgs(args []string) error {
 	const tokenArgument = "pass the token at the prompt or on stdin, not as an argument: arguments end up in shell history"
 	positional := 0
@@ -202,7 +174,7 @@ func checkConnectArgs(args []string) error {
 		}
 		if !flags || !strings.HasPrefix(arg, "-") || arg == "-" {
 			positional++
-			if positional > 1 {
+			if positional > 1 || !commandWord.MatchString(arg) {
 				return errors.New(tokenArgument)
 			}
 			continue

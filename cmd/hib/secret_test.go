@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"maps"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 func writeTestResponse(w io.Writer, r hibapi.Response) int {
@@ -71,6 +78,155 @@ func TestSecretAddUsesSudoAndStdin(t *testing.T) {
 	}
 	if !strings.Contains(c.out.String(), "stored github") {
 		t.Fatalf("stdout = %q", c.out.String())
+	}
+}
+
+func TestSecretAddDoesNotPrintAReflectedValue(t *testing.T) {
+	values := map[string]string{
+		"plain":             "s3cret-value-1234567890",
+		"control character": "tok\x1b\x01en\tvalue-1234",
+		"pem": "-----BEGIN PRIVATE KEY-----\n" +
+			"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n" +
+			"MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu\n" +
+			"NMoSfm76oqFvAp8Gy0iz5sxjZmSnXyCdPEovGhLa0VzMaQ8s+CLOyS56YyCFGeJZ\n" +
+			"-----END PRIVATE KEY-----",
+	}
+	modes := []string{"ssh stderr", "hibd error", "unreadable reply", "stored line", "ssh runner error"}
+	for valueName, value := range values {
+		for _, mode := range modes {
+			t.Run(valueName+"/"+mode, func(t *testing.T) {
+				h := newHost(t)
+				c := initClient(t, h)
+				h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+					stored := &hibapi.Secret{Name: "api", Env: "API_KEY", Sites: []string{"api.example.com"}, Placeholder: "ph"}
+					switch mode {
+					case "ssh stderr":
+						io.WriteString(stderr, "hibd: storing "+value[:5])
+						io.WriteString(stderr, value[5:]+"\n")
+					case "hibd error":
+						return writeTestResponse(stdout, hibapi.Response{Error: "refused " + value}), true
+					case "unreadable reply":
+						io.WriteString(stdout, "not JSON: "+value)
+						return 1, true
+					case "stored line":
+						stored.Name, stored.Env, stored.Sites = value, value, []string{value}
+					}
+					return writeTestResponse(stdout, hibapi.Response{Secret: stored}), true
+				}
+				if mode == "ssh runner error" {
+					c.ssh = func(_ context.Context, args []string, _ io.Reader, _, _ io.Writer) (int, error) {
+						h.record(args)
+						return -1, errors.New("ssh broke on " + value)
+					}
+				}
+				c.app.stdin = strings.NewReader(value)
+				code := c.hib("secret", "add", "api", "--env", "API_KEY", "--bind", "api.example.com")
+				if want := map[bool]int{true: 0, false: 1}[mode == "ssh stderr" || mode == "stored line"]; code != want {
+					t.Errorf("exit %d, want %d; stderr %q", code, want, c.errOut)
+				}
+				output := c.out.String() + c.errOut.String()
+				for _, form := range append([]string{value, termsafe.String(value), termsafe.Line(value)}, strings.Split(value, "\n")[1:]...) {
+					if strings.Contains(output, form) {
+						t.Errorf("the value reached the output as %q: %q", form, output)
+					}
+				}
+				if mode == "unreadable reply" {
+					if !strings.Contains(output, "unreadable reply from hibd") || strings.Contains(output, "not JSON") {
+						t.Errorf("an unreadable reply to a secret was shown: %q", output)
+					}
+				} else if !strings.Contains(output, "[redacted]") {
+					t.Errorf("no redaction marker in %q", output)
+				}
+			})
+		}
+	}
+}
+
+func jsonQuoted(t *testing.T, value string, escapeHTML bool) string {
+	t.Helper()
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(escapeHTML)
+	if err := enc.Encode(value); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func TestSecretAddRedactsQuotedForms(t *testing.T) {
+	const value = "sk-review\"q\\b\t<x>&\u00e9\x01\ntail-7f3a9c"
+	quotings := map[string]string{
+		"go":                strconv.Quote(value),
+		"json":              jsonQuoted(t, value, true),
+		"json without html": jsonQuoted(t, value, false),
+	}
+	if distinct := slices.Compact(slices.Sorted(maps.Values(quotings))); len(distinct) != len(quotings) {
+		t.Fatalf("the quotings must differ to test each one: %q", distinct)
+	}
+	for quoting, quoted := range quotings {
+		messages := map[string]string{
+			"text error": "token refused: " + quoted,
+			"json error": `{"error":{"message":"bad token","token":` + quoted + `}}`,
+		}
+		for shape, message := range messages {
+			for _, channel := range []string{"stdout", "stderr"} {
+				t.Run(quoting+"/"+shape+"/"+channel, func(t *testing.T) {
+					h := newHost(t)
+					c := initClient(t, h)
+					h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+						if channel == "stdout" {
+							return writeTestResponse(stdout, hibapi.Response{Error: message}), true
+						}
+						for i := 1; i < len(message); i++ {
+							io.WriteString(stderr, message[:i])
+							io.WriteString(stderr, message[i:]+"\n")
+						}
+						return writeTestResponse(stdout, hibapi.Response{Secret: &hibapi.Secret{
+							Name: "api", Env: "API_KEY", Sites: []string{"api.example.com"}, Placeholder: "ph",
+						}}), true
+					}
+					c.app.stdin = strings.NewReader(value)
+					c.hib("secret", "add", "api", "--env", "API_KEY", "--bind", "api.example.com")
+					output := c.out.String() + c.errOut.String()
+					for _, leak := range []string{"review", "7f3a9c"} {
+						if strings.Contains(output, leak) {
+							t.Fatalf("part of the value reached the output: %q", output)
+						}
+					}
+					want := 1
+					if channel == "stderr" {
+						want = len(message) - 1
+					}
+					if got := strings.Count(output, "[redacted]"); got != want {
+						t.Errorf("%d redactions, want %d: %q", got, want, output)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAPlainSecretKeepsOneRedactingWriterPerStream(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &stderr}
+	hidden, flush := a.hidingSecret("abc123XYZ")
+	for _, got := range []struct {
+		w    io.Writer
+		next io.Writer
+	}{{hidden.stdout, &stdout}, {hidden.stderr, &stderr}} {
+		w, ok := got.w.(*secretWriter)
+		if !ok || w.w != got.next {
+			t.Errorf("a plain value got a chain of writers: %#v", got.w)
+			continue
+		}
+		if len(w.forms) != 1 || string(w.forms[0]) != "abc123XYZ" {
+			t.Errorf("a plain value has the forms %q, want just the value", w.forms)
+		}
+	}
+	io.WriteString(hidden.stdout, `token "abc123XYZ" and abc123XYZ`)
+	flush()
+	if want := `token "[redacted]" and [redacted]`; stdout.String() != want {
+		t.Errorf("printed %q, want %q", stdout.String(), want)
 	}
 }
 
@@ -202,13 +358,48 @@ func TestLogWarnsAboutCorruptLinesAndEscapesEntries(t *testing.T) {
 	}
 }
 
+func TestLogKeepsEachEntryOnOneAlignedRow(t *testing.T) {
+	h := newHost(t)
+	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+		return writeTestResponse(stdout, hibapi.Response{Logs: []hibapi.LogEntry{
+			{Time: time.Unix(0, 0), Machine: "dev\tx", Site: "a.co\nb", Method: "GE\rT", Path: "/p\tq", Secrets: []string{"one\n", "two"}},
+			{Time: time.Unix(0, 0), Machine: "app", Site: "api.github.com", Method: "GET", Path: "/user", Secrets: []string{"github"}},
+		}}), true
+	}
+	c := initClient(t, h)
+	if code := c.hib("log"); code != 0 {
+		t.Fatalf("hib log exit %d, stderr %s", code, c.errOut)
+	}
+	lines := strings.Split(strings.TrimSuffix(c.out.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("hib log printed %d lines, want a header and one row per entry: %q", len(lines), c.out)
+	}
+	if want := `dev\x09x`; !strings.Contains(lines[1], want) || !strings.Contains(lines[1], `a.co\x0ab`) ||
+		!strings.Contains(lines[1], `GE\x0dT`) || !strings.Contains(lines[1], `/p\x09q`) || !strings.Contains(lines[1], `one\x0a,two`) {
+		t.Errorf("row %q, want each cell's tab, newline and carriage return escaped", lines[1])
+	}
+	cell := regexp.MustCompile(`\S+`)
+	header := cell.FindAllStringIndex(lines[0], -1)
+	for _, line := range lines[1:] {
+		row := cell.FindAllStringIndex(line, -1)
+		if len(row) != len(header) {
+			t.Fatalf("row %q has %d cells, want %d", line, len(row), len(header))
+		}
+		for i := range row {
+			if row[i][0] != header[i][0] {
+				t.Errorf("row %q: cell %d starts at %d, want %d under its header", line, i, row[i][0], header[i][0])
+			}
+		}
+	}
+}
+
 func TestLogRefusesBadArgumentsWithoutAskingTheHost(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"-n", "-1"}, "hib log: -n must be non-negative"},
-		{[]string{"extra"}, "log [-n N]"},
+		{[]string{"-n", "-1"}, "hib log: --n must be non-negative"},
+		{[]string{"extra"}, "log [--n N]"},
 		{[]string{"-n", "many"}, "invalid value"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {

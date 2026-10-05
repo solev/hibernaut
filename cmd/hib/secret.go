@@ -18,90 +18,64 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
-func (a *app) secret(ctx context.Context, cfg *config, args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(a.stderr, "usage: hib secret add NAME -env VAR -bind SITE[,SITE...] | secret ls | secret rm NAME")
-		return 2
+func (a *app) secretAdd(ctx context.Context, cfg *config, name, env, bind string) int {
+	if env == "" {
+		return a.mistake("missing --env VAR")
 	}
-	switch args[0] {
-	case "add":
-		return a.secretAdd(ctx, cfg, args[1:])
-	case "ls":
-		return a.secretLS(ctx, cfg, args[1:])
-	case "rm":
-		return a.secretRM(ctx, cfg, args[1:])
+	sites := vault.SplitSites(bind)
+	if err := vault.CheckSecret(name, env, sites); err != nil {
+		return a.mistake(err.Error())
 	}
-	fmt.Fprintf(a.stderr, "hib secret: unknown command %q\n", args[0])
-	return 2
-}
-
-func (a *app) secretAdd(ctx context.Context, cfg *config, args []string) int {
-	fl := a.flags("secret add")
-	env := fl.String("env", "", "environment variable to set in machines")
-	bind := fl.String("bind", "", "comma-separated bound sites")
-	names, ok := a.parse(fl, args, 1, "secret add NAME -env VAR -bind SITE[,SITE...]")
-	if !ok {
-		return 2
-	}
-	sites := vault.SplitSites(*bind)
-	if err := vault.CheckSecret(names[0], *env, sites); err != nil {
-		return a.fail(err)
-	}
-	value, err := a.readSecretValue(fmt.Sprintf("Value for %s: ", names[0]))
+	value, err := a.readSecretValue(fmt.Sprintf("Value for %s: ", name))
 	if err != nil {
-		return a.fail(err)
+		return a.fail(fmt.Errorf("%w: type it at the prompt or pipe it on stdin", err))
 	}
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "secret", "add", names[0], "--env", *env, "--bind", strings.Join(sites, ","), "--json")
+	a, flush := a.hidingSecret(value)
+	defer flush()
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{secret: []byte(value)}, "secret", "add", name, "--env", env, "--bind", strings.Join(sites, ","), "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be storing %s: check hib secret ls", name))
 	}
 	if r.Secret == nil {
-		return a.fail(errors.New("hibd didn't say which secret it stored"))
+		return a.fail(errors.New("hibd didn't say which secret it stored: run hib secret ls to see your secrets"))
 	}
 	fmt.Fprintf(a.stdout, "stored %s as %s for %s\n", safe(r.Secret.Name), safe(r.Secret.Env), safe(strings.Join(r.Secret.Sites, ",")))
 	return 0
 }
 
-func (a *app) secretLS(ctx context.Context, cfg *config, args []string) int {
-	if _, ok := a.parse(a.flags("secret ls"), args, 0, "secret ls"); !ok {
-		return 2
-	}
+func (a *app) secretLS(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "secret", "ls", "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Secrets: r.Secrets}, nil)
 	}
 	hibapi.PrintSecrets(a.stdout, r.Secrets)
 	return 0
 }
 
 func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
-	names, ok := a.parse(a.flags("secret rm"), args, 1, "secret rm NAME")
-	if !ok {
+	if !a.checkNames(args[0]) {
 		return 2
 	}
-	if err := hibapi.CheckName(names[0]); err != nil {
-		return a.fail(err)
+	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "secret", "rm", args[0], "--json"); err != nil {
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be removing %s: check hib secret ls", args[0]))
 	}
-	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "secret", "rm", names[0], "--json"); err != nil {
-		return a.fail(err)
-	}
-	fmt.Fprintf(a.stdout, "removed %s\n", names[0])
+	fmt.Fprintf(a.stdout, "removed %s\n", args[0])
 	return 0
 }
 
-func (a *app) log(ctx context.Context, cfg *config, args []string) int {
-	fl := a.flags("log")
-	n := fl.Int("n", 50, "number of newest entries to show")
-	if _, ok := a.parse(fl, args, 0, "log [-n N]"); !ok {
-		return 2
+func (a *app) log(ctx context.Context, cfg *config, n int) int {
+	if n < 0 {
+		return a.mistake("--n must be non-negative")
 	}
-	if *n < 0 {
-		fmt.Fprintln(a.stderr, "hib log: -n must be non-negative")
-		return 2
-	}
-	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(*n), "--json")
+	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Logs: r.Logs, Corrupt: r.Corrupt}, nil)
 	}
 	if r.Corrupt > 0 {
 		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt audit log line(s)\n", r.Corrupt)
@@ -129,11 +103,11 @@ func printLogEntries(w io.Writer, entries []hibapi.LogEntry) {
 	for _, e := range entries {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			e.Time.Local().Format(time.RFC3339),
-			termsafe.String(e.Machine),
-			termsafe.String(e.Site),
-			termsafe.String(e.Method),
-			termsafe.String(e.Path),
-			termsafe.String(strings.Join(e.Secrets, ",")))
+			termsafe.Line(e.Machine),
+			termsafe.Line(e.Site),
+			termsafe.Line(e.Method),
+			termsafe.Line(e.Path),
+			termsafe.Line(strings.Join(e.Secrets, ",")))
 	}
 	tw.Flush()
 }

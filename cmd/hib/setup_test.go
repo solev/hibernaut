@@ -136,7 +136,7 @@ func TestInitVersion(t *testing.T) {
 			if warned := strings.Contains(c.out.String(), "note:"); warned != tc.warning {
 				t.Errorf("init warned %v, want %v: %s", warned, tc.warning, c.out)
 			}
-			if tc.warning && !strings.Contains(c.out.String(), "this is hib "+version.Version+"; deploy the same release to the host") {
+			if tc.warning && !strings.Contains(c.out.String(), "note: this is hib "+version.Version+". Deploy the same release to the host\n") {
 				t.Errorf("init didn't say which release to deploy: %s", c.out)
 			}
 		})
@@ -183,7 +183,7 @@ func TestInitRejects(t *testing.T) {
 		{"group without VM", []string{"init", "-host", testHost, "-azure-group", "g"}, 2},
 		{"VM without group", []string{"init", "-host", testHost, "-azure-vm", "v"}, 2},
 		{"bad group", []string{"init", "-host", testHost, "-azure-group", "g;id", "-azure-vm", "v"}, 2},
-		{"missing identity", []string{"init", "-host", testHost, "-identity", "/nonexistent/id"}, 1},
+		{"missing identity", []string{"init", "-host", testHost, "-identity", "/nonexistent/id"}, 2},
 		{"ssh config with a quote", []string{"init", "-host", testHost, "-ssh-config", "/tmp/it's"}, 2},
 		{"ssh config with a percent", []string{"init", "-host", testHost, "-ssh-config", "/tmp/%d"}, 2},
 		{"extra argument", []string{"init", "-host", testHost, "extra"}, 2},
@@ -212,13 +212,13 @@ func TestInitRejects(t *testing.T) {
 	}
 }
 
-// TestInitWithoutHost checks that init without -host names the missing flag, and on a laptop
+// TestInitWithoutHost checks that init without --host names the missing flag, and on a laptop
 // that's set up says for which host, instead of rejecting an empty host.
 func TestInitWithoutHost(t *testing.T) {
 	h := newHost(t)
 	c := newClient(t, h)
-	if code := c.hib("init"); code != 2 || !strings.Contains(c.errOut.String(), "missing -host USER@HOST") {
-		t.Errorf("init without -host: exit %d, stderr %q; want 2 and the missing flag", code, c.errOut)
+	if code := c.hib("init"); code != 2 || !strings.Contains(c.errOut.String(), "missing --host USER@HOST") {
+		t.Errorf("init without --host: exit %d, stderr %q; want 2 and the missing flag", code, c.errOut)
 	}
 
 	if code := c.hib("init", "-host", testHost); code != 0 {
@@ -227,7 +227,7 @@ func TestInitWithoutHost(t *testing.T) {
 	h.takeCalls()
 	code := c.hib("init")
 	if stderr := c.errOut.String(); code != 2 || !strings.Contains(stderr, "already set up for "+testHost) ||
-		!strings.Contains(stderr, "hib new NAME") {
+		!strings.Contains(stderr, "\nnext: hib new NAME. Then ssh NAME.hib\n") {
 		t.Errorf("init without -host once set up: exit %d, stderr %q; want 2, the saved host and what's next", code, stderr)
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
@@ -252,7 +252,7 @@ func TestInitFailsWhenHibdDoesnt(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hib")
-	if _, err := loadConfig(dir); err == nil || !strings.Contains(err.Error(), "run hib init first") {
+	if _, err := loadConfig(dir); err == nil || !strings.Contains(err.Error(), "run hib init --host USER@HOST first") {
 		t.Errorf("no settings: %v", err)
 	}
 	good := &config{Host: testHost, dir: dir}
@@ -457,10 +457,10 @@ func TestUsage(t *testing.T) {
 	if code := c.hib(); code != 2 {
 		t.Errorf("no command: %d", code)
 	}
-	if code := c.hib("launch"); code != 2 || !strings.Contains(c.errOut.String(), `unknown command "launch"`) {
+	if code := c.hib("launch"); code != 2 || !strings.Contains(c.errOut.String(), "unknown command launch") {
 		t.Errorf("unknown command: %d, %q", code, c.errOut)
 	}
-	if code := c.hib("ls"); code != 1 || !strings.Contains(c.errOut.String(), "run hib init first") {
+	if code := c.hib("ls"); code != 1 || !strings.Contains(c.errOut.String(), "run hib init --host USER@HOST first") {
 		t.Errorf("before init: %d, %q", code, c.errOut)
 	}
 	var cfg config

@@ -717,6 +717,9 @@ func TestVersion(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &raw); err != nil || raw["v"] != float64(hibapi.Version) {
 		t.Errorf("version -json = %s, want v %d", out, hibapi.Version)
 	}
+	if features, ok := raw["features"].([]any); !ok || !slices.Contains(features, any(hibapi.FeatureBuildEvents)) {
+		t.Errorf("version -json = %s, want build-events", out)
+	}
 }
 
 func TestQuiescing(t *testing.T) {

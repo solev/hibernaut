@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · give every agent its own machine</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="r2.css">
+<link rel="stylesheet" href="r3.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  body {
+    background:
+      radial-gradient(60% 46% at 50% 74%, rgba(243, 199, 124, .08), transparent 70%),
+      linear-gradient(180deg, var(--bg) 0%, #100d0a 100%);
+    background-attachment: fixed;
+  }
+  .hero { padding-top: 22px; padding-bottom: 40px; overflow-x: clip; }
+  .head { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 24px 64px; align-items: end; }
+  .title { display: grid; gap: 22px; }
+  .title .display { --size: clamp(40px, 4.9vw, 72px); }
+  .side { display: grid; gap: 24px; padding-bottom: 6px; }
+  .side .lede { font-size: 15px; }
+  .side .facts { font-size: 12px; }
+
+  .floor { --b: clamp(58px, 7.6vw, 108px); --air: calc(var(--b) * .95 + 30px); position: relative; margin-top: 46px; isolation: isolate; }
+  .floor::before {
+    content: ""; position: absolute; z-index: -1; left: 50%; top: 22%; width: 100vw; height: 90%; transform: translateX(-50%); pointer-events: none;
+    background: radial-gradient(40% 50% at 50% 55%, rgba(243, 199, 124, .055), transparent 72%);
+  }
+
+  .cmd { position: relative; z-index: 2; min-height: 48px; font-size: 14.5px; line-height: 24px; }
+  .cmd .in { color: var(--fg); white-space: pre; }
+  .cmd .p { color: var(--muted); }
+  .cmd .caret { visibility: hidden; }
+  .cmd[data-typing] .caret, .cmd[data-ready] .caret { visibility: visible; }
+  .cmd .out { color: var(--muted); }
+
+  .arcs { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 0; }
+  .arcs path { fill: none; stroke: var(--accent); stroke-width: 1.25; stroke-linecap: round; opacity: .7; transition: stroke .8s, opacity .4s; }
+  .arcs path.rest { stroke: var(--line-2); opacity: 1; stroke-dasharray: 1.5 5; }
+  .arcs path.gone { opacity: 0; }
+
+  .bays { list-style: none; margin: var(--air) 0 0; padding: 0; position: relative; z-index: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .bays::before {
+    content: ""; position: absolute; left: 0; right: 0; top: var(--b); height: 1px;
+    background: linear-gradient(90deg, transparent, var(--line-2) 6%, var(--line-2) 94%, transparent);
+  }
+  .bay { display: grid; justify-items: center; position: relative; }
+  .bay::before { content: ""; position: absolute; top: var(--b); left: 50%; width: 1px; height: 7px; background: var(--line-2); }
+  .seat { position: relative; width: var(--b); height: var(--b); transform-origin: 50% 100%; }
+  .seat hib-bot { position: absolute; width: calc(var(--b) * 1.9); left: calc(var(--b) * -.45); top: calc(var(--b) * -.55); transform-origin: 50% 60%; }
+  .seat::after {
+    content: ""; position: absolute; z-index: -1; left: 2%; right: 2%; bottom: -6px; height: 12px; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(0, 0, 0, .75), transparent); opacity: 0; transition: opacity .3s;
+  }
+  .bay[data-name] .seat::after { opacity: 1; }
+
+  .snap {
+    --c: var(--accent); position: absolute; inset: -11px; pointer-events: none; opacity: 0; transition: opacity .2s; overflow: hidden;
+    background:
+      linear-gradient(var(--c), var(--c)) 0 0 / 13px 1.5px, linear-gradient(var(--c), var(--c)) 0 0 / 1.5px 13px,
+      linear-gradient(var(--c), var(--c)) 100% 0 / 13px 1.5px, linear-gradient(var(--c), var(--c)) 100% 0 / 1.5px 13px,
+      linear-gradient(var(--c), var(--c)) 0 100% / 13px 1.5px, linear-gradient(var(--c), var(--c)) 0 100% / 1.5px 13px,
+      linear-gradient(var(--c), var(--c)) 100% 100% / 13px 1.5px, linear-gradient(var(--c), var(--c)) 100% 100% / 1.5px 13px;
+    background-repeat: no-repeat;
+  }
+  .snap::before {
+    content: ""; position: absolute; left: 8px; right: 8px; top: 10px; height: 1.5px; background: var(--accent);
+    box-shadow: 0 0 12px 1px var(--accent); animation: scan .8s cubic-bezier(.45, 0, .55, 1) infinite alternate;
+  }
+  @keyframes scan { to { transform: translateY(calc(var(--b) + 1px)); } }
+  .bay.snapping .snap { opacity: 1; }
+  .bay.snapping hib-bot { opacity: .62; transition: opacity .25s; }
+
+  .tag { margin: 16px 0 0; display: grid; justify-items: center; gap: 1px; min-height: 42px; font-size: 13px; line-height: 20px; text-align: center; white-space: nowrap; }
+  .tag .nm { color: var(--fg); font-weight: 500; }
+  .tag .nm span { color: var(--muted); font-weight: 400; }
+  .tag .st { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+  .tag .st::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s, box-shadow .3s; }
+  .bay:not([data-name]) .tag { visibility: hidden; }
+  .bay[data-s="running"] .st::before { background: var(--accent); box-shadow: 0 0 8px rgba(243, 199, 124, .6); }
+  .bay[data-s="paused"] .st::before { background: none; box-shadow: inset 0 0 0 1.5px var(--muted); }
+  .bay[data-s="working"] .st { color: var(--fg-2); }
+  .bay[data-s="working"] .st::before { background: var(--accent); animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(243, 199, 124, .16); } }
+
+  .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .controls .label { margin-right: 8px; }
+  .controls .sp { flex: 1; }
+  .controls .host { font-size: 12px; color: var(--faint); }
+
+  @media (max-width: 1100px) {
+    .head { grid-template-columns: 1fr; }
+    .side { max-width: 640px; }
+  }
+  @media (max-width: 860px) {
+    .hero { padding-top: 6px; }
+    .title { gap: 16px; }
+    .title .display { --size: min(9.4vw, 44px); }
+    .side { gap: 20px; }
+    .floor { --b: 54px; --air: 70px; margin-top: 34px; }
+    .bays { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .bay:nth-child(n + 5) { display: none; }
+    .cmd { font-size: 11.5px; line-height: 19px; min-height: 57px; }
+    .cmd .in { white-space: pre-wrap; }
+    .tag { font-size: 11px; line-height: 16px; margin-top: 12px; min-height: 34px; }
+    .tag .st { font-size: 10.5px; gap: 5px; }
+    .snap { inset: -7px; }
+    .controls { margin-top: 16px; gap: 8px; }
+    .controls .label { width: 100%; }
+    .controls .sp, .controls .host { display: none; }
+    .run { height: 34px; font-size: 12px; padding: 0 10px 0 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .snap::before, .bay[data-s="working"] .st::before { animation: none; } }
+</style>
+</head>
+<body>
+<header class="nav wrap">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Security</a><a href="#">Docs</a></nav>
+  <a class="btn sm quiet" href="#">Get early access</a>
+</header>
+
+<main class="hero wrap">
+  <section class="head">
+    <div class="title">
+      <p class="eyebrow reveal" style="--i:0"><i></i>Self-hosted machines for coding agents</p>
+      <h1 class="display"><span class="ln"><span>Give every agent</span></span><span class="ln"><span>its own <em>machine.</em></span></span></h1>
+    </div>
+    <div class="side">
+      <p class="lede reveal" style="--i:2">A hardware-isolated Linux machine on your own server, ready in about a second. Connect GitHub and Codex once and every machine comes logged in, Copilot too. <b>Real tokens never enter a machine.</b></p>
+      <div class="ctas reveal" style="--i:3">
+        <a class="btn primary" href="#">Get early access <span class="arr">→</span></a>
+        <button class="btn link" id="replay" type="button"><span class="play" aria-hidden="true"></span>Replay demo</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="floor reveal" style="--i:4" id="floor" aria-label="Illustration: machines on your server">
+    <svg class="arcs" id="arcs" aria-hidden="true"></svg>
+    <div class="cmd" id="cmd" aria-hidden="true">
+      <div class="in"><span class="p">~ $ </span><span id="typed"></span><span class="caret"></span></div>
+      <div class="out" id="out"></div>
+    </div>
+    <p class="sr" aria-live="polite" id="live"></p>
+    <ol class="bays" aria-hidden="true">
+      <li class="bay"><div class="seat"><div class="snap"></div></div><p class="tag"><b class="nm"></b><span class="st"></span></p></li>
+      <li class="bay"><div class="seat"><div class="snap"></div></div><p class="tag"><b class="nm"></b><span class="st"></span></p></li>
+      <li class="bay"><div class="seat"><div class="snap"></div></div><p class="tag"><b class="nm"></b><span class="st"></span></p></li>
+      <li class="bay"><div class="seat"><div class="snap"></div></div><p class="tag"><b class="nm"></b><span class="st"></span></p></li>
+      <li class="bay"><div class="seat"><div class="snap"></div></div><p class="tag"><b class="nm"></b><span class="st"></span></p></li>
+      <li class="bay"><div class="seat"><div class="snap"></div></div><p class="tag"><b class="nm"></b><span class="st"></span></p></li>
+    </ol>
+    <div class="controls">
+      <span class="label">Try it</span>
+      <button class="run" id="b-new" type="button" disabled>hib new web</button>
+      <button class="run" id="b-fork" type="button" disabled>hib fork api --count 2</button>
+      <button class="run" id="b-rm" type="button" disabled>hib rm api-3</button>
+      <span class="sp"></span>
+      <span class="host">your server · Firecracker microVMs</span>
+      <button class="toggle" id="motion" type="button">Pause motion</button>
+    </div>
+  </section>
+</main>
+
+<nav class="switcher" aria-label="Hero directions">
+  <a href="index.html">all</a><a href="09-spawn.html" aria-current="page">09</a><a href="10-placeholder.html">10</a><a href="11-ready.html">11</a>
+</nav>
+
+<script type="module">
+  import { $, $$, reduced, motion, setPaused } from './hero.js';
+
+  const floor = $('#floor');
+  const arcs = $('#arcs');
+  const cmdEl = $('#cmd');
+  const typed = $('#typed');
+  const out = $('#out');
+  const live = $('#live');
+  const bays = $$('.bay');
+  const btn = { new: $('#b-new'), fork: $('#b-fork'), rm: $('#b-rm') };
+  const NAMES = ['api', 'web', 'db', 'docs', 'jobs', 'ci', 'ml'];
+  const SVG = 'http://www.w3.org/2000/svg';
+  const STOP = Symbol('stop');
+  const machines = [];
+  let epoch = 0;
+  let busy = false;
+
+  const find = (name) => machines.find((m) => m.name === name);
+  const free = () => bays.filter((b) => b.offsetParent && !b.dataset.name);
+  const seat = (m) => m.bay.querySelector('.seat');
+  const lift = (dx) => 34 + Math.abs(dx) * 0.085;
+
+  function waiter(my) {
+    return (ms) => new Promise((res, rej) => {
+      let left = reduced ? 0 : ms;
+      const tick = () => {
+        if (my !== epoch) return rej(STOP);
+        if (motion.paused) return setTimeout(tick, 120);
+        if (left <= 0) return res();
+        const step = Math.min(left, 100);
+        left -= step;
+        setTimeout(tick, step);
+      };
+      tick();
+    });
+  }
+
+  function say(html) {
+    out.innerHTML = html;
+    live.textContent = out.textContent;
+  }
+
+  function status(m, text, s) {
+    m.bay.dataset.s = s;
+    m.bay.querySelector('.st').textContent = text;
+  }
+
+  function place(bay, name, from) {
+    const bot = document.createElement('hib-bot');
+    bot.setAttribute('follow', '');
+    bot.setAttribute('state', from ? 'idle' : 'asleep');
+    bot.setAttribute('aria-hidden', 'true');
+    if (motion.paused) bot.setAttribute('paused', '');
+    bay.dataset.name = name;
+    bay.querySelector('.seat').append(bot);
+    bay.querySelector('.nm').innerHTML = `${name}<span>.hib</span>`;
+    const m = { name, bay, bot, from };
+    machines.push(m);
+    return m;
+  }
+
+  async function create(w, name) {
+    const m = place(free()[0], name);
+    status(m, 'starting', 'paused');
+    if (!reduced) {
+      m.bot.animate(
+        [{ transform: 'translateY(-70px) scale(.9)', opacity: 0 }, { opacity: 1, offset: 0.3 }, { transform: 'none', opacity: 1 }],
+        { duration: 560, easing: 'cubic-bezier(.3, 1.3, .5, 1)' },
+      );
+    }
+    m.bot.setAttribute('state', 'wake');
+    await w(480);
+    status(m, 'running', 'running');
+    return m;
+  }
+
+  function arcPath(from, to) {
+    const f = floor.getBoundingClientRect();
+    const a = seat(from).getBoundingClientRect();
+    const b = seat(to).getBoundingClientRect();
+    const x0 = a.left + a.width / 2 - f.left, y0 = a.top - f.top - 7;
+    const x1 = b.left + b.width / 2 - f.left, y1 = b.top - f.top - 7;
+    const cy = (y0 + y1) / 2 - 2 * lift(x1 - x0);
+    return `M${x0.toFixed(1)} ${y0.toFixed(1)} Q${((x0 + x1) / 2).toFixed(1)} ${cy.toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  }
+
+  function settleArc(p) {
+    p.removeAttribute('pathLength');
+    p.style.strokeDasharray = '';
+    p.classList.add('rest');
+  }
+
+  function drawArc(from, to, dur) {
+    const p = document.createElementNS(SVG, 'path');
+    p.dataset.from = from.name;
+    p.dataset.to = to.name;
+    p.setAttribute('d', arcPath(from, to));
+    arcs.append(p);
+    if (reduced) return settleArc(p);
+    p.setAttribute('pathLength', '1');
+    p.style.strokeDasharray = '1';
+    p.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: dur, easing: 'cubic-bezier(.33, 0, .3, 1)', fill: 'forwards' })
+      .finished.then(() => setTimeout(() => p.isConnected && settleArc(p), 1300)).catch(() => {});
+  }
+
+  function hop(origin, bay, name) {
+    const m = place(bay, name, origin.name);
+    status(m, 'copied', 'running');
+    const dur = 660;
+    drawArc(origin, m, dur);
+    if (reduced) return m;
+    const a = seat(origin).getBoundingClientRect();
+    const b = seat(m).getBoundingClientRect();
+    const dx = a.left - b.left, dy = a.top - b.top, h = lift(dx);
+    const frames = [];
+    for (let i = 0; i <= 24; i++) {
+      const t = i / 24;
+      const x = dx * (1 - t), y = dy * (1 - t) - 4 * h * t * (1 - t);
+      frames.push({ offset: t, opacity: Math.min(1, t * 5), transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${(0.4 + 0.6 * t).toFixed(3)})` });
+    }
+    m.bot.animate(frames, { duration: dur, easing: 'cubic-bezier(.33, 0, .3, 1)' }).finished.then(() => {
+      seat(m).animate(
+        [{ transform: 'scale(1.1, .88)' }, { transform: 'scale(.97, 1.04)', offset: 0.45 }, { transform: 'none' }],
+        { duration: 420, easing: 'cubic-bezier(.2, .7, .3, 1)' },
+      );
+    }).catch(() => {});
+    return m;
+  }
+
+  async function fork(w, origin, names) {
+    const targets = free().slice(0, names.length);
+    origin.bay.classList.add('snapping');
+    origin.bot.setAttribute('paused', '');
+    status(origin, 'paused', 'paused');
+    await w(1150);
+    const copies = [];
+    for (let i = 0; i < names.length; i++) {
+      copies.push(hop(origin, targets[i], names[i]));
+      await w(200);
+    }
+    await w(620);
+    origin.bay.classList.remove('snapping');
+    if (!motion.paused) origin.bot.removeAttribute('paused');
+    status(origin, 'running', 'running');
+    return copies;
+  }
+
+  async function remove(w, m) {
+    machines.splice(machines.indexOf(m), 1);
+    for (const p of arcs.querySelectorAll('path')) {
+      if (p.dataset.from === m.name || p.dataset.to === m.name) { p.classList.add('gone'); setTimeout(() => p.remove(), 450); }
+    }
+    status(m, 'removing', 'paused');
+    if (!reduced) {
+      await m.bot.animate(
+        [{ transform: 'none', opacity: 1 }, { transform: 'translateY(-8px) scale(.72)', opacity: 0 }],
+        { duration: 360, easing: 'cubic-bezier(.5, 0, .75, 0)', fill: 'forwards' },
+      ).finished.catch(() => {});
+    }
+    m.bot.remove();
+    for (const k of ['name', 's']) delete m.bay.dataset[k];
+    m.bay.querySelector('.nm').textContent = '';
+    m.bay.querySelector('.st').textContent = '';
+    await w(120);
+  }
+
+  function nextCopies(origin, n) {
+    const names = [];
+    for (let k = 1; names.length < n; k++) if (!find(`${origin.name}-${k}`)) names.push(`${origin.name}-${k}`);
+    return names;
+  }
+
+  const commands = {
+    new() {
+      const name = NAMES.find((n) => !find(n));
+      if (!name || !free().length) return null;
+      return {
+        text: `hib new ${name}`,
+        async run(w) { await create(w, name); say(`made ${name}; connect with: <mark>ssh ${name}.hib</mark>`); },
+      };
+    },
+    fork(n) {
+      const origin = machines.find((m) => !m.from) || machines[0];
+      n = Math.min(n, free().length);
+      if (!origin || n < 1) return null;
+      const names = nextCopies(origin, n);
+      return {
+        text: `hib fork ${origin.name}${n > 1 ? ` --count ${n}` : ''}`,
+        async run(w) {
+          const copies = await fork(w, origin, names);
+          say(`made ${names.join(', ')} from ${origin.name}. connect with: <mark>ssh ${names[0]}.hib</mark>`);
+          return copies;
+        },
+      };
+    },
+    rm() {
+      const m = machines[machines.length - 1];
+      if (!m) return null;
+      return { text: `hib rm ${m.name}`, async run(w) { await remove(w, m); say(`removed ${m.name}`); } };
+    },
+  };
+
+  async function exec(w, cmd) {
+    say('');
+    cmdEl.removeAttribute('data-ready');
+    cmdEl.setAttribute('data-typing', '');
+    typed.textContent = '';
+    for (const ch of cmd.text) {
+      typed.textContent += ch;
+      await w(30 + Math.random() * 36);
+    }
+    await w(280);
+    cmdEl.removeAttribute('data-typing');
+    return cmd.run(w);
+  }
+
+  function refresh() {
+    const c = { new: commands.new(), fork: commands.fork(2), rm: commands.rm() };
+    for (const k of Object.keys(btn)) {
+      if (c[k]) btn[k].textContent = c[k].text;
+      btn[k].disabled = busy || !c[k];
+    }
+  }
+
+  async function perform(fn) {
+    const my = epoch;
+    busy = true;
+    refresh();
+    try {
+      await fn(waiter(my));
+    } catch (e) {
+      if (e !== STOP) throw e;
+    }
+    if (my === epoch) {
+      busy = false;
+      cmdEl.setAttribute('data-ready', '');
+      refresh();
+    }
+  }
+
+  function reset() {
+    for (const m of machines) m.bot.remove();
+    machines.length = 0;
+    for (const b of bays) {
+      for (const k of ['name', 's']) delete b.dataset[k];
+      b.classList.remove('snapping');
+      b.querySelector('.nm').textContent = '';
+      b.querySelector('.st').textContent = '';
+    }
+    arcs.replaceChildren();
+    typed.textContent = '';
+    say('');
+    cmdEl.setAttribute('data-ready', '');
+  }
+
+  function intro() {
+    epoch++;
+    reset();
+    perform(async (w) => {
+      await w(1100);
+      await exec(w, commands.new());
+      await w(1900);
+      const copies = await exec(w, commands.fork(3));
+      await w(1000);
+      const agents = ['codex', 'copilot', 'codex'];
+      for (const [i, m] of copies.entries()) {
+        m.bot.setAttribute('state', 'thinking');
+        status(m, agents[i], 'working');
+        await w(320);
+      }
+      await w(1300);
+      for (const m of copies) {
+        m.bot.setAttribute('state', 'working');
+        await w(240);
+      }
+    });
+  }
+
+  for (const [k, b] of Object.entries(btn)) {
+    b.addEventListener('click', () => {
+      const cmd = k === 'fork' ? commands.fork(2) : commands[k]();
+      if (!cmd || busy) return;
+      perform((w) => exec(w, cmd));
+    });
+  }
+  $('#replay').addEventListener('click', () => { if (motion.paused) toggle(); intro(); });
+
+  let held = [];
+  function toggle() {
+    setPaused(!motion.paused);
+    if (motion.paused) {
+      held = document.getAnimations().filter((a) => a.playState === 'running');
+      for (const a of held) a.pause();
+    } else {
+      for (const a of held) a.play();
+      held = [];
+      for (const b of $$('.bay.snapping hib-bot')) b.setAttribute('paused', '');
+    }
+    $('#motion').textContent = motion.paused ? 'Play motion' : 'Pause motion';
+  }
+  $('#motion').addEventListener('click', toggle);
+
+  new ResizeObserver(() => {
+    for (const p of arcs.querySelectorAll('path')) {
+      const from = find(p.dataset.from), to = find(p.dataset.to);
+      if (from && to) p.setAttribute('d', arcPath(from, to));
+    }
+  }).observe(floor);
+
+  intro();
+</script>
+</body>
+</html>

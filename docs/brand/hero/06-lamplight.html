@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · your machines sleep, your work stays intact</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="r2.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  :root { --max: 1360px; }
+  body { background: radial-gradient(120% 70% at 75% 10%, #1a1511 0%, var(--bg) 55%); background-attachment: fixed; }
+  .lamp {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: radial-gradient(520px circle at var(--mx, 70%) var(--my, 40%), rgba(243, 199, 124, .055), transparent 70%);
+  }
+  .nav, .hero, .below { position: relative; z-index: 1; }
+
+  .hero {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 56px; align-items: center;
+    min-height: calc(100svh - 76px - 40px); padding-block: 0 56px;
+  }
+  .copy { display: grid; gap: 26px; align-content: center; }
+  .copy .display { --size: clamp(38px, 4.2vw, 60px); }
+  .copy .ctas { margin-top: 6px; }
+  .copy .facts { margin-top: 10px; }
+
+  .host {
+    --lx: 50%; --ly: 40%; --lo: .8;
+    position: relative; border: 1px solid var(--line-2); border-radius: 26px;
+    background: linear-gradient(180deg, #120f0c, #0e0b09);
+    box-shadow: 0 40px 90px -40px rgba(0, 0, 0, .8), inset 0 1px 0 rgba(255, 240, 220, .03);
+    padding: 40px 18px 0;
+  }
+  .legend {
+    position: absolute; top: -10px; left: 26px; right: 26px; display: flex; justify-content: space-between; z-index: 4;
+    font-size: 12px; line-height: 20px; color: var(--muted); pointer-events: none;
+  }
+  .legend > span { background: var(--bg); padding: 0 10px; display: inline-flex; gap: 10px; border-radius: 6px; white-space: nowrap; }
+  .legend b { color: var(--fg-2); font-weight: 500; }
+  .legend .on { color: var(--accent); }
+
+  .shelf { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); position: relative; z-index: 1; }
+  .shelf + .shelf { margin-top: 34px; }
+  .m {
+    appearance: none; background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+    display: grid; border-radius: 16px; -webkit-tap-highlight-color: transparent;
+  }
+  .m:focus-visible { outline-offset: -2px; }
+  .seat { position: relative; padding: 0 8px; border-bottom: 1px solid var(--line-2); }
+  .seat::after {
+    content: ""; position: absolute; left: 50%; bottom: -1px; width: 46%; height: 12px; translate: -50% 50%;
+    background: radial-gradient(closest-side, rgba(0, 0, 0, .55), transparent); pointer-events: none;
+  }
+  .m hib-bot {
+    width: 100%; margin: -16% 0 -10.53%; position: relative; z-index: 1;
+    color: #6e6153; transition: color .9s ease, filter .9s ease;
+  }
+  .m[data-state="awake"] hib-bot { color: var(--fg); filter: drop-shadow(0 0 22px rgba(243, 199, 124, .2)); }
+  .tag { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 12px 16px 6px; font-size: 13px; color: var(--muted); }
+  .tag b { color: var(--fg-2); font-weight: 500; transition: color .4s; }
+  .tag .st { font-style: normal; font-size: 11.5px; color: var(--faint); display: inline-flex; align-items: center; gap: 7px; transition: color .4s; }
+  .tag .st::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .4s, box-shadow .4s; }
+  .m[data-state="awake"] .tag b { color: var(--fg); }
+  .m[data-state="awake"] .st { color: var(--accent); }
+  .m[data-state="awake"] .st::before { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+
+  .shade, .glow { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+  .shade { z-index: 2; background: radial-gradient(circle 400px at var(--lx) var(--ly), transparent 12%, rgba(6, 5, 3, .4) 55%, rgba(6, 5, 3, .7) 100%); }
+  .glow {
+    z-index: 3; mix-blend-mode: screen; opacity: var(--lo);
+    background: radial-gradient(circle 250px at var(--lx) var(--ly), rgba(243, 199, 124, .2), rgba(243, 199, 124, .05) 45%, transparent 75%);
+  }
+
+  .ticker {
+    position: relative; z-index: 4; margin: 22px -18px 0; height: 50px; border-top: 1px solid var(--line);
+    display: flex; align-items: center; padding: 0 22px; overflow: hidden; font-size: 12.5px; color: var(--muted);
+    background: rgba(20, 17, 14, .6); border-radius: 0 0 25px 25px;
+  }
+  .ticker p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: tick .5s cubic-bezier(.2, .7, .2, 1); }
+  .ticker time { color: var(--faint); margin-right: 14px; font-variant-numeric: tabular-nums; }
+  .ticker b { color: var(--fg); font-weight: 500; }
+  .ticker .ok { color: var(--accent); }
+  @keyframes tick { from { opacity: 0; transform: translateY(10px); } }
+
+  .below { display: flex; justify-content: space-between; gap: 16px; padding: 14px 6px 0; font-size: 12px; color: var(--faint); }
+  .below p { margin: 0; }
+
+  @media (prefers-reduced-motion: reduce) { .ticker p { animation: none; } }
+  @media (max-width: 1100px) { .hero { gap: 36px; } }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; min-height: 0; gap: 44px; padding-block: 4px 40px; }
+    .copy { gap: 20px; }
+    .copy .display { --size: clamp(36px, 10.4vw, 46px); }
+    .copy .facts { display: none; }
+    .host { padding: 34px 6px 0; border-radius: 22px; }
+    .legend { left: 16px; right: 16px; }
+    .legend .spec { display: none; }
+    .shelf + .shelf { display: none; }
+    .tag { flex-direction: column; gap: 2px; padding: 10px 6px 4px; align-items: center; font-size: 12px; }
+    .ticker { margin-inline: -6px; font-size: 11.5px; padding: 0 14px; border-radius: 0 0 21px 21px; }
+    .ticker time { display: none; }
+    .below { flex-direction: column; gap: 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="lamp" aria-hidden="true"></div>
+
+<header class="nav wrap">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Security</a><a href="#">Docs</a></nav>
+  <a class="btn sm quiet" href="#">Get early access</a>
+</header>
+
+<main class="hero wrap">
+  <section class="copy">
+    <p class="eyebrow reveal" style="--i:0"><i></i>Self-hosted machines for coding agents</p>
+    <h1 class="display"><span class="ln"><span>Your machines sleep.</span></span><span class="ln"><span>Your work stays intact.</span></span></h1>
+    <p class="lede reveal" style="--i:2">Run hardware-isolated machines on your own server. Idle ones pause with their memory saved to disk, and <code>ssh app.hib</code> wakes one in under a second. <b>Your GitHub token never enters a machine.</b></p>
+    <div class="ctas reveal" style="--i:3">
+      <a class="btn primary" href="#">Get early access <span class="arr">→</span></a>
+      <button class="btn link" id="watch" type="button"><span class="play" aria-hidden="true"></span>Watch one wake</button>
+    </div>
+    <ul class="facts reveal" style="--i:4">
+      <li>Firecracker microVMs</li>
+      <li><b>0.34 s</b> warm resume</li>
+      <li>runs on one 4 vCPU server</li>
+    </ul>
+  </section>
+
+  <div class="reveal" style="--i:3">
+    <section class="host" aria-label="Illustration: six machines on one server">
+      <div class="legend">
+        <span><b>your-server</b><span class="spec">4 vCPU · 16 GB</span></span>
+        <span id="counts"><b class="on">0</b> running · <b>6</b> paused</span>
+      </div>
+      <div class="shelf">
+        <button class="m" type="button" data-name="app" data-kept="dev server still on :5173"><span class="seat"><hib-bot follow state="asleep"></hib-bot></span><span class="tag"><span><b>app</b>.hib</span><i class="st">paused</i></span></button>
+        <button class="m" type="button" data-name="api" data-kept="psql session still open"><span class="seat"><hib-bot follow state="asleep"></hib-bot></span><span class="tag"><span><b>api</b>.hib</span><i class="st">paused</i></span></button>
+        <button class="m" type="button" data-name="docs" data-kept="unsaved vim buffer kept"><span class="seat"><hib-bot follow state="asleep"></hib-bot></span><span class="tag"><span><b>docs</b>.hib</span><i class="st">paused</i></span></button>
+      </div>
+      <div class="shelf">
+        <button class="m" type="button" data-name="review" data-kept="tmux panes as you left them"><span class="seat"><hib-bot follow state="asleep"></hib-bot></span><span class="tag"><span><b>review</b>.hib</span><i class="st">paused</i></span></button>
+        <button class="m" type="button" data-name="agent-1" data-kept="agent scrollback still there"><span class="seat"><hib-bot follow state="asleep"></hib-bot></span><span class="tag"><span><b>agent-1</b>.hib</span><i class="st">paused</i></span></button>
+        <button class="m" type="button" data-name="agent-2" data-kept="python REPL state kept"><span class="seat"><hib-bot follow state="asleep"></hib-bot></span><span class="tag"><span><b>agent-2</b>.hib</span><i class="st">paused</i></span></button>
+      </div>
+      <div class="ticker" aria-live="polite" id="ticker"><p><time></time><b>6</b> machines paused · holding no RAM</p></div>
+      <div class="shade" aria-hidden="true"></div>
+      <div class="glow" aria-hidden="true"></div>
+    </section>
+    <div class="below">
+      <p id="hint">Hover a machine to wake it. Idle time shortened to 2 s.</p>
+      <button class="toggle" id="motion" type="button">Pause motion</button>
+    </div>
+  </div>
+</main>
+
+<nav class="switcher" aria-label="Hero directions">
+  <a href="index.html">all</a><a href="06-lamplight.html" aria-current="page">06</a><a href="07-perch.html">07</a><a href="08-specimen.html">08</a>
+</nav>
+
+<script type="module">
+  import { $, $$, reduced } from './hero.js';
+
+  const host = $('.host');
+  const ticker = $('#ticker');
+  const touch = matchMedia('(hover: none)').matches;
+  if (touch) $('#hint').textContent = 'Tap a machine to wake it. Idle time shortened to 2 s.';
+
+  const machines = $$('.m').map((el) => ({ el, bot: $('hib-bot', el), st: $('.st', el), name: el.dataset.name, kept: el.dataset.kept, awake: false, timer: 0 }));
+  let frozen = false;
+  let touched = false;
+  let intro = 0;
+
+  const clock = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
+  function log(html) {
+    const p = document.createElement('p');
+    p.innerHTML = `<time>${clock()}</time>${html}`;
+    ticker.replaceChildren(p);
+  }
+  const shown = () => machines.filter((m) => m.el.getClientRects().length);
+  function count() {
+    const all = shown();
+    const on = all.filter((m) => m.awake).length;
+    $('#counts').innerHTML = `<b class="on">${on}</b> running · <b>${all.length - on}</b> paused`;
+  }
+  function label(m, text) {
+    m.st.textContent = text;
+    m.el.setAttribute('aria-label', `${m.name}.hib, ${text}. ${m.awake ? 'Running.' : 'Press to wake it.'}`);
+  }
+
+  function wake(m) {
+    clearTimeout(m.timer);
+    if (m.awake || frozen) return;
+    m.awake = true;
+    m.el.dataset.state = 'awake';
+    m.bot.setAttribute('state', 'wake');
+    label(m, 'waking');
+    count();
+    m.bot.addEventListener('settled', () => m.awake && label(m, 'running'), { once: true });
+    log(`<b>${m.name}</b> woke in 0.6 s <span class="ok">· ${m.kept}</span>`);
+  }
+  function sleep(m) {
+    clearTimeout(m.timer);
+    if (!m.awake || frozen) return;
+    m.awake = false;
+    m.el.dataset.state = 'asleep';
+    m.bot.setAttribute('state', 'hibernate');
+    label(m, 'pausing');
+    count();
+    m.bot.addEventListener('settled', () => !m.awake && label(m, 'paused'), { once: true });
+    log(`<b>${m.name}</b> idle 15 min · paused with its memory on disk`);
+  }
+  const later = (m, ms) => { clearTimeout(m.timer); m.timer = setTimeout(() => sleep(m), ms); };
+
+  // The lamp: an eased light pool that follows the pointer over the host.
+  const L = { x: 0, y: 0, tx: 0, ty: 0, o: 0.55, to: 0.55 };
+  function aim(m, o = 1) {
+    const r = host.getBoundingClientRect();
+    const b = m.bot.getBoundingClientRect();
+    L.tx = b.left + b.width / 2 - r.left;
+    L.ty = b.top + b.height * 0.62 - r.top;
+    L.to = o;
+  }
+  aim(machines[1], 0.55);
+  L.x = L.tx; L.y = L.ty;
+  (function frame() {
+    requestAnimationFrame(frame);
+    if (frozen) return;
+    const k = reduced ? 1 : 0.12;
+    L.x += (L.tx - L.x) * k; L.y += (L.ty - L.y) * k; L.o += (L.to - L.o) * 0.06;
+    host.style.setProperty('--lx', `${L.x.toFixed(1)}px`);
+    host.style.setProperty('--ly', `${L.y.toFixed(1)}px`);
+    host.style.setProperty('--lo', L.o.toFixed(3));
+  })();
+
+  addEventListener('pointermove', (e) => {
+    document.body.style.setProperty('--mx', `${e.clientX}px`);
+    document.body.style.setProperty('--my', `${e.clientY}px`);
+  }, { passive: true });
+  host.addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const r = host.getBoundingClientRect();
+    L.tx = e.clientX - r.left; L.ty = e.clientY - r.top; L.to = 1;
+  });
+  host.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') L.to = 0.55; });
+
+  for (const m of machines) {
+    m.el.addEventListener('pointerenter', (e) => {
+      if (e.pointerType !== 'mouse' || frozen) return;
+      stopIntro();
+      if (m.awake) { clearTimeout(m.timer); return; }
+      m.bot.stir();
+      m.timer = setTimeout(() => wake(m), 240);
+    });
+    m.el.addEventListener('pointerleave', (e) => {
+      if (e.pointerType !== 'mouse') return;
+      if (m.awake) later(m, 1400); else clearTimeout(m.timer);
+    });
+    m.el.addEventListener('click', (e) => {
+      if (frozen) return;
+      stopIntro();
+      const mouse = e.pointerType === 'mouse';
+      if (!mouse) aim(m);
+      if (m.awake) { if (m.bot.state === 'idle') m.bot.setAttribute('state', 'happy'); }
+      else wake(m);
+      if (!mouse) later(m, 3200);
+    });
+    m.el.addEventListener('blur', () => { if (m.awake && !m.el.matches(':hover')) later(m, 1400); });
+  }
+
+  function stopIntro() { touched = true; clearTimeout(intro); }
+  function demo(m) {
+    if (frozen) return;
+    aim(m);
+    setTimeout(() => { wake(m); later(m, 3400); }, reduced ? 0 : 420);
+    setTimeout(() => { if (!host.matches(':hover')) L.to = 0.55; }, 3800);
+  }
+  intro = setTimeout(() => !touched && demo(machines[2]), 1700);
+  $('#watch').addEventListener('click', () => {
+    stopIntro();
+    const asleep = shown().filter((m) => !m.awake);
+    if (asleep.length) demo(asleep[Math.floor(Math.random() * asleep.length)]);
+  });
+
+  $('#motion').addEventListener('click', (e) => {
+    frozen = !frozen;
+    e.currentTarget.textContent = frozen ? 'Resume motion' : 'Pause motion';
+    for (const b of $$('hib-bot')) b.toggleAttribute('paused', frozen);
+    if (frozen) { stopIntro(); machines.forEach((m) => clearTimeout(m.timer)); }
+    else machines.filter((m) => m.awake).forEach((m) => later(m, 1600));
+  });
+
+  count();
+  log(`<b>${shown().length}</b> machines paused <span class="ok">· holding no RAM</span>`);
+  matchMedia('(max-width: 860px)').addEventListener('change', count);
+</script>
+</body>
+</html>

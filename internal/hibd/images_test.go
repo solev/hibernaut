@@ -88,7 +88,7 @@ func TestImageSaveOutput(t *testing.T) {
 	if code := a.Run(t.Context(), []string{"image", "save", "web", "myimg"}); code != 0 {
 		t.Fatalf("save = %d; stderr %s", code, errOut)
 	}
-	if got, want := out.String(), "saved image myimg (512 MiB). use it with: hib new NAME -image myimg\n"; got != want {
+	if got, want := out.String(), "saved image myimg (512 MiB). use it with: hib new NAME --image myimg\n"; got != want {
 		t.Errorf("saved image output = %q, want %q", got, want)
 	}
 }

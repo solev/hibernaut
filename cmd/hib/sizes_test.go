@@ -58,7 +58,7 @@ func TestBadSizesNeverReachTheHost(t *testing.T) {
 	c := initClient(t, h)
 	for _, size := range []string{"", "huge", "Small", "small;reboot", "small --image x"} {
 		code := c.hib("new", "app", "--size", size)
-		if code != 2 || !strings.HasSuffix(c.errOut.String(), "(there is: small, medium, large)\n") {
+		if code != 2 || !strings.Contains(c.errOut.String(), "(there is: small, medium, large)\n") {
 			t.Errorf("new --size %q: exit %d, stderr %q; want 2 and the sizes", size, code, c.errOut)
 		}
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-const imageUsage = `usage: hibd image build NAME [-force] [-json]
+const imageUsage = `usage: hibd image build NAME [-force] [-verbose] [-json [-events]]
        hibd image save MACHINE NAME [-json]
        hibd image ls [-json]
        hibd image rm NAME [-json]`

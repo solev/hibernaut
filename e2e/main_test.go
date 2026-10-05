@@ -177,7 +177,7 @@ func newHibMachine(t *testing.T, ctx context.Context, flags ...string) string {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		runHib(ctx, "rm", name)
+		runHib(ctx, "rm", name, "--yes")
 
 		if ms, err := vm.engine.List(ctx, engine.ListOptions{Metadata: map[string]string{"hib.name": name}}); err != nil || len(ms) > 0 {
 			t.Logf("leaving machine %s for the next run to delete", name)

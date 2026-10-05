@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -500,7 +499,7 @@ func (g *guard) DialWebSocket(ctx context.Context, id string, port int, timeout 
 	return g.Engine.DialWebSocket(ctx, id, port, timeout)
 }
 
-func (g *guard) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs io.Writer) (string, error) {
+func (g *guard) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs func(engine.LogEntry)) (string, error) {
 	g.t.Errorf("BuildTemplate %s", spec.Name)
 	return g.Engine.BuildTemplate(ctx, spec, logs)
 }

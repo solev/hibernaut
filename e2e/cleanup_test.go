@@ -49,7 +49,7 @@ func TestSnapshotCleanup(t *testing.T) {
 	})
 
 	time.Sleep(time.Until(created.Add(20 * time.Second)))
-	hib(t, ctx, "rm", name)
+	hib(t, ctx, "rm", name, "--yes")
 	waitFor(t, ctx, "hibd to delete the removed machine's snapshots", 2*time.Minute, func() bool {
 		dirs, _ := buildDirs(t, ctx, builds)
 		return dirs == 0

@@ -1,0 +1,24 @@
+/* Round 3 additions, loaded after r2.css: small labels, a terminal caret, runnable command chips. */
+.label { font-size: 11px; line-height: 16px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+
+.caret {
+  display: inline-block; width: .6em; height: 1.15em; vertical-align: -.22em; margin-left: 1px;
+  background: var(--fg); animation: caret 1.05s steps(1) infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
+
+.run {
+  display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px 0 14px; cursor: pointer;
+  border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface); color: var(--fg-2);
+  font: 13px/1 "JetBrains Mono", monospace; white-space: nowrap;
+  transition: border-color .16s ease-out, color .16s ease-out, opacity .2s ease-out, transform .12s ease-out;
+}
+.run::after { content: "↵"; color: var(--faint); font-size: 12px; transition: color .16s ease-out; }
+.run:hover:not(:disabled) { border-color: var(--accent); color: var(--fg); }
+.run:hover:not(:disabled)::after { color: var(--accent); }
+.run:active:not(:disabled) { transform: translateY(1px); }
+.run:disabled { opacity: .4; cursor: default; }
+
+mark { background: none; color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); padding: 0 1px; }
+
+@media (prefers-reduced-motion: reduce) { .caret { animation: none; } }

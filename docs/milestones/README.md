@@ -6,7 +6,9 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 **Next: [M7 GitHub device flow](m7-github-device-flow.md).** [M0 Foundations](m0-foundations.md),
 [M1 Machines](m1-machines.md), [M2 Idle and wake](m2-idle-and-wake.md),
 [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md), [M4 GitHub](m4-github.md),
-[M5 AI tools](m5-ai-tools.md) and [M6 Golden images and fork](m6-images-and-fork.md) are done.
+[M5 AI tools](m5-ai-tools.md), [M6 Golden images and fork](m6-images-and-fork.md),
+[M8 Machine sizes](m8-machine-sizes.md) and [M10 CLI friendliness](m10-cli-friendliness.md) are
+done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -17,10 +19,10 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 | M4 | [GitHub](m4-github.md) | done | `TestGitHubFullFlow`, `TestWorkflowPush` |
 | M5 | [AI tools](m5-ai-tools.md) | done | `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | done | `TestImageAndFork` |
-| M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
+| M7 | [GitHub device flow](m7-github-device-flow.md) | in progress | `TestDeviceFlow` |
 | M8 | [Machine sizes](m8-machine-sizes.md) | done | `TestSizes` |
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | not started | `TestPauseCycles` (bounded) |
-| M10 | [CLI friendliness](m10-cli-friendliness.md) | not started | none new (unit tests in `cmd/hib`) |
+| M10 | [CLI friendliness](m10-cli-friendliness.md) | done | none new (unit tests in `cmd/hib`) |
 
 M8 and M9 came last but need only M2, so either can be pulled forward any time after M2. M9
 should come before the host's disk fills: until then, every pause adds to a machine's disk.

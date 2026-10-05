@@ -122,7 +122,53 @@ type Response struct {
 	Codex *Codex `json:"codex,omitempty"`
 	// Status is the host's health, from status.
 	Status *Status `json:"status,omitempty"`
+	// Event is a build step starting or ending. hibd image build -json -events sends a Response
+	// with only V and Event for each, one per line, before the final reply.
+	Event *Event `json:"event,omitempty"`
+	// Features are what this hibd can do beyond what every hibd does, from version. Older hibds
+	// don't send it, and other commands leave it out.
+	Features []string `json:"features,omitzero"`
+	// Host is the host VM's power state, which hib status --json adds from Azure's answer. hibd
+	// never sends it.
+	Host *Host `json:"host,omitempty"`
 }
+
+const (
+	// FeatureBuildEvents means image build takes -events, and then sends an Event per step.
+	FeatureBuildEvents = "build-events"
+	// FeatureDisconnect means hibd has the disconnect command.
+	FeatureDisconnect = "disconnect"
+)
+
+// Event is a build step starting or ending.
+type Event struct {
+	// Image is the image being built.
+	Image string `json:"image"`
+	// Size is the size being built, if the image is built in sizes.
+	Size string `json:"size,omitempty"`
+	// Step is E2B's name for the step, such as base, 3/12 or finalize.
+	Step string `json:"step"`
+	// Text is what the step does, such as RUN apt-get install -y git. It comes from E2B, so it
+	// must go through termsafe.Line before it's shown.
+	Text  string     `json:"text"`
+	State EventState `json:"state"`
+	// Seconds is how long the step took, rounded, once it has ended.
+	Seconds int `json:"seconds,omitempty"`
+}
+
+// EventState is where a build step is.
+type EventState string
+
+const (
+	// EventStarted means the step has started.
+	EventStarted EventState = "started"
+	// EventReused means the step ended by reusing E2B's cached result.
+	EventReused EventState = "reused"
+	// EventBuilt means the step ran and ended well.
+	EventBuilt EventState = "built"
+	// EventFailed means the step ran and failed, which fails the build.
+	EventFailed EventState = "failed"
+)
 
 // LeakScan is a leak scan result. It never carries secret values.
 type LeakScan struct {

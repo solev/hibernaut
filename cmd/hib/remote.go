@@ -47,7 +47,7 @@ func (c *config) sudoHibdArgs(args ...string) ([]string, error) {
 	quoted := make([]string, len(args))
 	for i, arg := range args {
 		if strings.Contains(arg, "'") {
-			return nil, fmt.Errorf("remote argument contains a quote")
+			return nil, errors.New("hib can't pass a quote (') to the host: leave it out")
 		}
 		quoted[i] = "'" + arg + "'"
 	}
@@ -90,6 +90,9 @@ func runAz(ctx context.Context, args ...string) ([]byte, error) {
 		if len(msg) > 500 {
 			msg = "…" + msg[len(msg)-500:]
 		}
+		if msg == "" {
+			return nil, fmt.Errorf("az %s %s: %w", args[0], args[1], err)
+		}
 		return nil, fmt.Errorf("az %s %s: %w: %s", args[0], args[1], err, msg)
 	}
 	return out, nil
@@ -110,18 +113,19 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 }
 
 type callOptions struct {
-	stdin     []byte
+	secret    []byte
 	holdStdin bool
 	sudo      bool
 	mayWake   bool
+	events    func(hibapi.Event)
 }
 
 func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, opts callOptions) (hibapi.Response, error) {
 	for woke := false; ; woke = true {
 		var out bytes.Buffer
 		var in io.Reader
-		if opts.stdin != nil {
-			in = bytes.NewReader(opts.stdin)
+		if opts.secret != nil {
+			in = bytes.NewReader(opts.secret)
 		}
 		var inR, inW *os.File
 		if opts.holdStdin {
@@ -132,15 +136,26 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 			}
 			in = inR
 		}
-		code, err := a.runSSH(ctx, timeout, sshArgs, in, &out)
+		runCtx, cancelRun := context.WithCancel(ctx)
+		stdout := io.Writer(&out)
+		var events *buildEvents
+		if opts.events != nil {
+			events = &buildEvents{show: opts.events, reply: &out, cancel: cancelRun}
+			stdout = events
+		}
+		code, err := a.runSSH(runCtx, timeout, sshArgs, in, stdout)
+		cancelRun()
 		if opts.holdStdin {
 			inW.Close()
 			inR.Close()
 		}
+		if events != nil {
+			err = events.end(err)
+		}
 		if err != nil {
 			return hibapi.Response{}, err
 		}
-		if code == 255 && !woke && opts.mayWake {
+		if code == 255 && !woke && opts.mayWake && !events.heard() {
 			err := a.wake(ctx, cfg)
 			if err == nil {
 				continue
@@ -150,12 +165,20 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 			}
 		}
 		if code != 0 && code != 1 {
-			return hibapi.Response{}, exitError(cfg, code)
+			return hibapi.Response{}, a.exitError(cfg, code)
 		}
 		if opts.sudo && code != 0 && out.Len() == 0 {
-			return hibapi.Response{}, errors.New("hibd needs passwordless sudo on the host")
+			return hibapi.Response{}, errors.New("hibd needs passwordless sudo on the host: run hib init --host USER@HOST with a user that has it")
 		}
-		return hibapi.DecodeResponse(out.Bytes())
+		r, err := hibapi.DecodeResponse(out.Bytes())
+		var remote *hibapi.RemoteError
+		if err != nil && !errors.As(err, &remote) && !errors.Is(err, hibapi.ErrVersion) {
+			if opts.secret != nil {
+				err = errors.New("unreadable reply from hibd")
+			}
+			err = fmt.Errorf("%w: %s", err, a.checkHost())
+		}
+		return r, err
 	}
 }
 
@@ -169,20 +192,29 @@ func (a *app) runSSH(ctx context.Context, timeout time.Duration, args []string, 
 	defer stderr.Flush()
 	code, err := a.ssh(ctx, args, stdin, stdout, stderr)
 	if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
-		return code, fmt.Errorf("gave up on hibd after %v", timeout)
+		return code, fmt.Errorf("gave up on hibd after %v: %s", timeout, a.checkHost())
 	}
 	return code, err
 }
 
-func exitError(cfg *config, code int) error {
+func (a *app) exitError(cfg *config, code int) error {
 	switch code {
 	case 255:
 		return fmt.Errorf("couldn't reach %s: see ssh's message above", cfg.Host)
 	case 127:
 		return fmt.Errorf("hibd isn't installed on %s: run make deploy", cfg.Host)
 	}
-	return fmt.Errorf("hibd on %s exited %d", cfg.Host, code)
+	return fmt.Errorf("hibd on %s exited %d: %s", cfg.Host, code, a.checkHost())
 }
+
+func (a *app) checkHost() string {
+	if a.command != nil && a.command.title() == "hib status" {
+		return "try again in a minute"
+	}
+	return "check the host with hib status"
+}
+
+const checkAz = "Check that az works, for example with az login"
 
 const (
 	wakeTimeout     = 10 * time.Minute
@@ -195,7 +227,7 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 	if cfg.Azure == nil {
 		return errAwake
 	}
-	ctx, cancel := context.WithTimeout(ctx, wakeTimeout)
+	ctx, cancel := withTimeLimit(ctx, timeLimit{"the host didn't come up", wakeTimeout, "check it with hib status in a few minutes"})
 	defer cancel()
 	state, err := a.powerState(ctx, cfg.Azure)
 	if err != nil {
@@ -205,7 +237,8 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 		return errAwake
 	}
 	start := time.Now()
-	fmt.Fprintf(a.stderr, "hib: the host is asleep (%s); starting it, which takes a few minutes\n", termsafe.String(state))
+	a.note("the host is asleep (%s); starting it, which takes a few minutes", termsafe.Line(state))
+	defer a.live.waitFor("waking the host")()
 	// Azure won't start a VM on its way down.
 	for state == "VM stopping" || state == "VM deallocating" {
 		if err := a.sleep(ctx); err != nil {
@@ -217,30 +250,37 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 	}
 	if state != "VM starting" && state != "VM running" {
 		if _, err := a.az(ctx, "vm", "start", "-g", cfg.Azure.Group, "-n", cfg.Azure.VM, "-o", "none"); err != nil {
-			return wakeError(ctx, fmt.Errorf("starting the host: %w", err))
+			return stillStarting(ctx, fmt.Errorf("starting the host: %w. %s", err, checkAz))
 		}
 	}
 	for {
 		code, err := a.ssh(ctx, cfg.sshArgs("ready", "--timeout", "5m"), nil, io.Discard, io.Discard)
 		switch {
 		case err != nil:
-			return wakeError(ctx, err)
+			return stillStarting(ctx, err)
 		case code == 0:
-			fmt.Fprintf(a.stderr, "hib: the host is up after %v\n", time.Since(start).Round(time.Second))
+			a.note("the host is up after %v", time.Since(start).Round(time.Second))
 			return nil
 		case code != 255:
-			return fmt.Errorf("the host is up, but hibd ready exited %d", code)
+			return fmt.Errorf("the host is up, but hibd ready exited %d: %s", code, a.checkHost())
 		}
 		if err := a.sleep(ctx); err != nil {
-			return err
+			return stillStarting(ctx, err)
 		}
 	}
+}
+
+func stillStarting(ctx context.Context, err error) error {
+	if err = wakeError(ctx, err); errors.Is(err, context.Canceled) {
+		return errStillStarting
+	}
+	return err
 }
 
 func (a *app) powerState(ctx context.Context, vm *azureVM) (string, error) {
 	out, err := a.az(ctx, "vm", "get-instance-view", "-g", vm.Group, "-n", vm.VM, "--query", powerStateQuery, "-o", "tsv")
 	if err != nil {
-		return "", wakeError(ctx, fmt.Errorf("checking whether the host is asleep: %w", err))
+		return "", wakeError(ctx, fmt.Errorf("checking whether the host is asleep: %w. %s", err, checkAz))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -254,9 +294,27 @@ func (a *app) sleep(ctx context.Context) error {
 	}
 }
 
+type timeLimit struct {
+	what  string
+	limit time.Duration
+	next  string
+}
+
+func (l timeLimit) Error() string {
+	return fmt.Sprintf("%s within %v: %s", l.what, l.limit, l.next)
+}
+
+func withTimeLimit(ctx context.Context, l timeLimit) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, l.limit, l)
+}
+
 func wakeError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("the host didn't come up within %v", wakeTimeout)
+		var limit timeLimit
+		if errors.As(context.Cause(ctx), &limit) {
+			return limit
+		}
+		return errors.New("hib ran out of time waiting for the host: check it with hib status")
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -283,9 +341,9 @@ func (a *app) bridge(ctx context.Context, cfg *config, name string) int {
 		case code == 1:
 
 		case code == 0 && errors.Is(err, io.EOF):
-			a.fail(errors.New("hibd closed the bridge before it was up"))
+			a.fail(errors.New("hibd closed the bridge before it was up: run hib ls to see your machines"))
 		case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
-			a.fail(exitError(cfg, code))
+			a.fail(a.exitError(cfg, code))
 		default:
 			a.fail(err)
 		}
