@@ -59,6 +59,8 @@ commands:
                     stdin ends
   connect codex     log in to Codex on a ChatGPT plan with a device code, keep the login, and
                     give machines a login file of placeholders, as root
+  disconnect codex|github
+                    remove the host's login, as root. Machines keep placeholders
   codex refresh     refresh the Codex login once half its token's lifetime has passed, as root
                     (-force refreshes now, even when a refresh is stuck)
   status            check E2B, every secret and the Codex login, as root
@@ -80,7 +82,7 @@ commands:
                     root
   version           print the version
 
-new, ls, rm, pause, fork, image build|save|ls|rm, connect github, connect codex, codex refresh,
+new, ls, rm, pause, fork, image build|save|ls|rm, connect, disconnect, codex refresh,
 status and version
 print JSON with -json.
 
@@ -187,6 +189,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.secret(ctx, args)
 	case "connect":
 		return a.connect(ctx, args)
+	case "disconnect":
+		return a.disconnect(ctx, args)
 	case "codex":
 		return a.runCodex(ctx, args)
 	case "status":
@@ -761,7 +765,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
-		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents}})
+		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
 	return 0
