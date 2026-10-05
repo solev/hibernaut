@@ -614,7 +614,14 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 	if query == nil {
 		query = cleanup.Postgres
 	}
-	h := cleanup.Host{Storage: cfg.e2bStorage, Cache: cleanup.CacheDir, Query: query, Engine: e, TrimScope: cfg.trimScope, OpenTrim: a.OpenTrim, Timeout: a.Timeout}
+	m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir})
+	h := cleanup.Host{
+		Storage: cfg.e2bStorage, Cache: cleanup.CacheDir, Query: query, Engine: e,
+		TrimScope: cfg.trimScope, OpenTrim: a.OpenTrim, Timeout: a.Timeout,
+		ReadGuard: func(ctx context.Context) (func(), error) {
+			return a.lockCleanupRead(ctx, m, !sweep, logf)
+		},
+	}
 	if sweep {
 		h.TrimTimeout = trimTimeout
 	}
@@ -627,6 +634,37 @@ const (
 )
 
 var errCleanupLocked = errors.New("another cleanup is running")
+
+func (a *App) lockCleanupRead(ctx context.Context, m *machines.Manager, wait bool, logf func(string, ...any)) (func(), error) {
+	waiting := false
+	for {
+		release, err := m.TryCleanupRead(ctx)
+		if !errors.Is(err, machines.ErrBusy) || !wait {
+			return release, err
+		}
+		if !waiting {
+			logf("waiting for an image save or fork to finish")
+			waiting = true
+		}
+		if err := a.waitCleanup(ctx); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (a *App) waitCleanup(ctx context.Context) error {
+	if a.WaitCleanup != nil {
+		return a.WaitCleanup(ctx)
+	}
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 func (a *App) lockCleanup(ctx context.Context, dir string, wait bool, logf func(string, ...any)) (func(), error) {
 	waiting := false
@@ -645,18 +683,8 @@ func (a *App) lockCleanup(ctx context.Context, dir string, wait bool, logf func(
 			logf("waiting for another cleanup")
 			waiting = true
 		}
-		if a.WaitCleanup != nil {
-			if err := a.WaitCleanup(ctx); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		timer := time.NewTimer(100 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
+		if err := a.waitCleanup(ctx); err != nil {
+			return nil, err
 		}
 	}
 }

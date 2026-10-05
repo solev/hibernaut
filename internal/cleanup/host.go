@@ -40,6 +40,10 @@ type Host struct {
 	Timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	// OpenTrim supplies local storage. Nil uses OpenTrimStorage.
 	OpenTrim func(string) (TrimStorage, error)
+	// ReadGuard holds the save lock for all cleanup inputs. Nil leaves reads unguarded.
+	ReadGuard func(context.Context) (func(), error)
+	// CheckSaves accounts for save records against the listing while ReadGuard is held.
+	CheckSaves func(context.Context, Listing, bool, func(string, ...any)) error
 }
 
 // Clean deletes the directories Garbage plans to, logging each, and then what it freed. With
@@ -56,7 +60,7 @@ func (h Host) CleanWithListing(ctx, listingCtx context.Context, now time.Time, d
 }
 
 func (h Host) clean(ctx, listCtx context.Context, cancel context.CancelFunc, now time.Time, dryRun bool, logf func(string, ...any)) error {
-	l, err := h.read(listCtx)
+	l, err := h.read(listCtx, dryRun, logf)
 	if err != nil {
 		return err
 	}
@@ -163,7 +167,14 @@ func (h Host) delete(ctx context.Context, l Listing, p Plan, dryRun bool, logf f
 
 func (h Host) path(build string) string { return filepath.Join(h.Storage, build) }
 
-func (h Host) read(ctx context.Context) (Listing, error) {
+func (h Host) read(ctx context.Context, dryRun bool, logf func(string, ...any)) (Listing, error) {
+	if h.ReadGuard != nil {
+		release, err := h.ReadGuard(ctx)
+		if err != nil {
+			return Listing{}, err
+		}
+		defer release()
+	}
 	var l Listing
 	machines, err := h.Engine.List(ctx, engine.ListOptions{})
 	if err != nil {
@@ -225,6 +236,11 @@ func (h Host) read(ctx context.Context) (Listing, error) {
 	}
 	if l.Dirs, err = readDirs(h.Storage); err != nil {
 		return Listing{}, err
+	}
+	if h.CheckSaves != nil {
+		if err := h.CheckSaves(ctx, l, dryRun, logf); err != nil {
+			return Listing{}, err
+		}
 	}
 	return l, nil
 }
