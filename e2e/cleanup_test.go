@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
@@ -71,6 +72,7 @@ func TestPauseCycles(t *testing.T) {
 	name := newHibMachine(t, ctx)
 	id := machineID(t, ctx, name)
 	sshMachine(t, ctx, name, "tmux new -d -s keep 'sleep 100000'")
+	sums := writeSentinels(t, ctx, name)
 	var cycles []pauseCycle
 	var latest string
 	for i := 1; i <= options.Cycles; i++ {
@@ -95,10 +97,40 @@ func TestPauseCycles(t *testing.T) {
 		start = time.Now()
 		sshMachine(t, ctx, name, "tmux has-session -t keep")
 		cycle.Resume = time.Since(start)
+		checkSentinels(t, ctx, name, sums)
 		cycles = append(cycles, cycle)
 		t.Log(formatPauseCycle(cycle))
 	}
 	t.Log(pauseCycleSummary(options, cycles))
+}
+
+func writeSentinels(t *testing.T, ctx context.Context, name string) sentinelSums {
+	t.Helper()
+	sums, err := parseSentinelSums(sshMachine(t, ctx, name, writeSentinelsCommand))
+	if err != nil {
+		t.Fatalf("writing the sentinels in %s: %v", name, err)
+	}
+	return sums
+}
+
+func checkSentinels(t *testing.T, ctx context.Context, name string, want sentinelSums) {
+	t.Helper()
+	res, err := vm.engine.Exec(ctx, machineID(t, ctx, name), engine.ExecRequest{
+		Cmd: "sh", Args: []string{"-c", readSentinelsCommand}, User: "root",
+	})
+	if err != nil {
+		t.Fatalf("reading the sentinels in %s: %v", name, err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("reading the sentinels in %s exited %d: %s", name, res.ExitCode, termsafe.String(string(res.Stderr)))
+	}
+	got, err := parseSentinelSums(string(res.Stdout))
+	if err != nil {
+		t.Fatalf("reading the sentinels in %s: %v", name, err)
+	}
+	for _, problem := range got.mismatches(want) {
+		t.Errorf("in %s, %s", name, problem)
+	}
 }
 
 func cleanUp(t *testing.T, ctx context.Context) {
