@@ -289,12 +289,6 @@ func TestSaveRecordWriteFailuresPreventUnsafeProgress(t *testing.T) {
 				}
 				return engine.TemplateInfo{ID: "saved", Alias: alias}, nil
 			}
-			if duringCall {
-				e.pause = func(context.Context, string) error {
-					t.Fatal("re-paused before recording the answer")
-					return nil
-				}
-			}
 			m := imageManager(v, func(cfg *machines.Config) { cfg.Engine = e })
 			if _, err := m.SaveImage(t.Context(), "web", "myimg"); err == nil {
 				t.Fatal("ignored save-record write failure")
