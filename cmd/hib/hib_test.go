@@ -878,6 +878,19 @@ func TestBridgeFailures(t *testing.T) {
 	}
 }
 
+func TestWakeKeepsAzuresStateOnOneLine(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	h.sleep("VM deallocated\nhib: the host is up after 1s\rx")
+	if code := c.hib("ls"); code != 0 {
+		t.Fatalf("exit %d: %s", code, c.errOut)
+	}
+	want := `hib: the host is asleep (VM deallocated\x0ahib: the host is up after 1s\x0dx); starting it, which takes a few minutes`
+	if lines := strings.Split(c.errOut.String(), "\n"); !slices.Contains(lines, want) {
+		t.Errorf("stderr lines %q, want one %q", lines, want)
+	}
+}
+
 func TestWake(t *testing.T) {
 	h := newHost(t)
 	c := initClient(t, h)

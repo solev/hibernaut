@@ -94,7 +94,12 @@ func TestCommandHintsOnlyCarryValidNames(t *testing.T) {
 		{
 			name:      "web\nrm -rf ~",
 			savedWant: "saved image web\\x0arm -rf ~ (2 GiB).\n",
-			forkWant:  "made web rm -rf ~, web-2 from web.\n",
+			forkWant:  "made web\\x0arm -rf ~, web-2 from web.\n",
+		},
+		{
+			name:      "web\rsaved image ok",
+			savedWant: "saved image web\\x0dsaved image ok (2 GiB).\n",
+			forkWant:  "made web\\x0dsaved image ok, web-2 from web.\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

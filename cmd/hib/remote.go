@@ -237,7 +237,7 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 		return errAwake
 	}
 	start := time.Now()
-	a.note("the host is asleep (%s); starting it, which takes a few minutes", termsafe.String(state))
+	a.note("the host is asleep (%s); starting it, which takes a few minutes", termsafe.Line(state))
 	defer a.live.waitFor("waking the host")()
 	// Azure won't start a VM on its way down.
 	for state == "VM stopping" || state == "VM deallocating" {

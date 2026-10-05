@@ -113,9 +113,9 @@ func PrintFork(w io.Writer, origin string, copies []Machine) {
 	}
 	names := make([]string, len(copies))
 	for i, copy := range copies {
-		names[i] = oneLine(copy.Name)
+		names[i] = termsafe.Line(copy.Name)
 	}
-	fmt.Fprintf(w, "made %s from %s.", strings.Join(names, ", "), oneLine(origin))
+	fmt.Fprintf(w, "made %s from %s.", strings.Join(names, ", "), termsafe.Line(origin))
 	if first := copies[0].Name; CheckName(first) == nil {
 		fmt.Fprintf(w, " connect with: ssh %s.hib", first)
 	}
