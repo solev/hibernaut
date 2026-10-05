@@ -591,7 +591,11 @@ func (a *App) cleanup(ctx context.Context, args []string) int {
 	if a.Now != nil {
 		now = a.Now()
 	}
-	if err := a.clean(ctx, ctx, cfg, e, now, *dryRun, false, log.New(a.Stdout, "", 0).Printf); err != nil {
+	logger := log.New(a.Stdout, "", 0)
+	logf := func(format string, args ...any) {
+		logger.Printf("%s", termsafe.String(fmt.Sprintf(format, args...)))
+	}
+	if err := a.clean(ctx, ctx, cfg, e, now, *dryRun, false, logf); err != nil {
 		return a.fail(false, "cleanup", err)
 	}
 	return 0

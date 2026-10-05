@@ -135,3 +135,22 @@ func TestCleanupLockWaitRespectsCancellation(t *testing.T) {
 		t.Fatalf("exit %d, %s, %s", code, out, errOut)
 	}
 }
+
+func TestCleanupEscapesFormattedOutput(t *testing.T) {
+	for _, args := range [][]string{{"cleanup"}, {"cleanup", "-n"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			a, out, errOut := newApp(t, fake.New())
+			a.Clean = func(_ context.Context, _ engine.Engine, _ time.Time, _ bool, logf func(string, ...any)) error {
+				logf("not trimming: %s directory: missing root", "cached%s\x1b]52;c;ZXZpbA==\x07")
+				return nil
+			}
+			if code := a.Run(t.Context(), args); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut)
+			}
+			want := `not trimming: cached%s\x1b]52;c;ZXZpbA==\x07 directory: missing root` + "\n"
+			if got := out.String(); got != want {
+				t.Errorf("stdout = %q, want %q", got, want)
+			}
+		})
+	}
+}
