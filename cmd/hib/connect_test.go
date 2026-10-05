@@ -626,7 +626,11 @@ func TestConnectGitHubDoesNotPrintReflectedToken(t *testing.T) {
 				t.Errorf("exit %d, want %d", code, wantCode)
 			}
 			output := c.out.String() + c.errOut.String()
-			if !strings.Contains(output, "[redacted]") {
+			if mode == "unreadable reply" {
+				if !strings.Contains(output, "unreadable reply from hibd") || strings.Contains(output, "not JSON") {
+					t.Errorf("an unreadable reply to a token was shown: %q", output)
+				}
+			} else if !strings.Contains(output, "[redacted]") {
 				t.Error("reflected token wasn't replaced by a redaction marker")
 			}
 			if strings.Contains(output, "\x1b") {

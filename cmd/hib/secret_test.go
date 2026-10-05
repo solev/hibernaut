@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"regexp"
 	"slices"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 func writeTestResponse(w io.Writer, r hibapi.Response) int {
@@ -72,6 +75,67 @@ func TestSecretAddUsesSudoAndStdin(t *testing.T) {
 	}
 	if !strings.Contains(c.out.String(), "stored github") {
 		t.Fatalf("stdout = %q", c.out.String())
+	}
+}
+
+func TestSecretAddDoesNotPrintAReflectedValue(t *testing.T) {
+	values := map[string]string{
+		"plain":             "s3cret-value-1234567890",
+		"control character": "tok\x1b\x01en\tvalue-1234",
+		"pem": "-----BEGIN PRIVATE KEY-----\n" +
+			"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n" +
+			"MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu\n" +
+			"NMoSfm76oqFvAp8Gy0iz5sxjZmSnXyCdPEovGhLa0VzMaQ8s+CLOyS56YyCFGeJZ\n" +
+			"-----END PRIVATE KEY-----",
+	}
+	modes := []string{"ssh stderr", "hibd error", "unreadable reply", "stored line", "ssh runner error"}
+	for valueName, value := range values {
+		for _, mode := range modes {
+			t.Run(valueName+"/"+mode, func(t *testing.T) {
+				h := newHost(t)
+				c := initClient(t, h)
+				h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+					stored := &hibapi.Secret{Name: "api", Env: "API_KEY", Sites: []string{"api.example.com"}, Placeholder: "ph"}
+					switch mode {
+					case "ssh stderr":
+						io.WriteString(stderr, "hibd: storing "+value[:5])
+						io.WriteString(stderr, value[5:]+"\n")
+					case "hibd error":
+						return writeTestResponse(stdout, hibapi.Response{Error: "refused " + value}), true
+					case "unreadable reply":
+						io.WriteString(stdout, "not JSON: "+value)
+						return 1, true
+					case "stored line":
+						stored.Name, stored.Env, stored.Sites = value, value, []string{value}
+					}
+					return writeTestResponse(stdout, hibapi.Response{Secret: stored}), true
+				}
+				if mode == "ssh runner error" {
+					c.ssh = func(_ context.Context, args []string, _ io.Reader, _, _ io.Writer) (int, error) {
+						h.record(args)
+						return -1, errors.New("ssh broke on " + value)
+					}
+				}
+				c.app.stdin = strings.NewReader(value)
+				code := c.hib("secret", "add", "api", "--env", "API_KEY", "--bind", "api.example.com")
+				if want := map[bool]int{true: 0, false: 1}[mode == "ssh stderr" || mode == "stored line"]; code != want {
+					t.Errorf("exit %d, want %d; stderr %q", code, want, c.errOut)
+				}
+				output := c.out.String() + c.errOut.String()
+				for _, form := range append([]string{value, termsafe.String(value), termsafe.Line(value)}, strings.Split(value, "\n")[1:]...) {
+					if strings.Contains(output, form) {
+						t.Errorf("the value reached the output as %q: %q", form, output)
+					}
+				}
+				if mode == "unreadable reply" {
+					if !strings.Contains(output, "unreadable reply from hibd") || strings.Contains(output, "not JSON") {
+						t.Errorf("an unreadable reply to a secret was shown: %q", output)
+					}
+				} else if !strings.Contains(output, "[redacted]") {
+					t.Errorf("no redaction marker in %q", output)
+				}
+			})
+		}
 	}
 }
 

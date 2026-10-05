@@ -3,7 +3,36 @@ package main
 import (
 	"bytes"
 	"io"
+	"slices"
+
+	"github.com/solev/hibernaut/internal/termsafe"
 )
+
+func (a *app) hidingSecret(value string) (*app, func()) {
+	hidden := *a
+	var writers []*secretWriter
+	for _, form := range printedForms(value) {
+		stdout := &secretWriter{w: hidden.stdout, value: []byte(form)}
+		stderr := &secretWriter{w: hidden.stderr, value: []byte(form)}
+		hidden.stdout, hidden.stderr = stdout, stderr
+		writers = append(writers, stdout, stderr)
+	}
+	return &hidden, func() {
+		for _, w := range slices.Backward(writers) {
+			w.Flush()
+		}
+	}
+}
+
+func printedForms(value string) []string {
+	var forms []string
+	for _, form := range []string{value, termsafe.String(value), termsafe.Line(value)} {
+		if form != "" && !slices.Contains(forms, form) {
+			forms = append(forms, form)
+		}
+	}
+	return forms
+}
 
 type secretWriter struct {
 	w       io.Writer

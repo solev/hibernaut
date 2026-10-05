@@ -113,7 +113,7 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 }
 
 type callOptions struct {
-	stdin     []byte
+	secret    []byte
 	holdStdin bool
 	sudo      bool
 	mayWake   bool
@@ -124,8 +124,8 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 	for woke := false; ; woke = true {
 		var out bytes.Buffer
 		var in io.Reader
-		if opts.stdin != nil {
-			in = bytes.NewReader(opts.stdin)
+		if opts.secret != nil {
+			in = bytes.NewReader(opts.secret)
 		}
 		var inR, inW *os.File
 		if opts.holdStdin {
@@ -173,6 +173,9 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 		r, err := hibapi.DecodeResponse(out.Bytes())
 		var remote *hibapi.RemoteError
 		if err != nil && !errors.As(err, &remote) && !errors.Is(err, hibapi.ErrVersion) {
+			if opts.secret != nil {
+				err = errors.New("unreadable reply from hibd")
+			}
 			err = fmt.Errorf("%w: %s", err, a.checkHost())
 		}
 		return r, err

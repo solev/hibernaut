@@ -46,14 +46,9 @@ func (a *app) connectGitHub(ctx context.Context, cfg *config, fromGH, token bool
 	if err != nil {
 		return a.fail(err)
 	}
-	stdout := &secretWriter{w: a.stdout, value: []byte(value)}
-	stderr := &secretWriter{w: a.stderr, value: []byte(value)}
-	defer stdout.Flush()
-	defer stderr.Flush()
-	connected := *a
-	connected.stdout, connected.stderr = stdout, stderr
-	a = &connected
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "connect", "github", "--source", source, "--json")
+	a, flush := a.hidingSecret(value)
+	defer flush()
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{secret: []byte(value)}, "connect", "github", "--source", source, "--json")
 	if err != nil {
 		return a.fail(err)
 	}

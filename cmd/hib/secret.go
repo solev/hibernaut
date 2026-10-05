@@ -30,7 +30,9 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, name, env, bind string
 	if err != nil {
 		return a.fail(fmt.Errorf("%w: type it at the prompt or pipe it on stdin", err))
 	}
-	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "secret", "add", name, "--env", env, "--bind", strings.Join(sites, ","), "--json")
+	a, flush := a.hidingSecret(value)
+	defer flush()
+	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{secret: []byte(value)}, "secret", "add", name, "--env", env, "--bind", strings.Join(sites, ","), "--json")
 	if err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be storing %s: check hib secret ls", name))
 	}

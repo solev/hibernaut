@@ -71,8 +71,8 @@ run hib help new
 
 **Errors end with the next step.** Every message hib prints through `fail`, and hibd's common
 ones, end with what to do, such as the ssh failures in `exitError` and the failed wakes in
-`wakeError`. Messages that hold a credential keep the guard in `cmd/hib/connect.go` that never
-echoes it.
+`wakeError`. Messages that might hold a credential keep the guard that never echoes it (see
+"Text from the host").
 
 **`hib rm NAME`** asks "Delete app and its disk for good? [y/N] " on stderr when stdin and stderr
 are both terminals. Only `y` or `yes`, in any case, deletes. Anything else, end of input or Ctrl-C
@@ -104,6 +104,12 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
   with: ssh NAME.hib", only ever holds a name that passes `hibapi.CheckName`. For any other name
   from the host, hib prints the confirmation, escaped, without the hint. So a host can't slip a
   command of its own into one.
+- `hib secret add` and `hib connect github --from-gh` or `--token` never print the value they
+  send. Once hib has read it, everything it prints on stdout and stderr shows the value as
+  "[redacted]": the host's stderr, errors, and the line naming what was stored. That covers the
+  value as it is and as `termsafe.String` and `termsafe.Line` escape it, so a value with a control
+  character or several lines is caught too. A reply hib can't read is reported without its text,
+  which is cut at 200 bytes and so could hold part of the value.
 
 **`--json`** on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one
 `hibapi.Response` on stdout, with `v` and only that command's fields.
