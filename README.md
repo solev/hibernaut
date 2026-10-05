@@ -32,9 +32,8 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
   own name and host key.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub) and M6 (golden
-  images and fork) are done. M5 (AI tools) is in progress. Progress:
-  [docs/milestones](docs/milestones/README.md).
+  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools) and
+  M6 (golden images and fork) are done. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 

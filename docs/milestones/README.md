@@ -3,12 +3,10 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-**In progress: the end of [M5 AI tools](m5-ai-tools.md).** M5 is built, and every check is
-green. Only the live Codex tests are left: they wait for `hib connect codex`, which needs someone
-to approve the code in a browser. [M0 Foundations](m0-foundations.md),
+**Next: [M7 GitHub device flow](m7-github-device-flow.md).** [M0 Foundations](m0-foundations.md),
 [M1 Machines](m1-machines.md), [M2 Idle and wake](m2-idle-and-wake.md),
-[M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md), [M4 GitHub](m4-github.md) and
-[M6 Golden images and fork](m6-images-and-fork.md) are done.
+[M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md), [M4 GitHub](m4-github.md),
+[M5 AI tools](m5-ai-tools.md) and [M6 Golden images and fork](m6-images-and-fork.md) are done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -17,7 +15,7 @@ to approve the code in a browser. [M0 Foundations](m0-foundations.md),
 | M2 | [Idle and wake](m2-idle-and-wake.md) | done | `TestIdlePauseWake`, `TestBusyStaysAwake`, `TestBusyPastAnHour`, `TestMachine/exec_wakes_a_paused_machine`, `TestHostFull`, `TestSnapshotCleanup`, `TestPauseCycles` |
 | M3 | [Vault, egress proxy, leak scan](m3-vault-and-proxy.md) | done | `TestSecretSwap`, `TestNoHostAccess`, `TestAuditLog`, `TestLeakScan` |
 | M4 | [GitHub](m4-github.md) | done | `TestGitHubFullFlow`, `TestWorkflowPush` |
-| M5 | [AI tools](m5-ai-tools.md) | in progress | `TestCodexRefresh`, `TestCopilot` |
+| M5 | [AI tools](m5-ai-tools.md) | done | `TestCodexRefresh`, `TestCopilot` |
 | M6 | [Golden images and fork](m6-images-and-fork.md) | done | `TestImageAndFork` |
 | M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
 | M8 | [Machine sizes](m8-machine-sizes.md) | not started | `TestSizes` |

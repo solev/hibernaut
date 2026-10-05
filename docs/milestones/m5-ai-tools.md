@@ -1,8 +1,6 @@
 # M5 AI tools
 
-Status: **in progress** · Spec: §4.1, §4.2 (Token endpoints), §4.3, §4.4 · Spikes: S6 and S9,
-both answered · Left: `TestCodexRefresh` and its leak scan, which need a live
-`hib connect codex`
+Status: **done** · Spec: §4.1, §4.2 (Token endpoints), §4.3, §4.4 · Spikes: S6 and S9, both answered
 
 **Goal:** `codex` and `copilot` work in every machine with no login, and no real ChatGPT or GitHub
 token ever enters a machine.
@@ -315,20 +313,21 @@ Integration (fake `chatgpt.com` and `auth.openai.com`, signed by the test CA, an
 
 End-to-end:
 
-- [ ] `TestCodexRefresh`: in a fresh machine,
+- [x] `TestCodexRefresh`: in a fresh machine,
       `codex exec --skip-git-repo-check "Reply with exactly OK."` prints OK with no login prompt.
       Then `sudo hibd codex refresh -force` makes a real refresh, and Codex still works in that
       machine and in a new one.
 - [x] `TestCopilot`: in a fresh machine,
       `copilot -p "Reply with exactly OK." -s --allow-all-tools --no-ask-user` prints OK.
-- [ ] The leak scan after both covers `github`, `codex-access`, `codex-refresh` and
+- [x] The leak scan after both covers `github`, `codex-access`, `codex-refresh` and
       `codex-id`, old values included, and finds nothing.
 
 ## Done when
 
 - [x] `make lint test`, `make test-host-remote`, CI and `make e2e` are green. CI is parked, so
       `make lint test` and a clean `make generate` stand in for it. `make e2e-slow` passed too.
-      `TestCodex` and `TestCodexRefresh` skipped there, since Codex wasn't connected yet.
+      `TestCodexRefresh` skipped there, since Codex wasn't connected yet. Once it was, it passed
+      live, with `TestCopilot` and M3's secret tests.
 - [x] Spec: S6 and S9 marked answered, and bound sites updated.
 - [x] README: `hib connect codex`, and Copilot working through the GitHub connection.
 
@@ -370,3 +369,8 @@ End-to-end:
   `TestSurvivesHostRestart` into `TestWakeOnSSH`, where ssh wakes the VM. `TestHibInit` became
   the `cmd/hib` unit tests `TestInit` and `TestInitVersion`. Still above CRAP 30: enginetest's
   `exec` (99) and `lifecycle` (89). Linux-only code isn't scored, since the audit ran on a Mac.
+- 2026-10-05: `hib connect codex` ran live, on a ChatGPT Plus account. `TestCodexRefresh` passed:
+  Codex answered with no login prompt before a real forced refresh, and after it in the same
+  machine and a new one. The leak scans covered the retired token values too. `TestCopilot` and
+  M3's `TestSecretSwap`, `TestAuditLog` and `TestLeakScan` passed with the Codex secrets in the
+  vault. M5 is done.
