@@ -17,7 +17,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 )
 
-func TestHostStrictHeaderRefusalDoesNotChangeDeletion(t *testing.T) {
+func TestCleanupStrictHeaderRefusalDoesNotChangeDeletion(t *testing.T) {
 	h, s := hostForTrim(t)
 	key := cleanup.FileKey{imageBuild, "memfile.header"}
 	binary.LittleEndian.PutUint64(s.headers[key], 0x10003)
@@ -39,7 +39,7 @@ func TestHostStrictHeaderRefusalDoesNotChangeDeletion(t *testing.T) {
 	}
 }
 
-func TestHostMissingRootHeaderReportsTrimRefusalAndKeepsM2Failure(t *testing.T) {
+func TestCleanupMissingRootHeaderReportsTrimRefusalAndKeepsM2Failure(t *testing.T) {
 	h, _ := hostForTrim(t)
 	if err := os.Remove(filepath.Join(h.Storage, imageBuild, "memfile.header")); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func hostForTrim(t *testing.T) (cleanup.Host, *trimStore) {
 	return cleanup.Host{Storage: storage, Cache: t.TempDir(), Query: query, Engine: e, OpenTrim: func(string) (cleanup.TrimStorage, error) { return s, nil }}, s
 }
 
-func TestHostPassesE2EMetadataAndAppendsTrimOutput(t *testing.T) {
+func TestCleanupPassesE2EMetadataAndAppendsTrimOutput(t *testing.T) {
 	h, s := hostForTrim(t)
 	var log lines
 	if err := h.Clean(t.Context(), now, true, log.logf); err != nil {
@@ -112,7 +112,7 @@ func TestHostPassesE2EMetadataAndAppendsTrimOutput(t *testing.T) {
 	}
 }
 
-func TestHostTrimBudgetIsSeparateAndRepeatedCutsFinish(t *testing.T) {
+func TestCleanupTrimBudgetIsSeparateAndRepeatedCutsFinish(t *testing.T) {
 	h, s := hostForTrim(t)
 	h.ListingTimeout = 30 * time.Second
 	h.TrimTimeout = 2 * time.Minute
@@ -156,7 +156,7 @@ func TestHostTrimBudgetIsSeparateAndRepeatedCutsFinish(t *testing.T) {
 	}
 }
 
-func TestHostUnknownTrimValueDoesNotStopDeletion(t *testing.T) {
+func TestCleanupUnknownTrimValueDoesNotStopDeletion(t *testing.T) {
 	h := newHost(t, now)
 	h.TrimScope = "mistyped"
 	h.OpenTrim = func(string) (cleanup.TrimStorage, error) {

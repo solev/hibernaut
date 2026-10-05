@@ -110,7 +110,7 @@ func (l lines) has(s string) bool {
 	return slices.ContainsFunc(l, func(line string) bool { return strings.Contains(line, s) })
 }
 
-func TestHostDeletesWhatNothingUses(t *testing.T) {
+func TestCleanupDeletesWhatNothingUses(t *testing.T) {
 	now := time.Now()
 	h := newHost(t, now)
 	var l lines
@@ -123,7 +123,7 @@ func TestHostDeletesWhatNothingUses(t *testing.T) {
 	}
 }
 
-func TestHostDryRunDeletesNothing(t *testing.T) {
+func TestCleanupDryRunDeletesNothing(t *testing.T) {
 	now := time.Now()
 	h := newHost(t, now)
 	var l lines
@@ -146,7 +146,7 @@ func TestHostDryRunDeletesNothing(t *testing.T) {
 	}
 }
 
-func TestHostLeavesWhatChangesWhileItCleansUp(t *testing.T) {
+func TestCleanupLeavesWhatChangesWhileItCleansUp(t *testing.T) {
 	now := time.Now()
 	h := newHost(t, now)
 	var l lines
@@ -165,7 +165,7 @@ func TestHostLeavesWhatChangesWhileItCleansUp(t *testing.T) {
 	}
 }
 
-func TestHostDeletesNothingIfTheCacheMakesNoSense(t *testing.T) {
+func TestCleanupDeletesNothingIfTheCacheMakesNoSense(t *testing.T) {
 	now := time.Now()
 	h := newHost(t, now)
 	bad := filepath.Join(h.Cache, "scope", "index", strings.Repeat("0b", 32))
