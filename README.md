@@ -32,8 +32,9 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
   own name and host key.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools) and
-  M6 (golden images and fork) are done. Progress: [docs/milestones](docs/milestones/README.md).
+  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools),
+  M6 (golden images and fork) and M8 (machine sizes) are done. Progress:
+  [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 
@@ -178,7 +179,7 @@ over plain `ssh`:
 hib init -host azureuser@20.91.197.185 -azure-group rg-e2b-test -azure-vm e2b-test
 hib image build dev        # build the dev image in every size, as E2B templates
 hib new app                # create a machine named app
-hib new tiny --size small  # a small one (small, medium or large; default medium)
+hib new tiny --size small  # a small one (or medium, the default, or large)
 hib new big -idle 2h       # one that pauses after 2 idle hours (default 15m; 0 = never)
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
 hib exec app -- uname -a   # run one command, no interactive shell
