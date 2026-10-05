@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -401,9 +400,15 @@ func (a *App) image(ctx context.Context, args []string) int {
 	}
 	fl := a.flags("image build")
 	force := fl.Bool("force", false, "rebuild every step, not only those that changed")
+	verbose := fl.Bool("verbose", false, "print the full build log instead of step lines")
 	asJSON := fl.Bool("json", false, "print JSON")
+	events := fl.Bool("events", false, "send a JSON response for each step start and end")
 	names, ok := a.parse(fl, args[1:], 1, "image build NAME")
 	if !ok {
+		return 2
+	}
+	if *events && !*asJSON {
+		fmt.Fprintln(a.Stderr, "hibd image build: -events requires -json")
 		return 2
 	}
 	cfg, err := loadConfig(a.Getenv)
@@ -444,7 +449,7 @@ func (a *App) image(ctx context.Context, args []string) int {
 	var template string
 	var built []string
 	for i, size := range sizes {
-		id, err := a.buildSize(ctx, e, m, names[0], size, specs[i])
+		id, err := a.buildSize(ctx, e, m, names[0], size, specs[i], *verbose, *events)
 		if err != nil {
 			return a.fail(*asJSON, "image build", buildFailed(err, sizes, i))
 		}
@@ -460,19 +465,30 @@ func (a *App) image(ctx context.Context, args []string) int {
 	return 0
 }
 
-func (a *App) buildSize(ctx context.Context, e engine.Engine, m *machines.Manager, image string, size images.Size, spec engine.TemplateSpec) (string, error) {
+func (a *App) buildSize(ctx context.Context, e engine.Engine, m *machines.Manager, image string, size images.Size, spec engine.TemplateSpec, verbose, events bool) (string, error) {
 	if err := m.CheckBuildRoom(ctx, image, size); err != nil {
 		return "", err
 	}
-	start := time.Now()
-	buildLog := termsafe.NewWriter(a.Stderr)
-	id, err := e.BuildTemplate(ctx, spec, func(entry engine.LogEntry) { fmt.Fprintln(buildLog, entry.Message) })
-	buildLog.Flush()
+	start := a.now()
+	buildLog := buildLog{image: image, size: size.Name(), out: a.Stderr, verbose: verbose}
+	if events {
+		buildLog.events = a.Stdout
+	}
+	id, err := e.BuildTemplate(ctx, spec, buildLog.entry)
+	buildLog.finish(buildLog.last, err != nil)
+	err = errors.Join(err, buildLog.err)
 	if err != nil {
 		return "", fmt.Errorf("building %s (%s): %w", image, size.Name(), err)
 	}
-	fmt.Fprintf(a.Stderr, "built %s (%s) in %v\n", image, size.Name(), time.Since(start).Round(time.Second))
+	fmt.Fprintf(a.Stderr, "built %s (%s) in %v\n", termsafe.Line(image), termsafe.Line(size.Name()), a.now().Sub(start).Round(time.Second))
 	return id, nil
+}
+
+func (a *App) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 func buildFailed(err error, sizes []images.Size, failed int) error {
@@ -745,7 +761,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
-		return a.reply(hibapi.Response{Version: version.Version, Features: []string{}})
+		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
 	return 0
@@ -795,9 +811,12 @@ func (a *App) fail(asJSON bool, cmd string, err error) int {
 }
 
 func (a *App) reply(r hibapi.Response) int {
-	r.V = hibapi.Version
-	if err := json.NewEncoder(a.Stdout).Encode(r); err != nil {
-		fmt.Fprintln(a.Stderr, "hibd:", err)
+	data, err := marshalReply(r)
+	if err == nil {
+		_, err = a.Stdout.Write(data)
+	}
+	if err != nil {
+		fmt.Fprintln(a.Stderr, "hibd:", termsafe.String(err.Error()))
 		return 1
 	}
 	if r.Error != "" {

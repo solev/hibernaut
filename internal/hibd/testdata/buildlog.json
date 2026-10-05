@@ -1,0 +1,52 @@
+[
+  {
+    "size": "medium",
+    "entries": [
+      {"time":"2026-10-01T12:00:00Z","level":"info","step":"base","message":"CACHED [base] FROM ubuntu:24.04 [a0b1c2]"},
+      {"time":"2026-10-01T12:00:00.1Z","level":"info","step":"base","message":"CACHED [base] USER user [b1c2d3]"},
+      {"time":"2026-10-01T12:00:00.2Z","level":"info","step":"1","message":"CACHED [builder 1/2] RUN apt-get install -y git curl root [c2d3e4]"},
+      {"time":"2026-10-01T12:00:01Z","level":"info","step":"2","message":"[builder 2/2] RUN npm i -g @openai/codex root [d3e4f5]"},
+      {"time":"2026-10-01T12:00:35Z","level":"debug","step":"2","message":"added 1 package"},
+      {"time":"2026-10-01T12:00:42.2Z","level":"info","step":"finalize","message":"[finalize] Finalizing template build [e4f5a6]"},
+      {"time":"2026-10-01T12:00:43Z","level":"info","step":"finalize","message":"Running start command: /usr/local/bin/start"},
+      {"time":"2026-10-01T12:00:45Z","level":"info","step":"finalize","message":"Template is ready"},
+      {"time":"2026-10-01T12:00:47Z","level":"info","message":"Build finished, took 47s"}
+    ]
+  },
+  {
+    "size": "small",
+    "entries": [
+      {"time":"2026-10-01T12:01:00Z","level":"info","step":"base","message":"CACHED [base] FROM ubuntu:24.04 [a0b1c2]"},
+      {"time":"2026-10-01T12:01:00.1Z","level":"info","step":"1","message":"CACHED [builder 1/2] RUN apt-get install -y git curl root [c2d3e4]"},
+      {"time":"2026-10-01T12:01:00.2Z","level":"info","step":"2","message":"CACHED [builder 2/2] RUN npm i -g @openai/codex root [d3e4f5]"},
+      {"time":"2026-10-01T12:01:00.3Z","level":"info","step":"finalize","message":"[finalize] Finalizing template build [f5a6b7]"},
+      {"time":"2026-10-01T12:01:06Z","level":"info","step":"finalize","message":"Template is ready"},
+      {"time":"2026-10-01T12:01:07Z","level":"info","message":"Build finished, took 7s"}
+    ]
+  },
+  {
+    "size": "large",
+    "entries": [
+      {"time":"2026-10-01T12:02:00Z","level":"info","step":"base","message":"[base] FROM ubuntu:24.04 [f6a7b8]"},
+      {"time":"2026-10-01T12:02:01Z","level":"info","step":"base","message":"Provisioning sandbox template"},
+      {"time":"2026-10-01T12:02:08Z","level":"info","step":"base","message":"Sandbox template provisioned"},
+      {"time":"2026-10-01T12:02:10Z","level":"info","step":"1","message":"CACHED [builder 1/2] RUN apt-get install -y git curl root [c2d3e4]"},
+      {"time":"2026-10-01T12:02:11Z","level":"info","step":"2","message":"CACHED [builder 2/2] RUN npm i -g @openai/codex root [d3e4f5]"},
+      {"time":"2026-10-01T12:02:12Z","level":"info","step":"finalize","message":"[finalize] Finalizing template build [a7b8c9]"},
+      {"time":"2026-10-01T12:02:17Z","level":"info","step":"finalize","message":"Template is ready"},
+      {"time":"2026-10-01T12:02:20Z","level":"info","message":"Build finished, took 20s"}
+    ]
+  },
+  {
+    "size": "medium",
+    "failure": "failed at step 2: failed to run command: exit status 1",
+    "entries": [
+      {"time":"2026-10-01T12:03:00Z","level":"info","step":"base","message":"CACHED [base] FROM ubuntu:24.04 [a0b1c2]"},
+      {"time":"2026-10-01T12:03:01Z","level":"info","step":"1","message":"CACHED [builder 1/2] RUN apt-get install -y git curl root [c2d3e4]"},
+      {"time":"2026-10-01T12:03:02Z","level":"info","step":"2","message":"[builder 2/2] RUN npm i -g @openai/codex root [d3e4f5]"},
+      {"time":"2026-10-01T12:03:08Z","level":"warn","step":"2","message":"npm warn registry unavailable"},
+      {"time":"2026-10-01T12:03:10Z","level":"error","step":"2","message":"npm error code ECONNRESET\nnpm error network connection reset"},
+      {"time":"2026-10-01T12:03:11Z","level":"error","message":"Build failed: failed to run command: exit status 1"}
+    ]
+  }
+]
