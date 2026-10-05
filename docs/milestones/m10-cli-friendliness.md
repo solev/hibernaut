@@ -108,9 +108,11 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
 - `hib secret add` and `hib connect github --from-gh` or `--token` never print the value they
   send. Once hib has read it, everything it prints on stdout and stderr shows the value as
   "[redacted]": the host's stderr, errors, and the line naming what was stored. That covers the
-  value as it is and as `termsafe.String` and `termsafe.Line` escape it, so a value with a control
-  character or several lines is caught too. A reply hib can't read is reported without its text,
-  which is cut at 200 bytes and so could hold part of the value.
+  value as it is, as Go's `%q` quotes it and as JSON quotes it, with and without HTML escaping.
+  It covers each of those as `termsafe.String` and `termsafe.Line` escape it too, so a value with a
+  control character, a quote or several lines is caught when a diagnostic quotes it. A reply hib
+  can't read is reported without its text, which is cut at 200 bytes and so could hold part of the
+  value.
 
 **`--json`** on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one
 `hibapi.Response` on stdout, with `v` and only that command's fields.
@@ -328,12 +330,13 @@ End-to-end:
 
 ## Changes
 
-- 2026-10-05: The reviews made five changes. The live line fits the terminal's width and follows
+- 2026-10-05: What the reviews changed. The live line fits the terminal's width and follows
   resizes, with hib reading the size itself instead of assuming 80 columns. With `--json`, hib
   says nothing of its own about waking the host, but still passes on what ssh and the host write.
   The secret and log tables escape tab, newline and carriage return with `termsafe.Line`, so host
   text stays in its cell. A hint with a command to copy only holds a name that passes
   `hibapi.CheckName`. The saved-image, fork and connect confirmations, the wake message and the
   asleep line of `hib status` escape the host's text with `termsafe.Line` too. `hib secret add`
-  redacts the value, as it is and escaped, in everything it prints, as `hib connect github` does.
-  A call that sends a secret reports a reply hib can't read without its text.
+  redacts the value in everything it prints, as `hib connect github` does: as it is, escaped, and
+  quoted by Go or JSON. A call that sends a secret reports a reply hib can't read without its
+  text.
