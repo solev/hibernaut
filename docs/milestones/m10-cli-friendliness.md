@@ -327,4 +327,11 @@ End-to-end:
 
 ## Changes
 
-(none yet)
+- 2026-10-05: The reviews made five changes. The live line fits the terminal's width and follows
+  resizes, with hib reading the size itself instead of assuming 80 columns. With `--json`, hib
+  says nothing of its own about waking the host, but still passes on what ssh and the host write.
+  The secret and log tables escape tab, newline and carriage return with `termsafe.Line`, so host
+  text stays in its cell. A hint with a command to copy only holds a name that passes
+  `hibapi.CheckName`. `hib secret add` redacts the value, as it is and escaped, in everything it
+  prints, as `hib connect github` does. A call that sends a secret reports a reply hib can't read
+  without its text.
