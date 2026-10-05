@@ -110,9 +110,11 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
   "[redacted]": the host's stderr, errors, and the line naming what was stored. That covers the
   value as it is, as Go's `%q` quotes it and as JSON quotes it, with and without HTML escaping.
   It covers each of those as `termsafe.String` and `termsafe.Line` escape it too, so a value with a
-  control character, a quote or several lines is caught when a diagnostic quotes it. A reply hib
-  can't read is reported without its text, which is cut at 200 bytes and so could hold part of the
-  value.
+  control character, a quote or several lines is caught when a diagnostic quotes it. hib looks for
+  every form in the host's text before it replaces any, so forms that overlap or touch, such as a
+  quoted form written just before the value, are caught too and print as one "[redacted]". It
+  can't hide a value the host re-encodes some other way, such as base64. A reply hib can't read is
+  reported without its text, which is cut at 200 bytes and so could hold part of the value.
 
 **`--json`** on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one
 `hibapi.Response` on stdout, with `v` and only that command's fields.
@@ -338,5 +340,5 @@ End-to-end:
   `hibapi.CheckName`. The saved-image, fork and connect confirmations, the wake message and the
   asleep line of `hib status` escape the host's text with `termsafe.Line` too. `hib secret add`
   redacts the value in everything it prints, as `hib connect github` does: as it is, escaped, and
-  quoted by Go or JSON. A call that sends a secret reports a reply hib can't read without its
-  text.
+  quoted by Go or JSON. It looks for every form at once, so forms that overlap are caught too. A
+  call that sends a secret reports a reply hib can't read without its text.
