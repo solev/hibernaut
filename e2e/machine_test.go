@@ -58,7 +58,7 @@ func TestMachine(t *testing.T) {
 		t.Logf("hib exec on a paused machine took %v", time.Since(start).Round(time.Millisecond))
 	})
 
-	hib(t, ctx, "rm", name)
+	hib(t, ctx, "rm", name, "--yes")
 	if row := nameRow(hib(t, ctx, "ls"), name); row != "" {
 		t.Errorf("hib ls still lists %s after rm: %q", name, row)
 	}

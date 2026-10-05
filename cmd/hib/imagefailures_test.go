@@ -34,7 +34,7 @@ func TestImageListAndRemove(t *testing.T) {
 		c.errOut.String() != "hib: image myimg is used by machines web2: remove them first\n" {
 		t.Fatalf("remove used image = %d; stdout %q; stderr %q", code, c.out, c.errOut)
 	}
-	if code := c.hib("rm", "web2"); code != 0 {
+	if code := c.hib("rm", "web2", "--yes"); code != 0 {
 		t.Fatalf("remove copy = %d; stderr %s", code, c.errOut)
 	}
 	if code := c.hib("image", "rm", "myimg"); code != 0 || c.out.String() != "removed image myimg\n" {

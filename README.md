@@ -185,8 +185,11 @@ ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
 hib exec app -- uname -a   # run one command, no interactive shell
 hib ls                     # machines, running and paused, their size, when they pause, room left
 hib pause app              # pause it now; ssh app.hib resumes it
-hib rm app                 # delete it
+hib rm app --yes           # delete it and its disk for good
 ```
+
+`hib rm` asks "Delete app and its disk for good? [y/N]" on a terminal, and only `y` or `yes`
+deletes. `--yes` skips the question. Scripts and anything else without a terminal must pass it.
 
 `hib image build dev` bakes the Hibernaut CA into the image, so machines can trust the host proxy.
 Machines made before that rebuild need to be recreated to trust it.
@@ -209,7 +212,7 @@ regardless (see [Costs and auto-off](#costs-and-auto-off)). `make down` does tha
 Paused ones take only disk. `hib ls` ends with how many more of each size fit, for example
 `Room for more machines: 4 small, 2 medium or 1 large.` Each count is on its own, not a mix. When
 the VM is full, `hib new` and waking a paused machine fail at once with a message naming the
-running machines: `hib pause NAME` frees memory, `hib rm NAME` frees disk. `hib new` with a
+running machines: `hib pause NAME` frees memory, `hib rm NAME --yes` frees disk. `hib new` with a
 built-in image also says which sizes still fit. CPU is shared, so busy machines slow each other
 down but nothing fails.
 
@@ -253,7 +256,7 @@ hib image ls                 # built-in and saved images, their memory and creat
 hib new task --image myimg    # start with everything that was in app
 hib fork app --count 2        # app-1 and app-2. The default is one copy, the most is ten.
 hib ls                       # FROM shows which machine a copy came from
-hib rm task
+hib rm task --yes
 hib image rm myimg
 ```
 

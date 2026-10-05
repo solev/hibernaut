@@ -26,7 +26,7 @@ func TestImageAndFork(t *testing.T) {
 		fresh, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		for _, name := range []string{origin + "-1", origin + "-2", fromImage, origin} {
-			runHib(fresh, "rm", name)
+			runHib(fresh, "rm", name, "--yes")
 		}
 		if _, stderr, code := runHib(fresh, "image", "rm", image); code != 0 {
 			if _, err := vm.engine.Template(fresh, "hibimg-"+image); err == nil {
@@ -55,7 +55,7 @@ func TestImageAndFork(t *testing.T) {
 		t.Errorf("saved image holds secret %s (%s) in %s at %d", termsafe.String(hit.Secret),
 			termsafe.String(hit.Encoding), termsafe.String(hit.Where), hit.Offset)
 	}
-	hib(t, ctx, "rm", fromImage)
+	hib(t, ctx, "rm", fromImage, "--yes")
 	hib(t, ctx, "image", "rm", image)
 
 	hib(t, ctx, "fork", origin, "-count", "2")
@@ -79,8 +79,8 @@ func TestImageAndFork(t *testing.T) {
 	if imageServer(t, ctx, origin) != server {
 		t.Error("the origin's dev server restarted during the fork")
 	}
-	hib(t, ctx, "rm", first)
-	hib(t, ctx, "rm", second)
+	hib(t, ctx, "rm", first, "--yes")
+	hib(t, ctx, "rm", second, "--yes")
 
 	hib(t, ctx, "pause", origin)
 	hib(t, ctx, "fork", origin)

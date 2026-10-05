@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -37,18 +38,19 @@ func main() {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go stopOnSignal(signals, cancel)
 	a := &app{
-		stdin:      os.Stdin,
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		getenv:     os.Getenv,
-		ssh:        runCommand("ssh"),
-		gh:         runCommand("gh"),
-		execSSH:    execSSH,
-		az:         runAz,
-		executable: os.Executable,
-		wakePoll:   5 * time.Second,
-		now:        time.Now,
-		colour:     colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		stdin:       os.Stdin,
+		stdout:      os.Stdout,
+		stderr:      os.Stderr,
+		getenv:      os.Getenv,
+		ssh:         runCommand("ssh"),
+		gh:          runCommand("gh"),
+		execSSH:     execSSH,
+		az:          runAz,
+		executable:  os.Executable,
+		wakePoll:    5 * time.Second,
+		now:         time.Now,
+		colour:      colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		interactive: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd())),
 	}
 	if term.IsTerminal(int(os.Stderr.Fd())) {
 		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
@@ -91,6 +93,7 @@ type app struct {
 	wakePoll       time.Duration
 	now            func() time.Time
 	colour         bool
+	interactive    bool
 	command        *command
 	configFlag     string
 }
@@ -263,14 +266,14 @@ func roomLine(r hibapi.Room) string {
 			}
 		}
 		if len(fits) == 0 {
-			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", free)
+			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME --yes frees disk.", free)
 		}
 		return fmt.Sprintf("Room for more machines: %s. %s", joinList(fits, "or"), free)
 	}
 	image := safe(r.Image)
 	switch {
 	case r.Fits <= 0:
-		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", image, free)
+		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME --yes frees disk.", image, free)
 	case r.Fits == 1:
 		return fmt.Sprintf("Room for 1 more %s machine: %s", image, free)
 	}
@@ -303,8 +306,41 @@ func safe(s string) string {
 	return termsafe.Line(s)
 }
 
-func (a *app) rm(ctx context.Context, cfg *config, args []string) int {
-	return a.byName(ctx, cfg, "rm", "removed", args[0])
+func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
+	if !a.checkNames(name) {
+		return 2
+	}
+	if !yes {
+		if !a.interactive {
+			return a.mistake(fmt.Sprintf("deleting %s can't be undone, so pass --yes when there's no terminal to ask on", name))
+		}
+		if !a.confirm(ctx, fmt.Sprintf("Delete %s and its disk for good? [y/N] ", name)) {
+			fmt.Fprintf(a.stderr, "kept %s\n", name)
+			return 1
+		}
+	}
+	return a.byName(ctx, cfg, "rm", "removed", name)
+}
+
+const maxAnswer = 1024
+
+func (a *app) confirm(ctx context.Context, question string) bool {
+	fmt.Fprint(a.stderr, question)
+	answer := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(io.LimitReader(a.stdin, maxAnswer)).ReadString('\n')
+		answer <- line
+	}()
+	select {
+	case <-ctx.Done():
+	case line := <-answer:
+		if line, ok := strings.CutSuffix(line, "\n"); ok {
+			word := strings.ToLower(strings.TrimSpace(line))
+			return word == "y" || word == "yes"
+		}
+	}
+	fmt.Fprintln(a.stderr)
+	return false
 }
 
 func (a *app) pause(ctx context.Context, cfg *config, args []string) int {

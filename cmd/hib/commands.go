@@ -69,9 +69,10 @@ func commandTable() *command {
 			},
 			{
 				name: "rm", args: "NAME", opts: "[--yes]",
-				summary:  "delete a machine and its disk for good",
-				about:    "Deletes the machine and its disk. This can't be undone.",
-				examples: []string{"hib rm app"},
+				summary: "delete a machine and its disk for good",
+				about: "Deletes the machine and its disk. This can't be undone, so on a terminal it asks first.\n" +
+					"--yes skips the question. Without a terminal, --yes is needed.",
+				examples: []string{"hib rm app", "hib rm app --yes"},
 				nargs:    1, flags: rmFlags,
 			},
 			{
@@ -420,8 +421,10 @@ func newFlags(fl *flag.FlagSet) runner {
 }
 
 func rmFlags(fl *flag.FlagSet) runner {
-	fl.Bool("yes", false, "delete without asking")
-	return configured((*app).rm)
+	yes := fl.Bool("yes", false, "delete without asking")
+	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
+		return a.rm(ctx, cfg, args[0], *yes)
+	})
 }
 
 func forkFlags(fl *flag.FlagSet) runner {
