@@ -356,10 +356,10 @@ Unit:
       failures inhibit cleanup but do not skip restoration or turn success into failed-save
       cleanup. The ten-minute backstop leaves an ended, unsuccessful record.
 - [ ] Record settlement: each proof above, no running-only proof for unsuccessful or legacy
-      answered records, no
-      proof from a paused listing, an image save, an older build or a pending build. Interrupted
-      saves use start plus the call timeout. Dry runs keep records. New Managers and Apps still
-      see records after a process restart. Unreadable and unsettled records stop all changes.
+      answered records, no proof from a paused listing, an image save, an older build or a
+      pending build. Interrupted saves use start plus the call timeout. Dry runs keep records.
+      New Managers and Apps still see records after a process restart. Unreadable and unsettled
+      records stop all changes.
 - [ ] Failed input: a later ready pause keeps the failed save build through its headers.
       Trimming never punches that failed build and preserves ranges in its other sources.
       Without a later pause, the unsettled record stops deletion and trimming.
