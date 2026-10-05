@@ -69,6 +69,7 @@ e2e: up
 	go test -tags e2e -count=1 -v -timeout 40m ./e2e/...
 
 # Also reboots the VM, then deallocates and starts it, which adds about 5 minutes, and keeps a
-# busy machine running past an hour, which adds about 65.
+# busy machine running past an hour, which adds about 65. TestTrim adds its pauses, at most the
+# rest of the hour, two restarts, two saves and a fork.
 e2e-slow: up
-	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 150m ./e2e/...
+	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 180m ./e2e/...
