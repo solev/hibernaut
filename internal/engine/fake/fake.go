@@ -42,6 +42,10 @@ type ExecFunc func(ctx context.Context, m engine.Machine, home string, req engin
 // paused. If it returns an error, Pause fails with it and the machine keeps running.
 type PauseHook func(ctx context.Context, id string) error
 
+// BuildHook runs at the start of every BuildTemplate. If it returns an error, BuildTemplate
+// fails with it and builds nothing.
+type BuildHook func(ctx context.Context, spec engine.TemplateSpec) error
+
 // DialFunc connects DialWebSocket to port in m, which is running by then.
 type DialFunc func(ctx context.Context, m engine.Machine, port int) (net.Conn, error)
 
@@ -73,6 +77,11 @@ func WithPauseHook(h PauseHook) Option {
 	return func(e *Engine) { e.pauseHook = h }
 }
 
+// WithBuildHook installs h.
+func WithBuildHook(h BuildHook) Option {
+	return func(e *Engine) { e.buildHook = h }
+}
+
 // WithTemplates makes Create accept only these templates, and those BuildTemplate builds or
 // SaveTemplate saves. Without it, Create accepts any. A later WithTemplates replaces an earlier
 // one. Template finds each, as a template of DefaultCPUs and DefaultMemoryMB whose ID is its name.
@@ -96,6 +105,7 @@ type Engine struct {
 	now                    func() time.Time
 	exec                   ExecFunc
 	pauseHook              PauseHook
+	buildHook              BuildHook
 	dial                   DialFunc
 	homeRoot               string
 	refuseUnknownTemplates bool
@@ -381,6 +391,11 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 	}
 	if spec.Name == "" || spec.FromImage == "" {
 		return "", errors.New("fake: Name and FromImage are required")
+	}
+	if e.buildHook != nil {
+		if err := e.buildHook(ctx, spec); err != nil {
+			return "", err
+		}
 	}
 	id := "tmpl-" + spec.Name
 	e.mu.Lock()

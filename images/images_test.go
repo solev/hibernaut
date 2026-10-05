@@ -54,7 +54,7 @@ func TestToolVersions(t *testing.T) {
 
 func TestSpecDev(t *testing.T) {
 	caPEM := testCAPEM(t)
-	spec, err := Spec(Default, caPEM)
+	spec, err := Spec(Default, DefaultSize(), caPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestGitHubGitConfig(t *testing.T) {
 }
 
 func TestSpecUnknown(t *testing.T) {
-	_, err := Spec("nope", testCAPEM(t))
+	_, err := Spec("nope", DefaultSize(), testCAPEM(t))
 	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "dev") {
 		t.Fatalf("err %v", err)
 	}
@@ -194,7 +194,7 @@ func TestSpecRejectsBadCA(t *testing.T) {
 		{"trailing junk", append(bytes.Clone(caPEM), []byte("junk")...), "one PEM CERTIFICATE block"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Spec(Default, tc.pem)
+			_, err := Spec(Default, DefaultSize(), tc.pem)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Spec = %v, want %q", err, tc.want)
 			}
@@ -204,7 +204,7 @@ func TestSpecRejectsBadCA(t *testing.T) {
 
 func TestHibernautCAInstallStep(t *testing.T) {
 	caPEM := testCAPEM(t)
-	spec, err := Spec(Default, caPEM)
+	spec, err := Spec(Default, DefaultSize(), caPEM)
 	if err != nil {
 		t.Fatal(err)
 	}

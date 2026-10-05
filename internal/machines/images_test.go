@@ -176,10 +176,15 @@ func TestCreateFromSavedImage(t *testing.T) {
 	em := v.get(t, web.ID)
 	em.MemoryMB = 4096
 	v.e.Add(em)
-	m := imageManager(v, nil)
-	if _, err := m.SaveImage(t.Context(), "web", "myimg"); err != nil {
+	bigPool := imageManager(v, func(cfg *machines.Config) {
+		cfg.ReadRoom = func() (room.Host, error) {
+			return room.Host{PageSize: 2 << 20, Pages: 8192, FreePages: 8000, DiskFree: 80 << 30}, nil
+		}
+	})
+	if _, err := bigPool.SaveImage(t.Context(), "web", "myimg"); err != nil {
 		t.Fatal(err)
 	}
+	m := imageManager(v, nil)
 	r, err := m.Room(t.Context(), "myimg")
 	if err != nil || r.Fits != 1 || r.Image != "myimg" {
 		t.Fatalf("saved image room = %+v, %v, want one 4 GiB machine", r, err)

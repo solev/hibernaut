@@ -9,6 +9,7 @@
 package room
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -131,6 +132,11 @@ func (h Host) CheckPlan(name string, p Plan, running []Machine) error {
 		runningNow = " Running now: " + strings.Join(names, ", ") + "."
 	}
 
+	if peak := cmp.Or(p.Peak, p.Running); h.pages(p.MemoryMB)*int64(peak) > h.Pages {
+		_, total := h.MemoryMB()
+		return fmt.Errorf("%w for %q: it needs %s of memory at once, and the host has %s for machines in all. It can't fit on this host, even with every machine paused",
+			ErrFull, name, hibapi.FormatMB(int64(p.MemoryMB)*int64(peak)), hibapi.FormatMB(total))
+	}
 	if h.FreePages < h.pages(p.MemoryMB)*int64(p.Running) {
 		free, _ := h.MemoryMB()
 		msg := fmt.Sprintf("it needs %s of memory and %s is free.", hibapi.FormatMB(int64(p.MemoryMB)*int64(p.Running)), hibapi.FormatMB(free))
@@ -165,6 +171,10 @@ type Plan struct {
 	// Snapshots is how many more snapshots the operation may write, each up to MemoryMB and
 	// DiskMargin, its machines' future pauses included.
 	Snapshots int
+	// Peak is how many machines run at once at the operation's peak with every other machine
+	// paused, those it works on included. 0 means Running. If the host's whole pool can't hold
+	// them, the operation can never fit.
+	Peak int
 }
 
 func (h Host) pages(memoryMB int) int64 {

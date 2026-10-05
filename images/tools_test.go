@@ -192,7 +192,7 @@ func TestToolsRejectIncompleteCodexPackage(t *testing.T) {
 func toolInstallFixture(t *testing.T, missing ...string) (func(string) ([]byte, error), string, string) {
 	t.Helper()
 	root := t.TempDir()
-	spec, err := Spec(Default, testCAPEM(t))
+	spec, err := Spec(Default, DefaultSize(), testCAPEM(t))
 	if err != nil {
 		t.Fatal(err)
 	}

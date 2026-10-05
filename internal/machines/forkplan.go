@@ -96,13 +96,14 @@ func (m *Manager) waitCopyRoom(ctx context.Context, name string, p room.Plan) er
 
 func (m *Manager) makeCopy(ctx context.Context, origin engine.Machine, template, name string, keys []byte) (hibapi.Machine, error) {
 	idle, _ := Idle(origin)
-	em, err := m.e.Create(ctx, engine.CreateOptions{
-		Template: template, Timeout: timeoutFor(idle),
-		Metadata: map[string]string{
-			labelName: name, labelImage: origin.Metadata[labelImage],
-			labelIdle: origin.Metadata[labelIdle], labelFork: Name(origin),
-		},
-	})
+	labels := map[string]string{
+		labelName: name, labelImage: origin.Metadata[labelImage],
+		labelIdle: origin.Metadata[labelIdle], labelFork: Name(origin),
+	}
+	if size, ok := machineSize(origin); ok {
+		labels[labelSize] = size.Name()
+	}
+	em, err := m.e.Create(ctx, engine.CreateOptions{Template: template, Timeout: timeoutFor(idle), Metadata: labels})
 	if err != nil {
 		return hibapi.Machine{}, m.failedCreate(ctx, name, fmt.Errorf("creating %s: %w", name, safeError(err)))
 	}
