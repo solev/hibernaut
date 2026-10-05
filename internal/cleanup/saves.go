@@ -4,12 +4,12 @@ import "time"
 
 // SaveRecord describes a dispatched image save that cleanup has not yet accounted for.
 type SaveRecord struct {
-	Machine  string    `json:"machine"`
-	Name     string    `json:"name"`
-	Started  time.Time `json:"started"`
-	BootID   string    `json:"boot_id"`
-	Ended    time.Time `json:"ended"`
-	Answered bool      `json:"answered"`
+	Machine   string    `json:"machine"`
+	Name      string    `json:"name"`
+	Started   time.Time `json:"started"`
+	BootID    string    `json:"boot_id"`
+	Ended     time.Time `json:"ended"`
+	Succeeded bool      `json:"succeeded"`
 }
 
 // SaveSettled reports whether the listing proves that a save can no longer hide a running input.
@@ -17,7 +17,7 @@ func SaveSettled(l Listing, r SaveRecord, bootID string, callTimeout time.Durati
 	if r.BootID != "" && bootID != "" && r.BootID != bootID {
 		return true
 	}
-	if r.Answered {
+	if r.Succeeded {
 		for _, m := range l.Machines {
 			if m.ID == r.Machine && !m.Paused {
 				return true

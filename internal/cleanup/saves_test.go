@@ -1,15 +1,33 @@
 package cleanup_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/solev/hibernaut/internal/cleanup"
 )
 
+func TestCleanupLegacyAnsweredSaveNeedsLaterPause(t *testing.T) {
+	var record cleanup.SaveRecord
+	if err := json.Unmarshal([]byte(`{"machine":"web","name":"web","started":"2026-10-05T10:00:00Z","ended":"2026-10-05T10:01:00Z","answered":true}`), &record); err != nil {
+		t.Fatal(err)
+	}
+	l := cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}
+	if cleanup.SaveSettled(l, record, "", 10*time.Minute) {
+		t.Fatal("an HTTP answer without a successful save settled on a running listing")
+	}
+	b := ready(orphanA, "slot", time.Date(2026, 10, 5, 10, 3, 0, 0, time.UTC))
+	l.Envs = []cleanup.Env{{ID: "slot", Machine: "web"}}
+	l.Builds = []cleanup.Build{b}
+	if !cleanup.SaveSettled(l, record, "", 10*time.Minute) {
+		t.Fatal("a later machine-only pause did not settle the failed save")
+	}
+}
+
 func TestCleanupSaveSettlementRequiresProof(t *testing.T) {
 	started, ended := ago(4*time.Hour), ago(3*time.Hour)
-	record := cleanup.SaveRecord{Machine: "web", Name: "web", Started: started, Ended: ended, Answered: true, BootID: "boot1"}
+	record := cleanup.SaveRecord{Machine: "web", Name: "web", Started: started, Ended: ended, Succeeded: true, BootID: "boot1"}
 	pause := func(created time.Time) cleanup.Build {
 		b := ready(orphanA, "slot", created.Add(time.Minute))
 		b.Created = created
@@ -22,9 +40,9 @@ func TestCleanupSaveSettlementRequiresProof(t *testing.T) {
 		boot   string
 		want   bool
 	}{
-		{"answered running", record, cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}, "boot1", true},
-		{"unanswered running", cleanup.SaveRecord{Machine: "web", Started: started, Ended: ended}, cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}, "boot1", false},
-		{"answered paused", record, cleanup.Listing{Machines: []cleanup.Machine{{ID: "web", Paused: true}}}, "boot1", false},
+		{"succeeded running", record, cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}, "boot1", true},
+		{"unsuccessful running", cleanup.SaveRecord{Machine: "web", Started: started, Ended: ended}, cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}, "boot1", false},
+		{"succeeded paused", record, cleanup.Listing{Machines: []cleanup.Machine{{ID: "web", Paused: true}}}, "boot1", false},
 		{"later pause", record, cleanup.Listing{Envs: []cleanup.Env{{ID: "slot", Machine: "web"}}, Builds: []cleanup.Build{pause(ended.Add(time.Minute))}}, "boot1", true},
 		{"older pause", record, cleanup.Listing{Envs: []cleanup.Env{{ID: "slot", Machine: "web"}}, Builds: []cleanup.Build{pause(ended.Add(-time.Minute))}}, "boot1", false},
 		{"same instant", record, cleanup.Listing{Envs: []cleanup.Env{{ID: "slot", Machine: "web"}}, Builds: []cleanup.Build{pause(ended)}}, "boot1", false},

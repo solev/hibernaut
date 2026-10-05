@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -60,7 +61,7 @@ func TestSaveRecordExistsDuringUncancelledBoundedCall(t *testing.T) {
 			t.Errorf("save deadline = %v, bounded %v", deadline, bounded)
 		}
 		records := saveRecords(t, v.dir)
-		if len(records) != 1 || records[0].Machine != id || records[0].Name != "web" || records[0].BootID != "boot1" || !records[0].Ended.IsZero() || records[0].Answered {
+		if len(records) != 1 || records[0].Machine != id || records[0].Name != "web" || records[0].BootID != "boot1" || !records[0].Ended.IsZero() || records[0].Succeeded {
 			t.Fatalf("in-flight record = %+v", records)
 		}
 		now = now.Add(time.Minute)
@@ -73,7 +74,7 @@ func TestSaveRecordExistsDuringUncancelledBoundedCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	records := saveRecords(t, v.dir)
-	if len(records) != 1 || !records[0].Answered || !records[0].Ended.Equal(now) {
+	if len(records) != 1 || !records[0].Succeeded || !records[0].Ended.Equal(now) {
 		t.Fatalf("ended record = %+v", records)
 	}
 }
@@ -106,13 +107,13 @@ func TestSaveCancellationBeforeDispatchWritesNothing(t *testing.T) {
 
 func TestSaveRecordsOutcomesBeforeRestoration(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		cause    error
-		answered bool
-		deleted  bool
+		name      string
+		cause     error
+		succeeded bool
+		deleted   bool
 	}{
 		{"success", nil, true, false},
-		{"answered failure", errors.New("E2B returned 503"), true, false},
+		{"answered failure", errors.New("E2B returned 503"), false, false},
 		{"no answer", errors.Join(engine.ErrNoAnswer, errors.New("connection lost")), false, false},
 		{"404", engine.ErrNotFound, false, true},
 		{"409", engine.ErrNotRunning, false, true},
@@ -145,7 +146,7 @@ func TestSaveRecordsOutcomesBeforeRestoration(t *testing.T) {
 					if len(records) != 0 {
 						t.Fatal("404/409 record survived")
 					}
-				} else if len(records) != 1 || !records[0].Ended.Equal(now) || records[0].Answered != tc.answered {
+				} else if len(records) != 1 || !records[0].Ended.Equal(now) || records[0].Succeeded != tc.succeeded {
 					t.Fatalf("record not ended before restoration: %+v", records)
 				}
 				return v.e.Pause(ctx, id)
@@ -187,6 +188,76 @@ func TestSaveRecordsSurviveManagerRestartAndDryRun(t *testing.T) {
 	}
 	if err := check(l, false); err != nil || len(saveRecords(t, v.dir)) != 0 {
 		t.Fatalf("running machine didn't settle record: %v", err)
+	}
+}
+
+func TestFailedSaveRunningListingNeedsLaterPause(t *testing.T) {
+	for _, cause := range []error{
+		errors.New("E2B returned 500"),
+		errors.New("201 template readback failed"),
+		errors.Join(engine.ErrNoAnswer, errors.New("connection lost")),
+	} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			v := newEnv(t)
+			web := v.create(t, "web")
+			e := &faultEngine{Engine: v.e}
+			e.save = func(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
+				if _, err := v.e.SaveTemplate(ctx, id, alias); err != nil {
+					t.Fatal(err)
+				}
+				return engine.TemplateInfo{}, cause
+			}
+			m := imageManager(v, func(cfg *machines.Config) { cfg.Engine = e })
+			if _, err := m.SaveImage(t.Context(), "web", "myimg"); !errors.Is(err, cause) {
+				t.Fatalf("save error = %v", err)
+			}
+			records := saveRecords(t, v.dir)
+			if len(records) != 1 || records[0].Ended.IsZero() || records[0].Succeeded {
+				t.Fatalf("failed save record = %+v", records)
+			}
+			release, err := m.TryCleanupRead(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			l := cleanup.Listing{Machines: []cleanup.Machine{{ID: web.ID}}}
+			if err := m.CheckSaves(t.Context(), l, false, func(string, ...any) {}); !errors.Is(err, machines.ErrSaveUnsettled) {
+				t.Fatalf("running listing settled a failed save: %v", err)
+			}
+			l.Envs = []cleanup.Env{{ID: "slot", Machine: web.ID}}
+			l.Builds = []cleanup.Build{{
+				ID: "pause", Status: "ready", Created: records[0].Ended.Add(time.Minute),
+				In: []cleanup.Assignment{{Env: "slot"}},
+			}}
+			if err := m.CheckSaves(t.Context(), l, false, func(string, ...any) {}); err != nil {
+				t.Fatalf("later pause did not settle failed save: %v", err)
+			}
+		})
+	}
+}
+
+func TestLegacyAnsweredRecordStaysUnsuccessful(t *testing.T) {
+	v := newEnv(t)
+	web := v.create(t, "web")
+	dir := filepath.Join(v.dir, "saves")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, web.ID+"-"+strings.Repeat("a", 32))
+	data := []byte(`{"machine":"` + web.ID + `","name":"web","started":"2026-10-05T10:00:00Z","ended":"2026-10-05T10:01:00Z","answered":true}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := machines.New(machines.Config{StateDir: v.dir, BootID: func() string { return "" }})
+	release, err := m.TryCleanupRead(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	l := cleanup.Listing{Machines: []cleanup.Machine{{ID: web.ID}}}
+	err = m.CheckSaves(t.Context(), l, false, func(string, ...any) {})
+	if !errors.Is(err, machines.ErrSaveUnsettled) || strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("legacy record did not decode as an unsuccessful save: %v", err)
 	}
 }
 
@@ -236,7 +307,7 @@ func TestSaveRecordWriteFailuresPreventUnsafeProgress(t *testing.T) {
 	}
 }
 
-func TestSaveCallBackstopEndsWithUnansweredRecord(t *testing.T) {
+func TestSaveCallBackstopEndsWithUnsuccessfulRecord(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		v := newEnv(t)
 		v.create(t, "web")
@@ -254,7 +325,7 @@ func TestSaveCallBackstopEndsWithUnansweredRecord(t *testing.T) {
 			t.Fatalf("backstop result = %v", err)
 		}
 		records := saveRecords(t, v.dir)
-		if len(records) != 1 || records[0].Answered || !records[0].Ended.Equal(started.Add(10*time.Minute)) {
+		if len(records) != 1 || records[0].Succeeded || !records[0].Ended.Equal(started.Add(10*time.Minute)) {
 			t.Fatalf("backstop record = %+v", records)
 		}
 	})

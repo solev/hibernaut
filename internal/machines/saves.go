@@ -109,7 +109,7 @@ func (m *Manager) finishSave(key string, r cleanup.SaveRecord, cause error) erro
 		defer saves.Close()
 		return removeSave(saves, key)
 	}
-	r.Ended, r.Answered = m.now(), !errors.Is(cause, engine.ErrNoAnswer)
+	r.Ended, r.Succeeded = m.now(), cause == nil
 	return m.writeSave(key, r, true)
 }
 
@@ -190,7 +190,7 @@ func readSave(root *os.Root, key string, uid int) (cleanup.SaveRecord, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return r, err
 	}
-	if !idRE.MatchString(r.Machine) || hibapi.CheckName(r.Name) != nil || r.Started.IsZero() || r.Answered && r.Ended.IsZero() {
+	if !idRE.MatchString(r.Machine) || hibapi.CheckName(r.Name) != nil || r.Started.IsZero() || r.Succeeded && r.Ended.IsZero() {
 		return r, errors.New("invalid machine, name or save times")
 	}
 	return r, nil

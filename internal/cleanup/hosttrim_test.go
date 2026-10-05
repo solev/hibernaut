@@ -15,7 +15,80 @@ import (
 	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
+	"github.com/solev/hibernaut/internal/snapheader"
 )
+
+func TestCleanupLaterPauseProtectsFailedSaveSources(t *testing.T) {
+	l, s := trimFixture()
+	failed := ready(orphanB, "web", ago(4*time.Hour))
+	failed.Status = "failed"
+	l.Builds = append(l.Builds, failed)
+	l.Dirs = append(l.Dirs, dir(orphanB, ago(4*time.Hour)))
+	l.Dirs[1].Refs = append(l.Dirs[1].Refs, orphanB)
+	s.dirs[orphanB] = true
+	for _, kind := range []string{"memfile", "rootfs.ext4"} {
+		s.headers[cleanup.FileKey{orphanB, kind + ".header"}] = trimHeader(orphanB, cachedBuild)
+		s.files[cleanup.FileKey{orphanB, kind}] = cleanup.FileState{Size: 4 << 20, Regular: true, Links: 1}
+		s.headers[cleanup.FileKey{imageBuild, kind + ".header"}] = trimHeader(imageBuild, cachedBuild,
+			snapheader.Mapping{Build: orphanB, Length: 1 << 20},
+			snapheader.Mapping{Offset: 1 << 20, Build: orphanA, StorageOffset: 1 << 20, Length: 1 << 20})
+	}
+	p, err := cleanup.Garbage(l, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := p.Keep[orphanB]; !kept || slices.Contains(p.Delete, orphanB) {
+		t.Fatal("the later pause did not keep its failed input", p)
+	}
+	var log lines
+	if err := (cleanup.Trimmer{Storage: s, Scope: "all"}).Trim(t.Context(), l, p, now, false, log.logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.applied) != 2 {
+		t.Fatalf("trim plans = %v, log = %v", s.applied, log)
+	}
+	for _, p := range s.applied {
+		if p.File.Key.Build != orphanA || p.Kept != 1<<20 || !slices.Equal(p.Holes, []cleanup.Range{{Start: 0, End: 1 << 20}, {Start: 2 << 20, End: 4 << 20}}) {
+			t.Fatalf("failed source or required range was punched: %+v", p)
+		}
+	}
+}
+
+func TestCleanupUnsettledFailedSaveStopsBeforePlanning(t *testing.T) {
+	h, _ := hostForTrim(t)
+	query := h.Query
+	h.Query = func(ctx context.Context, sql string) ([][]string, error) {
+		rows, err := query(ctx, sql)
+		if strings.Contains(sql, "FROM env_builds") {
+			rows = slices.DeleteFunc(rows, func(row []string) bool { return row[0] == imageBuild })
+			for _, row := range rows {
+				row[1] = "failed"
+			}
+		}
+		return rows, err
+	}
+	h.OpenTrim = func(string) (cleanup.TrimStorage, error) {
+		t.Fatal("unsettled failed save opened trim storage")
+		return nil, nil
+	}
+	want := errors.New("failed save is unsettled")
+	h.CheckSaves = func(_ context.Context, l cleanup.Listing, _ bool, _ func(string, ...any)) error {
+		r := cleanup.SaveRecord{Machine: "web", Name: "web", Started: ago(4 * time.Hour), Ended: ago(3 * time.Hour)}
+		if cleanup.SaveSettled(l, r, "", 10*time.Minute) {
+			t.Fatal("failed save without a later pause settled")
+		}
+		return want
+	}
+	var log lines
+	if err := h.Clean(t.Context(), now, false, log.logf); !errors.Is(err, want) || len(log) != 0 {
+		t.Fatalf("unsettled save = %v, log = %v", err, log)
+	}
+	for _, id := range []string{orphanA, imageBuild} {
+		if _, err := os.Stat(filepath.Join(h.Storage, id)); err != nil {
+			t.Fatalf("cleanup deleted %s: %v", id, err)
+		}
+	}
+}
 
 func TestCleanupStrictHeaderRefusalDoesNotChangeDeletion(t *testing.T) {
 	h, s := hostForTrim(t)
