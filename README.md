@@ -33,8 +33,8 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
   M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools),
-  M6 (golden images and fork), M8 (machine sizes) and M10 (CLI friendliness) are done. Progress:
-  [docs/milestones](docs/milestones/README.md).
+  M6 (golden images and fork), M8 (machine sizes), M9 (snapshot compaction) and M10 (CLI
+  friendliness) are done. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 
@@ -107,7 +107,8 @@ internal/engine/           The Engine interface; e2b/ (real), fake/ (in memory),
 internal/machines/         Makes machines from images, finds them by name, reaches their SSH
 internal/busy/, room/      Keeps busy machines running. Says whether one more machine fits.
 internal/pauseall/         Pauses every running sandbox, within a time limit
-internal/cleanup/          Finds the E2B snapshot builds that nothing needs any more
+internal/cleanup/          Deletes the E2B snapshot builds nothing needs, and trims old ones
+internal/snapheader/       Reads E2B's snapshot headers strictly, for trimming
 internal/vault/, envblock/ Sealed secrets and placeholders. The placeholder block in machines.
 internal/egress/           The HTTPS proxy; hook/ (iptables, real destination), swap/ (swap, scrub)
 internal/ca/, audit/       The Hibernaut CA. The audit log of every swap.
@@ -270,9 +271,21 @@ dev (small)  4/12  RUN npm i -g @openai/codex  built in 41s
 
 E2B keeps every snapshot it writes, even a removed machine's. `hibd` deletes the ones nothing
 needs any more when a machine is removed, and hourly. `./azure/ssh.sh sudo hibd cleanup -n`
-says what it would delete, and why it keeps the rest. A machine's own snapshots still grow as it
-pauses (3.6 GiB after 20 pauses of an idle one): each is a diff on the one before, and E2B never
-merges them. Compaction is planned ([M9](docs/milestones/m9-snapshot-compaction.md)).
+says what it would delete, and why it keeps the rest.
+
+A machine's own snapshots grow as it pauses (3.6 GiB after 20 pauses of an idle one): each is a
+diff on the one before, and E2B never merges them. So the same cleanup trims them. In older
+snapshots, it frees the parts that no snapshot still in use reads. Files keep their sizes, and
+what was freed reads as zeros. After each cleanup, a machine's older snapshots hold only its live
+memory and disk data, plus what its pauses of the last hour wrote. In `TestTrim`, a machine's
+snapshots from 10 pauses went from 3.9 GiB to 553 MiB. Each pause still adds a directory of 30 to
+130 KB, and saved images keep all their data. `cleanup -n` says what it would trim, or why it
+trims nothing.
+
+For now `hibd` trims only the snapshots of the end-to-end tests' machines (`HIBD_TRIM=e2e`).
+`all` trims every machine's, and `off` none. Set it in `/etc/hibernaut/hibd.env`, then run
+`sudo systemctl restart hibd`. Before `all`, back up the machines you can't lose, as
+[M9](docs/milestones/m9-snapshot-compaction.md) describes.
 
 ### Images and fork
 

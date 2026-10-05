@@ -477,17 +477,31 @@ Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2
 
 ### Snapshot compaction
 
-Planned for M9.
-
 - Every pause writes a diff against the machine's last snapshot, and E2B never merges them. The
-  latest snapshot needs many of the diffs before it, so cleanup can't free those: after 20
+  latest snapshot needs many of the diffs before it, so cleanup can't delete those: after 20
   pauses of an idle `dev` machine, it needed 13 of them (3.6 GiB), one more with every pause
   (M2's `TestPauseCycles`). Resume time didn't grow (0.7–1.5 s).
-- First, E2B's own options, which its local setup leaves off (LaunchDarkly flags at their
-  defaults): `memfile-diff-dedup` (4 KiB dedup of each diff, and a budget that copies parent
-  pages into the new one, so old diffs stop being needed), `guest-pause-reclaim` (fstrim,
-  drop_caches and compact_memory before a pause) and `collapse-envd-heap`.
-- If the chain still grows, `hibd` merges it into one build, and cleanup deletes the old diffs.
+- So cleanup also trims old builds (M9). A root is a build something may start from or resume:
+  what M2 keeps, plus any build a machine may be running from or may yet resume, which keeps a
+  replaced snapshot for an hour. In every other build, cleanup punches holes in `memfile` and
+  `rootfs.ext4` (`fallocate(PUNCH_HOLE|KEEP_SIZE)`) wherever no root's headers map. A hole reads
+  as zeros. Files keep their sizes, and headers, snapfiles and metadata stay, so hib's checks of
+  a chain still pass.
+- It fails closed. A root, or a build a root reads, that's missing or has a header the strict
+  parser (`internal/snapheader`) rejects stops all trimming in that run, and so does storage
+  that isn't ext4. Deletion still goes ahead, as in M2. An unfinished save stops both, until
+  `hibd` can prove it over (Images and fork).
+- After each cleanup, a machine's old builds hold only its live memory and disk data, plus what
+  its pauses of the last hour wrote. In `TestTrim`, 10 pauses took 3.9 GiB, and 553 MiB after
+  the trim. Not bounded: one build directory a pause (30 to 130 KB of headers and snapfile),
+  saved images, and how long cleanup waits while E2B is busy.
+- `HIBD_TRIM` in `/etc/hibernaut/hibd.env` picks whose old builds are trimmed. `e2e`, the
+  default until trimming has run on real machines, takes only the end-to-end tests' machines.
+  `all` takes every machine's, and `off` none. Roots never depend on it.
+- `hibd cleanup -n` says what it would trim, or why it trims nothing. The daemon trims for up to
+  two minutes at a time, and picks up where it stopped a minute later.
+- Not tried: E2B's own options, which its local setup leaves off (`memfile-diff-dedup`,
+  `guest-pause-reclaim` and `collapse-envd-heap`). Merging a chain into one build is for later.
 
 ### Sizes
 
@@ -604,7 +618,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | M6 | **Golden images and fork** | A machine started from a saved image has its repo, dependencies and running app in place. So do two forks of it, and the origin keeps running. |
 | M7 | **GitHub device flow** (own OAuth App) | Approve once in the browser, then the M4 test passes on the new token |
 | M8 | **Machine sizes** (`hib new --size small`) | A small machine has 1 vCPU and 1 GiB. One made without `--size` still has 2 vCPUs and 2 GiB |
-| M9 | **Snapshot compaction** | An idle machine paused 20 times needs no more disk than a bound, and resumes as fast as after one pause |
+| M9 | **Snapshot compaction:** cleanup trims old snapshots | After 10 pauses and a trim, a machine's snapshots take under half the disk they did, and no more than its latest snapshot maps. Its memory and disk read the same after a cold resume, and in an image, a fork and a machine from the image. |
 | M10 | **CLI friendliness:** help for every command, suggestions for typos, `hib rm` asks first, completions, `--json` | No new one: help and mistakes are unit-tested, and the existing tests pass with `hib rm --yes` |
 
 Repo layout:

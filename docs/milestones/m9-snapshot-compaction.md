@@ -1,6 +1,6 @@
 # M9 Snapshot compaction
 
-Status: **in progress** · Spec: §5 (Snapshot compaction) · Needs: M2 (snapshot cleanup) ·
+Status: **done** · Spec: §5 (Snapshot compaction) · Needs: M2 (snapshot cleanup) ·
 Research: [e2b-snapshot-compaction](../research/e2b-snapshot-compaction.md)
 
 **Goal:** a machine's old snapshots stop taking more disk with every pause. After each cleanup,
@@ -311,20 +311,20 @@ until `test` resumes after a real trim and a host restart.
 
 - [x] Measure (S0): `TestPauseCycles` rewriting a 64 MiB file of random data before each pause,
       synced to disk or not. Its numbers are in Why.
-- [ ] `internal/snapheader`: the strict parser.
-- [ ] Cleanup: the machine roots, root accounting, candidates and the scope. Read under
+- [x] `internal/snapheader`: the strict parser.
+- [x] Cleanup: the machine roots, root accounting, candidates and the scope. Read under
       `hibd.lock` and settle persistent save records before deleting or trimming.
-- [ ] Saves: uncancellable dispatched calls with a ten-minute backstop, successful-save
+- [x] Saves: uncancellable dispatched calls with a ten-minute backstop, successful-save
       accounting, and private save records written before dispatch and ended before restoration.
       Recover publication debris and join record errors without changing the save's outcome.
-- [ ] hib's E2B client without E2B's fork endpoint: an overlay `make generate` applies.
-- [ ] The plan, and punching on Linux (`trim_linux.go`, with a `trim_stub.go` that says trimming
+- [x] hib's E2B client without E2B's fork endpoint: an overlay `make generate` applies.
+- [x] The plan, and punching on Linux (`trim_linux.go`, with a `trim_stub.go` that says trimming
       needs Linux). `hibd cleanup -n` says what it would trim.
-- [ ] `cleanup.lock`, the trim budget, and `HIBD_TRIM` in hibd's usage.
-- [ ] Sentinels in `TestPauseCycles`, and `TestTrim`.
-- [ ] On the host: `make test-host-remote`, deploy, `sudo hibd cleanup -n` (read-only), then
+- [x] `cleanup.lock`, the trim budget, and `HIBD_TRIM` in hibd's usage.
+- [x] Sentinels in `TestPauseCycles`, and `TestTrim`.
+- [x] On the host: `make test-host-remote`, deploy, `sudo hibd cleanup -n` (read-only), then
       `make e2e-slow`.
-- [ ] README and spec §5: what a machine's snapshots take on disk, what's bounded and what isn't.
+- [x] README and spec §5: what a machine's snapshots take on disk, what's bounded and what isn't.
 - [ ] Optional, not needed for Done: E2B's own options, each turned on by patching its default in
       the pinned E2B and measured with `TestPauseCycles`: `memfile-diff-dedup`,
       `guest-pause-reclaim` and `collapse-envd-heap`.
@@ -333,10 +333,10 @@ until `test` resumes after a real trim and a host restart.
 
 Unit:
 
-- [ ] `snapheader`: versions and flag bits, block sizes, sizes, alignment, another build's header,
+- [x] `snapheader`: versions and flag bits, block sizes, sizes, alignment, another build's header,
       a gap, an overlap, an overflow, a mapping past the size, an empty list, zero-length
       mappings, cut-short mappings.
-- [ ] Roots, on an injected clock: a running machine keeps its builds from an hour before it
+- [x] Roots, on an injected clock: a running machine keeps its builds from an hour before it
       started, all of them if its start is unknown. A machine E2B lists as paused before its
       pause's build exists, whose run started from a snapshot replaced over an hour before, keeps
       that snapshot. So does one whose slot also holds an image save's build from that run, made
@@ -345,70 +345,70 @@ Unit:
       snapshot of its own runs, as a native fork would, every other machine's slot that isn't
       removed keeps its builds from an hour before it started. Startup history, saved images and
       the layer cache stay roots in every scope. Deletion keeps the roots.
-- [ ] Locked reads: listing, SQL, cache, directories and records happen under `hibd.lock`.
+- [x] Locked reads: listing, SQL, cache, directories and records happen under `hibd.lock`.
       Deletion and trimming happen after release. Both locks release on errors and cancelled
       waits. Sweep contention retries in a minute without `not trimming`. The command logs its
       wait once. An unlocked resume during the read keeps the latest and warm-cache roots whole.
-- [ ] Save outcomes: pre-dispatch cancellation writes nothing and sends nothing. Cancellation
+- [x] Save outcomes: pre-dispatch cancellation writes nothing and sends nothing. Cancellation
       during the call leaves a live, bounded context. The record exists before dispatch and ends
       before restoration. Only a 201 with a good readback succeeds. An HTTP error, a 201 with
       failed readback and a transport failure do not. A 404 or 409 removes its record. Write
       failures inhibit cleanup but do not skip restoration or turn success into failed-save
       cleanup. The ten-minute backstop leaves an ended, unsuccessful record.
-- [ ] Record settlement: each proof above, no running-only proof for unsuccessful or legacy
+- [x] Record settlement: each proof above, no running-only proof for unsuccessful or legacy
       answered records, no proof from a paused listing, an image save, an older build or a
       pending build. Interrupted saves use start plus the call timeout. Dry runs keep records.
       New Managers and Apps still see records after a process restart. Unreadable and unsettled
       records stop all changes.
-- [ ] Failed input: a later ready pause keeps the failed save build through its headers.
+- [x] Failed input: a later ready pause keeps the failed save build through its headers.
       Trimming never punches that failed build and preserves ranges in its other sources.
       Without a later pause, the unsettled record stops deletion and trimming.
-- [ ] Publication debris, in real and dry runs: partial and complete staging files, replacement
+- [x] Publication debris, in real and dry runs: partial and complete staging files, replacement
       debris with an old record, and a record linked to its staging file. Real runs remove
       debris. Dry runs account for same-inode links. Unexplained links, unexpected names and
       staging-named symlinks or directories fail closed with the correct manual procedure.
       Debris owned by the state owner or hibd's effective UID is accepted.
-- [ ] Recovery messages: running, paused and unlisted machines, before and at or after the
+- [x] Recovery messages: running, paused and unlisted machines, before and at or after the
       threshold. Times are UTC RFC3339 and stable within a branch. Damaged records give the exact
       path and post-restart procedure without a zero time. Every message names the machine and
       ends with one next step.
-- [ ] Cross-process, with real flock on macOS and Linux: one process saves against a gated E2B
+- [x] Cross-process, with real flock on macOS and Linux: one process saves against a gated E2B
       handler while another runs cleanup on the same state directory. Cleanup logs its wait
       once, makes no List call until the save ends, then clears the settled record and completes.
-- [ ] Root accounting: a root without a directory stops trimming, however old. So does a root
+- [x] Root accounting: a root without a directory stops trimming, however old. So does a root
       header missing or invalid, a headerless legacy build, a filesystem-only snapshot, or a
       source missing, short or with an invalid header. A root whose header maps nothing to its
       own build, which has no file of that kind, doesn't.
-- [ ] Candidates and scope: `e2e` takes only e2e machines' builds, and none that a root outside
+- [x] Candidates and scope: `e2e` takes only e2e machines' builds, and none that a root outside
       the scope maps data in or has as its base, such as a saved image's ancestors. `all` takes
       those. `off` and unknown values take none. Never a root, a base, an image's build, or an
       unfinished or recently changed build.
-- [ ] The plan: the union over roots comes before the complement. Kept ranges apart within one
+- [x] The plan: the union over roots comes before the complement. Kept ranges apart within one
       4 MiB chunk. Zero (nil) mappings. Storage offsets that differ from logical ones. A source
       shared by several roots and generations. `memfile` and `rootfs.ext4` apart. Holes rounded
       inward. A candidate no root maps loses everything.
-- [ ] The sweep: trimming has its own budget, a sweep that runs out of it tries again in a
+- [x] The sweep: trimming has its own budget, a sweep that runs out of it tries again in a
       minute, and runs cut short again and again still finish the trim.
-- [ ] hib's E2B client has no method that forks a machine natively.
+- [x] hib's E2B client has no method that forks a machine natively.
 
 Host (`-tags host`, on ext4 under `/var/tmp`, in `make test-host-remote`):
 
-- [ ] A storage directory of several generations of random data: every root's memory and disk,
+- [x] A storage directory of several generations of random data: every root's memory and disk,
       read through its headers, has the same SHA-256 before and after a real trim. Fewer blocks
       are allocated, sizes, mtimes and access times are as before, and a second run trims
       nothing.
-- [ ] A file swapped for another, resized, touched or hard-linked after the plan is left, with
+- [x] A file swapped for another, resized, touched or hard-linked after the plan is left, with
       its reason.
-- [ ] Cancelled halfway: every root still reads the same, and the next run finishes.
-- [ ] Not ext4 (`/dev/shm`): nothing is trimmed, and cleanup says why.
+- [x] Cancelled halfway: every root still reads the same, and the next run finishes.
+- [x] Not ext4 (`/dev/shm`): nothing is trimmed, and cleanup says why.
 
 End-to-end:
 
-- [ ] `TestPauseCycles` writes two sentinels before the first pause (64 MiB of random data in
+- [x] `TestPauseCycles` writes two sentinels before the first pause (64 MiB of random data in
       `/dev/shm`, which is memory, and a synced 64 MiB file on disk), and checks their SHA-256
       after every resume, reading the disk one after dropping the guest's page cache. It stays a
       measurement.
-- [ ] `TestTrim` (slow). Machine A, with the sentinels, pauses 10 times with the random
+- [x] `TestTrim` (slow). Machine A, with the sentinels, pauses 10 times with the random
       workload. Machine B pauses twice, and an image is saved from it. Once their build
       directories hold all their files, the test records each of A's and B's build files: size,
       allocated blocks, and the SHA-256 of headers, snapfile and metadata. Then it calls
@@ -429,9 +429,9 @@ End-to-end:
 
 ## Done when
 
-- [ ] `make lint test`, `make test-host-remote`, CI and `make e2e-slow` are green. CI is parked,
+- [x] `make lint test`, `make test-host-remote`, CI and `make e2e-slow` are green. CI is parked,
       so `make lint test` stands in for it.
-- [ ] `sudo hibd cleanup -n` on the host gives no reason not to trim, and would trim nothing of
+- [x] `sudo hibd cleanup -n` on the host gives no reason not to trim, and would trim nothing of
       `test` or `demo`.
 
 ## Changes
@@ -455,3 +455,10 @@ End-to-end:
   debris, accounts for dry-run hard links and gives exact-file manual recovery for damaged or
   unexpected entries. Recovery messages follow the listing and time threshold. Record-end
   failures no longer skip restoration or choose the save's success path.
+- 2026-10-05: Done. `make e2e-slow` passed on the host. In `TestTrim`, A's ten snapshot
+  directories took 3.9 GiB after the pauses and 553 MiB after the trim, within the bound of
+  561 MiB. The daemon's sweep had trimmed them before the test's own cleanup ran. The sentinels
+  matched after two host restarts, and in an image, a fork and a machine made from the image. The
+  unit tests of `internal/hibd`, `internal/cleanup` and `internal/machines` passed on the host
+  too, with a umask of 022. `HIBD_TRIM` stays `e2e` until `test` is backed up. E2B's own options
+  weren't tried.
