@@ -711,19 +711,35 @@ func TestConnectGitHubAcceptsBooleanLiterals(t *testing.T) {
 }
 
 func TestConnectGitHubAccountIsTerminalSafe(t *testing.T) {
-	h := newHost(t)
-	c := initClient(t, h)
-	c.stdin = strings.NewReader(testGitHubToken)
-	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
-		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
-			Login: "octocat\x1b", Name: "The Octocat\x07", Email: "1+octocat@users.noreply.github.com\x1b",
-		}}), true
-	}
-	code := c.hib("connect", "github", "--token")
-	assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
-	want := "connected GitHub as octocat\\x1b (The Octocat\\x07). Machines commit as 1+octocat@users.noreply.github.com\\x1b\n"
-	if code != 0 || c.out.String() != want {
-		t.Errorf("exit %d, account fields weren't terminal-safe", code)
+	for _, tc := range []struct {
+		name    string
+		account hibapi.GitHub
+		want    string
+	}{
+		{
+			name:    "terminal controls",
+			account: hibapi.GitHub{Login: "octocat\x1b", Name: "The Octocat\x07", Email: "1+octocat@users.noreply.github.com\x1b"},
+			want:    "connected GitHub as octocat\\x1b (The Octocat\\x07). Machines commit as 1+octocat@users.noreply.github.com\\x1b\n",
+		},
+		{
+			name:    "newline and carriage return",
+			account: hibapi.GitHub{Login: "octocat\nhib: forged", Name: "The\rOctocat", Email: "1+octocat@users.noreply.github.com\r\nx"},
+			want:    "connected GitHub as octocat\\x0ahib: forged (The\\x0dOctocat). Machines commit as 1+octocat@users.noreply.github.com\\x0d\\x0ax\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			c.stdin = strings.NewReader(testGitHubToken)
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				return writeTestResponse(stdout, hibapi.Response{GitHub: &tc.account}), true
+			}
+			code := c.hib("connect", "github", "--token")
+			assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
+			if code != 0 || c.out.String() != tc.want {
+				t.Errorf("exit %d, printed %q, want %q", code, c.out, tc.want)
+			}
+		})
 	}
 }
 
@@ -876,14 +892,32 @@ func TestConnectCodexFailures(t *testing.T) {
 }
 
 func TestConnectCodexAccountIsTerminalSafe(t *testing.T) {
-	h := newHost(t)
-	c := initClient(t, h)
-	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
-		return writeTestResponse(stdout, hibapi.Response{Codex: &hibapi.Codex{Email: "dev@example.com\x1b]0;x\x07", Plan: "plus\x1b[2J"}}), true
-	}
-	code := c.hib("connect", "codex")
-	want := "connected Codex as dev@example.com\\x1b]0;x\\x07, on the plus\\x1b[2J plan\n"
-	if code != 0 || c.out.String() != want {
-		t.Errorf("exit %d, printed %q, want %q", code, c.out, want)
+	for _, tc := range []struct {
+		name  string
+		codex hibapi.Codex
+		want  string
+	}{
+		{
+			name:  "terminal controls",
+			codex: hibapi.Codex{Email: "dev@example.com\x1b]0;x\x07", Plan: "plus\x1b[2J"},
+			want:  "connected Codex as dev@example.com\\x1b]0;x\\x07, on the plus\\x1b[2J plan\n",
+		},
+		{
+			name:  "newline and carriage return",
+			codex: hibapi.Codex{Email: "dev@example.com\nhib: forged", Plan: "plus\rpro"},
+			want:  "connected Codex as dev@example.com\\x0ahib: forged, on the plus\\x0dpro plan\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				return writeTestResponse(stdout, hibapi.Response{Codex: &tc.codex}), true
+			}
+			code := c.hib("connect", "codex")
+			if code != 0 || c.out.String() != tc.want {
+				t.Errorf("exit %d, printed %q, want %q", code, c.out, tc.want)
+			}
+		})
 	}
 }

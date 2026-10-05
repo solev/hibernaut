@@ -68,7 +68,7 @@ func TestStatusAsleepHostNeverUsesSSHOrStartsAzure(t *testing.T) {
 		{"stopping", "VM stopping", "VM stopping"},
 		{"deallocating", "VM deallocating", "VM deallocating"},
 		{"starting", "VM starting", "VM starting"},
-		{"terminal controls", "VM deallocated\x1b[2J\nforged", "VM deallocated\\x1b[2J forged"},
+		{"terminal controls", "VM deallocated\x1b[2J\nforged\rx", "VM deallocated\\x1b[2J\\x0aforged\\x0dx"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)

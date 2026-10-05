@@ -333,7 +333,7 @@ End-to-end:
   says nothing of its own about waking the host, but still passes on what ssh and the host write.
   The secret and log tables escape tab, newline and carriage return with `termsafe.Line`, so host
   text stays in its cell. A hint with a command to copy only holds a name that passes
-  `hibapi.CheckName`. The saved-image and fork confirmations and the wake message escape the
-  host's text with `termsafe.Line` too. `hib secret add` redacts the value, as it is and escaped,
-  in everything it prints, as `hib connect github` does. A call that sends a secret reports a
-  reply hib can't read without its text.
+  `hibapi.CheckName`. The saved-image, fork and connect confirmations, the wake message and the
+  asleep line of `hib status` escape the host's text with `termsafe.Line` too. `hib secret add`
+  redacts the value, as it is and escaped, in everything it prints, as `hib connect github` does.
+  A call that sends a secret reports a reply hib can't read without its text.

@@ -55,8 +55,7 @@ func (a *app) asleep(cfg *config, state string) int {
 	if a.json {
 		return a.reply(hibapi.Response{Host: &hibapi.Host{State: hibapi.HostAsleep, Detail: state}}, nil)
 	}
-	state = strings.Join(strings.Fields(termsafe.String(state)), " ")
-	fmt.Fprintf(a.stdout, "host    %s: asleep (%s). Using a machine wakes it.\n", termsafe.String(cfg.Host), state)
+	fmt.Fprintf(a.stdout, "host    %s: asleep (%s). Using a machine wakes it.\n", termsafe.String(cfg.Host), termsafe.Line(state))
 	return 0
 }
 
