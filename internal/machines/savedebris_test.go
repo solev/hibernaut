@@ -25,7 +25,7 @@ func writeSaveFixture(t *testing.T, path string, record cleanup.SaveRecord) {
 	}
 }
 
-func checkSaveFixture(t *testing.T, m *machines.Manager, l cleanup.Listing, dry bool) (error, []string) {
+func checkSaveFixture(t *testing.T, m *machines.Manager, l cleanup.Listing, dry bool) ([]string, error) {
 	t.Helper()
 	release, err := m.TryCleanupRead(t.Context())
 	if err != nil {
@@ -36,7 +36,7 @@ func checkSaveFixture(t *testing.T, m *machines.Manager, l cleanup.Listing, dry 
 	err = m.CheckSaves(t.Context(), l, dry, func(f string, args ...any) {
 		logs = append(logs, fmt.Sprintf(f, args...))
 	})
-	return err, logs
+	return logs, err
 }
 
 func TestSavePublicationDebrisRecovery(t *testing.T) {
@@ -122,7 +122,7 @@ func TestSavePublicationDebrisRecovery(t *testing.T) {
 				}
 				m := machines.New(machines.Config{StateDir: state, BootID: func() string { return "boot1" }})
 				l := cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}
-				err, logs := checkSaveFixture(t, m, l, dry)
+				logs, err := checkSaveFixture(t, m, l, dry)
 				if errors.Is(err, machines.ErrSaveUnsettled) != tc.blocked || err != nil && !tc.blocked {
 					t.Fatalf("cleanup = %v, logs = %v", err, logs)
 				}

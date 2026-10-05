@@ -87,7 +87,7 @@ func TestSaveEndFailureDoesNotChooseTheSaveOutcome(t *testing.T) {
 			if tc.pauseErr == nil && v.get(t, web.ID).State != engine.Paused {
 				t.Error("paused origin was not restored")
 			}
-			blocked, _ := checkSaveFixture(t, m, cleanup.Listing{}, false)
+			_, blocked := checkSaveFixture(t, m, cleanup.Listing{}, false)
 			if !errors.Is(blocked, machines.ErrSaveUnsettled) {
 				t.Fatalf("record failure did not inhibit cleanup: %v", blocked)
 			}

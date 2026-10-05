@@ -48,7 +48,7 @@ func TestSaveRecoveryMessagesFollowListingAndTime(t *testing.T) {
 			if tc.listed {
 				l.Machines = []cleanup.Machine{{ID: "web", Paused: tc.paused}}
 			}
-			err, _ := checkSaveFixture(t, m, l, false)
+			_, err := checkSaveFixture(t, m, l, false)
 			if !errors.Is(err, machines.ErrSaveUnsettled) {
 				t.Fatal(err)
 			}
@@ -60,7 +60,7 @@ func TestSaveRecoveryMessagesFollowListingAndTime(t *testing.T) {
 				t.Fatal(message)
 			}
 			at = at.Add(time.Second)
-			again, _ := checkSaveFixture(t, m, l, false)
+			_, again := checkSaveFixture(t, m, l, false)
 			if again == nil || again.Error() != message {
 				t.Fatalf("same branch changed as time advanced: %v", again)
 			}
@@ -79,11 +79,11 @@ func TestSaveRecoveryMessageChangesOnlyAtTheRecoveryBoundary(t *testing.T) {
 	at := started
 	m := machines.New(machines.Config{StateDir: state, Now: func() time.Time { return at }, BootID: func() string { return "" }})
 	l := cleanup.Listing{Machines: []cleanup.Machine{{ID: "web"}}}
-	before, _ := checkSaveFixture(t, m, l, false)
+	_, before := checkSaveFixture(t, m, l, false)
 	at = started.Add(9 * time.Minute)
-	still, _ := checkSaveFixture(t, m, l, false)
+	_, still := checkSaveFixture(t, m, l, false)
 	at = started.Add(10 * time.Minute)
-	after, _ := checkSaveFixture(t, m, l, false)
+	_, after := checkSaveFixture(t, m, l, false)
 	if before == nil || still == nil || after == nil || before.Error() != still.Error() || before.Error() == after.Error() {
 		t.Fatalf("boundary messages: %v, %v, %v", before, still, after)
 	}

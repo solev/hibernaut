@@ -251,7 +251,7 @@ func (m *Manager) CheckSaves(ctx context.Context, l cleanup.Listing, dry bool, l
 			continue
 		}
 		if err := removeSave(saves, file.key); err != nil {
-			return fmt.Errorf("%w: clearing save record %s for %s: %w. Check it with: hib ls.", ErrSaveUnsettled, file.key, file.machine, err)
+			return fmt.Errorf("%w: clearing save record %s for %s: %w. Check it with: hib ls", ErrSaveUnsettled, file.key, file.machine, err)
 		}
 		logf("cleared settled save record %s for %s. Check it with: hib ls.", file.key, file.machine)
 	}
