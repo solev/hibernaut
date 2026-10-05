@@ -175,11 +175,11 @@ Everyday use is `make up` → play → `make down` (or just walk away and let it
 over plain `ssh`:
 
 ```bash
-hib init -host azureuser@20.91.197.185 -azure-group rg-e2b-test -azure-vm e2b-test
+hib init --host azureuser@20.91.197.185 --azure-group rg-e2b-test --azure-vm e2b-test
 hib image build dev        # build the dev image in every size, as E2B templates
 hib new app                # create a machine named app
 hib new tiny --size small  # a small one (small, medium or large; default medium)
-hib new big -idle 2h       # one that pauses after 2 idle hours (default 15m; 0 = never)
+hib new big --idle 2h      # one that pauses after 2 idle hours (default 15m; 0 = never)
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
 hib exec app -- uname -a   # run one command, no interactive shell
 hib ls                     # machines, running and paused, their size, when they pause, room left
@@ -198,7 +198,7 @@ host key. The machine user is `user`, with passwordless sudo.
 **Idle machines pause themselves. Busy ones don't.** A machine is busy while you're connected
 (`ssh` or `hib exec`), while it uses at least 10% of a CPU, or while a coding agent (`codex`,
 `copilot`, `claude`) runs in it, even one waiting on an LLM. Once it has been idle for its idle
-time, 15 minutes unless `-idle` says otherwise, it pauses with its memory and files. `hib ls`
+time, 15 minutes unless `--idle` says otherwise, it pauses with its memory and files. `hib ls`
 shows when each machine pauses. `ssh app.hib` or `hib exec` wakes it in under a second, where it
 left off. Nothing else wakes it. After 30 minutes with no machine running and no one connected,
 the VM deallocates itself, and every night at 20:00 UTC it pauses every machine and deallocates
@@ -249,8 +249,8 @@ processes come with it, so a dev server answers in each copy without restarting:
 ```bash
 hib image save app myimg      # save app as image myimg, memory included
 hib image ls                 # built-in and saved images, their memory and creation time
-hib new task -image myimg     # start with everything that was in app
-hib fork app -count 2         # app-1 and app-2. The default is one copy, the most is ten.
+hib new task --image myimg    # start with everything that was in app
+hib fork app --count 2        # app-1 and app-2. The default is one copy, the most is ten.
 hib ls                       # FROM shows which machine a copy came from
 hib rm task
 hib image rm myimg
@@ -274,7 +274,7 @@ starting at `app-1`. If a later copy fails, the whole copies already made stay, 
 them before printing the error.
 
 Saved names can't replace a built-in image or an existing saved one. If a later built-in image
-takes a saved name, `image ls` marks the saved one as shadowed. `new -image` uses the built-in one.
+takes a saved name, `image ls` marks the saved one as shadowed. `new --image` uses the built-in one.
 `image rm` always means the saved one, and refuses while any running or paused machine uses it.
 Remove those machines first. E2B keeps a deleted image's snapshot files until `hibd`'s cleanup can
 free them.
@@ -288,7 +288,7 @@ value on the way out, and turns it back into the placeholder in the response. Se
 else, the placeholder is a meaningless string.
 
 ```bash
-hib secret add OPENAI -env OPENAI_API_KEY -bind api.openai.com  # asks for the value, hidden
+hib secret add OPENAI --env OPENAI_API_KEY --bind api.openai.com  # asks for the value, hidden
 hib secret ls                         # names, variables, sites and placeholders, never values
 ssh app.hib printenv OPENAI_API_KEY   # the placeholder
 hib log                               # each swap: time, machine, site, method, path and secret
@@ -299,7 +299,7 @@ hib secret rm OPENAI
   AES-256-GCM, under a key only root can read.
 - For GitHub, use `hib connect github` ([below](#github-hib-connect-github-hib-status)). It
   stores the token as secret `github` and sets up git too.
-- `-bind` takes host names, comma-separated. `*.example.com` matches every host under
+- `--bind` takes host names, comma-separated. `*.example.com` matches every host under
   example.com, but not example.com itself.
 - Adding or removing a secret updates every running machine at once, and paused ones when they
   wake. New logins see the change. The proxy uses it from the next request.
@@ -433,6 +433,61 @@ export E2B_SANDBOX_URL=http://localhost:3002
 
 The API key is the fixed development key from E2B's `DEV-LOCAL.md`. It is not a secret. Only
 SSH (port 22) is reachable from the internet.
+
+### Command reference
+
+This is what `hib help` prints. `hib help COMMAND` adds a command's flags and examples. Flags
+take one dash or two: `--idle` and `-idle` are the same.
+
+```text
+usage: hib [--config DIR] COMMAND [ARG...]
+
+hib makes machines on your Hibernaut host and runs them, over SSH. ssh NAME.hib logs in to
+one, waking it if it's paused.
+
+commands:
+  init                       set this laptop up for a host
+  new NAME                   make a machine
+  ls                         list machines, and when each pauses unless it's busy
+  rm NAME                    delete a machine and its disk for good
+  pause NAME                 pause a machine; logging in wakes it
+  fork MACHINE               copy a machine
+  ssh NAME [-- CMD]          log in to a machine, or run CMD there
+  exec NAME -- CMD [ARG...]  run CMD on a machine
+  connect github             give machines your GitHub login
+  connect codex              give machines your Codex login on a ChatGPT plan
+  disconnect codex|github    remove a login from the host
+  status                     show the health of the host, E2B, each secret and the Codex login
+  secret add NAME            store a bound secret
+  secret ls                  list bound secrets
+  secret rm NAME             remove a bound secret
+  log                        show secret swap audit entries
+  image build NAME           build an image on the host, in every size
+  image save MACHINE NAME    save a machine as an image, memory included
+  image ls                   list built-in and saved images
+  image rm NAME              remove a saved image no machine uses
+  completion bash|zsh|fish   print a shell completion script
+  bridge NAME.hib            connect to a machine's SSH server; ssh runs this for you
+  version                    print the version
+  help [COMMAND [SUB]]       show help for hib or a command
+
+flags:
+  --config DIR  the settings directory (default ~/.config/hibernaut)
+  --version     print the version
+
+examples:
+  hib init --host azureuser@203.0.113.7
+  hib new app
+  ssh app.hib
+
+exit codes:
+  0    done
+  1    failed
+  2    used wrongly
+  130  stopped by Ctrl-C (128 plus the signal's number)
+
+run hib help COMMAND for a command's flags and examples.
+```
 
 ## Development
 
