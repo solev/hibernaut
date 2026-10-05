@@ -46,3 +46,13 @@ func machineSize(em engine.Machine) (images.Size, bool) {
 	}
 	return images.SizeWithMemory(em.MemoryMB)
 }
+
+// CheckBuildRoom returns nil if there's room on the host to build image at size, which boots a
+// machine of that size. Otherwise it returns an error wrapping room.ErrFull that says what to do.
+func (m *Manager) CheckBuildRoom(ctx context.Context, image string, size images.Size) error {
+	ems, h, err := m.roomNow(ctx)
+	if err != nil {
+		return err
+	}
+	return h.Check(fmt.Sprintf("%s (%s)", image, size.Name()), size.MemoryMB(), roomMachines(ems))
+}

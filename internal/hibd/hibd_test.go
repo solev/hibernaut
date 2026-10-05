@@ -137,7 +137,7 @@ func TestLs(t *testing.T) {
 	idle := map[string]string{}
 	for _, l := range lines[1:] {
 		f := strings.Fields(l)
-		idle[f[1]] = f[4]
+		idle[f[1]] = f[5]
 	}
 	for id, want := range map[string]string{"run1": "-", "app1": "1h30m", "old1": "15m", "inf1": "never"} {
 		if idle[id] != want {
@@ -617,15 +617,15 @@ func TestImageBuild(t *testing.T) {
 	if code != 0 || err != nil || r.Template != "tmpl-hib-dev" {
 		t.Fatalf("image build dev -json = %d, %+v, %v; stderr %s", code, r, err, errOut)
 	}
-	if !strings.Contains(errOut.String(), "fake: built hib-dev") || !strings.Contains(errOut.String(), "built dev in") {
+	if !strings.Contains(errOut.String(), "fake: built hib-dev ") || !strings.Contains(errOut.String(), "built dev (medium) in") {
 		t.Errorf("stderr = %q, want the build log", errOut)
 	}
 	if code, _, err := runJSON(t, a, out, "image", "build", "-force", "dev", "-json"); code != 0 || err != nil {
 		t.Errorf("image build -force = %d, %v", code, err)
 	}
 	built := e.Built()
-	if len(built) != 2 || built[0].Name != "hib-dev" || built[0].Force || !built[1].Force {
-		t.Errorf("built %+v, want hib-dev, then hib-dev forced", built)
+	if len(built) != 6 || built[0].Name != "hib-dev" || built[0].Force || !built[3].Force {
+		t.Errorf("built %v, want every size, then every size forced", builtNames(e))
 	}
 	withCA := 0
 	for _, step := range built[0].Steps {

@@ -324,3 +324,22 @@ func sequence(hs ...func() (room.Host, error)) func() (room.Host, error) {
 		return h()
 	}
 }
+
+func TestCheckBuildRoom(t *testing.T) {
+	v := newEnv(t)
+	buildSizes(t, v.e)
+	v.create(t, "web")
+	m := machines.New(machines.Config{Engine: v.e, StateDir: v.dir, AuthorizedKeys: v.keys, ReadRoom: func() (room.Host, error) {
+		return room.Host{PageSize: 2 << 20, Pages: 3200, FreePages: 1100, DiskFree: 80 << 30}, nil
+	}})
+	for _, size := range []string{"small", "medium"} {
+		if err := m.CheckBuildRoom(t.Context(), "dev", sizeNamed(t, size)); err != nil {
+			t.Errorf("CheckBuildRoom(%s) = %v, want room", size, err)
+		}
+	}
+	err := m.CheckBuildRoom(t.Context(), "dev", sizeNamed(t, "large"))
+	if !errors.Is(err, room.ErrFull) || !strings.HasPrefix(err.Error(), `no room on the host for "dev (large)": `) ||
+		!strings.HasSuffix(err.Error(), "Running now: web. To free memory, pause one: hib pause NAME") {
+		t.Errorf("CheckBuildRoom(large) = %v, want no room for dev (large)", err)
+	}
+}
