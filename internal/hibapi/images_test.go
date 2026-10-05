@@ -18,17 +18,17 @@ func TestSavedImageOutput(t *testing.T) {
 		{
 			name:  "mebibytes",
 			image: hibapi.Image{Name: "myimg", MemoryMB: 512},
-			want:  "saved image myimg (512 MiB). use it with: hib new NAME -image myimg\n",
+			want:  "saved image myimg (512 MiB). use it with: hib new NAME --image myimg\n",
 		},
 		{
 			name:  "gibibytes",
 			image: hibapi.Image{Name: "myimg", MemoryMB: 2048},
-			want:  "saved image myimg (2 GiB). use it with: hib new NAME -image myimg\n",
+			want:  "saved image myimg (2 GiB). use it with: hib new NAME --image myimg\n",
 		},
 		{
 			name:  "terminal controls",
 			image: hibapi.Image{Name: "myimg\x1b\x07", MemoryMB: 2048},
-			want:  "saved image myimg\\x1b\\x07 (2 GiB). use it with: hib new NAME -image myimg\\x1b\\x07\n",
+			want:  "saved image myimg\\x1b\\x07 (2 GiB). use it with: hib new NAME --image myimg\\x1b\\x07\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

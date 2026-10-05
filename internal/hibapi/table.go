@@ -79,7 +79,7 @@ func (t *Table) styleStates(text []byte) []byte {
 // PrintSavedImage writes a terminal-safe saved-image confirmation and how to use it.
 func PrintSavedImage(w io.Writer, img Image) {
 	name := termsafe.String(img.Name)
-	fmt.Fprintf(w, "saved image %s (%s). use it with: hib new NAME -image %s\n",
+	fmt.Fprintf(w, "saved image %s (%s). use it with: hib new NAME --image %s\n",
 		name, FormatMB(int64(img.MemoryMB)), name)
 }
 
