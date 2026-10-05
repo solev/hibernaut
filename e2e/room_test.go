@@ -24,10 +24,13 @@ func TestHostFull(t *testing.T) {
 	var running []string
 	for {
 		ls := hib(t, ctx, "ls")
-		if strings.Contains(ls, "\nNo room for another dev machine") {
+		_, line, _ := strings.Cut(ls, "\n\n")
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "No room for another machine") ||
+			strings.HasPrefix(line, "Room for more machines: ") && !strings.Contains(line, " medium") {
 			break
 		}
-		if !strings.Contains(ls, "\nRoom for ") || len(running) == 6 {
+		if !strings.HasPrefix(line, "Room for more machines: ") || len(running) == 6 {
 			t.Fatalf("after %d more machines, hib ls says:\n%s", len(running), ls)
 		}
 		running = append(running, newHibMachine(t, ctx))
