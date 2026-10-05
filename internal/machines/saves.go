@@ -9,6 +9,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 
@@ -19,6 +21,44 @@ import (
 
 // ErrSaveUnsettled means a save record still inhibits snapshot deletion and trimming.
 var ErrSaveUnsettled = errors.New("an image save has not settled")
+
+var saveTokenRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+type saveEntryKind int
+
+const (
+	unexpectedSaveFile saveEntryKind = iota
+	saveRecordFile
+	savePublicationDebris
+)
+
+type saveFile struct {
+	key, machine string
+	info         fs.FileInfo
+}
+
+func saveMachine(key string) (string, bool) {
+	id, token, ok := strings.Cut(key, "-")
+	return id, ok && idRE.MatchString(id) && saveTokenRE.MatchString(token)
+}
+
+func classifySaveEntry(key string, info fs.FileInfo, owner, euid int) (saveEntryKind, string) {
+	if id, ok := saveMachine(key); ok {
+		return saveRecordFile, id
+	}
+	name, token, staged := strings.Cut(strings.TrimPrefix(key, "."), ".tmp-")
+	id, record := saveMachine(name)
+	st, stat := info.Sys().(*syscall.Stat_t)
+	if strings.HasPrefix(key, ".") && staged && record && saveTokenRE.MatchString(token) &&
+		info.Mode().IsRegular() && stat && (int(st.Uid) == owner || int(st.Uid) == euid) {
+		return savePublicationDebris, id
+	}
+	id, _, _ = strings.Cut(strings.TrimPrefix(key, "."), "-")
+	if !idRE.MatchString(id) {
+		id = "unknown"
+	}
+	return unexpectedSaveFile, id
+}
 
 func readBootID() string {
 	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
@@ -115,6 +155,10 @@ func (m *Manager) finishSave(key string, r cleanup.SaveRecord, cause error) erro
 
 // CheckSaves settles save records against cleanup's locked listing. It requires TryCleanupRead.
 func (m *Manager) CheckSaves(ctx context.Context, l cleanup.Listing, dry bool, logf func(string, ...any)) error {
+	state, err := filepath.Abs(m.dir)
+	if err != nil {
+		return fmt.Errorf("%w: locating save records: %w", ErrSaveUnsettled, err)
+	}
 	root, owner, err := m.stateRoot()
 	if err != nil {
 		return fmt.Errorf("%w: reading save records: %w", ErrSaveUnsettled, err)
@@ -135,22 +179,59 @@ func (m *Manager) CheckSaves(ctx context.Context, l cleanup.Listing, dry bool, l
 	if err != nil {
 		return fmt.Errorf("%w: reading save records: %w", ErrSaveUnsettled, err)
 	}
-	bootID := m.bootID()
-	var settled []string
+	var records, debris []saveFile
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		r, err := readSave(saves, entry.Name(), owner.uid)
+		key := entry.Name()
+		fi, err := saves.Lstat(key)
 		if err != nil {
-			return fmt.Errorf("%w: save record %s for %s begun %s is unreadable: %w. Repair the record before cleanup. A readable record clears once the machine runs or pauses, is removed, or the host restarts",
-				ErrSaveUnsettled, entry.Name(), r.Machine, r.Started, err)
+			return damagedSave(state, key, err)
+		}
+		kind, machine := classifySaveEntry(key, fi, owner.uid, m.euid())
+		file := saveFile{key: key, machine: machine, info: fi}
+		switch kind {
+		case saveRecordFile:
+			records = append(records, file)
+		case savePublicationDebris:
+			debris = append(debris, file)
+		default:
+			return fmt.Errorf("%w: unexpected save entry %s for machine %s. Hibd never writes this entry. Move it out of saves/ before cleanup",
+				ErrSaveUnsettled, filepath.Join(state, "saves", key), machine)
+		}
+	}
+	var remaining []fs.FileInfo
+	for _, file := range debris {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if dry {
+			remaining = append(remaining, file.info)
+			logf("would remove save publication debris %s for %s", filepath.Join(state, "saves", file.key), file.machine)
+		} else {
+			if err := removeSave(saves, file.key); err != nil {
+				return fmt.Errorf("%w: removing save publication debris %s for %s: %w. Move it out of saves/ before cleanup",
+					ErrSaveUnsettled, filepath.Join(state, "saves", file.key), file.machine, err)
+			}
+			logf("removed save publication debris %s for %s", filepath.Join(state, "saves", file.key), file.machine)
+		}
+	}
+	bootID := m.bootID()
+	var settled []string
+	for _, file := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r, err := readSave(saves, file.key, owner.uid, remaining)
+		if err != nil {
+			return damagedSave(state, file.key, err)
 		}
 		if !cleanup.SaveSettled(l, r, bootID, saveCallTimeout) {
 			return fmt.Errorf("%w: %s (%s) began saving at %s. It clears once the machine runs or pauses, is removed, or the host restarts",
 				ErrSaveUnsettled, r.Name, r.Machine, r.Started)
 		}
-		settled = append(settled, entry.Name())
+		settled = append(settled, file.key)
 	}
 	for _, key := range settled {
 		if err := ctx.Err(); err != nil {
@@ -168,8 +249,18 @@ func (m *Manager) CheckSaves(ctx context.Context, l cleanup.Listing, dry bool, l
 	return nil
 }
 
-func readSave(root *os.Root, key string, uid int) (cleanup.SaveRecord, error) {
-	r := cleanup.SaveRecord{Machine: strings.SplitN(key, "-", 2)[0]}
+func damagedSave(state, key string, cause error) error {
+	id, _ := saveMachine(key)
+	path := filepath.Join(state, "saves", key)
+	damaged := filepath.Join(state, "saves-damaged")
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+	return fmt.Errorf("%w: save record %s for machine %s is unreadable: %w. Once the host has restarted, move exactly this file out of saves/: sudo mkdir -p %s && sudo mv %s %s",
+		ErrSaveUnsettled, path, id, cause, quote(damaged), quote(path), quote(damaged+"/"))
+}
+
+func readSave(root *os.Root, key string, uid int, debris []fs.FileInfo) (cleanup.SaveRecord, error) {
+	id, _ := saveMachine(key)
+	r := cleanup.SaveRecord{Machine: id}
 	f, err := root.OpenFile(key, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return r, err
@@ -180,8 +271,17 @@ func readSave(root *os.Root, key string, uid int) (cleanup.SaveRecord, error) {
 		return r, err
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 || int(st.Uid) != uid || st.Nlink != 1 || fi.Size() > 64<<10 {
+	if !ok || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 || int(st.Uid) != uid || fi.Size() > 64<<10 {
 		return r, errors.New("needs a private regular file owned by the state owner")
+	}
+	links := uint64(1)
+	for _, info := range debris {
+		if os.SameFile(fi, info) {
+			links++
+		}
+	}
+	if uint64(st.Nlink) != links {
+		return r, fmt.Errorf("has %d links, expected %d after debris removal", st.Nlink, links)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
 	if err != nil {
@@ -190,7 +290,7 @@ func readSave(root *os.Root, key string, uid int) (cleanup.SaveRecord, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return r, err
 	}
-	if !idRE.MatchString(r.Machine) || hibapi.CheckName(r.Name) != nil || r.Started.IsZero() || r.Succeeded && r.Ended.IsZero() {
+	if r.Machine != id || hibapi.CheckName(r.Name) != nil || r.Started.IsZero() || r.Succeeded && r.Ended.IsZero() {
 		return r, errors.New("invalid machine, name or save times")
 	}
 	return r, nil

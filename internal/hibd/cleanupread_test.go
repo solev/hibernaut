@@ -103,7 +103,7 @@ func TestCleanupReadErrorsReleaseBothLocks(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := os.WriteFile(filepath.Join(saves, "web-record"), data, 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(saves, "web-"+strings.Repeat("a", 32)), data, 0o600); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Mkdir(filepath.Join(cfg.e2bStorage, "44444444-4444-4444-8444-444444444444"), 0o700); err != nil {
