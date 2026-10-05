@@ -1,0 +1,10 @@
+overlay: 1.0.0
+info:
+  title: Hibernaut snapshot trimming
+  version: 1.0.0
+actions:
+  - target: "$.paths['/sandboxes/{sandboxID}/fork']"
+    description: >
+      M9's trimming relies on hib never forking a machine natively.
+      See docs/milestones/m9-snapshot-compaction.md.
+    remove: true

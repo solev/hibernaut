@@ -560,21 +560,6 @@ type SandboxEgressProxyConfig struct {
 	Username *string `json:"username,omitempty"`
 }
 
-// SandboxForkRequest defines model for SandboxForkRequest.
-type SandboxForkRequest struct {
-	// Count Number of forked sandboxes to create. All forks boot from the same snapshot, so the snapshot is captured once regardless of count. Each fork succeeds or fails independently; the outcome of each is reported in its entry of the response list.
-	Count *int32 `json:"count,omitempty"`
-
-	// Timeout Time to live for the new forked sandboxes in seconds.
-	Timeout *int32 `json:"timeout,omitempty"`
-}
-
-// SandboxForkResult Result of one requested fork. Exactly one of sandbox or error is set: sandbox when the fork started successfully, error when it failed to start.
-type SandboxForkResult struct {
-	Error   *Error   `json:"error,omitempty"`
-	Sandbox *Sandbox `json:"sandbox,omitempty"`
-}
-
 // SandboxIam Sandbox workload identity configuration. A non-empty, valid tokens map enables workload identity for the sandbox.
 type SandboxIam struct {
 	// Tokens Named workload-token definitions, keyed by a caller-chosen token name.
@@ -1234,9 +1219,6 @@ type PostSandboxesJSONRequestBody = NewSandbox
 // Deprecated: this type has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 type PostSandboxesSandboxIDConnectJSONRequestBody = ConnectSandbox
 
-// PostSandboxesSandboxIDForkJSONRequestBody defines body for PostSandboxesSandboxIDFork for application/json ContentType.
-type PostSandboxesSandboxIDForkJSONRequestBody = SandboxForkRequest
-
 // PutSandboxesSandboxIDNetworkJSONRequestBody defines body for PutSandboxesSandboxIDNetwork for application/json ContentType.
 type PutSandboxesSandboxIDNetworkJSONRequestBody = SandboxNetworkUpdateConfig
 
@@ -1561,24 +1543,6 @@ type ClientInterface interface {
 	//
 	// Deprecated: this operation has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	PostSandboxesSandboxIDConnect(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDConnectJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PostSandboxesSandboxIDForkWithBody Fork sandbox
-	//
-	// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-	//
-	// Takes any type of body and a specified content type.
-	//
-	// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-	PostSandboxesSandboxIDForkWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PostSandboxesSandboxIDFork Fork sandbox
-	//
-	// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-	//
-	// Takes a body of the `application/json` content type.
-	//
-	// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-	PostSandboxesSandboxIDFork(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDForkJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetSandboxesSandboxIDLogs Sandbox logs
 	//
@@ -2035,44 +1999,6 @@ func (c *Client) PostSandboxesSandboxIDConnectWithBody(ctx context.Context, sand
 // Deprecated: this operation has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 func (c *Client) PostSandboxesSandboxIDConnect(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDConnectJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostSandboxesSandboxIDConnectRequest(c.Server, sandboxID, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PostSandboxesSandboxIDForkWithBody Fork sandbox
-//
-// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-//
-// Takes any type of body and a specified content type.
-//
-// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-func (c *Client) PostSandboxesSandboxIDForkWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostSandboxesSandboxIDForkRequestWithBody(c.Server, sandboxID, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-// PostSandboxesSandboxIDFork Fork sandbox
-//
-// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-//
-// Takes a body of the `application/json` content type.
-//
-// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-func (c *Client) PostSandboxesSandboxIDFork(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDForkJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostSandboxesSandboxIDForkRequest(c.Server, sandboxID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3006,53 +2932,6 @@ func NewPostSandboxesSandboxIDConnectRequestWithBody(server string, sandboxID Sa
 	}
 
 	operationPath := fmt.Sprintf("/sandboxes/%s/connect", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	return req, nil
-}
-
-// NewPostSandboxesSandboxIDForkRequest calls the generic PostSandboxesSandboxIDFork builder with application/json body
-func NewPostSandboxesSandboxIDForkRequest(server string, sandboxID SandboxID, body PostSandboxesSandboxIDForkJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewPostSandboxesSandboxIDForkRequestWithBody(server, sandboxID, "application/json", bodyReader)
-}
-
-// NewPostSandboxesSandboxIDForkRequestWithBody constructs an http.Request for the PostSandboxesSandboxIDFork method, with any body, and a specified content type
-func NewPostSandboxesSandboxIDForkRequestWithBody(server string, sandboxID SandboxID, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxID", sandboxID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/sandboxes/%s/fork", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -4748,24 +4627,6 @@ type ClientWithResponsesInterface interface {
 	// Deprecated: this operation has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	PostSandboxesSandboxIDConnectWithResponse(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDConnectJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSandboxesSandboxIDConnectResponse, error)
 
-	// PostSandboxesSandboxIDForkWithBodyWithResponse Fork sandbox
-	//
-	// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-	//
-	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
-	//
-	// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-	PostSandboxesSandboxIDForkWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostSandboxesSandboxIDForkResponse, error)
-
-	// PostSandboxesSandboxIDForkWithResponse Fork sandbox
-	//
-	// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-	//
-	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
-	//
-	// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-	PostSandboxesSandboxIDForkWithResponse(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDForkJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSandboxesSandboxIDForkResponse, error)
-
 	// GetSandboxesSandboxIDLogsWithResponse Sandbox logs
 	//
 	// Get sandbox logs. Use /v2/sandboxes/{sandboxID}/logs instead.
@@ -5600,96 +5461,6 @@ func (r PostSandboxesSandboxIDConnectResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r PostSandboxesSandboxIDConnectResponse) ContentType() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Header.Get("Content-Type")
-	}
-	return ""
-}
-
-// PostSandboxesSandboxIDForkResponse429Headers the declared response headers of an HTTP 429 response for PostSandboxesSandboxIDFork
-type PostSandboxesSandboxIDForkResponse429Headers struct {
-	RetryAfter *int
-}
-
-type PostSandboxesSandboxIDForkResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	// JSON201 the response for an HTTP 201 `application/json` response
-	JSON201 *[]SandboxForkResult
-	// JSON401 the response for an HTTP 401 `application/json` response
-	JSON401 *N401
-	// JSON404 the response for an HTTP 404 `application/json` response
-	JSON404 *N404
-	// JSON409 the response for an HTTP 409 `application/json` response
-	JSON409 *N409
-	// JSON429 the response for an HTTP 429 `application/json` response
-	JSON429 *N429
-	// JSON500 the response for an HTTP 500 `application/json` response
-	JSON500 *N500
-	// JSON503 the response for an HTTP 503 `application/json` response
-	JSON503 *N503
-	// Headers429 the parsed response headers for an HTTP 429 response
-	Headers429 *PostSandboxesSandboxIDForkResponse429Headers
-}
-
-// GetJSON201 returns the response for an HTTP 201 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON201() *[]SandboxForkResult {
-	return r.JSON201
-}
-
-// GetJSON401 returns the response for an HTTP 401 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON401() *N401 {
-	return r.JSON401
-}
-
-// GetJSON404 returns the response for an HTTP 404 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON404() *N404 {
-	return r.JSON404
-}
-
-// GetJSON409 returns the response for an HTTP 409 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON409() *N409 {
-	return r.JSON409
-}
-
-// GetJSON429 returns the response for an HTTP 429 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON429() *N429 {
-	return r.JSON429
-}
-
-// GetJSON500 returns the response for an HTTP 500 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON500() *N500 {
-	return r.JSON500
-}
-
-// GetJSON503 returns the response for an HTTP 503 `application/json` response
-func (r PostSandboxesSandboxIDForkResponse) GetJSON503() *N503 {
-	return r.JSON503
-}
-
-// GetBody returns the raw response body bytes
-func (r PostSandboxesSandboxIDForkResponse) GetBody() []byte {
-	return r.Body
-}
-
-// Status returns HTTPResponse.Status
-func (r PostSandboxesSandboxIDForkResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r PostSandboxesSandboxIDForkResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
-func (r PostSandboxesSandboxIDForkResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -7816,36 +7587,6 @@ func (c *ClientWithResponses) PostSandboxesSandboxIDConnectWithResponse(ctx cont
 	return ParsePostSandboxesSandboxIDConnectResponse(rsp)
 }
 
-// PostSandboxesSandboxIDForkWithBodyWithResponse Fork sandbox
-//
-// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-//
-// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
-//
-// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-func (c *ClientWithResponses) PostSandboxesSandboxIDForkWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostSandboxesSandboxIDForkResponse, error) {
-	rsp, err := c.PostSandboxesSandboxIDForkWithBody(ctx, sandboxID, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParsePostSandboxesSandboxIDForkResponse(rsp)
-}
-
-// PostSandboxesSandboxIDForkWithResponse Fork sandbox
-//
-// Fork the sandbox: checkpoint the running sandbox in place (it is briefly paused, snapshotted with its full memory state, and resumed on its node, keeping its ID and expiration untouched) and create count new sandboxes from that snapshot. Returns one result per requested fork, each carrying either the created sandbox or the error that prevented it from starting. A non-201 status means the request failed before any fork was attempted.
-//
-// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
-//
-// Corresponds with POST /sandboxes/{sandboxID}/fork (the `PostSandboxesSandboxIDFork` operationId).
-func (c *ClientWithResponses) PostSandboxesSandboxIDForkWithResponse(ctx context.Context, sandboxID SandboxID, body PostSandboxesSandboxIDForkJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSandboxesSandboxIDForkResponse, error) {
-	rsp, err := c.PostSandboxesSandboxIDFork(ctx, sandboxID, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParsePostSandboxesSandboxIDForkResponse(rsp)
-}
-
 // GetSandboxesSandboxIDLogsWithResponse Sandbox logs
 //
 // Get sandbox logs. Use /v2/sandboxes/{sandboxID}/logs instead.
@@ -8841,87 +8582,6 @@ func ParsePostSandboxesSandboxIDConnectResponse(rsp *http.Response) (*PostSandbo
 	switch {
 	case rsp.StatusCode == 429:
 		var headers PostSandboxesSandboxIDConnectResponse429Headers
-		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
-			var value int
-			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
-				return nil, err
-			}
-			headers.RetryAfter = &value
-		}
-		response.Headers429 = &headers
-	}
-
-	return response, nil
-}
-
-// ParsePostSandboxesSandboxIDForkResponse parses an HTTP response from a PostSandboxesSandboxIDForkWithResponse call
-func ParsePostSandboxesSandboxIDForkResponse(rsp *http.Response) (*PostSandboxesSandboxIDForkResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &PostSandboxesSandboxIDForkResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
-		var dest []SandboxForkResult
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON201 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest N401
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest N404
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
-		var dest N409
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
-		var dest N429
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON429 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
-		var dest N500
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON500 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
-		var dest N503
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON503 = &dest
-
-	}
-
-	switch {
-	case rsp.StatusCode == 429:
-		var headers PostSandboxesSandboxIDForkResponse429Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
 			var value int
 			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
