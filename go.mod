@@ -3,6 +3,7 @@ module github.com/solev/hibernaut
 go 1.26.2
 
 require (
+	charm.land/bubbletea/v2 v2.0.10
 	charm.land/lipgloss/v2 v2.0.6
 	connectrpc.com/connect v1.21.0
 	github.com/coder/websocket v1.8.15

@@ -158,8 +158,9 @@ for and for how long: "waking the host (40s)", then "making app (12s)".
 - It uses Bubble Tea v2.0.10, inline, with `WithInput(nil)`, `WithOutput(stderr)`,
   `WithoutSignalHandler()` and `WithContext`. Without input, Bubble Tea sends no terminal queries,
   and leaves the terminal and Ctrl-C alone.
-- The live line stops before hib prints anything else, so lines never mix.
-- There's no live line when stderr isn't a terminal or `TERM` is `dumb`.
+- What hib and hibd write on stderr while hib waits prints above the live line. The line stops,
+  and is cleared, before hib prints anything else, so lines never mix.
+- There's no live line when stderr isn't a terminal, with `--json`, or when `TERM` is `dumb`.
 - ssh runs with `BatchMode=yes` here, so no prompt can hide under the line.
 
 **`hib image build` prints one line per step.**

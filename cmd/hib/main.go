@@ -37,23 +37,26 @@ func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go stopOnSignal(signals, cancel)
+	stderrTerminal := term.IsTerminal(int(os.Stderr.Fd()))
 	a := &app{
-		stdin:       os.Stdin,
-		stdout:      os.Stdout,
-		stderr:      os.Stderr,
-		getenv:      os.Getenv,
-		ssh:         runCommand("ssh"),
-		gh:          runCommand("gh"),
-		execSSH:     execSSH,
-		az:          runAz,
-		executable:  os.Executable,
-		wakePoll:    5 * time.Second,
-		azLimit:     shortTimeout,
-		now:         time.Now,
-		colour:      colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
-		interactive: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd())),
+		stdin:          os.Stdin,
+		stdout:         os.Stdout,
+		stderr:         os.Stderr,
+		getenv:         os.Getenv,
+		ssh:            runCommand("ssh"),
+		gh:             runCommand("gh"),
+		execSSH:        execSSH,
+		az:             runAz,
+		executable:     os.Executable,
+		wakePoll:       5 * time.Second,
+		azLimit:        shortTimeout,
+		liveAfter:      liveAfter,
+		now:            time.Now,
+		colour:         colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		interactive:    term.IsTerminal(int(os.Stdin.Fd())) && stderrTerminal,
+		stderrTerminal: stderrTerminal,
 	}
-	if term.IsTerminal(int(os.Stderr.Fd())) {
+	if stderrTerminal {
 		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
 	}
 	os.Exit(a.run(ctx, os.Args[1:]))
@@ -93,6 +96,9 @@ type app struct {
 	executable     func() (string, error)
 	wakePoll       time.Duration
 	azLimit        time.Duration
+	liveAfter      time.Duration
+	stderrTerminal bool
+	live           *live
 	now            func() time.Time
 	colour         bool
 	interactive    bool
@@ -226,7 +232,9 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 	if badSize != nil {
 		return a.mistake(badSize.Error())
 	}
+	stopLive := a.showLive(ctx, "making "+name)
 	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
+	stopLive()
 	if err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making %s: check hib ls", name))
 	}
