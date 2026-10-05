@@ -33,7 +33,8 @@ Charm's libraries, a little at a time. Why we chose them is in
 
 - **Lip Gloss v2** for colour and styling. Only on a terminal, and never with `NO_COLOR`.
 - **Bubble Tea v2**, inline only (no alternate screen), for live progress: waiting in `hib new`
-  and the per-step lines in `hib image build`. Add it when that work starts, not before.
+  and the per-step lines in `hib image build`. M10 built both: see **Progress in `hib new`** and
+  **Build events** under Design.
 - **`golang.org/x/term`**, which `hib` already has, for the `hib rm` question and terminal
   checks.
 
