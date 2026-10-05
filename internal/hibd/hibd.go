@@ -74,8 +74,8 @@ commands:
   pause-all         pause every running machine; wait until none is running
   leakscan          scan a paused machine or image for real secrets, as root. Running machines
                     are paused first and stay paused (-image NAME, -canary, -json)
-  cleanup           delete the build directories nothing needs any more, as root (-n only
-                    says which, and why it keeps the others)
+  cleanup           delete unused build directories and trim old snapshot bodies, as root
+                    (-n only says what it would delete or trim, and why it keeps the others)
   daemon            keep busy machines running (-every), clean up when a machine is
                     removed and hourly, and keep the Codex login fresh; systemd runs it as
                     root
@@ -95,6 +95,7 @@ Environment variables of the same names override the file:
   HIBD_VAULT            default $HIBD_STATE_DIR/vault.json
   HIBD_VAULT_KEY        default /etc/hibernaut/vault.key
   HIBD_E2B_STORAGE      E2B snapshot storage, default /var/lib/e2b/local-template-storage
+  HIBD_TRIM             snapshot trimming: off, e2e or all, default e2e
   HIBD_AUDIT_LOG        default /var/log/hibernaut/audit.jsonl
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
   HIBD_CA_CERT          CA certificate for the proxy and image builds, default /etc/hibernaut/ca.crt
@@ -125,9 +126,15 @@ type App struct {
 	NewEngine func() (engine.Engine, error)
 	// ReadRoom reads the room on the host. If it's nil, App reads this host's.
 	ReadRoom func() (room.Host, error)
-	// Clean deletes the build directories nothing needs any more, like cleanup.Host.Clean. If
-	// it's nil, App cleans up this host's.
+	// Clean deletes unused directories and trims old snapshot bodies, like cleanup.Host.Clean.
+	// If it's nil, App cleans up this host's.
 	Clean func(ctx context.Context, e engine.Engine, now time.Time, dryRun bool, logf func(format string, args ...any)) error
+	// OpenTrim supplies the snapshot filesystem. Nil uses cleanup.OpenTrimStorage.
+	OpenTrim func(string) (cleanup.TrimStorage, error)
+	// Timeout supplies cleanup's phase contexts. Nil uses context.WithTimeout.
+	Timeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	// WaitCleanup waits before retrying a held cleanup lock. Nil waits with a context-aware timer.
+	WaitCleanup func(context.Context) error
 	// Query runs SQL in E2B's database. If it's nil, App uses cleanup.Postgres.
 	Query func(ctx context.Context, sql string) ([][]string, error)
 	// EUID returns the effective user ID. If it's nil, App uses os.Geteuid.
@@ -568,33 +575,92 @@ func (a *App) pauseAll(ctx context.Context, args []string) int {
 
 func (a *App) cleanup(ctx context.Context, args []string) int {
 	fl := a.flags("cleanup")
-	dryRun := fl.Bool("n", false, "only say what would be deleted, and why the rest is kept")
+	dryRun := fl.Bool("n", false, "only say what would be deleted or trimmed, and why the rest is kept")
 	if _, ok := a.parse(fl, args, 0, "cleanup [-n]"); !ok {
 		return 2
+	}
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		return a.fail(false, "cleanup", err)
 	}
 	e, err := a.engine()
 	if err != nil {
 		return a.fail(false, "cleanup", err)
 	}
-	if err := a.clean(ctx, e, time.Now(), *dryRun, log.New(a.Stdout, "", 0).Printf); err != nil {
+	now := time.Now()
+	if a.Now != nil {
+		now = a.Now()
+	}
+	if err := a.clean(ctx, ctx, cfg, e, now, *dryRun, false, log.New(a.Stdout, "", 0).Printf); err != nil {
 		return a.fail(false, "cleanup", err)
 	}
 	return 0
 }
 
-func (a *App) clean(ctx context.Context, e engine.Engine, now time.Time, dryRun bool, logf func(format string, args ...any)) error {
-	if a.Clean != nil {
-		return a.Clean(ctx, e, now, dryRun, logf)
+func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine, now time.Time, dryRun, sweep bool, logf func(format string, args ...any)) error {
+	unlock, err := a.lockCleanup(ctx, cfg.stateDir, !sweep, logf)
+	if err != nil {
+		return err
 	}
-	h := cleanup.Host{Storage: cleanup.StorageDir, Cache: cleanup.CacheDir, Query: cleanup.Postgres, Engine: e}
-	return h.Clean(ctx, now, dryRun, logf)
+	defer unlock()
+	if a.Clean != nil {
+		return a.Clean(listingCtx, e, now, dryRun, logf)
+	}
+	query := a.Query
+	if query == nil {
+		query = cleanup.Postgres
+	}
+	h := cleanup.Host{Storage: cfg.e2bStorage, Cache: cleanup.CacheDir, Query: query, Engine: e, TrimScope: cfg.trimScope, OpenTrim: a.OpenTrim, Timeout: a.Timeout}
+	if sweep {
+		h.TrimTimeout = trimTimeout
+	}
+	return h.CleanWithListing(ctx, listingCtx, now, dryRun, logf)
 }
 
-const sweepTimeout = 30 * time.Second
+const (
+	sweepTimeout = 30 * time.Second
+	trimTimeout  = 2 * time.Minute
+)
+
+var errCleanupLocked = errors.New("another cleanup is running")
+
+func (a *App) lockCleanup(ctx context.Context, dir string, wait bool, logf func(string, ...any)) (func(), error) {
+	waiting := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		unlock, ok, err := tryLock(dir, "cleanup.lock", "cleanup")
+		if err != nil || ok {
+			return unlock, err
+		}
+		if !wait {
+			return nil, errCleanupLocked
+		}
+		if !waiting {
+			logf("waiting for another cleanup")
+			waiting = true
+		}
+		if a.WaitCleanup != nil {
+			if err := a.WaitCleanup(ctx); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
 
 type sweeper struct {
 	engine  engine.Engine
-	clean   func(ctx context.Context, now time.Time) error
+	clean   func(ctx, listingCtx context.Context, now time.Time) error
+	clock   func() time.Time
 	logf    func(format string, args ...any)
 	seen    map[string]bool
 	next    time.Time
@@ -621,12 +687,18 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	if now.Before(s.next) {
 		return
 	}
-	err = s.clean(lctx, now)
+	err = s.clean(ctx, lctx, now)
 	retry := time.Hour
-	if errors.Is(err, cleanup.ErrBusy) || errors.Is(err, machines.ErrBusy) {
+	if errors.Is(err, cleanup.ErrBusy) || errors.Is(err, machines.ErrBusy) || errors.Is(err, errCleanupLocked) || errors.Is(err, cleanup.ErrTrimTimeout) {
 		retry = time.Minute
 	}
-	s.next = now.Add(retry)
+	completed := now
+	if s.clock != nil {
+		if at := s.clock(); at.After(completed) {
+			completed = at
+		}
+	}
+	s.next = completed.Add(retry)
 	if ctx.Err() != nil {
 		return
 	}
@@ -663,15 +735,19 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(false, "daemon", err)
 	}
-	s := &sweeper{engine: e, logf: func(format string, args ...any) {
+	clock := a.Now
+	if clock == nil {
+		clock = time.Now
+	}
+	s := &sweeper{engine: e, clock: clock, logf: func(format string, args ...any) {
 		logger.Printf("cleanup: %s", termsafe.String(fmt.Sprintf(format, args...)))
 	}}
 	m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir})
-	s.clean = func(ctx context.Context, now time.Time) error {
-		if err := m.SweepForks(ctx); err != nil {
+	s.clean = func(ctx, listingCtx context.Context, now time.Time) error {
+		if err := m.SweepForks(listingCtx); err != nil {
 			return err
 		}
-		return a.clean(ctx, e, now, false, s.logf)
+		return a.clean(ctx, listingCtx, cfg, e, now, false, true, s.logf)
 	}
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
@@ -864,6 +940,7 @@ type config struct {
 	vaultPath      string
 	vaultKeyPath   string
 	e2bStorage     string
+	trimScope      string
 	auditLogPath   string
 	authorizedKeys string
 	quiescing      string
@@ -929,6 +1006,7 @@ func loadSettings(getenv func(string) string) (config, error) {
 		vaultPath:      get("HIBD_VAULT", ""),
 		vaultKeyPath:   get("HIBD_VAULT_KEY", "/etc/hibernaut/vault.key"),
 		e2bStorage:     get("HIBD_E2B_STORAGE", cleanup.StorageDir),
+		trimScope:      get("HIBD_TRIM", "e2e"),
 		auditLogPath:   get("HIBD_AUDIT_LOG", "/var/log/hibernaut/audit.jsonl"),
 		authorizedKeys: get("HIBD_AUTHORIZED_KEYS", keys),
 		quiescing:      get("HIBD_QUIESCING", "/run/hibernaut/quiescing"),
