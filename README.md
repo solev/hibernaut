@@ -27,10 +27,13 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
   login: `git clone`, `git push` and `gh` work, with only a placeholder inside.
 - **So are AI tools.** `hib connect codex` logs Codex in with your ChatGPT plan, and Copilot uses
   the GitHub connection. Both work in every machine, with only placeholders inside.
+- **Set-up machines can be saved and copied.** `hib image save` keeps a machine as an image, and
+  `hib fork` copies it. Files, packages and running processes come along, and each copy gets its
+  own name and host key.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy) and M4 (GitHub) are done. M5
-  (AI tools) is in progress. Progress: [docs/milestones](docs/milestones/README.md).
+  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools) and
+  M6 (golden images and fork) are done. Progress: [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 

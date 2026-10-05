@@ -1,6 +1,6 @@
 # M6 Golden images and fork
 
-Status: **in progress** · Spec: §2 (Golden images), §5 (Images and fork, Room on the host), §9
+Status: **done** · Spec: §2 (Golden images), §5 (Images and fork, Room on the host), §9
 (S3) · Research: [e2b-images-and-fork](../research/e2b-images-and-fork.md)
 
 **Goal:** save a set-up machine as an image and start new machines from it in about a second, or
@@ -238,71 +238,71 @@ Under sudo `HOME` is root's, so `setup-host.sh` names the login user's keys in
 
 **Engine**
 
-- [ ] e2b `SaveTemplate`, `Template`, `SavedTemplates` and `DeleteTemplate`, tested against E2B's
+- [x] e2b `SaveTemplate`, `Template`, `SavedTemplates` and `DeleteTemplate`, tested against E2B's
       measured answers, with 500, 400 and 409, paging and namespaced names.
-- [ ] Engine contract cases, run against the fake and, in e2e, against E2B.
+- [x] Engine contract cases, run against the fake and, in e2e, against E2B.
 
 **Machines**
 
-- [ ] `SaveImage`, `Fork`, `Images`, `RemoveImage` and `SweepForks`, with the guard and its
+- [x] `SaveImage`, `Fork`, `Images`, `RemoveImage` and `SweepForks`, with the guard and its
       failure paths.
-- [ ] `CheckPlan`, and the check before each copy.
-- [ ] Re-key, and `Setup.Write` always for copies.
-- [ ] Kill by name after a failed create, in `Create` too.
-- [ ] `Pause` and `Remove` under the state lock.
+- [x] `CheckPlan`, and the check before each copy.
+- [x] Re-key, and `Setup.Write` always for copies.
+- [x] Kill by name after a failed create, in `Create` too.
+- [x] `Pause` and `Remove` under the state lock.
 
 **hibd and hib**
 
-- [ ] `hibd image save|ls|rm` and `hibd fork`, with `-json` and usage.
-- [ ] `Durable` wired, and `SweepForks` in the sweeper.
-- [ ] `hibd leakscan -image` scans saved images through the resolver.
-- [ ] `hib image save|ls|rm`, `hib fork`, `hib new --image` with saved images, and a FROM column
+- [x] `hibd image save|ls|rm` and `hibd fork`, with `-json` and usage.
+- [x] `Durable` wired, and `SweepForks` in the sweeper.
+- [x] `hibd leakscan -image` scans saved images through the resolver.
+- [x] `hib image save|ls|rm`, `hib fork`, `hib new --image` with saved images, and a FROM column
       in `hib ls`.
-- [ ] README: images and fork, and what an image carries.
+- [x] README: images and fork, and what an image carries.
 
 ## Tests
 
 Unit:
 
-- [ ] Names: the lowest free k, the length limit, the resolver, catalog refusal and shadowing.
-- [ ] Room plans: the table above, and the messages.
-- [ ] The sweep: a busy lock is skipped, in-use is ignored, and `hibimg-` is never touched.
-- [ ] Re-key arguments.
-- [ ] Every guard failure: the pause, `Durable`, the resume, the checkpoint and an unknown error.
-- [ ] A failed create is cleaned up by name.
-- [ ] Cleanup keeps a build that a machine's snapshot env and an image env share, and frees it
+- [x] Names: the lowest free k, the length limit, the resolver, catalog refusal and shadowing.
+- [x] Room plans: the table above, and the messages.
+- [x] The sweep: a busy lock is skipped, in-use is ignored, and `hibimg-` is never touched.
+- [x] Re-key arguments.
+- [x] Every guard failure: the pause, `Durable`, the resume, the checkpoint and an unknown error.
+- [x] A failed create is cleaned up by name.
+- [x] Cleanup keeps a build that a machine's snapshot env and an image env share, and frees it
       once both are gone. A paused copy's diff whose header names it keeps it.
 
 Integration (the fake engine, through Manager and through `hibd`):
 
-- [ ] Save, then `new --image`.
-- [ ] Fork 2 from a running origin, and from a paused one, which is paused again afterwards.
-- [ ] A failed save: the origin is running again, the message is honest, and no alias is left.
-- [ ] Failed saves hidden by E2B's alias cache are found after refresh. The origin is restored
+- [x] Save, then `new --image`.
+- [x] Fork 2 from a running origin, and from a paused one, which is paused again afterwards.
+- [x] A failed save: the origin is running again, the message is honest, and no alias is left.
+- [x] Failed saves hidden by E2B's alias cache are found after refresh. The origin is restored
       while cleanup waits. A long save needs at most two polls, and early 404 or 409 errors
       skip the wait.
-- [ ] Unknown save outcomes are cleaned up. A rejected save or a cache that never refreshes
+- [x] Unknown save outcomes are cleaned up. A rejected save or a cache that never refreshes
       reaches the 90 s window and reports removal as unconfirmed, with recovery instructions.
-- [ ] Failed fork aliases are removed after refresh. A hidden one that outlasts the window is
+- [x] Failed fork aliases are removed after refresh. A hidden one that outlasts the window is
       named honestly, without promising the sweeper will remove it.
-- [ ] A fork failing on copy 2 of 3: copy 1 is kept, copy 2 is killed, and the exit is non-zero.
-- [ ] `image rm` while copies use the image, then after they're gone.
-- [ ] `hib pause` waits for a fork.
+- [x] A fork failing on copy 2 of 3: copy 1 is kept, copy 2 is killed, and the exit is non-zero.
+- [x] `image rm` while copies use the image, then after they're gone.
+- [x] `hib pause` waits for a fork.
 
 Host (as root, through `make test-host-remote`):
 
-- [ ] Root's first sweep, then a create, a save and a fork, leave the lock, `host-keys` and pins
+- [x] Root's first sweep, then a create, a save and a fork, leave the lock, `host-keys` and pins
       owned by the state's owner.
 
 Engine contract (against the fake, and against E2B in e2e):
 
-- [ ] Saving a running machine works, and saving a paused one is refused.
-- [ ] A machine created from a saved template has only its own labels.
-- [ ] Deleting a template in use, a free one and a missing alias.
+- [x] Saving a running machine works, and saving a paused one is refused.
+- [x] A machine created from a saved template has only its own labels.
+- [x] Deleting a template in use, a free one and a missing alias.
 
 End-to-end:
 
-- [ ] `TestImageAndFork`, within the huge-page pool of three 2 GB dev machines:
+- [x] `TestImageAndFork`, within the huge-page pool of three 2 GB dev machines:
   1. `web` with the fixture repo cloned, dependencies installed and a dev server running.
   2. `hib image save web myimg`, then `hib new web2 --image myimg`. The files are in place, the
      server answers without a restart, and the host key differs. `hib image rm myimg` refuses.
@@ -315,10 +315,10 @@ End-to-end:
 
 ## Done when
 
-- [ ] `make lint test`, `make test-host-remote`, a clean `make generate` and `make e2e` are green.
+- [x] `make lint test`, `make test-host-remote`, a clean `make generate` and `make e2e` are green.
       CI is parked, so `make lint test` stands in for it.
-- [ ] Spec: §5 Images and fork matches the code, and S3 is answered.
-- [ ] README: images and fork.
+- [x] Spec: §5 Images and fork matches the code, and S3 is answered.
+- [x] README: images and fork.
 
 ## Changes
 
@@ -337,6 +337,20 @@ End-to-end:
   `make test-host` and `make test-host-remote` also run the machines `TestHost` tests as root.
   The first live fork found sudo's `HOME` pointing at root's keys, which Azure limits to a
   "log in as the user" message. `setup-host.sh` now names the login user's keys.
+- 2026-10-04: E2B caches a missing alias for about a minute, so a failed save's alias can stay
+  hidden from the lookup that would delete it. A failed save now puts the origin back first,
+  then looks for the alias every 5 s for up to 90 s, and reports a removal it can't confirm as
+  unconfirmed. The state lock stays held meanwhile.
+- 2026-10-04: `hibd fork --json` returns the made machines and the error, so `hib` reports both
+  after a partial fork. `hib fork --json` and `hib image ls --json` moved to M10, with the rest
+  of `hib`'s JSON output.
 - 2026-10-04: Guard failures put a paused origin back if a failed resume landed. The guard's
   idle protection is at least 10 minutes, separate from the 2 minute snapshot durability
   limit. Saves beyond that bound can still be paused by E2B.
+- 2026-10-04: The final slow run lost `TestSnapshotCleanup` and `TestImageAndFork` to E2B's
+  sandbox proxy. It ended a setup command's stream just after the machine started: a setup write
+  in a new machine, and `machine-init` in a fork's copy 150 ms after it started. The command may
+  still run, or finish, in the machine. Exec now reports that as a lost connection, and `hibd`
+  runs the machine's setup again, up to 3 tries within its 2 minutes. So every setup step is safe
+  to run twice at once: a copy's old host key is removed once per machine, under `machine-init`'s
+  lock, and git's identity and the env block are written under a lock.
