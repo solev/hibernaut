@@ -214,8 +214,13 @@ func TestAPlainSecretKeepsOneRedactingWriterPerStream(t *testing.T) {
 		w    io.Writer
 		next io.Writer
 	}{{hidden.stdout, &stdout}, {hidden.stderr, &stderr}} {
-		if w, ok := got.w.(*secretWriter); !ok || w.w != got.next {
+		w, ok := got.w.(*secretWriter)
+		if !ok || w.w != got.next {
 			t.Errorf("a plain value got a chain of writers: %#v", got.w)
+			continue
+		}
+		if len(w.forms) != 1 || string(w.forms[0]) != "abc123XYZ" {
+			t.Errorf("a plain value has the forms %q, want just the value", w.forms)
 		}
 	}
 	io.WriteString(hidden.stdout, `token "abc123XYZ" and abc123XYZ`)

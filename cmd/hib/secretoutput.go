@@ -12,18 +12,14 @@ import (
 )
 
 func (a *app) hidingSecret(value string) (*app, func()) {
+	forms := printedForms(value)
+	stdout := newSecretWriter(a.stdout, forms...)
+	stderr := newSecretWriter(a.stderr, forms...)
 	hidden := *a
-	var writers []*secretWriter
-	for _, form := range printedForms(value) {
-		stdout := &secretWriter{w: hidden.stdout, value: []byte(form)}
-		stderr := &secretWriter{w: hidden.stderr, value: []byte(form)}
-		hidden.stdout, hidden.stderr = stdout, stderr
-		writers = append(writers, stdout, stderr)
-	}
+	hidden.stdout, hidden.stderr = stdout, stderr
 	return &hidden, func() {
-		for _, w := range slices.Backward(writers) {
-			w.Flush()
-		}
+		stdout.Flush()
+		stderr.Flush()
 	}
 }
 
@@ -57,38 +53,79 @@ func quotedForms(value string) []string {
 
 type secretWriter struct {
 	w       io.Writer
-	value   []byte
+	forms   [][]byte
 	pending []byte
+	hidden  []bool
+	inMatch bool
+}
+
+func newSecretWriter(w io.Writer, forms ...string) *secretWriter {
+	sw := &secretWriter{w: w}
+	for _, form := range forms {
+		if form != "" {
+			sw.forms = append(sw.forms, []byte(form))
+		}
+	}
+	return sw
 }
 
 func (w *secretWriter) Write(p []byte) (int, error) {
-	if len(w.value) == 0 {
+	if len(w.forms) == 0 {
 		return w.w.Write(p)
 	}
-	n := len(p)
-	data := append(w.pending, p...)
-	var out []byte
-	for {
-		i := bytes.Index(data, w.value)
-		if i < 0 {
-			break
-		}
-		out = append(out, data[:i]...)
-		out = append(out, "[redacted]"...)
-		data = data[i+len(w.value):]
-	}
-	keep := min(len(data), len(w.value)-1)
-	for keep > 0 && !bytes.Equal(data[len(data)-keep:], w.value[:keep]) {
-		keep--
-	}
-	out = append(out, data[:len(data)-keep]...)
-	w.pending = append(w.pending[:0], data[len(data)-keep:]...)
-	_, err := w.w.Write(out)
-	return n, err
+	w.pending = append(w.pending, p...)
+	w.hidden = append(w.hidden, make([]bool, len(p))...)
+	w.hideMatches()
+	return len(p), w.print(w.couldStartMatch())
 }
 
 func (w *secretWriter) Flush() error {
-	_, err := w.w.Write(w.pending)
-	w.pending = nil
+	return w.print(len(w.pending))
+}
+
+func (w *secretWriter) hideMatches() {
+	for _, form := range w.forms {
+		for start := 0; ; start++ {
+			i := bytes.Index(w.pending[start:], form)
+			if i < 0 {
+				break
+			}
+			start += i
+			for j := range form {
+				w.hidden[start+j] = true
+			}
+		}
+	}
+}
+
+func (w *secretWriter) couldStartMatch() int {
+	for start := range w.pending {
+		rest := w.pending[start:]
+		for _, form := range w.forms {
+			if len(rest) < len(form) && bytes.HasPrefix(form, rest) {
+				return start
+			}
+		}
+	}
+	return len(w.pending)
+}
+
+func (w *secretWriter) print(n int) error {
+	var out []byte
+	for i, b := range w.pending[:n] {
+		switch {
+		case !w.hidden[i]:
+			out = append(out, b)
+		case !w.inMatch:
+			out = append(out, "[redacted]"...)
+		}
+		w.inMatch = w.hidden[i]
+	}
+	w.pending = append(w.pending[:0], w.pending[n:]...)
+	w.hidden = append(w.hidden[:0], w.hidden[n:]...)
+	if len(out) == 0 {
+		return nil
+	}
+	_, err := w.w.Write(out)
 	return err
 }
