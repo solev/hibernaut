@@ -1,6 +1,6 @@
 # M7 GitHub device flow
 
-Status: **in progress** · Spec: §4.3
+Status: **done** · Spec: §4.3
 
 **Goal:** `hib connect github` gives the host its own GitHub token through a browser approval. No
 copying from the laptop, and it can be revoked on its own.
@@ -122,7 +122,7 @@ secret.
 - [x] Create the "Hibernaut" GitHub OAuth App by hand, with Device Flow enabled. Its client ID
       goes into `hibd`, as `github.ClientID`. It isn't secret, and the device flow needs no
       client secret.
-- [ ] Opt the app out of token expiration, under **Optional features**. `hibd` refuses a token
+- [x] Opt the app out of token expiration, under **Optional features**. `hibd` refuses a token
       that expires.
 - [x] `hibd` runs the flow, and `hib` shows the code and opens `github.com/login/device`. The
       token goes straight into the vault and never touches the laptop.
@@ -151,12 +151,12 @@ Integration:
 
 End-to-end:
 
-- [ ] `TestDeviceFlow` (manual: you approve the code in the browser), then `TestGitHubFullFlow`
+- [x] `TestDeviceFlow` (manual: you approve the code in the browser), then `TestGitHubFullFlow`
       passes on the new token.
 
 ## Done when
 
-- [ ] `make lint test`, `make test-host-remote`, a clean `make generate` and `make e2e` are green,
+- [x] `make lint test`, `make test-host-remote`, a clean `make generate` and `make e2e` are green,
       plus one manual `TestDeviceFlow` run. CI is parked, so `make lint test` stands in for it.
 - [x] Spec: §4.3 matches the code.
 - [x] README: connecting GitHub with the device flow.
@@ -178,3 +178,9 @@ End-to-end:
   since GitHub's change of 2026-08-14, new OAuth Apps issue 8-hour tokens with a refresh token
   unless they opt out. hibd refused it as designed and stored nothing. The app has to opt out under
   **Optional features**, and hibd's message now says where.
+- 2026-10-05: Done. The app now opts out of token expiration, and `TestDeviceFlow` passed on the
+  host at e1803e2. GitHub gave a token that doesn't expire, and `hibd` stored it with the source
+  `device` and the scopes `repo`, `read:org` and `workflow`. In a machine, clone, push and a PR
+  worked on it, and `TestCopilot` passed on the same token. `make lint test`,
+  `make test-host-remote`, a clean `make generate` and `make e2e-slow`, which runs every e2e test,
+  passed on the same code in M9's close-out.

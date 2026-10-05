@@ -31,10 +31,11 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
   `hib fork` copies it. Files, packages and running processes come along, and each copy gets its
   own name and host key.
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
-  GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
-  M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools),
-  M6 (golden images and fork), M8 (machine sizes), M9 (snapshot compaction) and M10 (CLI
-  friendliness) are done. Progress: [docs/milestones](docs/milestones/README.md).
+  GitHub and AI tools connected once and no real credentials inside machines. All its milestones
+  are done: M0 (foundations), M1 (machines), M2 (idle and wake), M3 (vault and egress proxy),
+  M4 (GitHub), M5 (AI tools), M6 (golden images and fork), M7 (GitHub device flow), M8 (machine
+  sizes), M9 (snapshot compaction) and M10 (CLI friendliness). Progress and what's left:
+  [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
 
@@ -631,7 +632,9 @@ The GitHub tests connect your laptop's gh login and use the private fixture repo
 runs left. `TestWorkflowPush` skips until gh's token has the `workflow` scope.
 `TestDeviceFlow` uses the host's own token instead. It skips unless `HIB_E2E_DEVICE_FLOW=1`.
 Run it with `HIB_E2E_DEVICE_FLOW=1 go test -tags e2e -run '^TestDeviceFlow$' -v -timeout 40m ./e2e`
-and approve the code by hand. The account you approve needs access to the fixture repo.
+and approve the code by hand. The account you approve needs access to the fixture repo. The other
+GitHub tests leave the host on gh's token, so after `make e2e` run `hib connect github` to go back
+to the host's own.
 
 CI (`lint`, `test` and the `generate` check) is parked: GitHub Actions is off for this repo, so
 nothing runs on push. Run `make lint test` before you push. To turn it back on:
