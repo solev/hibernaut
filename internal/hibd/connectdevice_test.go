@@ -407,8 +407,9 @@ func TestConnectGitHubWithTheDeviceFlowFails(t *testing.T) {
 		{"no client ID", deviceAnswer{body: codeBody}, deviceAnswer{body: tokenBody}, "none",
 			"this hibd has no GitHub OAuth App to log in to. Run hib connect github --from-gh or --token", ""},
 		{"expiring token", deviceAnswer{body: codeBody}, deviceAnswer{body: expiring}, "",
-			"GitHub gave a token that expires, and hibd can't refresh tokens. Turn off expiring tokens for the Hibernaut OAuth App, " +
-				"then run hib connect github again", devicePrompt},
+			"GitHub gave a token that expires, and hibd can't refresh tokens. The Hibernaut OAuth App's owner must opt out of " +
+				"token expiration in its Optional features at github.com/settings/developers. Then run hib connect github again",
+			devicePrompt},
 		{"another refusal", deviceAnswer{body: codeBody}, deviceAnswer{body: `{"error":"incorrect_device_code"}`}, "",
 			"the GitHub login failed: GitHub refused the device login (incorrect_device_code). Nothing was stored", devicePrompt},
 	} {

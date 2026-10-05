@@ -210,11 +210,12 @@ git clone https://github.com/solev/private-repo
   "Hibernaut" GitHub OAuth App. `hibd` asks GitHub for a code, `hib` shows it and opens
   `github.com/login/device`, and you approve it in the browser. The token goes straight into the
   vault and never touches the laptop, and you can revoke it on its own.
-  - The app is created once by hand, with Device Flow enabled. Its client ID is built into
-    `hibd`. It isn't secret, and the device flow needs no client secret.
+  - The app is created once by hand, with Device Flow enabled and token expiration opted out. Its
+    client ID is built into `hibd`. It isn't secret, and the device flow needs no client secret.
   - Scopes: `repo`, `read:org`, `workflow`.
-  - OAuth App tokens (`gho_…`) don't expire unless the app turns expiring tokens on, so there's
-    nothing to refresh. `hibd` refuses a token that expires.
+  - Since GitHub's change of 2026-08-14, new OAuth Apps issue tokens that expire after 8 hours,
+    with a refresh token. The Hibernaut app opts out under **Optional features**, so its tokens
+    (`gho_…`) don't expire and there's nothing to refresh. `hibd` refuses a token that expires.
   - A code lasts 15 minutes. Ctrl-C in `hib` stops `hibd` waiting, but a token GitHub granted
     just before is still stored. `hib status` shows whether it was.
   - An org that restricts OAuth Apps hides its repos from the token until an owner approves the

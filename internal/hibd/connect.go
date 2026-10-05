@@ -132,8 +132,9 @@ func (a *App) githubDeviceLogin(ctx context.Context) (string, error) {
 	case errors.Is(err, github.ErrNoClientID):
 		return "", errors.New("this hibd has no GitHub OAuth App to log in to. Run hib connect github --from-gh or --token")
 	case errors.Is(err, github.ErrExpiringToken):
-		return "", fmt.Errorf("%w, and hibd can't refresh tokens. Turn off expiring tokens for the Hibernaut OAuth App, "+
-			"then run hib connect github again", github.ErrExpiringToken)
+		return "", fmt.Errorf("%w, and hibd can't refresh tokens. The Hibernaut OAuth App's owner must opt out of token "+
+			"expiration in its Optional features at github.com/settings/developers. Then run hib connect github again",
+			github.ErrExpiringToken)
 	}
 	return "", fmt.Errorf("the GitHub login failed: %w. Nothing was stored", err)
 }

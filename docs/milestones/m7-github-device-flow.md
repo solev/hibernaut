@@ -96,8 +96,9 @@ The M7 code is built against this section. Code that has to differ updates it in
   github.com/settings/developers. Until then, run hib connect github --from-gh or --token".
 - No client ID: "this hibd has no GitHub OAuth App to log in to. Run hib connect github --from-gh
   or --token".
-- Expiring token: "GitHub gave a token that expires, and hibd can't refresh tokens. Turn off
-  expiring tokens for the Hibernaut OAuth App, then run hib connect github again".
+- Expiring token: "GitHub gave a token that expires, and hibd can't refresh tokens. The Hibernaut
+  OAuth App's owner must opt out of token expiration in its Optional features at
+  github.com/settings/developers. Then run hib connect github again".
 
 **hib:**
 
@@ -112,11 +113,17 @@ The M7 code is built against this section. Code that has to differ updates it in
 **Later:** a cancelled `hib connect codex` leaves the codex login polling on the host until its
 code expires, holding its lock. The same stdin watch would stop it.
 
+**Later:** if GitHub stops letting OAuth Apps opt out of expiring tokens, `hibd` must refresh the
+GitHub token, as it does Codex's. A token from the device flow refreshes without the client
+secret.
+
 ## Tasks
 
 - [x] Create the "Hibernaut" GitHub OAuth App by hand, with Device Flow enabled. Its client ID
       goes into `hibd`, as `github.ClientID`. It isn't secret, and the device flow needs no
       client secret.
+- [ ] Opt the app out of token expiration, under **Optional features**. `hibd` refuses a token
+      that expires.
 - [x] `hibd` runs the flow, and `hib` shows the code and opens `github.com/login/device`. The
       token goes straight into the vault and never touches the laptop.
 - [x] Scopes `repo`, `read:org`, `workflow`.
@@ -167,4 +174,7 @@ End-to-end:
   says. The login locks refuse a symlink or anything that isn't a regular file, because Go's
   `os.Root` follows a symlink inside the root even with `O_NOFOLLOW`.
 - 2026-10-05: The "Hibernaut" OAuth App exists, with Device Flow on. Its client ID,
-  `Ov23li7DEIl4LNsMzS1o`, is `github.ClientID`.
+  `Ov23li7DEIl4LNsMzS1o`, is `github.ClientID`. The first live login got a token that expires:
+  since GitHub's change of 2026-08-14, new OAuth Apps issue 8-hour tokens with a refresh token
+  unless they opt out. hibd refused it as designed and stored nothing. The app has to opt out under
+  **Optional features**, and hibd's message now says where.
