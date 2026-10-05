@@ -100,6 +100,10 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
 - `termsafe.Line` escapes tab, newline and carriage return too. Table cells, suggestions, step
   lines and progress use it.
 - Styling comes after escaping, so colour sequences are always hib's own.
+- A hint with a command to copy, such as "use it with: hib new NAME --image IMAGE" or "connect
+  with: ssh NAME.hib", only ever holds a name that passes `hibapi.CheckName`. For any other name
+  from the host, hib prints the confirmation, escaped, without the hint. So a host can't slip a
+  command of its own into one.
 
 **`--json`** on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one
 `hibapi.Response` on stdout, with `v` and only that command's fields.

@@ -76,11 +76,14 @@ func (t *Table) styleStates(text []byte) []byte {
 	}
 }
 
-// PrintSavedImage writes a terminal-safe saved-image confirmation and how to use it.
+// PrintSavedImage writes a terminal-safe saved-image confirmation. It says how to use the image
+// only when the name passes CheckName, so a command to copy never carries other text.
 func PrintSavedImage(w io.Writer, img Image) {
-	name := termsafe.String(img.Name)
-	fmt.Fprintf(w, "saved image %s (%s). use it with: hib new NAME --image %s\n",
-		name, FormatMB(int64(img.MemoryMB)), name)
+	fmt.Fprintf(w, "saved image %s (%s).", termsafe.Line(img.Name), FormatMB(int64(img.MemoryMB)))
+	if CheckName(img.Name) == nil {
+		fmt.Fprintf(w, " use it with: hib new NAME --image %s", img.Name)
+	}
+	fmt.Fprintln(w)
 }
 
 // PrintImages writes the built-in and saved images as a terminal-safe table.
@@ -101,7 +104,9 @@ func PrintImages(w io.Writer, images []Image) {
 	tw.Flush()
 }
 
-// PrintFork writes the copies made and how to connect to the first one. No copies print nothing.
+// PrintFork writes the copies made and how to connect to the first one. It says how to connect
+// only when that copy's name passes CheckName, so a command to copy never carries other text.
+// No copies print nothing.
 func PrintFork(w io.Writer, origin string, copies []Machine) {
 	if len(copies) == 0 {
 		return
@@ -110,8 +115,11 @@ func PrintFork(w io.Writer, origin string, copies []Machine) {
 	for i, copy := range copies {
 		names[i] = oneLine(copy.Name)
 	}
-	fmt.Fprintf(w, "made %s from %s. connect with: ssh %s.hib\n",
-		strings.Join(names, ", "), oneLine(origin), names[0])
+	fmt.Fprintf(w, "made %s from %s.", strings.Join(names, ", "), oneLine(origin))
+	if first := copies[0].Name; CheckName(first) == nil {
+		fmt.Fprintf(w, " connect with: ssh %s.hib", first)
+	}
+	fmt.Fprintln(w)
 }
 
 // PrintSecrets writes a terminal-safe metadata table. Empty fields show as "-".
