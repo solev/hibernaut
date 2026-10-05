@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -116,46 +117,54 @@ func checkPrivate(path string) error {
 	return nil
 }
 
-func (a *app) init(ctx context.Context, dir string, args []string) int {
-	fl := a.flags("init")
-	host := fl.String("host", "", "the host's SSH destination: USER@HOST (required)")
-	identity := fl.String("identity", "", "private key for the host and machines (default: ssh's)")
-	group := fl.String("azure-group", "", "the host VM's Azure resource group, so hib can start it")
-	vm := fl.String("azure-vm", "", "the host's Azure VM name")
-	sshConfig := fl.String("ssh-config", "", "ssh config to include hib's settings in (default ~/.ssh/config)")
-	const use = "init -host USER@HOST [-identity FILE] [-azure-group GROUP -azure-vm VM] [-ssh-config FILE]"
-	if _, ok := a.parse(fl, args, 0, use); !ok {
-		return 2
-	}
-	if *host == "" {
-		if saved, err := loadConfig(dir); err == nil {
-			fmt.Fprintf(a.stderr, "hib init: this laptop is already set up for %s\n", saved.Host)
-			fmt.Fprintln(a.stderr, "next: hib new NAME; ssh NAME.hib")
-			fmt.Fprintf(a.stderr, "to set it up again: hib %s\n", use)
-		} else {
-			fmt.Fprintln(a.stderr, "hib init: missing -host USER@HOST")
-			fmt.Fprintf(a.stderr, "usage: hib %s\n", use)
+type initOptions struct {
+	host, identity, group, vm, sshConfig string
+}
+
+func initFlags(fl *flag.FlagSet) runner {
+	var o initOptions
+	fl.StringVar(&o.host, "host", "", "the `USER@HOST` that SSH reaches the host as (required)")
+	fl.StringVar(&o.identity, "identity", "", "the private key `file` for the host and machines (default ssh's)")
+	fl.StringVar(&o.group, "azure-group", "", "the host VM's Azure resource `group`, so hib can start it")
+	fl.StringVar(&o.vm, "azure-vm", "", "the host's Azure `VM` name")
+	fl.StringVar(&o.sshConfig, "ssh-config", "", "the ssh config `file` to include hib's settings in (default ~/.ssh/config)")
+	return func(ctx context.Context, a *app, _ []string) int {
+		dir, err := a.configDir(a.configFlag)
+		if err != nil {
+			return a.fail(err)
 		}
+		return a.init(ctx, dir, o)
+	}
+}
+
+func (a *app) init(ctx context.Context, dir string, o initOptions) int {
+	if o.host == "" {
+		saved, err := loadConfig(dir)
+		if err != nil {
+			return a.mistake("missing --host USER@HOST")
+		}
+		fmt.Fprintf(a.stderr, "hib init: this laptop is already set up for %s\n", saved.Host)
+		fmt.Fprintln(a.stderr, "next: hib new NAME; ssh NAME.hib")
+		fmt.Fprintf(a.stderr, "to set it up again: %s\n", a.command.synopsis())
 		return 2
 	}
-	cfg := &config{Host: *host, dir: dir, prompt: true}
+	cfg := &config{Host: o.host, dir: dir, prompt: true}
 	var err error
-	if *identity != "" {
-		if cfg.Identity, err = filepath.Abs(*identity); err != nil {
+	if o.identity != "" {
+		if cfg.Identity, err = filepath.Abs(o.identity); err != nil {
 			return a.fail(err)
 		}
 		if _, err := os.Stat(cfg.Identity); err != nil {
 			return a.fail(err)
 		}
 	}
-	if (*group == "") != (*vm == "") {
-		fmt.Fprintln(a.stderr, "hib init: -azure-group and -azure-vm go together")
-		return 2
+	if (o.group == "") != (o.vm == "") {
+		return a.mistake("--azure-group and --azure-vm go together")
 	}
-	if *group != "" {
-		cfg.Azure = &azureVM{Group: *group, VM: *vm}
+	if o.group != "" {
+		cfg.Azure = &azureVM{Group: o.group, VM: o.vm}
 	}
-	includer := *sshConfig
+	includer := o.sshConfig
 	if includer != "" {
 		if cfg.SSHConfig, err = filepath.Abs(includer); err != nil {
 			return a.fail(err)
@@ -164,11 +173,10 @@ func (a *app) init(ctx context.Context, dir string, args []string) int {
 	} else if home := a.getenv("HOME"); home != "" {
 		includer = filepath.Join(home, ".ssh", "config")
 	} else {
-		return a.fail(errors.New("$HOME isn't set: use -ssh-config FILE"))
+		return a.fail(errors.New("$HOME isn't set: use --ssh-config FILE"))
 	}
 	if err := cfg.validate(); err != nil {
-		fmt.Fprintln(a.stderr, "hib init:", err)
-		return 2
+		return a.mistake(err.Error())
 	}
 	hib, err := a.executable()
 	if err == nil {

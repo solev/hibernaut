@@ -212,13 +212,13 @@ func TestInitRejects(t *testing.T) {
 	}
 }
 
-// TestInitWithoutHost checks that init without -host names the missing flag, and on a laptop
+// TestInitWithoutHost checks that init without --host names the missing flag, and on a laptop
 // that's set up says for which host, instead of rejecting an empty host.
 func TestInitWithoutHost(t *testing.T) {
 	h := newHost(t)
 	c := newClient(t, h)
-	if code := c.hib("init"); code != 2 || !strings.Contains(c.errOut.String(), "missing -host USER@HOST") {
-		t.Errorf("init without -host: exit %d, stderr %q; want 2 and the missing flag", code, c.errOut)
+	if code := c.hib("init"); code != 2 || !strings.Contains(c.errOut.String(), "missing --host USER@HOST") {
+		t.Errorf("init without --host: exit %d, stderr %q; want 2 and the missing flag", code, c.errOut)
 	}
 
 	if code := c.hib("init", "-host", testHost); code != 0 {
@@ -457,7 +457,7 @@ func TestUsage(t *testing.T) {
 	if code := c.hib(); code != 2 {
 		t.Errorf("no command: %d", code)
 	}
-	if code := c.hib("launch"); code != 2 || !strings.Contains(c.errOut.String(), `unknown command "launch"`) {
+	if code := c.hib("launch"); code != 2 || !strings.Contains(c.errOut.String(), "unknown command launch") {
 		t.Errorf("unknown command: %d, %q", code, c.errOut)
 	}
 	if code := c.hib("ls"); code != 1 || !strings.Contains(c.errOut.String(), "run hib init first") {

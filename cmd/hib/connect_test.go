@@ -529,9 +529,10 @@ func TestConnectGitHubRejectsArguments(t *testing.T) {
 		want string
 	}{
 		{"both sources", []string{"github", "--from-gh", "--token"}, "choose at most one"},
-		{"another provider", []string{"gitlab", "--token"}, "only GitHub and Codex are supported"},
-		{"codex with a flag", []string{"codex", "--token"}, "hib connect codex takes no flags"},
-		{"codex with a false flag", []string{"codex", "--from-gh=false"}, "hib connect codex takes no flags"},
+		{"another provider", []string{"gitlab", "--token"}, "unknown command gitlab"},
+		{"codex with a flag", []string{"codex", "--token"}, "unknown flag --token"},
+		{"codex with a false flag", []string{"codex", "--from-gh=false"}, "unknown flag --from-gh"},
+		{"token as provider", []string{testGitHubToken}, "arguments end up in shell history"},
 		{"codex and a token", []string{"codex", testGitHubToken}, "arguments end up in shell history"},
 		{"no arguments", nil, "usage: hib connect"},
 		{"no provider", []string{"--token"}, "usage: hib connect"},

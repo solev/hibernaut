@@ -43,7 +43,8 @@ all read the table, so they can't drift apart. hib keeps Go's `flag` package: `-
 - Each command parses its flags before it loads settings, so help works before `hib init` and
   without `$HOME`. `hib version` and `hib --version` work there too.
 - `hib help`, `hib -h` and `hib --help` list the commands and the exit codes on stdout and exit 0.
-  `hib` alone prints the same on stderr and exits 2.
+  `hib` alone prints the same on stderr and exits 2. So does a group alone, such as `hib image`,
+  with its own help.
 
 **Exit codes.** 0 done, 1 failed, 2 used wrongly, and 128 plus the signal when a signal stopped
 hib: 130 for Ctrl-C. hib records which signal arrived, since a cancelled context can't tell.

@@ -10,14 +10,7 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-func (a *app) status(ctx context.Context, cfg *config, args []string) int {
-	fl := a.flags("status")
-	stderr := termsafe.NewWriter(a.stderr)
-	defer stderr.Flush()
-	fl.SetOutput(stderr)
-	if _, ok := a.parse(fl, args, 0, "status"); !ok {
-		return 2
-	}
+func (a *app) status(ctx context.Context, cfg *config, _ []string) int {
 	ctx, cancel := context.WithTimeout(ctx, shortTimeout)
 	defer cancel()
 	if cfg.Azure != nil {
