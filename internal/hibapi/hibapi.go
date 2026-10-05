@@ -39,6 +39,8 @@ type Machine struct {
 	Name  string `json:"name,omitempty"`
 	ID    string `json:"id"`
 	Image string `json:"image,omitempty"`
+	// Size is the machine's size, such as "small", or "" if it's none of the sizes.
+	Size string `json:"size,omitempty"`
 	// ForkOf is the name of the machine this one was forked from, if it was.
 	ForkOf string `json:"forkOf,omitempty"`
 	// State is "running" or "paused".
@@ -105,8 +107,11 @@ type Response struct {
 	Image *Image `json:"image,omitempty"`
 	// Images are the images image ls lists.
 	Images []Image `json:"images,omitempty"`
-	// Template is the ID of the template an image was built into.
+	// Template is the ID of the template an image was built into, at the default size.
 	Template string `json:"template,omitempty"`
+	// Sizes are the sizes image build built, in the order it built them. Older hibds don't send
+	// it.
+	Sizes []string `json:"sizes,omitempty"`
 	// Version is hibd's release.
 	Version string `json:"version,omitempty"`
 	// LeakScan is the result of a leak scan.
@@ -174,6 +179,15 @@ type Room struct {
 	MemoryMB     int64 `json:"memoryMB"`
 	// DiskFreeMB is the free disk for the snapshots of paused machines.
 	DiskFreeMB int64 `json:"diskFreeMB"`
+	// Sizes says how many more machines of each size fit, smallest first. Each count is on its
+	// own, not a mix. Older hibds don't send it.
+	Sizes []SizeRoom `json:"sizes,omitempty"`
+}
+
+// SizeRoom is how many more machines of one size fit next to the running machines.
+type SizeRoom struct {
+	Size string `json:"size"`
+	Fits int    `json:"fits"`
 }
 
 const (
