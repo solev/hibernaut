@@ -117,6 +117,7 @@ type callOptions struct {
 	holdStdin bool
 	sudo      bool
 	mayWake   bool
+	events    func(hibapi.Event)
 }
 
 func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, opts callOptions) (hibapi.Response, error) {
@@ -135,15 +136,26 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 			}
 			in = inR
 		}
-		code, err := a.runSSH(ctx, timeout, sshArgs, in, &out)
+		runCtx, cancelRun := context.WithCancel(ctx)
+		stdout := io.Writer(&out)
+		var events *buildEvents
+		if opts.events != nil {
+			events = &buildEvents{show: opts.events, reply: &out, cancel: cancelRun}
+			stdout = events
+		}
+		code, err := a.runSSH(runCtx, timeout, sshArgs, in, stdout)
+		cancelRun()
 		if opts.holdStdin {
 			inW.Close()
 			inR.Close()
 		}
+		if events != nil {
+			err = events.end(err)
+		}
 		if err != nil {
 			return hibapi.Response{}, err
 		}
-		if code == 255 && !woke && opts.mayWake {
+		if code == 255 && !woke && opts.mayWake && !events.heard() {
 			err := a.wake(ctx, cfg)
 			if err == nil {
 				continue

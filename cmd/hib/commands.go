@@ -461,8 +461,8 @@ func logFlags(fl *flag.FlagSet) runner {
 
 func imageBuildFlags(fl *flag.FlagSet) runner {
 	force := fl.Bool("force", false, "rebuild every step, not only those that changed")
-	fl.Bool("verbose", false, "print E2B's full build log")
+	verbose := fl.Bool("verbose", false, "print E2B's full build log")
 	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
-		return a.imageBuild(ctx, cfg, args[0], *force)
+		return a.imageBuild(ctx, cfg, args[0], *force, *verbose)
 	})
 }

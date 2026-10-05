@@ -16,8 +16,12 @@ const (
 	liveWidth, liveHeight = 80, 24
 )
 
+func (a *app) liveTerminal() bool {
+	return a.stderrTerminal && !a.json && a.getenv("TERM") != "dumb"
+}
+
 func (a *app) showLive(ctx context.Context, text string) (stop func()) {
-	if !a.stderrTerminal || a.json || a.getenv("TERM") == "dumb" {
+	if !a.liveTerminal() {
 		return func() {}
 	}
 	now := a.now()
@@ -134,14 +138,14 @@ func (l *live) Write(p []byte) (int, error) {
 }
 
 func (l *live) waitFor(text string) (restore func()) {
-	if l == nil {
-		return func() {}
-	}
 	previous := l.set(text)
 	return func() { l.set(previous) }
 }
 
 func (l *live) set(text string) (previous string) {
+	if l == nil {
+		return ""
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	previous = l.model.text

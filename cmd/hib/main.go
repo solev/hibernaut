@@ -415,7 +415,7 @@ func execSSH(args []string) error {
 	return syscall.Exec(path, append([]string{"ssh"}, args...), os.Environ())
 }
 
-func (a *app) imageBuild(ctx context.Context, cfg *config, name string, force bool) int {
+func (a *app) imageBuild(ctx context.Context, cfg *config, name string, force, verbose bool) int {
 	if !a.checkNames(name) {
 		return 2
 	}
@@ -423,7 +423,7 @@ func (a *app) imageBuild(ctx context.Context, cfg *config, name string, force bo
 	if force {
 		remote = append(remote, "--force")
 	}
-	r, err := a.remote(ctx, cfg, buildTimeout, remote...)
+	r, err := a.buildImage(ctx, cfg, name, remote, verbose)
 	if err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still finish building %s: check hib image ls in a few minutes", name))
 	}

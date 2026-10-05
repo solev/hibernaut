@@ -192,6 +192,8 @@ for and for how long: "waking the host (40s)", then "making app (12s)".
 - hib reads lines of at most 64 KiB. A line it can't read is an error, and it never starts the
   build again.
 - With an older hibd, hib passes stderr on as today.
+- `--verbose` shows the full log, with no live line. hib passes `-verbose` only to a hibd that lists
+  `build-events`. An older hibd prints the full log anyway.
 - hib never guesses which step comes next or how long is left.
 
 **`hib disconnect codex|github`** runs `hibd disconnect codex|github`.
