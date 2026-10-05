@@ -368,6 +368,11 @@ accessed through the VM's managed identity.
   auto-resume off (`autoResume: {enabled: false}`), so traffic to a paused machine doesn't wake
   it. `hibd` resumes machines itself: only its users can wake one, and only once it has checked
   there's room (Room on the host).
+- `hibd` sets each new machine up by running commands in it through E2B's envd: `machine-init`
+  (the host key and your public key), then the env block, git's identity and Codex's login file.
+  E2B's proxy sometimes ends a command's stream early, though the command may still run. So
+  every setup step is safe to run twice, even at once, and `hibd` runs setup again, up to 3 tries
+  within 2 minutes.
 
 ### Idle and wake
 
