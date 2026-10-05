@@ -61,12 +61,6 @@ may yet resume from: `keepHistory` on the machine's slot, from a time `since`.
   build created after it started that's in no image's slot, and for an hour after that build
   finished. An image save puts its build in the machine's slot as well as the image's, and the
   machine keeps running.
-- E2B's listing passes over a machine it's saving as an image, in state `snapshotting`, and
-  shows its last pause with that pause's run start instead. That lasts until E2B records the
-  save's build, after which `ErrBusy` applies. So cleanup asks E2B about each machine the listing
-  calls paused. E2B answers for one machine from what's running, and calls every state but
-  pausing and killing running. If it says running, cleanup uses that and its start. If E2B says
-  paused or no longer has the machine, the listing stands. Any other error stops that cleanup.
 - Otherwise `since` is an hour ago: a replaced snapshot stays a root for an hour.
 
 After an image save, E2B resumes the machine from the save's build. With E2B's
@@ -212,8 +206,7 @@ until `test` resumes after a real trim and a host restart.
 - [x] Measure (S0): `TestPauseCycles` rewriting a 64 MiB file of random data before each pause,
       synced to disk or not. Its numbers are in Why.
 - [ ] `internal/snapheader`: the strict parser.
-- [ ] Cleanup: the machine roots, rechecking paused listings, root accounting, candidates and
-      the scope.
+- [ ] Cleanup: the machine roots, root accounting, candidates and the scope.
 - [ ] hib's E2B client without E2B's fork endpoint: an overlay `make generate` applies.
 - [ ] The plan, and punching on Linux (`trim_linux.go`, with a `trim_stub.go` that says trimming
       needs Linux). `hibd cleanup -n` says what it would trim.
@@ -242,12 +235,6 @@ Unit:
       snapshot of its own runs, as a native fork would, every other machine's slot that isn't
       removed keeps its builds from an hour before it started. Startup history, saved images and
       the layer cache stay roots in every scope. Deletion keeps the roots.
-- [ ] Paused listing checks: a machine listed with its previous run's start, but running from an
-      older warm-cache snapshot according to E2B's single-machine answer, keeps that snapshot
-      whole as a root. With a paused answer, the same old snapshot is trimmed. An unknown running
-      start keeps all history. A paused or not-found answer keeps the listing's start. Any other
-      error stops deletion and trimming. The checks use the listing's context and come before
-      the database queries.
 - [ ] Root accounting: a root without a directory stops trimming, however old. So does a root
       header missing or invalid, a headerless legacy build, a filesystem-only snapshot, or a
       source missing, short or with an invalid header. A root whose header maps nothing to its
@@ -316,8 +303,3 @@ End-to-end:
   and protects what a running machine may read for as long as it runs. The third review and its
   follow-up added a machine E2B is still pausing, image saves and native forks, warm template
   caches, builds an e2e machine shares with a saved image, and a baseline taken before the hour.
-- 2026-10-05: The Spec review found an image-save window before E2B records the save's build.
-  Its listing shows the machine's previous pause then, which could hide an older snapshot the
-  current run still reads. Cleanup now checks each paused listing with E2B's single-machine
-  answer before reading builds. A running answer restores that run's start and root protection.
-  A paused or not-found answer leaves the listing alone. Other errors stop that cleanup.

@@ -54,11 +54,6 @@ func TestCleanupMissingRootHeaderReportsTrimRefusalAndKeepsM2Failure(t *testing.
 func hostForTrim(t *testing.T) (cleanup.Host, *trimStore) {
 	t.Helper()
 	l, s := trimFixture()
-	return hostForTrimListing(t, l, s), s
-}
-
-func hostForTrimListing(t *testing.T, l cleanup.Listing, s *trimStore) cleanup.Host {
-	t.Helper()
 	storage := t.TempDir()
 	for _, d := range l.Dirs {
 		path := filepath.Join(storage, d.Build)
@@ -91,7 +86,7 @@ func hostForTrimListing(t *testing.T, l cleanup.Listing, s *trimStore) cleanup.H
 		slices.SortFunc(rows, func(a, b []string) int { return strings.Compare(a[0], b[0]) })
 		return rows, nil
 	}
-	return cleanup.Host{Storage: storage, Cache: t.TempDir(), Query: query, Engine: e, OpenTrim: func(string) (cleanup.TrimStorage, error) { return s, nil }}
+	return cleanup.Host{Storage: storage, Cache: t.TempDir(), Query: query, Engine: e, OpenTrim: func(string) (cleanup.TrimStorage, error) { return s, nil }}, s
 }
 
 func TestCleanupPassesE2EMetadataAndAppendsTrimOutput(t *testing.T) {

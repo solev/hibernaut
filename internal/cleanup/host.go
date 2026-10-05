@@ -170,16 +170,6 @@ func (h Host) read(ctx context.Context) (Listing, error) {
 		return Listing{}, err
 	}
 	for _, m := range machines {
-		if m.State == engine.Paused {
-			current, err := h.Engine.Get(ctx, m.ID)
-			switch {
-			case errors.Is(err, engine.ErrNotFound):
-			case err != nil:
-				return Listing{}, fmt.Errorf("checking paused machine %s: %w", m.ID, err)
-			case current.State != engine.Paused:
-				m.State, m.StartedAt = current.State, current.StartedAt
-			}
-		}
 		l.Machines = append(l.Machines, Machine{ID: m.ID, Started: m.StartedAt, Paused: m.State == engine.Paused, Metadata: m.Metadata})
 	}
 	rows, err := h.query(ctx, 3, `SELECT e.id,
