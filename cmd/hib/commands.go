@@ -158,7 +158,7 @@ func commandTable() *command {
 				name: "secret",
 				about: "Stores secrets on the host, bound to the sites that may get them. Machines see a placeholder,\n" +
 					"which the host swaps for the real value only in requests to those sites.",
-				examples: []string{"hib secret add OPENAI --env OPENAI_API_KEY --bind api.openai.com", "hib secret ls"},
+				examples: []string{"hib secret add openai --env OPENAI_API_KEY --bind api.openai.com", "hib secret ls"},
 				subs: []*command{
 					{
 						name: "add", args: "NAME", opts: "--env VAR --bind SITE[,SITE...]",
@@ -166,8 +166,8 @@ func commandTable() *command {
 						about: "Stores a secret, bound to the sites. Machines get a placeholder in VAR. The value comes\n" +
 							"from a hidden prompt or stdin, never from an argument.",
 						examples: []string{
-							"hib secret add OPENAI --env OPENAI_API_KEY --bind api.openai.com",
-							"hib secret add NPM --env NPM_TOKEN --bind registry.npmjs.org < npm-token.txt",
+							"hib secret add openai --env OPENAI_API_KEY --bind api.openai.com",
+							"hib secret add npm --env NPM_TOKEN --bind registry.npmjs.org < npm-token.txt",
 						},
 						nargs: 1, flags: secretAddFlags,
 					},
@@ -180,7 +180,7 @@ func commandTable() *command {
 					{
 						name: "rm", args: "NAME", summary: "remove a bound secret",
 						about:    "Removes the secret from the host. Machines keep its placeholder, which stops working.",
-						examples: []string{"hib secret rm OPENAI"},
+						examples: []string{"hib secret rm openai"},
 						nargs:    1, flags: noFlags(configured((*app).secretRM)),
 					},
 				},

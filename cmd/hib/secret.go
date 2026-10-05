@@ -19,20 +19,23 @@ import (
 )
 
 func (a *app) secretAdd(ctx context.Context, cfg *config, name, env, bind string) int {
+	if env == "" {
+		return a.mistake("missing --env VAR")
+	}
 	sites := vault.SplitSites(bind)
 	if err := vault.CheckSecret(name, env, sites); err != nil {
-		return a.fail(err)
+		return a.mistake(err.Error())
 	}
 	value, err := a.readSecretValue(fmt.Sprintf("Value for %s: ", name))
 	if err != nil {
-		return a.fail(err)
+		return a.fail(fmt.Errorf("%w: type it at the prompt or pipe it on stdin", err))
 	}
 	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "secret", "add", name, "--env", env, "--bind", strings.Join(sites, ","), "--json")
 	if err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be storing %s: check hib secret ls", name))
 	}
 	if r.Secret == nil {
-		return a.fail(errors.New("hibd didn't say which secret it stored"))
+		return a.fail(errors.New("hibd didn't say which secret it stored: run hib secret ls to see your secrets"))
 	}
 	fmt.Fprintf(a.stdout, "stored %s as %s for %s\n", safe(r.Secret.Name), safe(r.Secret.Env), safe(strings.Join(r.Secret.Sites, ",")))
 	return 0
@@ -51,8 +54,8 @@ func (a *app) secretLS(ctx context.Context, cfg *config, _ []string) int {
 }
 
 func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
-	if err := hibapi.CheckName(args[0]); err != nil {
-		return a.fail(err)
+	if !a.checkNames(args[0]) {
+		return 2
 	}
 	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "secret", "rm", args[0], "--json"); err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be removing %s: check hib secret ls", args[0]))

@@ -23,7 +23,7 @@ func (a *app) fork(ctx context.Context, cfg *config, name string, count int) int
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making copies of %s: check hib ls", name))
 	}
 	if err == nil && len(r.Machines) == 0 {
-		err = errors.New("hibd didn't say which copies it made")
+		err = errors.New("hibd didn't say which copies it made: run hib ls to see your machines")
 	}
 	if a.json {
 		return a.reply(hibapi.Response{Machines: r.Machines}, err)

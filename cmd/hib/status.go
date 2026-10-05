@@ -35,7 +35,7 @@ func (a *app) status(ctx context.Context, cfg *config, _ []string) int {
 		return a.failWaiting(ctx, err, "")
 	}
 	if r.Status == nil {
-		return a.fail(errors.New("hibd didn't report a status"))
+		return a.fail(errors.New("hibd didn't report a status: run make deploy to update hibd"))
 	}
 	if a.json {
 		a.reply(hibapi.Response{Status: r.Status, Host: host}, nil)

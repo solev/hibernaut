@@ -98,7 +98,7 @@ func (a *app) connectGitHubDevice(ctx context.Context, cfg *config) int {
 
 func (a *app) connectedGitHub(r hibapi.Response) int {
 	if r.GitHub == nil {
-		return a.fail(errors.New("hibd didn't say which account it connected"))
+		return a.fail(errors.New("hibd didn't say which account it connected: run hib status to see what's connected"))
 	}
 	g := r.GitHub
 	fmt.Fprintf(a.stdout, "connected GitHub as %s. Machines commit as %s\n", termsafe.String(g.Who()), termsafe.String(g.Email))
@@ -114,7 +114,7 @@ func (a *app) connectCodex(ctx context.Context, cfg *config, _ []string) int {
 		return a.fail(err)
 	}
 	if r.Codex == nil {
-		return a.fail(errors.New("hibd didn't say which account it connected"))
+		return a.fail(errors.New("hibd didn't say which account it connected: run hib status to see what's connected"))
 	}
 	fmt.Fprintf(a.stdout, "connected Codex as %s, on the %s plan\n", termsafe.String(r.Codex.Email), termsafe.String(r.Codex.Plan))
 	return 0

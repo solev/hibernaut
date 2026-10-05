@@ -21,7 +21,7 @@ func (a *app) imageSave(ctx context.Context, cfg *config, args []string) int {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be saving %s as %s: check hib image ls in a few minutes", args[0], args[1]))
 	}
 	if r.Image == nil {
-		return a.fail(errors.New("hibd didn't say which image it saved"))
+		return a.fail(errors.New("hibd didn't say which image it saved: run hib image ls to see your images"))
 	}
 	hibapi.PrintSavedImage(a.stdout, *r.Image)
 	return 0

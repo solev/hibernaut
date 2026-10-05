@@ -229,7 +229,7 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making %s: check hib ls", name))
 	}
 	if r.Machine == nil {
-		return a.fail(errors.New("hibd didn't say which machine it made"))
+		return a.fail(errors.New("hibd didn't say which machine it made: run hib ls to see your machines"))
 	}
 	if a.json {
 		return a.reply(hibapi.Response{Machine: r.Machine}, nil)
@@ -365,7 +365,7 @@ func (a *app) byName(ctx context.Context, cfg *config, cmd, doing, done, name st
 	}
 	if cmd == "rm" {
 		if err := cfg.unpin(name); err != nil {
-			return a.fail(err)
+			return a.fail(fmt.Errorf("deleted %s, but couldn't forget its host key: %w. Remove that file yourself", name, err))
 		}
 	}
 	fmt.Fprintf(a.stdout, "%s %s\n", done, name)
@@ -400,7 +400,7 @@ func (a *app) sshTo(_ context.Context, cfg *config, args []string) int {
 func execSSH(args []string) error {
 	path, err := exec.LookPath("ssh")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: install OpenSSH 9.6 or later", err)
 	}
 	return syscall.Exec(path, append([]string{"ssh"}, args...), os.Environ())
 }
