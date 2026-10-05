@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
@@ -208,17 +209,17 @@ func (m *Manager) CheckSaves(ctx context.Context, l cleanup.Listing, dry bool, l
 		}
 		if dry {
 			remaining = append(remaining, file.info)
-			logf("would remove save publication debris %s for %s", filepath.Join(state, "saves", file.key), file.machine)
+			logf("would remove save publication debris %s for %s. Check machines with: hib ls.", filepath.Join(state, "saves", file.key), file.machine)
 		} else {
 			if err := removeSave(saves, file.key); err != nil {
 				return fmt.Errorf("%w: removing save publication debris %s for %s: %w. Move it out of saves/ before cleanup",
 					ErrSaveUnsettled, filepath.Join(state, "saves", file.key), file.machine, err)
 			}
-			logf("removed save publication debris %s for %s", filepath.Join(state, "saves", file.key), file.machine)
+			logf("removed save publication debris %s for %s. Check machines with: hib ls.", filepath.Join(state, "saves", file.key), file.machine)
 		}
 	}
 	bootID := m.bootID()
-	var settled []string
+	var settled []saveFile
 	for _, file := range records {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -228,25 +229,52 @@ func (m *Manager) CheckSaves(ctx context.Context, l cleanup.Listing, dry bool, l
 			return damagedSave(state, file.key, err)
 		}
 		if !cleanup.SaveSettled(l, r, bootID, saveCallTimeout) {
-			return fmt.Errorf("%w: %s (%s) began saving at %s. It clears once the machine runs or pauses, is removed, or the host restarts",
-				ErrSaveUnsettled, r.Name, r.Machine, r.Started)
+			running := false
+			for _, machine := range l.Machines {
+				if machine.ID == r.Machine {
+					running = !machine.Paused
+					break
+				}
+			}
+			return fmt.Errorf("%w: save of %s started at %s. %s",
+				ErrSaveUnsettled, r.Name, r.Started.UTC().Format(time.RFC3339), saveRecovery(r, running, m.now()))
 		}
-		settled = append(settled, file.key)
+		file.machine = r.Name
+		settled = append(settled, file)
 	}
-	for _, key := range settled {
+	for _, file := range settled {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if dry {
-			logf("would clear settled save record %s", key)
+			logf("would clear settled save record %s for %s. Check it with: hib ls.", file.key, file.machine)
 			continue
 		}
-		if err := removeSave(saves, key); err != nil {
-			return fmt.Errorf("%w: clearing save record %s: %w", ErrSaveUnsettled, key, err)
+		if err := removeSave(saves, file.key); err != nil {
+			return fmt.Errorf("%w: clearing save record %s for %s: %w. Check it with: hib ls.", ErrSaveUnsettled, file.key, file.machine, err)
 		}
-		logf("cleared settled save record %s", key)
+		logf("cleared settled save record %s for %s. Check it with: hib ls.", file.key, file.machine)
 	}
 	return nil
+}
+
+func saveRecovery(r cleanup.SaveRecord, running bool, now time.Time) string {
+	after := r.Ended
+	if after.IsZero() {
+		after = r.Started.Add(saveCallTimeout)
+	}
+	if running {
+		if now.Before(after) {
+			return fmt.Sprintf("Snapshot cleanup waits until %s pauses after %s. After that time, run: hib pause %s.",
+				r.Name, after.UTC().Format(time.RFC3339), r.Name)
+		}
+		return fmt.Sprintf("Snapshot cleanup waits until %s pauses, is removed, or the host restarts. Run: hib pause %s.", r.Name, r.Name)
+	}
+	if now.Before(after) {
+		return fmt.Sprintf("Snapshot cleanup waits until %s runs and pauses again after %s, is removed, or the host restarts. After that time, wake and pause it: hib exec %s -- true && hib pause %s.",
+			r.Name, after.UTC().Format(time.RFC3339), r.Name, r.Name)
+	}
+	return fmt.Sprintf("Snapshot cleanup waits until %s runs and pauses again, is removed, or the host restarts. Wake and pause it: hib exec %s -- true && hib pause %s.", r.Name, r.Name, r.Name)
 }
 
 func damagedSave(state, key string, cause error) error {

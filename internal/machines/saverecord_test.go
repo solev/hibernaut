@@ -221,7 +221,7 @@ func TestFailedSaveRunningListingNeedsLaterPause(t *testing.T) {
 			}
 			defer release()
 			l := cleanup.Listing{Machines: []cleanup.Machine{{ID: web.ID}}}
-			if err := m.CheckSaves(t.Context(), l, false, func(string, ...any) {}); !errors.Is(err, machines.ErrSaveUnsettled) {
+			if err := m.CheckSaves(t.Context(), l, false, func(string, ...any) {}); !errors.Is(err, machines.ErrSaveUnsettled) || !strings.HasSuffix(err.Error(), "Run: hib pause web.") {
 				t.Fatalf("running listing settled a failed save: %v", err)
 			}
 			l.Envs = []cleanup.Env{{ID: "slot", Machine: web.ID}}
