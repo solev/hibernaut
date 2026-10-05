@@ -9,42 +9,46 @@ import (
 )
 
 func (m *Manager) ensurePins(root *os.Root, owner stateOwner) error {
-	fi, err := root.Lstat("host-keys")
+	return m.ensureDirectory(root, owner, "host-keys")
+}
+
+func (m *Manager) ensureDirectory(root *os.Root, owner stateOwner, name string) error {
+	fi, err := root.Lstat(name)
 	if errors.Is(err, fs.ErrNotExist) {
 		if m.euid() == 0 {
-			err = m.makeOwnedPins(root, owner)
+			err = m.makeOwnedDirectory(root, owner, name)
 		} else {
-			err = root.Mkdir("host-keys", 0o700)
+			err = root.Mkdir(name, 0o700)
 		}
 		if err != nil && !errors.Is(err, fs.ErrExist) {
 			return err
 		}
-		fi, err = root.Lstat("host-keys")
+		fi, err = root.Lstat(name)
 	}
 	if err != nil {
 		return err
 	}
-	pinsOwner, err := directoryOwner(fi, root.Name()+"/host-keys", m.euid())
+	pinsOwner, err := directoryOwner(fi, root.Name()+"/"+name, m.euid())
 	if err != nil {
 		return err
 	}
 	if pinsOwner.uid != owner.uid {
-		return fmt.Errorf("state directory %s/host-keys: belongs to uid %d, not the state owner %d", root.Name(), pinsOwner.uid, owner.uid)
+		return fmt.Errorf("state directory %s/%s: belongs to uid %d, not the state owner %d", root.Name(), name, pinsOwner.uid, owner.uid)
 	}
 	return nil
 }
 
-func (m *Manager) makeOwnedPins(root *os.Root, owner stateOwner) error {
-	if err := root.Mkdir("host-keys", 0o700); err != nil {
+func (m *Manager) makeOwnedDirectory(root *os.Root, owner stateOwner, name string) error {
+	if err := root.Mkdir(name, 0o700); err != nil {
 		return err
 	}
-	d, err := root.OpenFile("host-keys", os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	d, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
 	defer d.Close()
 	if err := m.chownFile(d, owner.uid, owner.gid); err != nil {
-		root.Remove("host-keys")
+		root.Remove(name)
 		return err
 	}
 	return nil

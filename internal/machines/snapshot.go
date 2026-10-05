@@ -14,6 +14,7 @@ import (
 const (
 	snapshotTimeout = 2 * time.Minute
 	saveWindow      = 10 * time.Minute
+	saveCallTimeout = saveWindow
 )
 
 type describedError struct {
@@ -60,7 +61,19 @@ func (m *Manager) saveOrigin(ctx context.Context, em engine.Machine, alias strin
 	if err := m.awake(); err != nil {
 		return engine.TemplateInfo{}, m.restoreAfterFailure(ctx, em, err, true)
 	}
-	tmpl, err := m.e.SaveTemplate(ctx, em.ID, alias)
+	if err := ctx.Err(); err != nil {
+		return engine.TemplateInfo{}, m.restoreAfterFailure(ctx, em, err, true)
+	}
+	key, record, err := m.startSave(em.ID, Name(em))
+	if err != nil {
+		return engine.TemplateInfo{}, m.restoreAfterFailure(ctx, em, safeError(err), true)
+	}
+	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), saveCallTimeout)
+	defer cancel()
+	tmpl, err := m.e.SaveTemplate(call, em.ID, alias)
+	if recordErr := m.finishSave(key, record, err); recordErr != nil {
+		return tmpl, describe(errors.Join(err, recordErr), fmt.Sprintf("recording the save result for %s failed: %v. Snapshot cleanup is blocked by its save record. Check it with: hib ls.", Name(em), recordErr))
+	}
 	if err != nil {
 		return engine.TemplateInfo{}, m.failedSave(ctx, em, alias, err)
 	}

@@ -621,6 +621,7 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 		ReadGuard: func(ctx context.Context) (func(), error) {
 			return a.lockCleanupRead(ctx, m, !sweep, logf)
 		},
+		CheckSaves: m.CheckSaves,
 	}
 	if sweep {
 		h.TrimTimeout = trimTimeout
@@ -721,7 +722,7 @@ func (s *sweeper) look(ctx context.Context, now time.Time) {
 	}
 	err = s.clean(ctx, lctx, now)
 	retry := time.Hour
-	if errors.Is(err, cleanup.ErrBusy) || errors.Is(err, machines.ErrBusy) || errors.Is(err, errCleanupLocked) || errors.Is(err, cleanup.ErrTrimTimeout) {
+	if errors.Is(err, cleanup.ErrBusy) || errors.Is(err, machines.ErrBusy) || errors.Is(err, machines.ErrSaveUnsettled) || errors.Is(err, errCleanupLocked) || errors.Is(err, cleanup.ErrTrimTimeout) {
 		retry = time.Minute
 	}
 	completed := now

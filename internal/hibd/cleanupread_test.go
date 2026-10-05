@@ -1,13 +1,18 @@
 package hibd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/machines"
@@ -77,7 +82,7 @@ func TestCleanupReadWaitsOnceAndCancels(t *testing.T) {
 }
 
 func TestCleanupReadErrorsReleaseBothLocks(t *testing.T) {
-	for _, failure := range []string{"list", "query", "directory", "cancelled wait"} {
+	for _, failure := range []string{"list", "query", "directory", "cancelled wait", "unsettled record", "unreadable record"} {
 		t.Run(failure, func(t *testing.T) {
 			a, _, _ := newApp(t, fake.New())
 			a.Clean = nil
@@ -86,6 +91,30 @@ func TestCleanupReadErrorsReleaseBothLocks(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.e2bStorage, cfg.trimScope = t.TempDir(), "off"
+			if strings.HasSuffix(failure, "record") {
+				saves := filepath.Join(cfg.stateDir, "saves")
+				if err := os.Mkdir(saves, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				data := []byte("{")
+				if failure == "unsettled record" {
+					data, err = json.Marshal(cleanup.SaveRecord{Machine: "web", Name: "web", Started: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(saves, "web-record"), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(cfg.e2bStorage, "44444444-4444-4444-8444-444444444444"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				a.OpenTrim = func(string) (cleanup.TrimStorage, error) {
+					t.Fatal("trimming opened storage despite save record")
+					return nil, nil
+				}
+				cfg.trimScope = "e2e"
+			}
 			if failure == "directory" {
 				cfg.e2bStorage += "/missing"
 			}
@@ -119,6 +148,25 @@ func TestCleanupReadErrorsReleaseBothLocks(t *testing.T) {
 				}
 			} else if err := a.clean(ctx, ctx, cfg, e, time.Now(), false, false, func(string, ...any) {}); err == nil {
 				t.Fatal("cleanup ignored read failure")
+			}
+			if strings.HasSuffix(failure, "record") {
+				if _, err := os.Stat(filepath.Join(cfg.e2bStorage, "44444444-4444-4444-8444-444444444444")); err != nil {
+					t.Fatal("unsettled record allowed deletion")
+				}
+				var out, errOut bytes.Buffer
+				restarted := App{
+					Stdout: &out, Stderr: &errOut, Query: a.Query, OpenTrim: a.OpenTrim,
+					NewEngine: func() (engine.Engine, error) { return e, nil },
+					Getenv: func(k string) string {
+						if k == "HIBD_E2B_STORAGE" {
+							return cfg.e2bStorage
+						}
+						return a.Getenv(k)
+					},
+				}
+				if code := restarted.Run(t.Context(), []string{"cleanup"}); code != 1 || !strings.Contains(errOut.String(), "save") {
+					t.Fatalf("process restart ignored record: exit %d, %s", code, errOut.String())
+				}
 			}
 			unlock, err := m.TryCleanupRead(t.Context())
 			if err != nil {
@@ -165,5 +213,22 @@ func TestCleanupReadSweepContentionRetriesMinute(t *testing.T) {
 	s.look(t.Context(), now)
 	if !s.next.Equal(now.Add(time.Minute)) || strings.Contains(strings.Join(logs, "\n"), "not trimming") {
 		t.Fatalf("retry = %v, logs %v", s.next, logs)
+	}
+}
+
+func TestCleanupUnsettledSaveRetriesWithoutRepeatedProblem(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	var logs []string
+	s := sweeper{
+		engine: fake.New(),
+		clean: func(context.Context, context.Context, time.Time) error {
+			return fmt.Errorf("%w: web began saving at %s", machines.ErrSaveUnsettled, now)
+		},
+		logf: func(f string, args ...any) { logs = append(logs, fmt.Sprintf(f, args...)) },
+	}
+	s.look(t.Context(), now)
+	s.look(t.Context(), now.Add(time.Minute))
+	if !s.next.Equal(now.Add(2*time.Minute)) || len(logs) != 1 {
+		t.Fatalf("next %v, problems %v", s.next, logs)
 	}
 }

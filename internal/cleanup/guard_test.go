@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
@@ -90,5 +92,56 @@ func TestCleanupGuardFailureStartsNoReads(t *testing.T) {
 	var log lines
 	if err := h.Clean(t.Context(), now, false, log.logf); !errors.Is(err, want) || len(log) != 0 {
 		t.Fatalf("guard failure = %v, log = %v", err, log)
+	}
+}
+
+func TestCleanupDeletesAfterGuardRelease(t *testing.T) {
+	h := newHost(t, now)
+	h.TrimScope = "off"
+	held := false
+	h.ReadGuard = func(context.Context) (func(), error) {
+		held = true
+		return func() { held = false }, nil
+	}
+	var log lines
+	if err := h.Clean(t.Context(), now, false, func(f string, args ...any) {
+		if held {
+			t.Error("deletion ran under the read guard")
+		}
+		log.logf(f, args...)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !log.has("deleted " + orphanA) {
+		t.Fatal(log)
+	}
+}
+
+func TestCleanupResumeDuringReadKeepsLatestAndWarmCacheRoots(t *testing.T) {
+	h, s := hostForTrim(t)
+	h.ReadGuard = func(context.Context) (func(), error) { return func() {}, nil }
+	query := h.Query
+	h.Query = func(ctx context.Context, sql string) ([][]string, error) {
+		if strings.Contains(sql, "FROM env_builds") {
+			rows, err := query(ctx, sql)
+			for _, row := range rows {
+				if row[0] == imageBuild {
+					row[6] = strconv.FormatInt(now.Add(-2*time.Minute).UnixMicro(), 10)
+				}
+			}
+			return rows, err
+		}
+		return query(ctx, sql)
+	}
+	h.CheckSaves = func(context.Context, cleanup.Listing, bool, func(string, ...any)) error {
+		_, err := h.Engine.Resume(t.Context(), "web", time.Hour)
+		return err
+	}
+	var log lines
+	if err := h.Clean(t.Context(), now, true, log.logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.applied) != 0 || !log.has("a machine may have started from it") {
+		t.Fatalf("resume input or latest pause was trimmed: %v, %v", s.applied, log)
 	}
 }

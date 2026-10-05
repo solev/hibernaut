@@ -29,8 +29,8 @@ func TestGuardProtectsLongSaveWithShortIdle(t *testing.T) {
 			if em.EndAt.Before(time.Now().Add(10 * time.Minute)) {
 				t.Errorf("renewed timeout ends at %s, want at least 10m from now", em.EndAt)
 			}
-			if _, bounded := ctx.Deadline(); bounded {
-				t.Error("SaveTemplate must not acquire a guard deadline")
+			if deadline, bounded := ctx.Deadline(); !bounded || !deadline.Equal(time.Now().Add(10*time.Minute)) {
+				t.Errorf("SaveTemplate deadline = %v, want the 10m backstop", deadline)
 			}
 			return v.e.SaveTemplate(ctx, id, alias)
 		}
