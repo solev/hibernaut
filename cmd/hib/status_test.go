@@ -251,3 +251,21 @@ func TestInitPointsAtStatus(t *testing.T) {
 		t.Errorf("init output %q doesn't end by pointing at hib status", c.out)
 	}
 }
+
+func TestStatusNamesTheAzCheckThatRanOutOfTime(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	c.azLimit = time.Millisecond
+	c.az = func(ctx context.Context, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	code := c.hib("status")
+	got := c.errOut.String()
+	if code != 1 || got != "hib: az didn't say whether the host is asleep within 1ms: check that az works, for example with az login\n" {
+		t.Errorf("exit %d, stderr %q", code, got)
+	}
+	if calls := h.takeCalls(); len(calls) != 0 {
+		t.Errorf("status ran ssh after az ran out of time: %q", calls)
+	}
+}

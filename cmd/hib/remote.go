@@ -212,7 +212,7 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 	if cfg.Azure == nil {
 		return errAwake
 	}
-	ctx, cancel := context.WithTimeout(ctx, wakeTimeout)
+	ctx, cancel := withTimeLimit(ctx, timeLimit{"the host didn't come up", wakeTimeout, "check it with hib status in a few minutes"})
 	defer cancel()
 	state, err := a.powerState(ctx, cfg.Azure)
 	if err != nil {
@@ -278,9 +278,29 @@ func (a *app) sleep(ctx context.Context) error {
 	}
 }
 
+// timeLimit is the cause of a context that ran out of time, so the error names what ran out and
+// its limit.
+type timeLimit struct {
+	what  string
+	limit time.Duration
+	next  string
+}
+
+func (l timeLimit) Error() string {
+	return fmt.Sprintf("%s within %v: %s", l.what, l.limit, l.next)
+}
+
+func withTimeLimit(ctx context.Context, l timeLimit) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, l.limit, l)
+}
+
 func wakeError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("the host didn't come up within %v: check it with hib status in a few minutes", wakeTimeout)
+		var limit timeLimit
+		if errors.As(context.Cause(ctx), &limit) {
+			return limit
+		}
+		return errors.New("hib ran out of time waiting for the host: check it with hib status")
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()

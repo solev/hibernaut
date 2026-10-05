@@ -13,11 +13,11 @@ import (
 const nextAfterInit = "run hib status to see what's next"
 
 func (a *app) status(ctx context.Context, cfg *config, _ []string) int {
-	ctx, cancel := context.WithTimeout(ctx, shortTimeout)
-	defer cancel()
 	var host *hibapi.Host
 	if cfg.Azure != nil {
-		state, err := a.powerState(ctx, cfg.Azure)
+		azCtx, cancel := withTimeLimit(ctx, timeLimit{"az didn't say whether the host is asleep", a.azLimit, "check that az works, for example with az login"})
+		state, err := a.powerState(azCtx, cfg.Azure)
+		cancel()
 		if err != nil {
 			return a.failWaiting(ctx, err, "")
 		}

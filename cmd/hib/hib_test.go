@@ -384,6 +384,7 @@ func newClient(t *testing.T, h *host) *client {
 		az:         h.az,
 		executable: func() (string, error) { return testHib, nil },
 		wakePoll:   time.Millisecond,
+		azLimit:    shortTimeout,
 		now:        time.Now,
 	}
 	c.sshConfig = filepath.Join(env["HOME"], ".ssh", "config")

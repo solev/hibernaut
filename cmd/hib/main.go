@@ -48,6 +48,7 @@ func main() {
 		az:          runAz,
 		executable:  os.Executable,
 		wakePoll:    5 * time.Second,
+		azLimit:     shortTimeout,
 		now:         time.Now,
 		colour:      colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
 		interactive: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd())),
@@ -91,6 +92,7 @@ type app struct {
 	az             func(ctx context.Context, args ...string) ([]byte, error)
 	executable     func() (string, error)
 	wakePoll       time.Duration
+	azLimit        time.Duration
 	now            func() time.Time
 	colour         bool
 	interactive    bool
