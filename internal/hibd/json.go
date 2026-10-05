@@ -9,6 +9,8 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 )
 
+const maxBuildLine = 64 << 10
+
 func marshalReply(reply hibapi.Response) ([]byte, error) {
 	reply.V = hibapi.Version
 	data, err := json.Marshal(reply)
@@ -55,36 +57,56 @@ func marshalReply(reply hibapi.Response) ([]byte, error) {
 }
 
 func marshalBuildEvent(event hibapi.Event) ([]byte, error) {
-	const limit = 64 << 10
-	text := event.Text
-	truncated := len(text) > limit
+	return marshalBoundedText(event.Text, "…", func(text string) hibapi.Response {
+		event.Text = text
+		return hibapi.Response{Event: &event}
+	})
+}
+
+func marshalBoundedText(text, suffix string, reply func(string) hibapi.Response) ([]byte, error) {
+	truncated := len(text) > maxBuildLine
 	if truncated {
-		text = firstBytes(text, limit)
+		text = firstBytes(text, maxBuildLine)
 	}
-	event.Text = text
+	initial := text
 	if truncated {
-		event.Text += "…"
+		initial += suffix
 	}
-	data, err := marshalReply(hibapi.Response{Event: &event})
-	if err != nil || len(data) <= limit {
+	data, err := marshalReply(reply(initial))
+	if err != nil || len(data) <= maxBuildLine {
 		return data, err
 	}
 	low, high := 0, len(text)
 	for low < high {
 		mid := (low + high + 1) / 2
-		event.Text = firstBytes(text, mid) + "…"
-		data, err = marshalReply(hibapi.Response{Event: &event})
+		data, err = marshalReply(reply(firstBytes(text, mid) + suffix))
 		if err != nil {
 			return nil, err
 		}
-		if len(data) <= limit {
+		if len(data) <= maxBuildLine {
 			low = mid
 		} else {
 			high = mid - 1
 		}
 	}
-	event.Text = firstBytes(text, low) + "…"
-	return marshalReply(hibapi.Response{Event: &event})
+	return marshalReply(reply(firstBytes(text, low) + suffix))
+}
+
+func (a *App) buildReply(reply hibapi.Response) int {
+	var data []byte
+	var err error
+	if reply.Error != "" {
+		data, err = marshalBoundedText(reply.Error, "… Check hib image ls before trying again", func(text string) hibapi.Response {
+			reply.Error = text
+			return reply
+		})
+	} else {
+		data, err = marshalReply(reply)
+	}
+	if err == nil && len(data) > maxBuildLine {
+		return a.reply(hibapi.Response{Error: "build finished, but its reply exceeds 64 KiB. Check hib image ls before trying again"})
+	}
+	return a.writeReply(data, err, reply.Error != "")
 }
 
 func firstBytes(text string, limit int) string {

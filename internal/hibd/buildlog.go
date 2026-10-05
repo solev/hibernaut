@@ -19,7 +19,7 @@ type buildStep struct {
 	cached     bool
 }
 
-func stepHeader(entry engine.LogEntry) (buildStep, bool) {
+func logHeader(entry engine.LogEntry) (buildStep, bool) {
 	if entry.Level != "info" {
 		return buildStep{}, false
 	}
@@ -29,24 +29,33 @@ func stepHeader(entry engine.LogEntry) (buildStep, bool) {
 		return buildStep{}, false
 	}
 	name := strings.TrimPrefix(prefix, "[")
+	hash := strings.LastIndex(rest, " [")
+	if hash < 1 || hash+2 == len(rest)-1 {
+		return buildStep{}, false
+	}
+	text := rest[:hash]
+	if len(text) > maxBuildLine {
+		text = firstBytes(text, maxBuildLine) + "…"
+	}
+	return buildStep{name: name, text: strings.Clone(text), at: entry.Time, cached: cached}, true
+}
+
+func stepName(name string) (string, bool) {
 	switch {
 	case name == "base", name == "finalize":
+		return name, true
 	case strings.HasPrefix(name, "builder "):
 		name = strings.TrimPrefix(name, "builder ")
 		n, total, ok := strings.Cut(name, "/")
 		step, stepErr := strconv.Atoi(n)
 		count, countErr := strconv.Atoi(total)
 		if !ok || stepErr != nil || countErr != nil || step < 1 || step > count {
-			return buildStep{}, false
+			return "", false
 		}
+		return fmt.Sprintf("%d/%d", step, count), true
 	default:
-		return buildStep{}, false
+		return "", false
 	}
-	hash := strings.LastIndex(rest, " [")
-	if hash < 1 || hash+2 == len(rest)-1 {
-		return buildStep{}, false
-	}
-	return buildStep{name: name, text: rest[:hash], at: entry.Time, cached: cached}, true
 }
 
 func stepResult(step buildStep, end time.Time, failed bool) (hibapi.EventState, int) {
@@ -112,13 +121,16 @@ func (b *buildLog) entry(entry engine.LogEntry) {
 	if b.verbose {
 		fmt.Fprintln(b.out, termsafe.String(entry.Message))
 	}
-	if step, ok := stepHeader(entry); ok {
+	if step, ok := logHeader(entry); ok {
 		b.finish(entry.Time, false)
-		b.step = &step
 		b.tail = logTail{}
-		b.tail.add(entry.Message)
-		b.event(step, hibapi.EventStarted, 0)
-		return
+		if name, known := stepName(step.name); known {
+			step.name = name
+			b.step = &step
+			b.tail.add(entry.Message)
+			b.event(step, hibapi.EventStarted, 0)
+			return
+		}
 	}
 	b.tail.add(entry.Message)
 	if !b.verbose && (b.step == nil || strings.HasPrefix(entry.Message, "[") || strings.HasPrefix(entry.Message, "CACHED [")) {

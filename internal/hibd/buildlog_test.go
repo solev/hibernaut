@@ -155,3 +155,27 @@ func TestBuildVerboseReplacesStepLines(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownBuildPhaseEndsPreviousStepAndPassesItsLogThrough(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	a := buildEntriesApp(t, []engine.LogEntry{
+		{Time: at, Level: "info", Message: "[builder 1/1] RUN true [a0b1]"},
+		{Time: at.Add(time.Second), Level: "debug", Message: "known step output"},
+		{Time: at.Add(3 * time.Second), Level: "info", Message: "[optimize] Optimizing template [b1c2]"},
+		{Time: at.Add(7 * time.Second), Level: "info", Message: "Collected prefetch mapping with memory blocks"},
+		{Time: at.Add(10 * time.Second), Level: "info", Message: "Build finished, took 10s"},
+	}, nil)
+	if code := a.Run(t.Context(), []string{"image", "build", "dev"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, a.Stderr)
+	}
+	got := a.Stderr.(*bytes.Buffer).String()
+	for _, want := range []string{"1/1  RUN true  built in 3s", "[optimize] Optimizing template [b1c2]",
+		"Collected prefetch mapping with memory blocks"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q from %s", want, got)
+		}
+	}
+	if strings.Contains(got, "known step output") {
+		t.Fatal("known step output was not summarized")
+	}
+}

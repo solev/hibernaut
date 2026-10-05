@@ -111,3 +111,31 @@ func TestBuildEventsRequireJSONAndAreAdvertised(t *testing.T) {
 		t.Fatal("build-events not advertised")
 	}
 }
+
+func TestBuildEventsBoundFinalErrorToo(t *testing.T) {
+	a := buildEntriesApp(t, nil, errors.New(strings.Repeat("界\x7f", 50000)))
+	if code := a.Run(t.Context(), []string{"image", "build", "dev", "-json", "-events"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	replies := buildReplies(t, a.Stdout.(*bytes.Buffer))
+	if len(replies) != 1 || !strings.HasSuffix(replies[0].Error, "Check hib image ls before trying again") {
+		t.Fatalf("missing bounded final error or next step")
+	}
+}
+
+func TestBuildEventsNormalizeStepNumbersAndPreserveShortText(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	text := "RUN printf '界😀\t\x7f\u202e'\nroot"
+	number := strings.Repeat("0", 70000) + "1"
+	a := buildEntriesApp(t, []engine.LogEntry{
+		{Time: at, Level: "info", Message: "[builder " + number + "/1] " + text + " [a0b1]"},
+		{Time: at.Add(time.Second), Level: "info", Message: "Build finished, took 1s"},
+	}, nil)
+	if code := a.Run(t.Context(), []string{"image", "build", "dev", "-json", "-events"}); code != 0 {
+		t.Fatalf("exit %d: %s", code, a.Stderr)
+	}
+	replies := buildReplies(t, a.Stdout.(*bytes.Buffer))
+	if len(replies) != 7 || replies[0].Event == nil || replies[0].Event.Step != "1/1" || replies[0].Event.Text != text {
+		t.Fatal("step number was unbounded or decoded text changed")
+	}
+}

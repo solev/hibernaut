@@ -51,6 +51,17 @@ func TestBuildReportsLogsBeforeFailure(t *testing.T) {
 	}
 }
 
+func TestBuildIgnoresLogsWhenCallbackIsNil(t *testing.T) {
+	e := fake.New(fake.WithBuildLogs(func(_ context.Context, _ engine.TemplateSpec, emit func(engine.LogEntry)) error {
+		emit(engine.LogEntry{Level: "info", Message: "build output"})
+		return nil
+	}))
+	id, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "dev", FromImage: "ubuntu:24.04"}, nil)
+	if err != nil || id != "tmpl-dev" || len(e.Built()) != 1 {
+		t.Fatalf("build = %q, %v, built %+v", id, err, e.Built())
+	}
+}
+
 func TestKillRemovesHome(t *testing.T) {
 	root := t.TempDir()
 	e := fake.New(fake.WithLocalExec(root))

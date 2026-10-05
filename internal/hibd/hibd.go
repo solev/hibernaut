@@ -67,6 +67,7 @@ commands:
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image in every size (-force rebuilds every step)
+                    -verbose keeps full logs. -json -events sends build step events
   image save MACHINE NAME
                     save a machine as an image, memory included, as root
   image ls          list built-in and saved images
@@ -156,7 +157,7 @@ type App struct {
 	ProxyHook proxypkg.Rule
 	// ProxyListen opens hibd proxy's port, for tests only. If it's nil, App uses net.Listen.
 	ProxyListen func(network, address string) (net.Listener, error)
-	// Now supplies the daemon's clock. If it's nil, App uses time.Now.
+	// Now supplies hibd's clock. If it's nil, App uses time.Now.
 	Now func() time.Time
 	// DaemonTicks supplies the daemon's ticks. If it's nil, App uses a ticker at -every.
 	DaemonTicks <-chan time.Time
@@ -415,37 +416,43 @@ func (a *App) image(ctx context.Context, args []string) int {
 		fmt.Fprintln(a.Stderr, "hibd image build: -events requires -json")
 		return 2
 	}
+	fail := func(err error) int {
+		if *events {
+			return a.buildReply(hibapi.Response{Error: termsafe.String(withNextStep("image build", err).Error())})
+		}
+		return a.fail(*asJSON, "image build", err)
+	}
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	caPEM, err := os.ReadFile(cfg.caCert)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			err = fmt.Errorf("no Hibernaut CA at %s: run `sudo hibd ca init` (vm/setup-host.sh does this)", cfg.caCert)
 		}
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	sizes := images.BuildSizes()
 	specs := make([]engine.TemplateSpec, len(sizes))
 	for i, size := range sizes {
 		spec, err := images.Spec(names[0], size, caPEM)
 		if err != nil {
-			return a.fail(*asJSON, "image build", err)
+			return fail(err)
 		}
 		spec.Force = *force
 		specs[i] = spec
 	}
 	if err := a.awake(); err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	e, err := a.engine()
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	m, err := a.manager()
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
@@ -455,7 +462,7 @@ func (a *App) image(ctx context.Context, args []string) int {
 	for i, size := range sizes {
 		id, err := a.buildSize(ctx, e, m, names[0], size, specs[i], *verbose, *events)
 		if err != nil {
-			return a.fail(*asJSON, "image build", buildFailed(err, sizes, i))
+			return fail(buildFailed(err, sizes, i))
 		}
 		if size == images.DefaultSize() {
 			template = id
@@ -463,6 +470,9 @@ func (a *App) image(ctx context.Context, args []string) int {
 		built = append(built, size.Name())
 	}
 	if *asJSON {
+		if *events {
+			return a.buildReply(hibapi.Response{Template: template, Sizes: built})
+		}
 		return a.reply(hibapi.Response{Template: template, Sizes: built})
 	}
 	fmt.Fprintln(a.Stdout, template)
@@ -817,6 +827,10 @@ func (a *App) fail(asJSON bool, cmd string, err error) int {
 
 func (a *App) reply(r hibapi.Response) int {
 	data, err := marshalReply(r)
+	return a.writeReply(data, err, r.Error != "")
+}
+
+func (a *App) writeReply(data []byte, err error, failed bool) int {
 	if err == nil {
 		_, err = a.Stdout.Write(data)
 	}
@@ -824,7 +838,7 @@ func (a *App) reply(r hibapi.Response) int {
 		fmt.Fprintln(a.Stderr, "hibd:", termsafe.String(err.Error()))
 		return 1
 	}
-	if r.Error != "" {
+	if failed {
 		return 1
 	}
 	return 0

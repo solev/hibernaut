@@ -111,9 +111,13 @@ type BuildStep struct {
 
 // LogEntry is one build log entry, with the engine's timestamp and phase metadata.
 type LogEntry struct {
-	Time    time.Time
-	Level   string
-	Step    string
+	// Time is when the engine logged the entry.
+	Time time.Time
+	// Level is the engine's log level, such as info or error.
+	Level string
+	// Step is the phase's name or its step number. Empty means no phase.
+	Step string
+	// Message is the full, unescaped log text.
 	Message string
 }
 
@@ -174,7 +178,7 @@ type Engine interface {
 	// machine, and makes sure a running one runs for at least timeout more. ctx bounds only the
 	// dial: the connection lasts until it's closed.
 	DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error)
-	// BuildTemplate builds spec, or rebuilds the template of that name, calling logs with each
+	// BuildTemplate builds spec, or rebuilds the template of that name, calling logs synchronously with each
 	// complete entry as it arrives. A nil callback ignores logs. Entries keep their full message,
 	// time, level and step. It drains finished builds' log pages before returning the template's
 	// ID or the failure.

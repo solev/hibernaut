@@ -82,7 +82,7 @@ func WithBuildHook(h BuildHook) Option {
 }
 
 // WithBuildLogs replaces the fake's build log with f. A failure leaves the template unchanged.
-// The callback may be nil when the caller ignores logs.
+// The callback ignores entries when the caller ignores logs.
 func WithBuildLogs(f func(context.Context, engine.TemplateSpec, func(engine.LogEntry)) error) Option {
 	return func(e *Engine) { e.buildLogs = f }
 }
@@ -404,7 +404,11 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 		}
 	}
 	if e.buildLogs != nil {
-		if err := e.buildLogs(ctx, spec, logs); err != nil {
+		emit := logs
+		if emit == nil {
+			emit = func(engine.LogEntry) {}
+		}
+		if err := e.buildLogs(ctx, spec, emit); err != nil {
 			return "", err
 		}
 	} else if logs != nil {
