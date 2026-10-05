@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net"
 	"os"
@@ -82,6 +81,12 @@ func WithBuildHook(h BuildHook) Option {
 	return func(e *Engine) { e.buildHook = h }
 }
 
+// WithBuildLogs replaces the fake's build log with f. A failure leaves the template unchanged.
+// The callback may be nil when the caller ignores logs.
+func WithBuildLogs(f func(context.Context, engine.TemplateSpec, func(engine.LogEntry)) error) Option {
+	return func(e *Engine) { e.buildLogs = f }
+}
+
 // WithTemplates makes Create accept only these templates, and those BuildTemplate builds or
 // SaveTemplate saves. Without it, Create accepts any. A later WithTemplates replaces an earlier
 // one. Template finds each, as a template of DefaultCPUs and DefaultMemoryMB whose ID is its name.
@@ -106,6 +111,7 @@ type Engine struct {
 	exec                   ExecFunc
 	pauseHook              PauseHook
 	buildHook              BuildHook
+	buildLogs              func(context.Context, engine.TemplateSpec, func(engine.LogEntry)) error
 	dial                   DialFunc
 	homeRoot               string
 	refuseUnknownTemplates bool
@@ -385,7 +391,7 @@ func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout
 
 // BuildTemplate records spec and returns "tmpl-" and its name. Machines created from the
 // template have the spec's CPUs and MemoryMB, or DefaultCPUs and DefaultMemoryMB if it has none.
-func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs io.Writer) (string, error) {
+func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs func(engine.LogEntry)) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -396,6 +402,14 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 		if err := e.buildHook(ctx, spec); err != nil {
 			return "", err
 		}
+	}
+	if e.buildLogs != nil {
+		if err := e.buildLogs(ctx, spec, logs); err != nil {
+			return "", err
+		}
+	} else if logs != nil {
+		logs(engine.LogEntry{Time: e.now(), Level: "info",
+			Message: fmt.Sprintf("fake: built %s from %s in %d steps", spec.Name, spec.FromImage, len(spec.Steps))})
 	}
 	id := "tmpl-" + spec.Name
 	e.mu.Lock()
@@ -409,9 +423,6 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 	}}
 	delete(e.missedAt, spec.Name)
 	e.mu.Unlock()
-	if logs != nil {
-		fmt.Fprintf(logs, "fake: built %s from %s in %d steps\n", spec.Name, spec.FromImage, len(spec.Steps))
-	}
 	return id, nil
 }
 

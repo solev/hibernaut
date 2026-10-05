@@ -466,7 +466,7 @@ func (a *App) buildSize(ctx context.Context, e engine.Engine, m *machines.Manage
 	}
 	start := time.Now()
 	buildLog := termsafe.NewWriter(a.Stderr)
-	id, err := e.BuildTemplate(ctx, spec, buildLog)
+	id, err := e.BuildTemplate(ctx, spec, func(entry engine.LogEntry) { fmt.Fprintln(buildLog, entry.Message) })
 	buildLog.Flush()
 	if err != nil {
 		return "", fmt.Errorf("building %s (%s): %w", image, size.Name(), err)
