@@ -32,6 +32,7 @@ func (a *app) imageList(ctx context.Context, cfg *config, _ []string) int {
 	if err != nil {
 		return a.failWaiting(ctx, err, "")
 	}
+	rememberImages(cfg, r.Images)
 	if a.json {
 		return a.reply(hibapi.Response{Images: r.Images}, nil)
 	}

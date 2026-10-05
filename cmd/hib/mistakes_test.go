@@ -91,15 +91,8 @@ func TestUnknownCommandsGetTheNearestOne(t *testing.T) {
 func TestUnbuiltCommandsSaySo(t *testing.T) {
 	h := newHost(t)
 	c := initClient(t, h)
-	for _, args := range [][]string{
-		{"completion", "bash"}, {"completion", "zsh"}, {"completion", "fish"},
-		{"disconnect", "codex"}, {"disconnect", "github"},
-		{"__complete", "hib", "n"},
-	} {
-		path := args[0]
-		if args[0] == "completion" || args[0] == "disconnect" {
-			path += " " + args[1]
-		}
+	for _, args := range [][]string{{"disconnect", "codex"}, {"disconnect", "github"}} {
+		path := args[0] + " " + args[1]
 		if code := c.hib(args...); code != 1 || c.errOut.String() != "hib "+path+" isn't built yet\n" || c.out.Len() > 0 {
 			t.Errorf("hib %q = %d, stdout %q, stderr %q", args, code, c.out, c.errOut)
 		}

@@ -233,17 +233,17 @@ func commandTable() *command {
 					{
 						name: "bash", summary: "print a bash completion script",
 						about: "Prints a bash completion script.", examples: []string{"source <(hib completion bash)"},
-						flags: noFlags(unbuilt),
+						flags: noFlags(printScript(bashCompletion)),
 					},
 					{
 						name: "zsh", summary: "print a zsh completion script",
 						about: "Prints a zsh completion script.", examples: []string{"source <(hib completion zsh)"},
-						flags: noFlags(unbuilt),
+						flags: noFlags(printScript(zshCompletion)),
 					},
 					{
 						name: "fish", summary: "print a fish completion script",
 						about: "Prints a fish completion script.", examples: []string{"hib completion fish | source"},
-						flags: noFlags(unbuilt),
+						flags: noFlags(printScript(fishCompletion)),
 					},
 				},
 			},
@@ -252,7 +252,7 @@ func commandTable() *command {
 				summary:  "complete a command line",
 				about:    "Prints what completes the last WORD. The completion scripts run it.",
 				examples: []string{"hib __complete new app --size ''"},
-				nargs:    anyArgs, flags: noFlags(unbuilt),
+				nargs:    anyArgs, flags: noFlags(complete),
 			},
 			{
 				name: "bridge", args: "NAME.hib", summary: "connect to a machine's SSH server; ssh runs this for you",

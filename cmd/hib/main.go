@@ -246,6 +246,7 @@ func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	slices.SortFunc(r.Machines, func(x, y hibapi.Machine) int {
 		return strings.Compare(x.Name+"\x00"+x.ID, y.Name+"\x00"+y.ID)
 	})
+	rememberMachines(cfg, r.Machines)
 	if a.json {
 		return a.reply(hibapi.Response{Machines: r.Machines, Room: r.Room}, nil)
 	}
