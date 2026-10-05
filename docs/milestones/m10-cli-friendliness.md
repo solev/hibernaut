@@ -108,8 +108,10 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
   host either. When the host is an Azure VM, hib adds `host` from Azure's answer: asleep is
   `{"v":1,"host":{"state":"asleep","detail":"VM deallocated"}}`, with no `status` and exit 0, and
   awake is `"host":{"state":"running"}` next to hibd's `status`. hibd never sends `host`.
-- A failure is the same object with `error`, exit 1. A fork that fails partway includes the copies
-  it made. `hib status --json` exits 1 when something is failing, as it does without `--json`.
+- A failure is the same object with `error`, exit 1, and hib adds nothing of its own on stderr. A
+  fork that fails partway includes the copies it made. `hib status --json` exits 1 when something
+  is failing, as it does without `--json`. A mistake on the command line is still a mistake: help
+  on stderr, exit 2.
 - The bytes are ASCII: every control character, DEL and non-ASCII character is written as
   `\uXXXX`. Decoded values are exact, and printing the JSON can't affect the terminal.
 - No colour, hints or progress, ever.

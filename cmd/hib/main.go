@@ -96,9 +96,11 @@ type app struct {
 	interactive    bool
 	command        *command
 	configFlag     string
+	json           bool
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
+	a.json = false
 	code := a.dispatch(ctx, commandTable(), args)
 	var s stopped
 	if code != 0 && errors.As(context.Cause(ctx), &s) {
@@ -229,6 +231,9 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 	if r.Machine == nil {
 		return a.fail(errors.New("hibd didn't say which machine it made"))
 	}
+	if a.json {
+		return a.reply(hibapi.Response{Machine: r.Machine}, nil)
+	}
 	fmt.Fprintf(a.stdout, "made %s; connect with: ssh %s.hib\n", name, name)
 	return 0
 }
@@ -241,6 +246,9 @@ func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	slices.SortFunc(r.Machines, func(x, y hibapi.Machine) int {
 		return strings.Compare(x.Name+"\x00"+x.ID, y.Name+"\x00"+y.ID)
 	})
+	if a.json {
+		return a.reply(hibapi.Response{Machines: r.Machines, Room: r.Room}, nil)
+	}
 	now := a.now()
 	tw := hibapi.NewTable(a.stdout, nil)
 	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
@@ -459,6 +467,9 @@ func (a *app) configDir(dir string) (string, error) {
 }
 
 func (a *app) fail(err error) int {
+	if a.json {
+		return a.reply(hibapi.Response{}, err)
+	}
 	fmt.Fprintf(a.stderr, "hib: %s\n", termsafe.String(err.Error()))
 	return 1
 }

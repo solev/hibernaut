@@ -349,13 +349,16 @@ func noFlags(run runner) func(*flag.FlagSet) runner {
 
 func jsonOnly(run runner) func(*flag.FlagSet) runner {
 	return func(fl *flag.FlagSet) runner {
-		jsonFlag(fl)
-		return run
+		return withJSON(fl, run)
 	}
 }
 
-func jsonFlag(fl *flag.FlagSet) *bool {
-	return fl.Bool("json", false, "print one JSON object instead of text")
+func withJSON(fl *flag.FlagSet, run runner) runner {
+	asJSON := fl.Bool("json", false, "print one JSON object instead of text")
+	return func(ctx context.Context, a *app, args []string) int {
+		a.json = *asJSON
+		return run(ctx, a, args)
+	}
 }
 
 func configured(run func(a *app, ctx context.Context, cfg *config, args []string) int) runner {
@@ -414,10 +417,9 @@ func newFlags(fl *flag.FlagSet) runner {
 	image := fl.String("image", images.Default, "the `image` to make the machine from")
 	size := fl.String("size", "", "small, medium or large (default medium, or the saved image's `size`)")
 	idle := fl.Duration("idle", 0, "pause the machine after this long idle, such as 1h (default 15m, and 0 means never)")
-	jsonFlag(fl)
-	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
+	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
 		return a.newMachine(ctx, cfg, fl, args[0], *image, *size, *idle)
-	})
+	}))
 }
 
 func rmFlags(fl *flag.FlagSet) runner {
@@ -429,10 +431,9 @@ func rmFlags(fl *flag.FlagSet) runner {
 
 func forkFlags(fl *flag.FlagSet) runner {
 	count := fl.Int("count", 1, fmt.Sprintf("make `N` copies, from 1 to %d", machines.MaxCopies))
-	jsonFlag(fl)
-	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
+	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
 		return a.fork(ctx, cfg, args[0], *count)
-	})
+	}))
 }
 
 func connectGitHubFlags(fl *flag.FlagSet) runner {
@@ -453,10 +454,9 @@ func secretAddFlags(fl *flag.FlagSet) runner {
 
 func logFlags(fl *flag.FlagSet) runner {
 	n := fl.Int("n", 50, "show the `N` newest entries")
-	jsonFlag(fl)
-	return configured(func(a *app, ctx context.Context, cfg *config, _ []string) int {
+	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, _ []string) int {
 		return a.log(ctx, cfg, *n)
-	})
+	}))
 }
 
 func imageBuildFlags(fl *flag.FlagSet) runner {

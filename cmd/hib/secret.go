@@ -43,6 +43,9 @@ func (a *app) secretLS(ctx context.Context, cfg *config, _ []string) int {
 	if err != nil {
 		return a.failWaiting(ctx, err, "")
 	}
+	if a.json {
+		return a.reply(hibapi.Response{Secrets: r.Secrets}, nil)
+	}
 	hibapi.PrintSecrets(a.stdout, r.Secrets)
 	return 0
 }
@@ -65,6 +68,9 @@ func (a *app) log(ctx context.Context, cfg *config, n int) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--json")
 	if err != nil {
 		return a.failWaiting(ctx, err, "")
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Logs: r.Logs, Corrupt: r.Corrupt}, nil)
 	}
 	if r.Corrupt > 0 {
 		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt audit log line(s)\n", r.Corrupt)

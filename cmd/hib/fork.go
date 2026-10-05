@@ -22,12 +22,15 @@ func (a *app) fork(ctx context.Context, cfg *config, name string, count int) int
 	if err != nil && !errors.As(err, &remote) {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making copies of %s: check hib ls", name))
 	}
+	if err == nil && len(r.Machines) == 0 {
+		err = errors.New("hibd didn't say which copies it made")
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Machines: r.Machines}, err)
+	}
 	hibapi.PrintFork(a.stdout, name, r.Machines)
 	if err != nil {
 		return a.fail(err)
-	}
-	if len(r.Machines) == 0 {
-		return a.fail(errors.New("hibd didn't say which copies it made"))
 	}
 	return 0
 }

@@ -213,7 +213,7 @@ func (a *app) init(ctx context.Context, dir string, o initOptions) int {
 	if added {
 		fmt.Fprintf(a.stdout, "added hib's settings to %s\n", includer)
 	}
-	fmt.Fprintln(a.stdout, "next: hib image build dev; hib new NAME; ssh NAME.hib")
+	fmt.Fprintln(a.stdout, nextAfterInit)
 	return 0
 }
 

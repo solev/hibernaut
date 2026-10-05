@@ -13,6 +13,16 @@ import (
 // shortEscapes are encoding/json's escapes that writeJSON spells as \u escapes instead.
 var shortEscapes = map[byte]byte{'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t'}
 
+func (a *app) reply(r hibapi.Response, err error) int {
+	if err != nil {
+		r.Error = err.Error()
+	}
+	if werr := writeJSON(a.stdout, r); werr != nil || err != nil {
+		return 1
+	}
+	return 0
+}
+
 func writeJSON(w io.Writer, r hibapi.Response) error {
 	r.V = hibapi.Version
 	data, err := json.Marshal(r)
