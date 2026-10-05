@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 // TestSnapshotCleanup checks that once a machine is removed, hibd deletes its snapshots from the
@@ -99,7 +101,7 @@ func cleanUp(t *testing.T, ctx context.Context) {
 	waitFor(t, ctx, "hibd cleanup to run", time.Minute, func() bool {
 		_, err := vm.ssh(ctx, "sudo hibd cleanup")
 		if err != nil && !strings.Contains(err.Error(), "E2B is writing a build") {
-			t.Fatal("hibd cleanup failed")
+			t.Fatalf("hibd cleanup: %s", termsafe.String(err.Error()))
 		}
 		return err == nil
 	})
@@ -115,7 +117,7 @@ func snapshotBuilds(t *testing.T, ctx context.Context, id string) (builds []stri
 		`--filter label=com.docker.compose.project=local-dev --filter label=com.docker.compose.service=postgres)" `+
 		`psql -qAt -U postgres -d postgres -c "`+query+`"`)
 	if err != nil {
-		t.Fatal("reading snapshot builds failed")
+		t.Fatalf("reading snapshot builds: %s", termsafe.String(err.Error()))
 	}
 	builds, done, err = parseSnapshotBuilds(out)
 	if err != nil {
@@ -132,7 +134,7 @@ func snapshotStats(t *testing.T, ctx context.Context, builds []string) snapshotM
 	}
 	out, err := vm.ssh(ctx, command)
 	if err != nil {
-		t.Fatal("reading snapshot files failed")
+		t.Fatalf("reading snapshot files: %s", termsafe.String(err.Error()))
 	}
 	files, err := parseSnapshotFiles(out, builds)
 	if err != nil {
@@ -156,7 +158,7 @@ func buildDirs(t *testing.T, ctx context.Context, builds []string) (dirs int, us
 	}
 	out, err := vm.ssh(ctx, command)
 	if err != nil {
-		t.Fatal("reading snapshot directories failed")
+		t.Fatalf("reading snapshot directories: %s", termsafe.String(err.Error()))
 	}
 	bytes, err := parseBuildDirs(out, builds)
 	if err != nil {
