@@ -82,11 +82,15 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
 
 **Ctrl-C** stops hib waiting, not the host. hib says what may be left behind, then exits 130:
 
-- `new`, `fork`: "stopped waiting. The host may still be making app: check hib ls".
+- `new`: "stopped waiting. The host may still be making app: check hib ls". `fork` says "making
+  copies of app".
 - `image build`: "stopped waiting. The host may still finish building dev: check hib image ls in a
   few minutes". It doesn't suggest building again, which would start a second build.
-- `image save`, `rm` and `pause` say the same for their own work. A wake says the host keeps
-  starting.
+- `image save`, `image rm`, `rm`, `pause`, `secret add` and `secret rm` say the same for their own
+  work. A wake says "stopped waiting. The host keeps starting: check hib status in a few minutes".
+  Commands that only read, such as `ls`, say "stopped waiting".
+- hib goes by the signal it recorded, not by the error it got: the same Ctrl-C may make ssh exit
+  255.
 - `connect` keeps the messages M5 and M7 gave it.
 
 **Text from the host** is untrusted, as before.
@@ -104,8 +108,10 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
   host either. When the host is an Azure VM, hib adds `host` from Azure's answer: asleep is
   `{"v":1,"host":{"state":"asleep","detail":"VM deallocated"}}`, with no `status` and exit 0, and
   awake is `"host":{"state":"running"}` next to hibd's `status`. hibd never sends `host`.
-- A failure is the same object with `error`, exit 1. A fork that fails partway includes the copies
-  it made. `hib status --json` exits 1 when something is failing, as it does without `--json`.
+- A failure is the same object with `error`, exit 1, and hib adds nothing of its own on stderr. A
+  fork that fails partway includes the copies it made. `hib status --json` exits 1 when something
+  is failing, as it does without `--json`. A mistake on the command line is still a mistake: help
+  on stderr, exit 2.
 - The bytes are ASCII: every control character, DEL and non-ASCII character is written as
   `\uXXXX`. Decoded values are exact, and printing the JSON can't affect the terminal.
 - No colour, hints or progress, ever.

@@ -24,7 +24,7 @@ func TestFailedRepliesAreNotTreatedAsSuccess(t *testing.T) {
 		}), true
 	}
 	for _, args := range [][]string{
-		{"new", "web"}, {"ls"}, {"rm", "web"}, {"pause", "web"},
+		{"new", "web"}, {"ls"}, {"rm", "web", "--yes"}, {"pause", "web"},
 		{"image", "build", "dev"}, {"image", "save", "web", "myimg"},
 		{"image", "ls"}, {"image", "rm", "myimg"},
 		{"secret", "add", "key", "-env", "KEY", "-bind", "example.com"},

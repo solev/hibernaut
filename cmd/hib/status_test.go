@@ -198,3 +198,56 @@ func TestStatusRejectsArgumentsSafelyBeforeCheckingHost(t *testing.T) {
 		t.Errorf("invalid status ran host commands: %q", calls)
 	}
 }
+
+func TestStatusSaysWhatsNext(t *testing.T) {
+	none, two := 0, 2
+	github := &hibapi.GitHub{Login: "octocat", Email: "1+octocat@users.noreply.github.com"}
+	codex := &hibapi.Codex{Email: "octo@example.com", Plan: "plus", Health: hibapi.CodexOK}
+	for _, tc := range []struct {
+		name   string
+		status hibapi.Status
+		next   string
+	}{
+		{"fresh host", hibapi.Status{Machines: &none}, "Next: hib connect github, hib connect codex (optional), hib new NAME"},
+		{"older hibd", hibapi.Status{}, "Next: hib connect github, hib connect codex (optional)"},
+		{"no machines yet", hibapi.Status{GitHub: github, Codex: codex, Machines: &none}, "Next: hib new NAME"},
+		{"no Codex", hibapi.Status{GitHub: github, Machines: &two}, "Next: hib connect codex (optional)"},
+		{"all done", hibapi.Status{GitHub: github, Codex: codex, Machines: &two}, ""},
+		{"all done with an older hibd", hibapi.Status{GitHub: github, Codex: codex}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			tc.status.Version, tc.status.E2B = "v-test", hibapi.Health{OK: true}
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				return writeTestResponse(stdout, hibapi.Response{Status: &tc.status}), true
+			}
+			if code := c.hib("status"); code != 0 {
+				t.Fatalf("exit %d: %s", code, c.errOut)
+			}
+			out := c.out.String()
+			health, next, found := strings.Cut(out, "secrets  none\n")
+			if !strings.HasPrefix(health, "host     "+testHost+"\nhibd     v-test\n") {
+				t.Errorf("status output %q is missing the health lines", out)
+			}
+			want := ""
+			if tc.next != "" {
+				want = "\n" + tc.next + "\n"
+			}
+			if !found || next != want {
+				t.Errorf("after the health lines %q, want %q", next, want)
+			}
+		})
+	}
+}
+
+func TestInitPointsAtStatus(t *testing.T) {
+	h := newHost(t)
+	c := newClient(t, h)
+	if code := c.hib("init", "-host", testHost); code != 0 {
+		t.Fatalf("init exit %d: %s", code, c.errOut)
+	}
+	if !strings.HasSuffix(c.out.String(), "\nrun hib status to see what's next\n") {
+		t.Errorf("init output %q doesn't end by pointing at hib status", c.out)
+	}
+}

@@ -69,9 +69,10 @@ func commandTable() *command {
 			},
 			{
 				name: "rm", args: "NAME", opts: "[--yes]",
-				summary:  "delete a machine and its disk for good",
-				about:    "Deletes the machine and its disk. This can't be undone.",
-				examples: []string{"hib rm app"},
+				summary: "delete a machine and its disk for good",
+				about: "Deletes the machine and its disk. This can't be undone, so on a terminal it asks first.\n" +
+					"--yes skips the question. Without a terminal, --yes is needed.",
+				examples: []string{"hib rm app", "hib rm app --yes"},
 				nargs:    1, flags: rmFlags,
 			},
 			{
@@ -93,7 +94,7 @@ func commandTable() *command {
 				name: "ssh", args: "NAME [-- CMD]", summary: "log in to a machine, or run CMD there",
 				about:    "Runs ssh NAME.hib, with CMD if you give one. It wakes the machine if it's paused.",
 				examples: []string{"hib ssh app", "hib ssh app -- uptime"},
-				nargs:    1, takesCommand: true, flags: noFlags(unbuilt),
+				nargs:    1, takesCommand: true, flags: noFlags(configured((*app).sshTo)),
 			},
 			{
 				name: "exec", args: "NAME -- CMD [ARG...]", summary: "run CMD on a machine",
@@ -157,7 +158,7 @@ func commandTable() *command {
 				name: "secret",
 				about: "Stores secrets on the host, bound to the sites that may get them. Machines see a placeholder,\n" +
 					"which the host swaps for the real value only in requests to those sites.",
-				examples: []string{"hib secret add OPENAI --env OPENAI_API_KEY --bind api.openai.com", "hib secret ls"},
+				examples: []string{"hib secret add openai --env OPENAI_API_KEY --bind api.openai.com", "hib secret ls"},
 				subs: []*command{
 					{
 						name: "add", args: "NAME", opts: "--env VAR --bind SITE[,SITE...]",
@@ -165,8 +166,8 @@ func commandTable() *command {
 						about: "Stores a secret, bound to the sites. Machines get a placeholder in VAR. The value comes\n" +
 							"from a hidden prompt or stdin, never from an argument.",
 						examples: []string{
-							"hib secret add OPENAI --env OPENAI_API_KEY --bind api.openai.com",
-							"hib secret add NPM --env NPM_TOKEN --bind registry.npmjs.org < npm-token.txt",
+							"hib secret add openai --env OPENAI_API_KEY --bind api.openai.com",
+							"hib secret add npm --env NPM_TOKEN --bind registry.npmjs.org < npm-token.txt",
 						},
 						nargs: 1, flags: secretAddFlags,
 					},
@@ -179,7 +180,7 @@ func commandTable() *command {
 					{
 						name: "rm", args: "NAME", summary: "remove a bound secret",
 						about:    "Removes the secret from the host. Machines keep its placeholder, which stops working.",
-						examples: []string{"hib secret rm OPENAI"},
+						examples: []string{"hib secret rm openai"},
 						nargs:    1, flags: noFlags(configured((*app).secretRM)),
 					},
 				},
@@ -232,17 +233,17 @@ func commandTable() *command {
 					{
 						name: "bash", summary: "print a bash completion script",
 						about: "Prints a bash completion script.", examples: []string{"source <(hib completion bash)"},
-						flags: noFlags(unbuilt),
+						flags: noFlags(printScript(bashCompletion)),
 					},
 					{
 						name: "zsh", summary: "print a zsh completion script",
 						about: "Prints a zsh completion script.", examples: []string{"source <(hib completion zsh)"},
-						flags: noFlags(unbuilt),
+						flags: noFlags(printScript(zshCompletion)),
 					},
 					{
 						name: "fish", summary: "print a fish completion script",
 						about: "Prints a fish completion script.", examples: []string{"hib completion fish | source"},
-						flags: noFlags(unbuilt),
+						flags: noFlags(printScript(fishCompletion)),
 					},
 				},
 			},
@@ -251,7 +252,7 @@ func commandTable() *command {
 				summary:  "complete a command line",
 				about:    "Prints what completes the last WORD. The completion scripts run it.",
 				examples: []string{"hib __complete new app --size ''"},
-				nargs:    anyArgs, flags: noFlags(unbuilt),
+				nargs:    anyArgs, flags: noFlags(complete),
 			},
 			{
 				name: "bridge", args: "NAME.hib", summary: "connect to a machine's SSH server; ssh runs this for you",
@@ -348,13 +349,16 @@ func noFlags(run runner) func(*flag.FlagSet) runner {
 
 func jsonOnly(run runner) func(*flag.FlagSet) runner {
 	return func(fl *flag.FlagSet) runner {
-		jsonFlag(fl)
-		return run
+		return withJSON(fl, run)
 	}
 }
 
-func jsonFlag(fl *flag.FlagSet) *bool {
-	return fl.Bool("json", false, "print one JSON object instead of text")
+func withJSON(fl *flag.FlagSet, run runner) runner {
+	asJSON := fl.Bool("json", false, "print one JSON object instead of text")
+	return func(ctx context.Context, a *app, args []string) int {
+		a.json = *asJSON
+		return run(ctx, a, args)
+	}
 }
 
 func configured(run func(a *app, ctx context.Context, cfg *config, args []string) int) runner {
@@ -413,23 +417,23 @@ func newFlags(fl *flag.FlagSet) runner {
 	image := fl.String("image", images.Default, "the `image` to make the machine from")
 	size := fl.String("size", "", "small, medium or large (default medium, or the saved image's `size`)")
 	idle := fl.Duration("idle", 0, "pause the machine after this long idle, such as 1h (default 15m, and 0 means never)")
-	jsonFlag(fl)
-	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
+	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
 		return a.newMachine(ctx, cfg, fl, args[0], *image, *size, *idle)
-	})
+	}))
 }
 
 func rmFlags(fl *flag.FlagSet) runner {
-	fl.Bool("yes", false, "delete without asking")
-	return configured((*app).rm)
+	yes := fl.Bool("yes", false, "delete without asking")
+	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
+		return a.rm(ctx, cfg, args[0], *yes)
+	})
 }
 
 func forkFlags(fl *flag.FlagSet) runner {
 	count := fl.Int("count", 1, fmt.Sprintf("make `N` copies, from 1 to %d", machines.MaxCopies))
-	jsonFlag(fl)
-	return configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
+	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, args []string) int {
 		return a.fork(ctx, cfg, args[0], *count)
-	})
+	}))
 }
 
 func connectGitHubFlags(fl *flag.FlagSet) runner {
@@ -450,10 +454,9 @@ func secretAddFlags(fl *flag.FlagSet) runner {
 
 func logFlags(fl *flag.FlagSet) runner {
 	n := fl.Int("n", 50, "show the `N` newest entries")
-	jsonFlag(fl)
-	return configured(func(a *app, ctx context.Context, cfg *config, _ []string) int {
+	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, _ []string) int {
 		return a.log(ctx, cfg, *n)
-	})
+	}))
 }
 
 func imageBuildFlags(fl *flag.FlagSet) runner {

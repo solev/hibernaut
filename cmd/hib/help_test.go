@@ -2,10 +2,12 @@ package main
 
 import (
 	"flag"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/version"
 )
 
@@ -177,5 +179,30 @@ func TestCommandsLoadSettingsAfterTheirFlags(t *testing.T) {
 	}
 	if code := hib("ls", "--bogus"); code != 2 || !strings.HasPrefix(c.errOut.String(), "hib ls: unknown flag --bogus\n") {
 		t.Errorf("ls --bogus without $HOME = %d, stderr %q; want the flag mistake", code, c.errOut)
+	}
+}
+
+func TestExamplesAreNoMistakes(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	c.interactive = true
+	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+		return writeTestResponse(stdout, hibapi.Response{Error: "refused in this test"}), true
+	}
+	for _, cmd := range allCommands(commandTable()) {
+		if path := cmd.path(); strings.HasPrefix(path, "connect") || strings.HasPrefix(path, "disconnect") {
+			continue
+		}
+		for _, example := range cmd.examples {
+			words, ok := strings.CutPrefix(example, "hib ")
+			if !ok {
+				continue
+			}
+			words, _, _ = strings.Cut(words, " <")
+			words, _, _ = strings.Cut(words, " |")
+			if code := c.hib(strings.Fields(words)...); code == 2 || strings.Contains(c.errOut.String(), "\nusage: ") {
+				t.Errorf("example %q is a mistake: exit %d, stderr %q", example, code, c.errOut)
+			}
+		}
 	}
 }

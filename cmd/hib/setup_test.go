@@ -183,7 +183,7 @@ func TestInitRejects(t *testing.T) {
 		{"group without VM", []string{"init", "-host", testHost, "-azure-group", "g"}, 2},
 		{"VM without group", []string{"init", "-host", testHost, "-azure-vm", "v"}, 2},
 		{"bad group", []string{"init", "-host", testHost, "-azure-group", "g;id", "-azure-vm", "v"}, 2},
-		{"missing identity", []string{"init", "-host", testHost, "-identity", "/nonexistent/id"}, 1},
+		{"missing identity", []string{"init", "-host", testHost, "-identity", "/nonexistent/id"}, 2},
 		{"ssh config with a quote", []string{"init", "-host", testHost, "-ssh-config", "/tmp/it's"}, 2},
 		{"ssh config with a percent", []string{"init", "-host", testHost, "-ssh-config", "/tmp/%d"}, 2},
 		{"extra argument", []string{"init", "-host", testHost, "extra"}, 2},
@@ -252,7 +252,7 @@ func TestInitFailsWhenHibdDoesnt(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hib")
-	if _, err := loadConfig(dir); err == nil || !strings.Contains(err.Error(), "run hib init first") {
+	if _, err := loadConfig(dir); err == nil || !strings.Contains(err.Error(), "run hib init --host USER@HOST first") {
 		t.Errorf("no settings: %v", err)
 	}
 	good := &config{Host: testHost, dir: dir}
@@ -460,7 +460,7 @@ func TestUsage(t *testing.T) {
 	if code := c.hib("launch"); code != 2 || !strings.Contains(c.errOut.String(), "unknown command launch") {
 		t.Errorf("unknown command: %d, %q", code, c.errOut)
 	}
-	if code := c.hib("ls"); code != 1 || !strings.Contains(c.errOut.String(), "run hib init first") {
+	if code := c.hib("ls"); code != 1 || !strings.Contains(c.errOut.String(), "run hib init --host USER@HOST first") {
 		t.Errorf("before init: %d, %q", code, c.errOut)
 	}
 	var cfg config

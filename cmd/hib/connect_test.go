@@ -851,8 +851,8 @@ func TestConnectCodexFailures(t *testing.T) {
 	}{
 		{"hibd error", hibapi.Response{Error: "codex login failed: turn on device code login in ChatGPT\x1b[2J"}, false,
 			"hib: codex login failed: turn on device code login in ChatGPT\\x1b[2J\n"},
-		{"missing account", hibapi.Response{}, false, "hib: hibd didn't say which account it connected\n"},
-		{"no sudo", hibapi.Response{}, true, "hib: hibd needs passwordless sudo on the host\n"},
+		{"missing account", hibapi.Response{}, false, "hib: hibd didn't say which account it connected: run hib status to see what's connected\n"},
+		{"no sudo", hibapi.Response{}, true, "hib: hibd needs passwordless sudo on the host: run hib init --host USER@HOST with a user that has it\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)

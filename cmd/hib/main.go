@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -37,18 +38,19 @@ func main() {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go stopOnSignal(signals, cancel)
 	a := &app{
-		stdin:      os.Stdin,
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		getenv:     os.Getenv,
-		ssh:        runCommand("ssh"),
-		gh:         runCommand("gh"),
-		execSSH:    execSSH,
-		az:         runAz,
-		executable: os.Executable,
-		wakePoll:   5 * time.Second,
-		now:        time.Now,
-		colour:     colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		stdin:       os.Stdin,
+		stdout:      os.Stdout,
+		stderr:      os.Stderr,
+		getenv:      os.Getenv,
+		ssh:         runCommand("ssh"),
+		gh:          runCommand("gh"),
+		execSSH:     execSSH,
+		az:          runAz,
+		executable:  os.Executable,
+		wakePoll:    5 * time.Second,
+		now:         time.Now,
+		colour:      colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		interactive: term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd())),
 	}
 	if term.IsTerminal(int(os.Stderr.Fd())) {
 		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
@@ -91,11 +93,14 @@ type app struct {
 	wakePoll       time.Duration
 	now            func() time.Time
 	colour         bool
+	interactive    bool
 	command        *command
 	configFlag     string
+	json           bool
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
+	a.json = false
 	code := a.dispatch(ctx, commandTable(), args)
 	var s stopped
 	if code != 0 && errors.As(context.Cause(ctx), &s) {
@@ -221,10 +226,13 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 	}
 	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making %s: check hib ls", name))
 	}
 	if r.Machine == nil {
-		return a.fail(errors.New("hibd didn't say which machine it made"))
+		return a.fail(errors.New("hibd didn't say which machine it made: run hib ls to see your machines"))
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Machine: r.Machine}, nil)
 	}
 	fmt.Fprintf(a.stdout, "made %s; connect with: ssh %s.hib\n", name, name)
 	return 0
@@ -233,13 +241,17 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "ls", "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	slices.SortFunc(r.Machines, func(x, y hibapi.Machine) int {
 		return strings.Compare(x.Name+"\x00"+x.ID, y.Name+"\x00"+y.ID)
 	})
+	rememberMachines(cfg, r.Machines)
+	if a.json {
+		return a.reply(hibapi.Response{Machines: r.Machines, Room: r.Room}, nil)
+	}
 	now := a.now()
-	tw := hibapi.NewTable(a.stdout, nil)
+	tw := hibapi.NewTable(a.stdout, a.style())
 	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
 	for _, m := range r.Machines {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),
@@ -263,14 +275,14 @@ func roomLine(r hibapi.Room) string {
 			}
 		}
 		if len(fits) == 0 {
-			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", free)
+			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME --yes frees disk.", free)
 		}
 		return fmt.Sprintf("Room for more machines: %s. %s", joinList(fits, "or"), free)
 	}
 	image := safe(r.Image)
 	switch {
 	case r.Fits <= 0:
-		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", image, free)
+		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME --yes frees disk.", image, free)
 	case r.Fits == 1:
 		return fmt.Sprintf("Room for 1 more %s machine: %s", image, free)
 	}
@@ -303,34 +315,71 @@ func safe(s string) string {
 	return termsafe.Line(s)
 }
 
-func (a *app) rm(ctx context.Context, cfg *config, args []string) int {
-	return a.byName(ctx, cfg, "rm", "removed", args[0])
+func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
+	if !a.checkNames(name) {
+		return 2
+	}
+	if !yes {
+		if !a.interactive {
+			return a.mistake(fmt.Sprintf("deleting %s can't be undone, so pass --yes when there's no terminal to ask on", name))
+		}
+		if !a.confirm(ctx, fmt.Sprintf("Delete %s and its disk for good? [y/N] ", name)) {
+			fmt.Fprintf(a.stderr, "kept %s\n", name)
+			return 1
+		}
+	}
+	return a.byName(ctx, cfg, "rm", "deleting", "removed", name)
+}
+
+const maxAnswer = 1024
+
+func (a *app) confirm(ctx context.Context, question string) bool {
+	fmt.Fprint(a.stderr, question)
+	answer := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(io.LimitReader(a.stdin, maxAnswer)).ReadString('\n')
+		answer <- line
+	}()
+	select {
+	case <-ctx.Done():
+	case line := <-answer:
+		if line, ok := strings.CutSuffix(line, "\n"); ok {
+			word := strings.ToLower(strings.TrimSpace(line))
+			return word == "y" || word == "yes"
+		}
+	}
+	fmt.Fprintln(a.stderr)
+	return false
 }
 
 func (a *app) pause(ctx context.Context, cfg *config, args []string) int {
-	return a.byName(ctx, cfg, "pause", "paused", args[0])
+	return a.byName(ctx, cfg, "pause", "pausing", "paused", args[0])
 }
 
-func (a *app) byName(ctx context.Context, cfg *config, cmd, done, name string) int {
+func (a *app) byName(ctx context.Context, cfg *config, cmd, doing, done, name string) int {
 	if !a.checkNames(name) {
 		return 2
 	}
 	if _, err := a.remote(ctx, cfg, shortTimeout, cmd, name, "--json"); err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be %s %s: check hib ls", doing, name))
 	}
 	if cmd == "rm" {
 		if err := cfg.unpin(name); err != nil {
-			return a.fail(err)
+			return a.fail(fmt.Errorf("deleted %s, but couldn't forget its host key: %w. Remove that file yourself", name, err))
 		}
 	}
 	fmt.Fprintf(a.stdout, "%s %s\n", done, name)
 	return 0
 }
 
-func (a *app) exec(_ context.Context, cfg *config, args []string) int {
+func (a *app) exec(ctx context.Context, cfg *config, args []string) int {
 	if len(args) < 3 {
 		return a.mistake("missing CMD")
 	}
+	return a.sshTo(ctx, cfg, args)
+}
+
+func (a *app) sshTo(_ context.Context, cfg *config, args []string) int {
 	if !a.checkNames(args[0]) {
 		return 2
 	}
@@ -339,7 +388,10 @@ func (a *app) exec(_ context.Context, cfg *config, args []string) int {
 		sshArgs = append(sshArgs, "-F", cfg.SSHConfig)
 	}
 	sshArgs = append(sshArgs, "--", args[0]+".hib")
-	if err := a.execSSH(append(sshArgs, args[2:]...)); err != nil {
+	if len(args) > 2 {
+		sshArgs = append(sshArgs, args[2:]...)
+	}
+	if err := a.execSSH(sshArgs); err != nil {
 		return a.fail(err)
 	}
 	return 0
@@ -348,7 +400,7 @@ func (a *app) exec(_ context.Context, cfg *config, args []string) int {
 func execSSH(args []string) error {
 	path, err := exec.LookPath("ssh")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: install OpenSSH 9.6 or later", err)
 	}
 	return syscall.Exec(path, append([]string{"ssh"}, args...), os.Environ())
 }
@@ -363,7 +415,7 @@ func (a *app) imageBuild(ctx context.Context, cfg *config, name string, force bo
 	}
 	r, err := a.remote(ctx, cfg, buildTimeout, remote...)
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still finish building %s: check hib image ls in a few minutes", name))
 	}
 	if len(r.Sizes) == 0 {
 		fmt.Fprintf(a.stdout, "built image %s (template %s)\n", name, safe(r.Template))
@@ -416,6 +468,9 @@ func (a *app) configDir(dir string) (string, error) {
 }
 
 func (a *app) fail(err error) int {
+	if a.json {
+		return a.reply(hibapi.Response{}, err)
+	}
 	fmt.Fprintf(a.stderr, "hib: %s\n", termsafe.String(err.Error()))
 	return 1
 }

@@ -182,11 +182,20 @@ hib new app                # create a machine named app
 hib new tiny --size small  # a small one (or medium, the default, or large)
 hib new big --idle 2h      # one that pauses after 2 idle hours (default 15m; 0 = never)
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
+hib ssh app                # the same as ssh app.hib
+hib ssh app -- uptime      # run uptime there and come back
 hib exec app -- uname -a   # run one command, no interactive shell
 hib ls                     # machines, running and paused, their size, when they pause, room left
 hib pause app              # pause it now; ssh app.hib resumes it
-hib rm app                 # delete it
+hib rm app --yes           # delete it and its disk for good
 ```
+
+`hib rm` asks "Delete app and its disk for good? [y/N]" on a terminal, and only `y` or `yes`
+deletes. `--yes` skips the question. Scripts and anything else without a terminal must pass it.
+
+Ctrl-C stops `hib` waiting, not the host. Work the host has started, such as making, copying,
+pausing or deleting a machine, carries on. `hib` says what may be left behind and how to check
+it, for example "stopped waiting. The host may still be making app: check hib ls", and exits 130.
 
 `hib image build dev` bakes the Hibernaut CA into the image, so machines can trust the host proxy.
 Machines made before that rebuild need to be recreated to trust it.
@@ -209,7 +218,7 @@ regardless (see [Costs and auto-off](#costs-and-auto-off)). `make down` does tha
 Paused ones take only disk. `hib ls` ends with how many more of each size fit, for example
 `Room for more machines: 4 small, 2 medium or 1 large.` Each count is on its own, not a mix. When
 the VM is full, `hib new` and waking a paused machine fail at once with a message naming the
-running machines: `hib pause NAME` frees memory, `hib rm NAME` frees disk. `hib new` with a
+running machines: `hib pause NAME` frees memory, `hib rm NAME --yes` frees disk. `hib new` with a
 built-in image also says which sizes still fit. CPU is shared, so busy machines slow each other
 down but nothing fails.
 
@@ -253,7 +262,7 @@ hib image ls                 # built-in and saved images, their memory and creat
 hib new task --image myimg    # start with everything that was in app
 hib fork app --count 2        # app-1 and app-2. The default is one copy, the most is ten.
 hib ls                       # FROM shows which machine a copy came from
-hib rm task
+hib rm task --yes
 hib image rm myimg
 ```
 
@@ -289,11 +298,11 @@ value on the way out, and turns it back into the placeholder in the response. Se
 else, the placeholder is a meaningless string.
 
 ```bash
-hib secret add OPENAI --env OPENAI_API_KEY --bind api.openai.com  # asks for the value, hidden
+hib secret add openai --env OPENAI_API_KEY --bind api.openai.com  # asks for the value, hidden
 hib secret ls                         # names, variables, sites and placeholders, never values
 ssh app.hib printenv OPENAI_API_KEY   # the placeholder
 hib log                               # each swap: time, machine, site, method, path and secret
-hib secret rm OPENAI
+hib secret rm openai
 ```
 
 - The value comes from stdin or a hidden prompt, never from an argument. The host seals it with
@@ -364,7 +373,8 @@ hib status                     # the host, E2B, GitHub and each secret, without 
 
 `hib status` checks secrets bound to `api.github.com` with GitHub. It can't test other keys, so
 they show as `unchecked`. It exits 1 when E2B is down or a secret is revoked or failing. If the
-host is asleep, it says so and exits 0, without waking it.
+host is asleep, it says so and exits 0, without waking it. A `Next:` line ends it while something
+is left to set up, such as `hib connect github`, or `hib new NAME` when there are no machines.
 
 Machines made before the `dev` image was rebuilt with M4 don't have gh as git's helper. Run
 `hib image build dev` and recreate them. Their git identity is set either way.
@@ -434,6 +444,66 @@ export E2B_SANDBOX_URL=http://localhost:3002
 
 The API key is the fixed development key from E2B's `DEV-LOCAL.md`. It is not a secret. Only
 SSH (port 22) is reachable from the internet.
+
+### Scripts, completion and colour
+
+`--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one JSON
+object on stdout instead of text, and nothing else there. It changes only the output: `hib status
+--json` doesn't wake the host either. hibd's messages still go to stderr.
+
+```bash
+hib ls --json | jq -r '.machines[]?.name'
+```
+
+The fields below are stable. Later releases may add fields, but these keep their names and
+meanings.
+
+| Command     | Fields                                                                          |
+| ----------- | ------------------------------------------------------------------------------- |
+| every one   | `v`, the format's version, 1. `error` when the command failed.                  |
+| `ls`        | `machines`, and `room` on the host.                                             |
+| `new`       | `machine`, the one it made.                                                     |
+| `fork`      | `machines`, the copies. A fork that fails partway still lists the ones it made. |
+| `image ls`  | `images`.                                                                       |
+| `secret ls` | `secrets`.                                                                      |
+| `log`       | `logs`, and `corrupt`, how many lines of the audit log couldn't be read.        |
+| `status`    | `status`, and `host` when the host is an Azure VM.                              |
+
+| Object        | Fields                                                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| machine       | `name`, `id`, `image`, `size`, `forkOf`, `state` (`running` or `paused`), `startedAt`, `endAt` (when it pauses unless it's busy), `idleSeconds` (0 is never) |
+| `room`        | `memoryFreeMB`, `memoryMB`, `diskFreeMB`, `sizes` (each a `size` and how many more `fits`), and `fits` and `image` for the default image                   |
+| image         | `name`, `kind` (`built-in` or `saved`), `memoryMB`, `cpus`, `created`, `built`, `shadowed`                                                                 |
+| secret        | `name`, `env`, `sites`, `placeholder`. Never the value.                                                                                                    |
+| log entry     | `time`, `machine`, `site`, `method`, `path`, `secrets`                                                                                                     |
+| `status`      | `version`, `e2b` (`ok`, `detail`), `github`, `codex`, `secrets` (each a `name`, `sites`, `state` and `detail`), `machines` (how many there are)            |
+| `github`      | `login`, `id`, `name`, `email`, `source`, `scopes`, `scopesKnown`                                                                                          |
+| `codex`       | `email`, `plan`, `accountId`, `health` (`ok`, `dead` or `stuck`), `problem`, `expires`, `lastRefresh`                                                      |
+| `host`        | `state` (`running` or `asleep`), and `detail`, Azure's word for it, such as `VM deallocated`                                                               |
+
+- A field with nothing in it is usually left out: no machines means no `machines`, not an empty
+  list. Times are RFC 3339.
+- An asleep host is `{"v":1,"host":{"state":"asleep","detail":"VM deallocated"}}`, with no
+  `status`, and exit 0. `hib status --json` exits 1 when something is failing, as it does without
+  `--json`.
+- A failure is the same object with `error`, and exit 1. A mistake on the command line still
+  prints help on stderr and exits 2.
+- The output is ASCII. Control and non-ASCII characters are `\uXXXX` escapes, so values decode
+  exactly and printing the JSON can't change the terminal.
+
+**Completion** covers commands, flags, sizes, and the names of your machines and images. The
+names come from what `hib ls` and `hib image ls` last listed, kept in `names.json` in the settings
+directory, so completing never reaches the host. Load it from your shell's startup file:
+
+```bash
+eval "$(hib completion bash)"       # bash, in ~/.bashrc, or ~/.bash_profile on macOS
+source <(hib completion zsh)        # zsh, in ~/.zshrc after compinit
+hib completion fish > ~/.config/fish/completions/hib.fish   # fish, once
+```
+
+**Colour.** On a terminal, `hib ls` shows running machines in green and paused ones in yellow, and
+`hib status` shows ok in green and failing states in red. Set `NO_COLOR=1` to turn colour off.
+It's also off with `TERM=dumb`, when the output isn't a terminal, and with `--json`.
 
 ### Command reference
 

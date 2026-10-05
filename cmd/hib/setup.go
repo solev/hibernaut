@@ -72,12 +72,14 @@ func checkPath(p string) error {
 	return nil
 }
 
+const initAgain = "Run hib init --host USER@HOST to set this laptop up again"
+
 func loadConfig(dir string) (*config, error) {
 	path := filepath.Join(dir, "config.json")
 	for _, p := range []string{dir, path} {
 		if err := checkPrivate(p); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("no settings in %s: run hib init first", dir)
+				return nil, fmt.Errorf("no settings in %s: run hib init --host USER@HOST first", dir)
 			}
 			return nil, err
 		}
@@ -90,10 +92,10 @@ func loadConfig(dir string) (*config, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w. %s", path, err, initAgain)
 	}
 	if err := c.validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w. %s", path, err, initAgain)
 	}
 	c.dir = dir
 	return &c, nil
@@ -109,7 +111,7 @@ func checkPrivate(path string) error {
 		return fmt.Errorf("%s: can't tell its owner", path)
 	}
 	if int(st.Uid) != os.Geteuid() {
-		return fmt.Errorf("%s belongs to uid %d, not you", path, st.Uid)
+		return fmt.Errorf("%s belongs to uid %d, not you: make it yours with chown", path, st.Uid)
 	}
 	if fi.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("others can change %s (%v): run chmod go-w on it", path, fi.Mode().Perm())
@@ -155,7 +157,7 @@ func (a *app) init(ctx context.Context, dir string, o initOptions) int {
 			return a.fail(err)
 		}
 		if _, err := os.Stat(cfg.Identity); err != nil {
-			return a.fail(err)
+			return a.mistake(fmt.Sprintf("can't use --identity: %v", err))
 		}
 	}
 	if (o.group == "") != (o.vm == "") {
@@ -183,12 +185,13 @@ func (a *app) init(ctx context.Context, dir string, o initOptions) int {
 		hib, err = filepath.Abs(hib)
 	}
 	if err != nil {
-		return a.fail(fmt.Errorf("finding hib's own path: %w", err))
+		return a.fail(fmt.Errorf("finding hib's own path: %w. Run hib by its full path", err))
 	}
-	for _, p := range []string{hib, dir} {
-		if err := checkPath(p); err != nil {
-			return a.fail(err)
-		}
+	if err := checkPath(hib); err != nil {
+		return a.fail(fmt.Errorf("%w. Move hib to such a path", err))
+	}
+	if err := checkPath(dir); err != nil {
+		return a.fail(fmt.Errorf("%w. Use --config DIR with such a path", err))
 	}
 	if err := a.checkOpenSSH(ctx); err != nil {
 		return a.fail(err)
@@ -213,9 +216,11 @@ func (a *app) init(ctx context.Context, dir string, o initOptions) int {
 	if added {
 		fmt.Fprintf(a.stdout, "added hib's settings to %s\n", includer)
 	}
-	fmt.Fprintln(a.stdout, "next: hib image build dev; hib new NAME; ssh NAME.hib")
+	fmt.Fprintln(a.stdout, nextAfterInit)
 	return 0
 }
+
+const installOpenSSH = "Install OpenSSH 9.6 or later"
 
 var opensshRE = regexp.MustCompile(`OpenSSH_(\d+)\.(\d+)`)
 
@@ -226,16 +231,16 @@ func (a *app) checkOpenSSH(ctx context.Context) error {
 	var out bytes.Buffer
 	code, err := a.ssh(ctx, []string{"-V"}, nil, &out, &out)
 	if err != nil {
-		return fmt.Errorf("running ssh -V: %w", err)
+		return fmt.Errorf("running ssh -V: %w. %s", err, installOpenSSH)
 	}
 	m := opensshRE.FindStringSubmatch(out.String())
 	if code != 0 || m == nil {
-		return fmt.Errorf("hib needs OpenSSH, but ssh -V says %q", strings.TrimSpace(out.String()))
+		return fmt.Errorf("hib needs OpenSSH, but ssh -V says %q. %s", strings.TrimSpace(out.String()), installOpenSSH)
 	}
 	major, _ := strconv.Atoi(m[1])
 	minor, _ := strconv.Atoi(m[2])
 	if major < 9 || major == 9 && minor < 6 {
-		return fmt.Errorf("hib needs OpenSSH 9.6 or later, which keeps shell commands out of host names (CVE-2023-51385); this is %s.%s", m[1], m[2])
+		return fmt.Errorf("this is OpenSSH %s.%s, but hib needs 9.6 or later, which keeps shell commands out of host names (CVE-2023-51385). %s", m[1], m[2], installOpenSSH)
 	}
 	return nil
 }
