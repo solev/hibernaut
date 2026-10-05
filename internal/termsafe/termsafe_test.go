@@ -18,6 +18,9 @@ func TestString(t *testing.T) {
 		"bad \xff\xfe utf8 \xe2\x82":      `bad \xff\xfe utf8 \xe2\x82`,
 		"lone continuation \x80":          `lone continuation \x80`,
 		"\u00a0 nbsp is printable \u00ff": "\u00a0 nbsp is printable \u00ff",
+		"app\u202egpj.exe":                `app\u202egpj.exe`,
+		"\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069": `\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069`,
+		"\u200d zero width joiner and \u2028 stay":                                 "\u200d zero width joiner and \u2028 stay",
 	} {
 		if got := String(in); got != want {
 			t.Errorf("String(%q) = %q, want %q", in, got, want)
@@ -26,7 +29,7 @@ func TestString(t *testing.T) {
 }
 
 func TestWriterSplitsAnywhere(t *testing.T) {
-	in := "ok 🚀 é 世\x1b[31m red \xff\xe2\x82\xac\x9b end \xf0\x9f"
+	in := "ok 🚀 é 世\x1b[31m red \xff\xe2\x82\xac\x9b \u202e rlo \u2066 end \xf0\x9f"
 	want := String(in)
 	for size := 1; size <= len(in); size++ {
 		var out bytes.Buffer
@@ -101,5 +104,19 @@ func TestWriterNeverPassesEscape(t *testing.T) {
 	w.Flush()
 	if want := `\x1b\x9b\u009b\x07`; out.String() != want {
 		t.Errorf("wrote %q, want %q", out.String(), want)
+	}
+}
+
+func TestLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain text":                 "plain text",
+		"tabs\tand\nlines\r\n":       `tabs\x09and\x0alines\x0d\x0a`,
+		"\x1b[31mred\x1b[0m \x1b[2J": `red \x1b[2J`,
+		"name\u202e and \u009b \xff": `name\u202e and \u009b \xff`,
+		"héllo, 世界 🚀":                "héllo, 世界 🚀",
+	} {
+		if got := Line(in); got != want {
+			t.Errorf("Line(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
