@@ -805,6 +805,7 @@ func (a *App) parseAny(fl *flag.FlagSet, args []string) ([]string, bool) {
 }
 
 func (a *App) fail(asJSON bool, cmd string, err error) int {
+	err = withNextStep(cmd, err)
 	msg := termsafe.String(err.Error())
 	if asJSON {
 		a.reply(hibapi.Response{Error: msg})
