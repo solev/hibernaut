@@ -6,7 +6,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
 	"time"
 )
@@ -110,6 +109,18 @@ type BuildStep struct {
 	User string
 }
 
+// LogEntry is one build log entry, with the engine's timestamp and phase metadata.
+type LogEntry struct {
+	// Time is when the engine logged the entry.
+	Time time.Time
+	// Level is the engine's log level, such as info or error.
+	Level string
+	// Step is the phase's name or its step number. Empty means no phase.
+	Step string
+	// Message is the full, unescaped log text.
+	Message string
+}
+
 // TemplateInfo is a template machines can be created from, built or saved.
 type TemplateInfo struct {
 	ID string
@@ -167,9 +178,11 @@ type Engine interface {
 	// machine, and makes sure a running one runs for at least timeout more. ctx bounds only the
 	// dial: the connection lasts until it's closed.
 	DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error)
-	// BuildTemplate builds spec, or rebuilds the template of that name, copying build logs to
-	// logs as they arrive. It returns the template's ID once machines can be created from it.
-	BuildTemplate(ctx context.Context, spec TemplateSpec, logs io.Writer) (string, error)
+	// BuildTemplate builds spec, or rebuilds the template of that name, calling logs synchronously with each
+	// complete entry as it arrives. A nil callback ignores logs. Entries keep their full message,
+	// time, level and step. It drains finished builds' log pages before returning the template's
+	// ID or the failure.
+	BuildTemplate(ctx context.Context, spec TemplateSpec, logs func(LogEntry)) (string, error)
 	// SaveTemplate saves running machine id, memory included, as template alias, which machines
 	// can then be created from with only the metadata their own CreateOptions give them. The
 	// machine keeps running. Saving to an alias that exists adds a build to that template. It

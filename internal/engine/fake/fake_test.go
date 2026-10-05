@@ -36,6 +36,32 @@ func TestContract(t *testing.T) {
 	}
 }
 
+func TestBuildReportsLogsBeforeFailure(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	want := engine.LogEntry{Time: at, Level: "error", Step: "1", Message: "command output"}
+	e := fake.New(fake.WithBuildLogs(func(_ context.Context, _ engine.TemplateSpec, emit func(engine.LogEntry)) error {
+		emit(want)
+		return errors.New("exit status 1")
+	}))
+	var got []engine.LogEntry
+	_, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "dev", FromImage: "ubuntu:24.04"},
+		func(entry engine.LogEntry) { got = append(got, entry) })
+	if err == nil || err.Error() != "exit status 1" || len(got) != 1 || got[0] != want || len(e.Built()) != 0 {
+		t.Fatalf("build = %v, logs %+v, built %+v", err, got, e.Built())
+	}
+}
+
+func TestBuildIgnoresLogsWhenCallbackIsNil(t *testing.T) {
+	e := fake.New(fake.WithBuildLogs(func(_ context.Context, _ engine.TemplateSpec, emit func(engine.LogEntry)) error {
+		emit(engine.LogEntry{Level: "info", Message: "build output"})
+		return nil
+	}))
+	id, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "dev", FromImage: "ubuntu:24.04"}, nil)
+	if err != nil || id != "tmpl-dev" || len(e.Built()) != 1 {
+		t.Fatalf("build = %q, %v, built %+v", id, err, e.Built())
+	}
+}
+
 func TestKillRemovesHome(t *testing.T) {
 	root := t.TempDir()
 	e := fake.New(fake.WithLocalExec(root))

@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -400,12 +399,9 @@ func (c chunkedConn) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs io.Writer) (string, error) {
+func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs func(engine.LogEntry)) (string, error) {
 	if spec.Name == "" || spec.FromImage == "" {
 		return "", errors.New("build template: Name and FromImage are required")
-	}
-	if logs == nil {
-		logs = io.Discard
 	}
 	req := e2bapi.TemplateBuildRequestV3{Name: &spec.Name}
 	if spec.CPUs > 0 {
@@ -462,7 +458,9 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 		}
 		info := st.JSON200
 		for _, l := range info.LogEntries {
-			fmt.Fprintln(logs, elide(l.Message))
+			if logs != nil {
+				logs(engine.LogEntry{Time: l.Timestamp, Level: string(l.Level), Step: value(l.Step), Message: l.Message})
+			}
 		}
 		offset += int32(len(info.LogEntries))
 		done := info.Status == e2bapi.TemplateBuildStatusReady || info.Status == e2bapi.TemplateBuildStatusError
@@ -482,6 +480,13 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 		case <-time.After(BuildPollInterval):
 		}
 	}
+}
+
+func value(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func buildError(name string, r *e2bapi.BuildStatusReason) error {

@@ -34,7 +34,7 @@ func (t machineScanTarget) api() hibapi.LeakScanTarget {
 }
 
 func (t machineScanTarget) resolve(ctx context.Context, e engine.Engine, query scanpkg.Query) (hibapi.LeakScanTarget, string, error) {
-	m, err := findLeakscanMachine(ctx, e, t.name)
+	m, err := machines.Lookup(ctx, e, t.name)
 	if err != nil {
 		return hibapi.LeakScanTarget{}, "", err
 	}
@@ -313,30 +313,6 @@ func (a *App) loadLeakscanSecrets(cfg config) ([]scanpkg.Secret, error) {
 		secrets = append(secrets, scanpkg.Secret{Name: old.Name, Value: old.Value})
 	}
 	return secrets, nil
-}
-
-func findLeakscanMachine(ctx context.Context, e engine.Engine, name string) (engine.Machine, error) {
-	if err := hibapi.CheckName(name); err != nil {
-		return engine.Machine{}, err
-	}
-	ms, err := e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running, engine.Paused}})
-	if err != nil {
-		return engine.Machine{}, err
-	}
-	var found []engine.Machine
-	for _, m := range ms {
-		if machines.Name(m) == name {
-			found = append(found, m)
-		}
-	}
-	switch len(found) {
-	case 0:
-		return engine.Machine{}, fmt.Errorf("no machine called %q", name)
-	case 1:
-		return found[0], nil
-	default:
-		return engine.Machine{}, fmt.Errorf("more than one machine called %q", name)
-	}
 }
 
 func (a *App) needRoot(command string) error {

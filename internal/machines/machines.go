@@ -193,7 +193,7 @@ func (m *Manager) CreateSize(ctx context.Context, name, image string, size image
 		return hibapi.Machine{}, err
 	}
 	defer unlock()
-	switch _, err := m.lookup(ctx, name); {
+	switch _, err := lookupExact(ctx, m.e, name); {
 	case err == nil:
 		return hibapi.Machine{}, fmt.Errorf("%w called %q", ErrExists, name)
 	case !errors.Is(err, ErrNoMachine):
@@ -524,30 +524,7 @@ func Renew(ctx context.Context, e engine.Engine, em engine.Machine, timeout time
 }
 
 func (m *Manager) lookup(ctx context.Context, name string) (engine.Machine, error) {
-	if err := hibapi.CheckName(name); err != nil {
-		return engine.Machine{}, err
-	}
-	ems, err := m.e.List(ctx, engine.ListOptions{Metadata: map[string]string{labelName: name}})
-	if err != nil {
-		return engine.Machine{}, safeError(err)
-	}
-	var found []engine.Machine
-	for _, em := range ems {
-		if em.Metadata[labelName] == name {
-			found = append(found, em)
-		}
-	}
-	switch len(found) {
-	case 0:
-		return engine.Machine{}, fmt.Errorf("%w called %q", ErrNoMachine, name)
-	case 1:
-		return found[0], nil
-	}
-	ids := make([]string, len(found))
-	for i, em := range found {
-		ids[i] = termsafe.String(em.ID)
-	}
-	return engine.Machine{}, fmt.Errorf("%d machines are called %q (%s)", len(found), name, strings.Join(ids, ", "))
+	return Lookup(ctx, m.e, name)
 }
 
 func (m *Manager) initMachine(ctx context.Context, id string, keys []byte) (ssh.PublicKey, error) {
