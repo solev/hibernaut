@@ -3,8 +3,12 @@
 package e2e
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/solev/hibernaut/internal/engine"
 )
 
 const (
@@ -76,5 +80,70 @@ func TestSentinelMismatches(t *testing.T) {
 		got[0] != "the memory sentinel's SHA-256 is "+diskSum+", want "+memorySum ||
 		got[1] != "the disk sentinel's SHA-256 is "+memorySum+", want "+diskSum {
 		t.Errorf("mismatches = %q, want both sentinels with both sums", got)
+	}
+}
+
+type sentinelLog struct {
+	fatal  string
+	errors []string
+}
+
+func (*sentinelLog) Helper() {}
+
+func (l *sentinelLog) Fatalf(format string, args ...any) {
+	l.fatal = fmt.Sprintf(format, args...)
+}
+
+func (l *sentinelLog) Errorf(format string, args ...any) {
+	l.errors = append(l.errors, fmt.Sprintf(format, args...))
+}
+
+func TestCleanupSentinelReadErrorEscapesEngineMessage(t *testing.T) {
+	var log sentinelLog
+	checkSentinelResult(&log, "e2e-machine", engine.ExecResult{}, errors.New("E2B: \x1b]52;c;ZXZpbA==\x07"), sentinelSums{})
+	want := `reading the sentinels in e2e-machine: E2B: \x1b]52;c;ZXZpbA==\x07`
+	if log.fatal != want || len(log.errors) != 0 {
+		t.Fatalf("fatal = %q, errors = %q, want %q", log.fatal, log.errors, want)
+	}
+}
+
+func TestCleanupSentinelResultReportsFailuresAndMatches(t *testing.T) {
+	want := sentinelSums{Memory: memorySum, Disk: diskSum}
+	for _, tc := range []struct {
+		name   string
+		result engine.ExecResult
+		fatal  string
+		errors []string
+	}{
+		{
+			name:   "command failed",
+			result: engine.ExecResult{ExitCode: 1, Stderr: []byte("\x1b]52;c;ZXZpbA==\x07")},
+			fatal:  `reading the sentinels in e2e-machine exited 1: \x1b]52;c;ZXZpbA==\x07`,
+		},
+		{
+			name:   "invalid sums",
+			result: engine.ExecResult{Stdout: []byte("\x1b]52;c;ZXZpbA==\x07")},
+			fatal:  "reading the sentinels in e2e-machine: sentinel sums must be 2 lines, got 1",
+		},
+		{
+			name:   "matching",
+			result: engine.ExecResult{Stdout: []byte(memorySum + "  " + memorySentinel + "\n" + diskSum + "  " + diskSentinel + "\n")},
+		},
+		{
+			name:   "mismatch",
+			result: engine.ExecResult{Stdout: []byte(diskSum + "  " + memorySentinel + "\n" + memorySum + "  " + diskSentinel + "\n")},
+			errors: []string{
+				"in e2e-machine, the memory sentinel's SHA-256 is " + diskSum + ", want " + memorySum,
+				"in e2e-machine, the disk sentinel's SHA-256 is " + memorySum + ", want " + diskSum,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var log sentinelLog
+			checkSentinelResult(&log, "e2e-machine", tc.result, nil, want)
+			if log.fatal != tc.fatal || strings.Join(log.errors, "\n") != strings.Join(tc.errors, "\n") {
+				t.Fatalf("fatal = %q, errors = %q, want %q, %q", log.fatal, log.errors, tc.fatal, tc.errors)
+			}
+		})
 	}
 }

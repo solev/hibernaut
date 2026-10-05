@@ -197,13 +197,13 @@ func TestTrim(t *testing.T) {
 			fresh, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			if err := vm.openTunnel(fresh); err != nil {
-				t.Logf("reopening the tunnel to clean up: %v", err)
+				t.Logf("reopening the tunnel to clean up: %s", termsafe.String(err.Error()))
 			}
 		}
 	})
 	if vm.engine == nil {
 		if err := vm.openTunnel(setup); err != nil {
-			t.Fatal(err)
+			t.Fatal(termsafe.String(err.Error()))
 		}
 	}
 	holdHostSession(t)
@@ -298,19 +298,7 @@ func checkSentinels(t *testing.T, ctx context.Context, name string, want sentine
 	res, err := vm.engine.Exec(ctx, machineID(t, ctx, name), engine.ExecRequest{
 		Cmd: "sh", Args: []string{"-c", readSentinelsCommand}, User: "root",
 	})
-	if err != nil {
-		t.Fatalf("reading the sentinels in %s: %v", name, err)
-	}
-	if res.ExitCode != 0 {
-		t.Fatalf("reading the sentinels in %s exited %d: %s", name, res.ExitCode, termsafe.String(string(res.Stderr)))
-	}
-	got, err := parseSentinelSums(string(res.Stdout))
-	if err != nil {
-		t.Fatalf("reading the sentinels in %s: %v", name, err)
-	}
-	for _, problem := range got.mismatches(want) {
-		t.Errorf("in %s, %s", name, problem)
-	}
+	checkSentinelResult(t, name, res, err, want)
 }
 
 func readStorage(ctx context.Context, builds []string) (storageRecord, error) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const startCounter = `setsid nohup sh -c 'i=0; while :; do i=$((i+1)); echo $i > /tmp/counter; sleep 1; done' </dev/null >/dev/null 2>&1 & echo $!`
@@ -77,10 +78,10 @@ func restartHost(t *testing.T, ctx context.Context, restart func(t *testing.T, c
 	vm.closeTunnel()
 	restart(t, ctx)
 	if out, err := vm.ssh(ctx, "hibernaut/vm/wait-e2b.sh 2>&1"); err != nil {
-		t.Fatalf("E2B didn't come up on its own: %v\n%s", err, out)
+		t.Fatalf("E2B didn't come up on its own: %s\n%s", termsafe.String(err.Error()), termsafe.String(out))
 	}
 	if err := vm.openTunnel(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatal(termsafe.String(err.Error()))
 	}
 }
 

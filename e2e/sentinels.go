@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const (
@@ -49,4 +52,30 @@ func (s sentinelSums) mismatches(want sentinelSums) []string {
 		problems = append(problems, fmt.Sprintf("the disk sentinel's SHA-256 is %s, want %s", s.Disk, want.Disk))
 	}
 	return problems
+}
+
+type sentinelReporter interface {
+	Helper()
+	Fatalf(string, ...any)
+	Errorf(string, ...any)
+}
+
+func checkSentinelResult(t sentinelReporter, name string, res engine.ExecResult, err error, want sentinelSums) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("reading the sentinels in %s: %s", name, termsafe.String(err.Error()))
+		return
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("reading the sentinels in %s exited %d: %s", name, res.ExitCode, termsafe.String(string(res.Stderr)))
+		return
+	}
+	got, err := parseSentinelSums(string(res.Stdout))
+	if err != nil {
+		t.Fatalf("reading the sentinels in %s: %v", name, err)
+		return
+	}
+	for _, problem := range got.mismatches(want) {
+		t.Errorf("in %s, %s", name, problem)
+	}
 }
