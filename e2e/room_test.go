@@ -43,7 +43,7 @@ func TestHostFull(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		runHib(ctx, "rm", extra)
+		runHib(ctx, "rm", extra, "--yes")
 	})
 	wantNoRoom(t, ctx, "hib new", extra, running, func(ctx context.Context) (bool, string) {
 		_, stderr, code := runHib(ctx, "new", extra)

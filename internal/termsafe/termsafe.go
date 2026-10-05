@@ -12,9 +12,16 @@ import (
 const maxColour = 64
 
 // String returns s with colour sequences dropped, and with control characters other than tab,
-// newline and carriage return, and bytes that aren't UTF-8, written as Go escapes such as \x1b.
+// newline and carriage return, bidi controls, and bytes that aren't UTF-8, written as Go escapes
+// such as \x1b and \u202e. Bidi controls could reorder what's shown around s.
 func String(s string) string {
-	return string(appendSafe(nil, []byte(s)))
+	return string(appendSafe(nil, []byte(s), false))
+}
+
+// Line returns s escaped as String does, with tab, newline and carriage return escaped too, so
+// s stays on one line and in its column.
+func Line(s string) string {
+	return string(appendSafe(nil, []byte(s), true))
 }
 
 // Writer escapes what's written to it as String does, and writes the result on. Call Flush
@@ -43,7 +50,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 		n = min(n, i)
 	}
 	w.pending = append([]byte(nil), data[n:]...)
-	if _, err := w.w.Write(appendSafe(nil, data[:n])); err != nil {
+	if _, err := w.w.Write(appendSafe(nil, data[:n], false)); err != nil {
 		return 0, err
 	}
 	return len(p), nil
@@ -54,12 +61,12 @@ func (w *Writer) Flush() error {
 	if len(w.pending) == 0 {
 		return nil
 	}
-	_, err := w.w.Write(appendSafe(nil, w.pending))
+	_, err := w.w.Write(appendSafe(nil, w.pending, false))
 	w.pending = nil
 	return err
 }
 
-func appendSafe(dst, p []byte) []byte {
+func appendSafe(dst, p []byte, line bool) []byte {
 	for len(p) > 0 {
 		if n := colourLen(p); n > 0 {
 			p = p[n:]
@@ -69,11 +76,11 @@ func appendSafe(dst, p []byte) []byte {
 		switch {
 		case r == utf8.RuneError && size == 1:
 			dst = fmt.Appendf(dst, `\x%02x`, p[0])
-		case r == '\t' || r == '\n' || r == '\r':
+		case !line && (r == '\t' || r == '\n' || r == '\r'):
 			dst = append(dst, p[:size]...)
 		case r < 0x20 || r == 0x7f:
 			dst = fmt.Appendf(dst, `\x%02x`, r)
-		case r >= 0x80 && r < 0xa0: // C1 controls, such as CSI
+		case isC1(r), isBidi(r):
 			dst = fmt.Appendf(dst, `\u%04x`, r)
 		default:
 			dst = append(dst, p[:size]...)
@@ -81,6 +88,14 @@ func appendSafe(dst, p []byte) []byte {
 		p = p[size:]
 	}
 	return dst
+}
+
+func isC1(r rune) bool {
+	return r >= 0x80 && r < 0xa0
+}
+
+func isBidi(r rune) bool {
+	return r == 0x061c || r == 0x200e || r == 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
 }
 
 func colourLen(p []byte) int {

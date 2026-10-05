@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -16,7 +17,6 @@ import (
 	"slices"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"golang.org/x/term"
@@ -24,38 +24,7 @@ import (
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
-	"github.com/solev/hibernaut/internal/version"
 )
-
-const usage = `usage: hib [-config DIR] <command> [flags]
-
-commands:
-  init              set this laptop up (-host USER@HOST; see hib init -h)
-  new NAME          make a machine (-image, default ` + images.Default + `; --size small, medium or large,
-                    default medium; -idle, default 15m); then: ssh NAME.hib
-  ls                list machines, and when each pauses unless it's busy
-  rm NAME           delete a machine for good
-  pause NAME        pause a machine; connecting wakes it
-  fork MACHINE      copy a machine (-count, default 1, most 10)
-  connect github    open a browser to approve your GitHub login (--from-gh or --token instead)
-  connect codex     give machines your Codex login on a ChatGPT plan, with a device code
-  status            show the health of the host, E2B, each secret and the Codex login; never
-                    wakes the host
-  secret add NAME   store a bound secret (-env VAR -bind SITE[,SITE...])
-  secret ls         list bound secrets
-  secret rm NAME    remove a bound secret
-  log               show secret swap audit entries (-n, default 50)
-  exec NAME -- CMD  run CMD on a machine, as ssh NAME.hib -- CMD does
-  image build NAME  build an image on the host, in every size (-force rebuilds every step)
-  image save MACHINE NAME
-                    save a machine as an image, memory included
-  image ls          list built-in and saved images
-  image rm NAME     remove a saved image not used by any machine
-  bridge NAME.hib   connect to a machine's SSH server; ssh runs this for you
-  version           print the version
-
--config defaults to ~/.config/hibernaut.
-`
 
 const (
 	shortTimeout = 2 * time.Minute
@@ -64,25 +33,55 @@ const (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go stopOnSignal(signals, cancel)
+	stderrTerminal := term.IsTerminal(int(os.Stderr.Fd()))
 	a := &app{
-		stdin:      os.Stdin,
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		getenv:     os.Getenv,
-		ssh:        runCommand("ssh"),
-		gh:         runCommand("gh"),
-		execSSH:    execSSH,
-		az:         runAz,
-		executable: os.Executable,
-		wakePoll:   5 * time.Second,
-		now:        time.Now,
+		stdin:          os.Stdin,
+		stdout:         os.Stdout,
+		stderr:         os.Stderr,
+		getenv:         os.Getenv,
+		ssh:            runCommand("ssh"),
+		gh:             runCommand("gh"),
+		execSSH:        execSSH,
+		az:             runAz,
+		executable:     os.Executable,
+		wakePoll:       5 * time.Second,
+		azLimit:        shortTimeout,
+		liveAfter:      liveAfter,
+		now:            time.Now,
+		colour:         colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		interactive:    term.IsTerminal(int(os.Stdin.Fd())) && stderrTerminal,
+		stderrTerminal: stderrTerminal,
 	}
-	if term.IsTerminal(int(os.Stderr.Fd())) {
+	if stderrTerminal {
 		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
+		a.stderrSize = func() (int, int, error) { return term.GetSize(int(os.Stderr.Fd())) }
+		a.resizes = watchResizes
 	}
 	os.Exit(a.run(ctx, os.Args[1:]))
+}
+
+// stopped is the cause hib's context is cancelled with, since a cancelled context can't tell
+// which signal arrived.
+type stopped struct {
+	signal syscall.Signal
+}
+
+func (s stopped) Error() string {
+	return "stopped by " + s.signal.String()
+}
+
+func stopOnSignal(signals <-chan os.Signal, cancel context.CancelCauseFunc) {
+	if sig, ok := (<-signals).(syscall.Signal); ok {
+		cancel(stopped{sig})
+	}
+}
+
+func colourOn(terminal bool, getenv func(string) string) bool {
+	return terminal && getenv("TERM") != "dumb" && getenv("NO_COLOR") == ""
 }
 
 type runFunc func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (code int, err error)
@@ -98,134 +97,178 @@ type app struct {
 	az             func(ctx context.Context, args ...string) ([]byte, error)
 	executable     func() (string, error)
 	wakePoll       time.Duration
+	azLimit        time.Duration
+	liveAfter      time.Duration
+	stderrTerminal bool
+	stderrSize     func() (width, height int, err error)
+	resizes        func() (<-chan os.Signal, func())
+	live           *live
 	now            func() time.Time
+	colour         bool
+	interactive    bool
+	command        *command
+	configFlag     string
+	json           bool
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
-	fl := a.flags("hib")
-	dir := fl.String("config", "", "settings directory (default ~/.config/hibernaut)")
-	fl.Usage = func() { fmt.Fprint(a.stderr, usage) }
-	if err := fl.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
+	a.json = false
+	code := a.dispatch(ctx, commandTable(), args)
+	var s stopped
+	if code != 0 && errors.As(context.Cause(ctx), &s) {
+		return 128 + int(s.signal)
 	}
-	if fl.NArg() == 0 {
-		fmt.Fprint(a.stderr, usage)
-		return 2
-	}
-	cmd, args := fl.Arg(0), fl.Args()[1:]
-	switch cmd {
-	case "version":
-		fmt.Fprintln(a.stdout, "hib", version.Version)
-		return 0
-	case "help":
-		fmt.Fprint(a.stdout, usage)
-		return 0
-	case "init", "new", "ls", "rm", "pause", "fork", "exec", "image", "bridge", "secret", "log", "connect", "status":
-	default:
-		fmt.Fprintf(a.stderr, "hib: unknown command %q\n\n%s", cmd, usage)
-		return 2
-	}
-	cfgDir, err := a.configDir(*dir)
-	if err != nil {
-		return a.fail(err)
-	}
-	if cmd == "init" {
-		return a.init(ctx, cfgDir, args)
-	}
-	if slices.Contains(args, "-h") || slices.Contains(args, "-help") || slices.Contains(args, "--help") {
-		switch {
-		case cmd == "fork":
-			return a.fork(ctx, nil, args)
-		case cmd == "image" && len(args) > 0 && args[0] == "save":
-			return a.imageSave(ctx, nil, args[1:])
-		}
-	}
-	cfg, err := loadConfig(cfgDir)
-	if err != nil {
-		return a.fail(err)
-	}
-	switch cmd {
-	case "new":
-		return a.newMachine(ctx, cfg, args)
-	case "ls":
-		return a.ls(ctx, cfg, args)
-	case "rm":
-		return a.byName(ctx, cfg, "rm", "removed", args)
-	case "pause":
-		return a.byName(ctx, cfg, "pause", "paused", args)
-	case "fork":
-		return a.fork(ctx, cfg, args)
-	case "secret":
-		return a.secret(ctx, cfg, args)
-	case "connect":
-		return a.connect(ctx, cfg, args)
-	case "status":
-		return a.status(ctx, cfg, args)
-	case "log":
-		return a.log(ctx, cfg, args)
-	case "exec":
-		return a.exec(cfg, args)
-	case "image":
-		return a.image(ctx, cfg, args)
-	}
-	return a.bridgeCmd(ctx, cfg, args)
+	return code
 }
 
-func (a *app) newMachine(ctx context.Context, cfg *config, args []string) int {
-	fl := a.flags("new")
-	image := fl.String("image", images.Default, "the image to make the machine from")
-	size := fl.String("size", "", "the machine's size: small, medium or large (default medium, or a saved image's size)")
-	idle := fl.Duration("idle", 0, "pause the machine once it has been idle this long, e.g. 1h (default 15m; 0 means never)")
-	names, ok := a.parse(fl, args, 1, "new NAME [-image IMAGE] [--size SIZE] [-idle 15m]")
-	if !ok || !a.checkNames(names[0], *image) {
+func (a *app) dispatch(ctx context.Context, c *command, args []string) int {
+	a.command = c
+	if c.guard != nil {
+		if err := c.guard(args); err != nil {
+			return a.mistake(err.Error())
+		}
+	}
+	switch {
+	case c.parent == nil:
+		fl := quietFlags(c.name)
+		run := c.flags(fl)
+		if err := fl.Parse(args); err != nil {
+			return a.parseFailed(err)
+		}
+		return run(ctx, a, fl.Args())
+	case c.subs != nil:
+		return a.runGroup(ctx, c, args)
+	}
+	return a.runLeaf(ctx, c, args)
+}
+
+func (a *app) runGroup(ctx context.Context, c *command, args []string) int {
+	i := slices.IndexFunc(args, func(arg string) bool { return !strings.HasPrefix(arg, "-") })
+	if i < 0 {
+		if slices.ContainsFunc(args, isHelpFlag) {
+			printHelp(a.stdout, c)
+			return 0
+		}
+		printHelp(a.stderr, c)
 		return 2
 	}
-	words := []string{"new", names[0], "--image", *image}
+	return a.runSub(ctx, c, args[i], slices.Concat(args[:i], args[i+1:]))
+}
 
+func (a *app) runSub(ctx context.Context, c *command, name string, args []string) int {
+	sub := c.sub(name)
+	if sub == nil {
+		return a.mistake(unknownCommand(name, c))
+	}
+	return a.dispatch(ctx, sub, args)
+}
+
+func (a *app) runLeaf(ctx context.Context, c *command, args []string) int {
+	var remote []string
+	if i := slices.Index(args, "--"); c.takesCommand && i >= 0 {
+		args, remote = args[:i], args[i:]
+	}
+	fl := quietFlags(c.path())
+	run := c.flags(fl)
+	if c.raw {
+		return run(ctx, a, args)
+	}
+	positional, err := parseAnywhere(fl, args)
+	if err != nil {
+		return a.parseFailed(err)
+	}
+	switch {
+	case c.nargs == anyArgs:
+	case len(positional) > c.nargs:
+		return a.mistake("unexpected argument " + positional[c.nargs])
+	case len(positional) < c.nargs:
+		return a.mistake("missing " + strings.Fields(c.args)[len(positional)])
+	}
+	return run(ctx, a, append(positional, remote...))
+}
+
+func (a *app) parseFailed(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		printHelp(a.stdout, a.command)
+		return 0
+	}
+	return a.mistake(flagMessage(err))
+}
+
+// parseAnywhere reads flags after positional arguments too, where Go's flag package stops.
+func parseAnywhere(fl *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fl.Parse(args); err != nil {
+			return nil, err
+		}
+		if fl.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fl.Arg(0))
+		args = fl.Args()[1:]
+	}
+}
+
+func (a *app) settings() (*config, error) {
+	dir, err := a.configDir(a.configFlag)
+	if err != nil {
+		return nil, err
+	}
+	return loadConfig(dir)
+}
+
+func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, name, image, size string, idle time.Duration) int {
+	if !a.checkNames(name, image) {
+		return 2
+	}
+	words := []string{"new", name, "--image", image}
 	var badSize error
 	fl.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "size":
-			_, badSize = images.SizeNamed(*size)
-			words = append(words, "--size", *size)
+			_, badSize = images.SizeNamed(size)
+			words = append(words, "--size", size)
 		case "idle":
 			words = append(words, "--idle", idle.String())
 		}
 	})
 	if badSize != nil {
-		fmt.Fprintln(a.stderr, "hib:", termsafe.String(badSize.Error()))
-		return 2
+		return a.mistake(badSize.Error())
 	}
+	stopLive := a.showLive(ctx, "making "+name)
 	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
+	stopLive()
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making %s: check hib ls", name))
 	}
 	if r.Machine == nil {
-		return a.fail(errors.New("hibd didn't say which machine it made"))
+		return a.fail(errors.New("hibd didn't say which machine it made: run hib ls to see your machines"))
 	}
-	fmt.Fprintf(a.stdout, "made %s; connect with: ssh %s.hib\n", names[0], names[0])
+	if a.json {
+		return a.reply(hibapi.Response{Machine: r.Machine}, nil)
+	}
+	fmt.Fprintf(a.stdout, "made %s; connect with: ssh %s.hib\n", name, name)
 	return 0
 }
 
-func (a *app) ls(ctx context.Context, cfg *config, args []string) int {
-	if _, ok := a.parse(a.flags("ls"), args, 0, "ls"); !ok {
-		return 2
-	}
+func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "ls", "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	slices.SortFunc(r.Machines, func(x, y hibapi.Machine) int {
 		return strings.Compare(x.Name+"\x00"+x.ID, y.Name+"\x00"+y.ID)
 	})
+	rememberMachines(cfg, r.Machines)
+	if a.json {
+		return a.reply(hibapi.Response{Machines: r.Machines, Room: r.Room}, nil)
+	}
 	now := a.now()
-	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
+	tw := hibapi.NewTable(a.stdout, a.style())
 	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
 	for _, m := range r.Machines {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), safe(m.State), safe(m.Image), safe(m.Size),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),
 			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID), safe(m.ForkOf))
 	}
 	tw.Flush()
@@ -246,14 +289,14 @@ func roomLine(r hibapi.Room) string {
 			}
 		}
 		if len(fits) == 0 {
-			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", free)
+			return fmt.Sprintf("No room for another machine: %s hib pause NAME frees memory, hib rm NAME --yes frees disk.", free)
 		}
 		return fmt.Sprintf("Room for more machines: %s. %s", joinList(fits, "or"), free)
 	}
 	image := safe(r.Image)
 	switch {
 	case r.Fits <= 0:
-		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME frees disk.", image, free)
+		return fmt.Sprintf("No room for another %s machine: %s hib pause NAME frees memory, hib rm NAME --yes frees disk.", image, free)
 	case r.Fits == 1:
 		return fmt.Sprintf("Room for 1 more %s machine: %s", image, free)
 	}
@@ -283,31 +326,74 @@ func safe(s string) string {
 	if s == "" {
 		return "-"
 	}
-	return termsafe.String(s)
+	return termsafe.Line(s)
 }
 
-func (a *app) byName(ctx context.Context, cfg *config, cmd, done string, args []string) int {
-	names, ok := a.parse(a.flags(cmd), args, 1, cmd+" NAME")
-	if !ok || !a.checkNames(names[0]) {
+func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
+	if !a.checkNames(name) {
 		return 2
 	}
-	if _, err := a.remote(ctx, cfg, shortTimeout, cmd, names[0], "--json"); err != nil {
-		return a.fail(err)
-	}
-	if cmd == "rm" {
-		if err := cfg.unpin(names[0]); err != nil {
-			return a.fail(err)
+	if !yes {
+		if !a.interactive {
+			return a.mistake(fmt.Sprintf("deleting %s can't be undone, so pass --yes when there's no terminal to ask on", name))
+		}
+		if !a.confirm(ctx, fmt.Sprintf("Delete %s and its disk for good? [y/N] ", name)) {
+			fmt.Fprintf(a.stderr, "kept %s\n", name)
+			return 1
 		}
 	}
-	fmt.Fprintf(a.stdout, "%s %s\n", done, names[0])
+	return a.byName(ctx, cfg, "rm", "deleting", "removed", name)
+}
+
+const maxAnswer = 1024
+
+func (a *app) confirm(ctx context.Context, question string) bool {
+	fmt.Fprint(a.stderr, question)
+	answer := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(io.LimitReader(a.stdin, maxAnswer)).ReadString('\n')
+		answer <- line
+	}()
+	select {
+	case <-ctx.Done():
+	case line := <-answer:
+		if line, ok := strings.CutSuffix(line, "\n"); ok {
+			word := strings.ToLower(strings.TrimSpace(line))
+			return word == "y" || word == "yes"
+		}
+	}
+	fmt.Fprintln(a.stderr)
+	return false
+}
+
+func (a *app) pause(ctx context.Context, cfg *config, args []string) int {
+	return a.byName(ctx, cfg, "pause", "pausing", "paused", args[0])
+}
+
+func (a *app) byName(ctx context.Context, cfg *config, cmd, doing, done, name string) int {
+	if !a.checkNames(name) {
+		return 2
+	}
+	if _, err := a.remote(ctx, cfg, shortTimeout, cmd, name, "--json"); err != nil {
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be %s %s: check hib ls", doing, name))
+	}
+	if cmd == "rm" {
+		if err := cfg.unpin(name); err != nil {
+			return a.fail(fmt.Errorf("deleted %s, but couldn't forget its host key: %w. Remove that file yourself", name, err))
+		}
+	}
+	fmt.Fprintf(a.stdout, "%s %s\n", done, name)
 	return 0
 }
 
-func (a *app) exec(cfg *config, args []string) int {
-	if len(args) < 3 || args[1] != "--" {
-		fmt.Fprintln(a.stderr, "usage: hib exec NAME -- COMMAND [ARG...]")
-		return 2
+func (a *app) exec(ctx context.Context, cfg *config, args []string) int {
+	if len(args) < 3 {
+		return a.mistake("missing CMD")
 	}
+	return a.sshTo(ctx, cfg, args)
+}
+
+func (a *app) sshTo(_ context.Context, cfg *config, args []string) int {
 	if !a.checkNames(args[0]) {
 		return 2
 	}
@@ -316,7 +402,10 @@ func (a *app) exec(cfg *config, args []string) int {
 		sshArgs = append(sshArgs, "-F", cfg.SSHConfig)
 	}
 	sshArgs = append(sshArgs, "--", args[0]+".hib")
-	if err := a.execSSH(append(sshArgs, args[2:]...)); err != nil {
+	if len(args) > 2 {
+		sshArgs = append(sshArgs, args[2:]...)
+	}
+	if err := a.execSSH(sshArgs); err != nil {
 		return a.fail(err)
 	}
 	return 0
@@ -325,51 +414,32 @@ func (a *app) exec(cfg *config, args []string) int {
 func execSSH(args []string) error {
 	path, err := exec.LookPath("ssh")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: install OpenSSH 9.6 or later", err)
 	}
 	return syscall.Exec(path, append([]string{"ssh"}, args...), os.Environ())
 }
 
-func (a *app) image(ctx context.Context, cfg *config, args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(a.stderr, imageUsage)
+func (a *app) imageBuild(ctx context.Context, cfg *config, name string, force, verbose bool) int {
+	if !a.checkNames(name) {
 		return 2
 	}
-	switch args[0] {
-	case "save":
-		return a.imageSave(ctx, cfg, args[1:])
-	case "ls":
-		return a.imageList(ctx, cfg, args[1:])
-	case "rm":
-		return a.imageRemove(ctx, cfg, args[1:])
-	case "build":
-	default:
-		fmt.Fprintln(a.stderr, imageUsage)
-		return 2
-	}
-	fl := a.flags("image build")
-	force := fl.Bool("force", false, "rebuild every step, not only those that changed")
-	names, ok := a.parse(fl, args[1:], 1, "image build NAME [-force]")
-	if !ok || !a.checkNames(names[0]) {
-		return 2
-	}
-	remote := []string{"image", "build", names[0], "--json"}
-	if *force {
+	remote := []string{"image", "build", name, "--json"}
+	if force {
 		remote = append(remote, "--force")
 	}
-	r, err := a.remote(ctx, cfg, buildTimeout, remote...)
+	r, err := a.buildImage(ctx, cfg, name, remote, verbose)
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still finish building %s: check hib image ls in a few minutes", name))
 	}
 	if len(r.Sizes) == 0 {
-		fmt.Fprintf(a.stdout, "built image %s (template %s)\n", names[0], safe(r.Template))
+		fmt.Fprintf(a.stdout, "built image %s (template %s)\n", name, safe(r.Template))
 		return 0
 	}
 	sizes := make([]string, len(r.Sizes))
 	for i, s := range r.Sizes {
 		sizes[i] = safe(s)
 	}
-	fmt.Fprintf(a.stdout, "built image %s in sizes %s\n", names[0], joinList(sizes, "and"))
+	fmt.Fprintf(a.stdout, "built image %s in sizes %s\n", name, joinList(sizes, "and"))
 	return 0
 }
 
@@ -381,14 +451,9 @@ func joinList(items []string, conj string) string {
 }
 
 func (a *app) bridgeCmd(ctx context.Context, cfg *config, args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(a.stderr, "usage: hib bridge NAME.hib")
-		return 2
-	}
 	name, ok := strings.CutSuffix(args[0], ".hib")
 	if !ok || hibapi.CheckName(name) != nil {
-		fmt.Fprintf(a.stderr, "hib bridge: want NAME.hib, with NAME of a-z, 0-9 and -, not %q\n", args[0])
-		return 2
+		return a.mistake(fmt.Sprintf("want NAME.hib, with NAME of a-z, 0-9 and -, not %q", args[0]))
 	}
 	return a.bridge(ctx, cfg, name)
 }
@@ -396,7 +461,7 @@ func (a *app) bridgeCmd(ctx context.Context, cfg *config, args []string) int {
 func (a *app) checkNames(names ...string) bool {
 	for _, n := range names {
 		if err := hibapi.CheckName(n); err != nil {
-			fmt.Fprintln(a.stderr, "hib:", err)
+			a.mistake(err.Error())
 			return false
 		}
 	}
@@ -410,50 +475,22 @@ func (a *app) configDir(dir string) (string, error) {
 		} else if home := a.getenv("HOME"); home != "" {
 			dir = filepath.Join(home, ".config", "hibernaut")
 		} else {
-			return "", errors.New("$HOME isn't set: use -config DIR")
+			return "", errors.New("$HOME isn't set: use --config DIR")
 		}
 	}
 	return filepath.Abs(dir)
 }
 
-func (a *app) flags(cmd string) *flag.FlagSet {
-	fl := flag.NewFlagSet(cmd, flag.ContinueOnError)
-	fl.SetOutput(a.stderr)
-	return fl
-}
-
-func (a *app) parse(fl *flag.FlagSet, args []string, n int, use string) ([]string, bool) {
-	rest, err := a.parseCommand(fl, args, n, use)
-	return rest, err == nil
-}
-
-func (a *app) parseCommand(fl *flag.FlagSet, args []string, n int, use string) ([]string, error) {
-	var rest []string
-	for {
-		if err := fl.Parse(args); err != nil {
-			return nil, err
-		}
-		if fl.NArg() == 0 {
-			break
-		}
-		rest = append(rest, fl.Arg(0))
-		args = fl.Args()[1:]
+func (a *app) note(format string, args ...any) {
+	if !a.json {
+		fmt.Fprintf(a.stderr, "hib: "+format+"\n", args...)
 	}
-	if len(rest) != n {
-		fmt.Fprintf(a.stderr, "usage: hib %s\n", use)
-		return nil, errors.New("wrong argument count")
-	}
-	return rest, nil
-}
-
-func argumentExit(err error) int {
-	if errors.Is(err, flag.ErrHelp) {
-		return 0
-	}
-	return 2
 }
 
 func (a *app) fail(err error) int {
+	if a.json {
+		return a.reply(hibapi.Response{}, err)
+	}
 	fmt.Fprintf(a.stderr, "hib: %s\n", termsafe.String(err.Error()))
 	return 1
 }

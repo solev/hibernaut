@@ -2,13 +2,34 @@ package hibd
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
+
+func waitLock(ctx context.Context, stateDir, name, what string) (func(), error) {
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		unlock, ok, err := tryLock(stateDir, name, what)
+		if err != nil || ok {
+			return unlock, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
 
 func tryLock(stateDir, name, what string) (unlock func(), ok bool, err error) {
 	f, err := openLock(stateDir, name)

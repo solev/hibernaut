@@ -529,9 +529,10 @@ func TestConnectGitHubRejectsArguments(t *testing.T) {
 		want string
 	}{
 		{"both sources", []string{"github", "--from-gh", "--token"}, "choose at most one"},
-		{"another provider", []string{"gitlab", "--token"}, "only GitHub and Codex are supported"},
-		{"codex with a flag", []string{"codex", "--token"}, "hib connect codex takes no flags"},
-		{"codex with a false flag", []string{"codex", "--from-gh=false"}, "hib connect codex takes no flags"},
+		{"another provider", []string{"gitlab", "--token"}, "unknown command gitlab"},
+		{"codex with a flag", []string{"codex", "--token"}, "unknown flag --token"},
+		{"codex with a false flag", []string{"codex", "--from-gh=false"}, "unknown flag --from-gh"},
+		{"token as provider", []string{testGitHubToken}, "arguments end up in shell history"},
 		{"codex and a token", []string{"codex", testGitHubToken}, "arguments end up in shell history"},
 		{"no arguments", nil, "usage: hib connect"},
 		{"no provider", []string{"--token"}, "usage: hib connect"},
@@ -625,13 +626,55 @@ func TestConnectGitHubDoesNotPrintReflectedToken(t *testing.T) {
 				t.Errorf("exit %d, want %d", code, wantCode)
 			}
 			output := c.out.String() + c.errOut.String()
-			if !strings.Contains(output, "[redacted]") {
+			if mode == "unreadable reply" {
+				if !strings.Contains(output, "unreadable reply from hibd") || strings.Contains(output, "not JSON") {
+					t.Errorf("an unreadable reply to a token was shown: %q", output)
+				}
+			} else if !strings.Contains(output, "[redacted]") {
 				t.Error("reflected token wasn't replaced by a redaction marker")
 			}
 			if strings.Contains(output, "\x1b") {
 				t.Error("reflected diagnostic contained terminal controls")
 			}
 		})
+	}
+}
+
+func TestConnectGitHubRedactsQuotedTokensInGHDiagnostics(t *testing.T) {
+	const token = "gho_\"quote\\slash<x>&\x01-7f3a9c"
+	quotings := []string{strconv.Quote(token), jsonQuoted(t, token, true), jsonQuoted(t, token, false)}
+	if distinct := slices.Compact(slices.Sorted(slices.Values(quotings))); len(distinct) != len(quotings) {
+		t.Fatalf("the quotings must differ to test each one: %q", distinct)
+	}
+	h := newHost(t)
+	c := initClient(t, h)
+	c.gh = func(_ context.Context, _ []string, _ io.Reader, stdout, stderr io.Writer) (int, error) {
+		io.WriteString(stdout, token+"\n")
+		io.WriteString(stderr, "gh: "+token+"\n")
+		for _, quoted := range quotings {
+			io.WriteString(stderr, "gh: "+quoted+"\n")
+		}
+		return 0, nil
+	}
+	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
+			Login: "octocat", Email: "1+octocat@users.noreply.github.com",
+		}}), true
+	}
+	code := c.hib("connect", "github", "--from-gh")
+	assertTokenPrivate(t, c, h.takeCalls(), token)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	output := c.out.String() + c.errOut.String()
+	for _, form := range append([]string{token}, quotings...) {
+		if interior := strings.Trim(form, `"`); strings.Contains(output, interior[1:]) {
+			t.Errorf("part of %q reached the output: %q", form, output)
+		}
+	}
+	want := "gh: [redacted]\n" + strings.Repeat("gh: \"[redacted]\"\n", len(quotings))
+	if c.errOut.String() != want {
+		t.Errorf("printed %q on stderr, want %q", c.errOut.String(), want)
 	}
 }
 
@@ -706,19 +749,35 @@ func TestConnectGitHubAcceptsBooleanLiterals(t *testing.T) {
 }
 
 func TestConnectGitHubAccountIsTerminalSafe(t *testing.T) {
-	h := newHost(t)
-	c := initClient(t, h)
-	c.stdin = strings.NewReader(testGitHubToken)
-	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
-		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
-			Login: "octocat\x1b", Name: "The Octocat\x07", Email: "1+octocat@users.noreply.github.com\x1b",
-		}}), true
-	}
-	code := c.hib("connect", "github", "--token")
-	assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
-	want := "connected GitHub as octocat\\x1b (The Octocat\\x07). Machines commit as 1+octocat@users.noreply.github.com\\x1b\n"
-	if code != 0 || c.out.String() != want {
-		t.Errorf("exit %d, account fields weren't terminal-safe", code)
+	for _, tc := range []struct {
+		name    string
+		account hibapi.GitHub
+		want    string
+	}{
+		{
+			name:    "terminal controls",
+			account: hibapi.GitHub{Login: "octocat\x1b", Name: "The Octocat\x07", Email: "1+octocat@users.noreply.github.com\x1b"},
+			want:    "connected GitHub as octocat\\x1b (The Octocat\\x07). Machines commit as 1+octocat@users.noreply.github.com\\x1b\n",
+		},
+		{
+			name:    "newline and carriage return",
+			account: hibapi.GitHub{Login: "octocat\nhib: forged", Name: "The\rOctocat", Email: "1+octocat@users.noreply.github.com\r\nx"},
+			want:    "connected GitHub as octocat\\x0ahib: forged (The\\x0dOctocat). Machines commit as 1+octocat@users.noreply.github.com\\x0d\\x0ax\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			c.stdin = strings.NewReader(testGitHubToken)
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				return writeTestResponse(stdout, hibapi.Response{GitHub: &tc.account}), true
+			}
+			code := c.hib("connect", "github", "--token")
+			assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
+			if code != 0 || c.out.String() != tc.want {
+				t.Errorf("exit %d, printed %q, want %q", code, c.out, tc.want)
+			}
+		})
 	}
 }
 
@@ -850,8 +909,8 @@ func TestConnectCodexFailures(t *testing.T) {
 	}{
 		{"hibd error", hibapi.Response{Error: "codex login failed: turn on device code login in ChatGPT\x1b[2J"}, false,
 			"hib: codex login failed: turn on device code login in ChatGPT\\x1b[2J\n"},
-		{"missing account", hibapi.Response{}, false, "hib: hibd didn't say which account it connected\n"},
-		{"no sudo", hibapi.Response{}, true, "hib: hibd needs passwordless sudo on the host\n"},
+		{"missing account", hibapi.Response{}, false, "hib: hibd didn't say which account it connected: run hib status to see what's connected\n"},
+		{"no sudo", hibapi.Response{}, true, "hib: hibd needs passwordless sudo on the host: run hib init --host USER@HOST with a user that has it\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)
@@ -871,14 +930,32 @@ func TestConnectCodexFailures(t *testing.T) {
 }
 
 func TestConnectCodexAccountIsTerminalSafe(t *testing.T) {
-	h := newHost(t)
-	c := initClient(t, h)
-	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
-		return writeTestResponse(stdout, hibapi.Response{Codex: &hibapi.Codex{Email: "dev@example.com\x1b]0;x\x07", Plan: "plus\x1b[2J"}}), true
-	}
-	code := c.hib("connect", "codex")
-	want := "connected Codex as dev@example.com\\x1b]0;x\\x07, on the plus\\x1b[2J plan\n"
-	if code != 0 || c.out.String() != want {
-		t.Errorf("exit %d, printed %q, want %q", code, c.out, want)
+	for _, tc := range []struct {
+		name  string
+		codex hibapi.Codex
+		want  string
+	}{
+		{
+			name:  "terminal controls",
+			codex: hibapi.Codex{Email: "dev@example.com\x1b]0;x\x07", Plan: "plus\x1b[2J"},
+			want:  "connected Codex as dev@example.com\\x1b]0;x\\x07, on the plus\\x1b[2J plan\n",
+		},
+		{
+			name:  "newline and carriage return",
+			codex: hibapi.Codex{Email: "dev@example.com\nhib: forged", Plan: "plus\rpro"},
+			want:  "connected Codex as dev@example.com\\x0ahib: forged, on the plus\\x0dpro plan\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				return writeTestResponse(stdout, hibapi.Response{Codex: &tc.codex}), true
+			}
+			code := c.hib("connect", "codex")
+			if code != 0 || c.out.String() != tc.want {
+				t.Errorf("exit %d, printed %q, want %q", code, c.out, tc.want)
+			}
+		})
 	}
 }

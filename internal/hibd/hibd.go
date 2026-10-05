@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,12 +59,15 @@ commands:
                     stdin ends
   connect codex     log in to Codex on a ChatGPT plan with a device code, keep the login, and
                     give machines a login file of placeholders, as root
+  disconnect codex|github
+                    remove the host's login, as root. Machines keep placeholders
   codex refresh     refresh the Codex login once half its token's lifetime has passed, as root
                     (-force refreshes now, even when a refresh is stuck)
   status            check E2B, every secret and the Codex login, as root
   ca init           create the Hibernaut CA once, as root
   proxy             run the egress proxy, as root (-unhook removes its iptables rule)
   image build NAME  build an image in every size (-force rebuilds every step)
+                    -verbose keeps full logs. -json -events sends build step events
   image save MACHINE NAME
                     save a machine as an image, memory included, as root
   image ls          list built-in and saved images
@@ -81,7 +83,7 @@ commands:
                     root
   version           print the version
 
-new, ls, rm, pause, fork, image build|save|ls|rm, connect github, connect codex, codex refresh,
+new, ls, rm, pause, fork, image build|save|ls|rm, connect, disconnect, codex refresh,
 status and version
 print JSON with -json.
 
@@ -155,7 +157,7 @@ type App struct {
 	ProxyHook proxypkg.Rule
 	// ProxyListen opens hibd proxy's port, for tests only. If it's nil, App uses net.Listen.
 	ProxyListen func(network, address string) (net.Listener, error)
-	// Now supplies the daemon's clock. If it's nil, App uses time.Now.
+	// Now supplies hibd's clock. If it's nil, App uses time.Now.
 	Now func() time.Time
 	// DaemonTicks supplies the daemon's ticks. If it's nil, App uses a ticker at -every.
 	DaemonTicks <-chan time.Time
@@ -188,6 +190,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.secret(ctx, args)
 	case "connect":
 		return a.connect(ctx, args)
+	case "disconnect":
+		return a.disconnect(ctx, args)
 	case "codex":
 		return a.runCodex(ctx, args)
 	case "status":
@@ -401,42 +405,54 @@ func (a *App) image(ctx context.Context, args []string) int {
 	}
 	fl := a.flags("image build")
 	force := fl.Bool("force", false, "rebuild every step, not only those that changed")
+	verbose := fl.Bool("verbose", false, "print the full build log instead of step lines")
 	asJSON := fl.Bool("json", false, "print JSON")
+	events := fl.Bool("events", false, "send a JSON response for each step start and end")
 	names, ok := a.parse(fl, args[1:], 1, "image build NAME")
 	if !ok {
 		return 2
 	}
+	if *events && !*asJSON {
+		fmt.Fprintln(a.Stderr, "hibd image build: -events requires -json")
+		return 2
+	}
+	fail := func(err error) int {
+		if *events {
+			return a.buildReply(hibapi.Response{Error: termsafe.String(withNextStep("image build", err).Error())})
+		}
+		return a.fail(*asJSON, "image build", err)
+	}
 	cfg, err := loadConfig(a.Getenv)
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	caPEM, err := os.ReadFile(cfg.caCert)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			err = fmt.Errorf("no Hibernaut CA at %s: run `sudo hibd ca init` (vm/setup-host.sh does this)", cfg.caCert)
 		}
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	sizes := images.BuildSizes()
 	specs := make([]engine.TemplateSpec, len(sizes))
 	for i, size := range sizes {
 		spec, err := images.Spec(names[0], size, caPEM)
 		if err != nil {
-			return a.fail(*asJSON, "image build", err)
+			return fail(err)
 		}
 		spec.Force = *force
 		specs[i] = spec
 	}
 	if err := a.awake(); err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	e, err := a.engine()
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	m, err := a.manager()
 	if err != nil {
-		return a.fail(*asJSON, "image build", err)
+		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
@@ -444,9 +460,9 @@ func (a *App) image(ctx context.Context, args []string) int {
 	var template string
 	var built []string
 	for i, size := range sizes {
-		id, err := a.buildSize(ctx, e, m, names[0], size, specs[i])
+		id, err := a.buildSize(ctx, e, m, names[0], size, specs[i], *verbose, *events)
 		if err != nil {
-			return a.fail(*asJSON, "image build", buildFailed(err, sizes, i))
+			return fail(buildFailed(err, sizes, i))
 		}
 		if size == images.DefaultSize() {
 			template = id
@@ -454,25 +470,39 @@ func (a *App) image(ctx context.Context, args []string) int {
 		built = append(built, size.Name())
 	}
 	if *asJSON {
+		if *events {
+			return a.buildReply(hibapi.Response{Template: template, Sizes: built})
+		}
 		return a.reply(hibapi.Response{Template: template, Sizes: built})
 	}
 	fmt.Fprintln(a.Stdout, template)
 	return 0
 }
 
-func (a *App) buildSize(ctx context.Context, e engine.Engine, m *machines.Manager, image string, size images.Size, spec engine.TemplateSpec) (string, error) {
+func (a *App) buildSize(ctx context.Context, e engine.Engine, m *machines.Manager, image string, size images.Size, spec engine.TemplateSpec, verbose, events bool) (string, error) {
 	if err := m.CheckBuildRoom(ctx, image, size); err != nil {
 		return "", err
 	}
-	start := time.Now()
-	buildLog := termsafe.NewWriter(a.Stderr)
-	id, err := e.BuildTemplate(ctx, spec, buildLog)
-	buildLog.Flush()
+	start := a.now()
+	buildLog := buildLog{image: image, size: size.Name(), out: a.Stderr, verbose: verbose}
+	if events {
+		buildLog.events = a.Stdout
+	}
+	id, err := e.BuildTemplate(ctx, spec, buildLog.entry)
+	buildLog.finish(buildLog.last, err != nil)
+	err = errors.Join(err, buildLog.err)
 	if err != nil {
 		return "", fmt.Errorf("building %s (%s): %w", image, size.Name(), err)
 	}
-	fmt.Fprintf(a.Stderr, "built %s (%s) in %v\n", image, size.Name(), time.Since(start).Round(time.Second))
+	fmt.Fprintf(a.Stderr, "built %s (%s) in %v\n", termsafe.Line(image), termsafe.Line(size.Name()), a.now().Sub(start).Round(time.Second))
 	return id, nil
+}
+
+func (a *App) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 func buildFailed(err error, sizes []images.Size, failed int) error {
@@ -745,7 +775,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
-		return a.reply(hibapi.Response{Version: version.Version})
+		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
 	return 0
@@ -785,6 +815,7 @@ func (a *App) parseAny(fl *flag.FlagSet, args []string) ([]string, bool) {
 }
 
 func (a *App) fail(asJSON bool, cmd string, err error) int {
+	err = withNextStep(cmd, err)
 	msg := termsafe.String(err.Error())
 	if asJSON {
 		a.reply(hibapi.Response{Error: msg})
@@ -795,12 +826,19 @@ func (a *App) fail(asJSON bool, cmd string, err error) int {
 }
 
 func (a *App) reply(r hibapi.Response) int {
-	r.V = hibapi.Version
-	if err := json.NewEncoder(a.Stdout).Encode(r); err != nil {
-		fmt.Fprintln(a.Stderr, "hibd:", err)
+	data, err := marshalReply(r)
+	return a.writeReply(data, err, r.Error != "")
+}
+
+func (a *App) writeReply(data []byte, err error, failed bool) int {
+	if err == nil {
+		_, err = a.Stdout.Write(data)
+	}
+	if err != nil {
+		fmt.Fprintln(a.Stderr, "hibd:", termsafe.String(err.Error()))
 		return 1
 	}
-	if r.Error != "" {
+	if failed {
 		return 1
 	}
 	return 0

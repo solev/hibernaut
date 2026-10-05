@@ -45,6 +45,7 @@ func Run(t *testing.T, cfg Config) {
 
 	t.Run("UnknownMachine", s.unknownMachine)
 	t.Run("UnknownTemplate", s.unknownTemplate)
+	t.Run("InvalidBuild", s.invalidBuild)
 	t.Run("Lifecycle", s.lifecycle)
 	t.Run("Exec", s.exec)
 	t.Run("KillPaused", s.killPaused)
@@ -53,6 +54,16 @@ func Run(t *testing.T, cfg Config) {
 	t.Run("DeleteTemplateInUse", s.deleteTemplateInUse)
 	t.Run("MissingTemplate", s.missingTemplate)
 	t.Run("SaveAfterMiss", s.saveAfterMiss)
+}
+
+func (s *suite) invalidBuild(t *testing.T) {
+	for _, spec := range []engine.TemplateSpec{{}, {Name: "hib-invalid"}, {FromImage: "ubuntu:24.04"}} {
+		called := false
+		id, err := s.cfg.Engine.BuildTemplate(s.ctx(t), spec, func(engine.LogEntry) { called = true })
+		if err == nil || id != "" || called {
+			t.Fatalf("invalid build = %q, %v, log callback %v", id, err, called)
+		}
+	}
 }
 
 type suite struct {

@@ -33,7 +33,7 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
   GitHub and AI tools connected once and no real credentials inside machines. M0 (foundations),
   M1 (machines), M2 (idle and wake), M3 (vault and egress proxy), M4 (GitHub), M5 (AI tools),
-  M6 (golden images and fork) and M8 (machine sizes) are done. Progress:
+  M6 (golden images and fork), M8 (machine sizes) and M10 (CLI friendliness) are done. Progress:
   [docs/milestones](docs/milestones/README.md).
 
 ## Measured on this setup
@@ -176,17 +176,32 @@ Everyday use is `make up` → play → `make down` (or just walk away and let it
 over plain `ssh`:
 
 ```bash
-hib init -host azureuser@20.91.197.185 -azure-group rg-e2b-test -azure-vm e2b-test
+hib init --host azureuser@20.91.197.185 --azure-group rg-e2b-test --azure-vm e2b-test
 hib image build dev        # build the dev image in every size, as E2B templates
 hib new app                # create a machine named app
 hib new tiny --size small  # a small one (or medium, the default, or large)
-hib new big -idle 2h       # one that pauses after 2 idle hours (default 15m; 0 = never)
+hib new big --idle 2h      # one that pauses after 2 idle hours (default 15m; 0 = never)
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
+hib ssh app                # the same as ssh app.hib
+hib ssh app -- uptime      # run uptime there and come back
 hib exec app -- uname -a   # run one command, no interactive shell
 hib ls                     # machines, running and paused, their size, when they pause, room left
 hib pause app              # pause it now; ssh app.hib resumes it
-hib rm app                 # delete it
+hib rm app --yes           # delete it and its disk for good
 ```
+
+`hib rm` asks "Delete app and its disk for good? [y/N]" on a terminal, and only `y` or `yes`
+deletes. `--yes` skips the question. Scripts and anything else without a terminal must pass it.
+
+Ctrl-C stops `hib` waiting, not the host. Work the host has started, such as making, copying,
+pausing or deleting a machine, carries on. `hib` says what may be left behind and how to check
+it, for example "stopped waiting. The host may still be making app: check hib ls", and exits 130.
+
+**`hib new` shows what it waits for.** After 2 seconds, a live line at the bottom of the terminal
+says what for and for how long: `waking the host (40s)`, then `making app (12s)`. Messages from
+`hib` and the host print above it, and it's cleared before `hib` prints its result. There's no
+live line when stderr isn't a terminal, such as a pipe or a file, when `TERM` is `dumb`, or with
+`--json`. So `TERM=dumb hib new app` turns it off.
 
 `hib image build dev` bakes the Hibernaut CA into the image, so machines can trust the host proxy.
 Machines made before that rebuild need to be recreated to trust it.
@@ -199,7 +214,7 @@ host key. The machine user is `user`, with passwordless sudo.
 **Idle machines pause themselves. Busy ones don't.** A machine is busy while you're connected
 (`ssh` or `hib exec`), while it uses at least 10% of a CPU, or while a coding agent (`codex`,
 `copilot`, `claude`) runs in it, even one waiting on an LLM. Once it has been idle for its idle
-time, 15 minutes unless `-idle` says otherwise, it pauses with its memory and files. `hib ls`
+time, 15 minutes unless `--idle` says otherwise, it pauses with its memory and files. `hib ls`
 shows when each machine pauses. `ssh app.hib` or `hib exec` wakes it in under a second, where it
 left off. Nothing else wakes it. After 30 minutes with no machine running and no one connected,
 the VM deallocates itself, and every night at 20:00 UTC it pauses every machine and deallocates
@@ -209,7 +224,7 @@ regardless (see [Costs and auto-off](#costs-and-auto-off)). `make down` does tha
 Paused ones take only disk. `hib ls` ends with how many more of each size fit, for example
 `Room for more machines: 4 small, 2 medium or 1 large.` Each count is on its own, not a mix. When
 the VM is full, `hib new` and waking a paused machine fail at once with a message naming the
-running machines: `hib pause NAME` frees memory, `hib rm NAME` frees disk. `hib new` with a
+running machines: `hib pause NAME` frees memory, `hib rm NAME --yes` frees disk. `hib new` with a
 built-in image also says which sizes still fit. CPU is shared, so busy machines slow each other
 down but nothing fails.
 
@@ -236,6 +251,23 @@ then small and large. They share the build steps, so each extra size adds only i
 and snapshot. After updating hibd, run `hib image build dev` once before making small or large
 machines.
 
+**`hib image build` prints a line as each step ends**, with its time, or `reused` when E2B had it
+from an earlier build:
+
+```text
+dev (small)  3/12  RUN apt-get install -y git curl  reused
+dev (small)  4/12  RUN npm i -g @openai/codex  built in 41s
+```
+
+- On a terminal, a live line below them shows the step that's running and its time so far.
+  `hib` never guesses which step comes next or how long is left.
+- A failed step prints its last 20 lines. `--verbose` prints E2B's full log instead.
+- If `hib` can't read the host's progress, it stops waiting and says the build may still be
+  running on the host. Check `hib image ls` a few minutes later. `hib` never starts the build
+  again by itself.
+- With a pipe, or `TERM=dumb`, the same step lines print with no live line. A host whose hibd is
+  older than M10 prints the full log.
+
 E2B keeps every snapshot it writes, even a removed machine's. `hibd` deletes the ones nothing
 needs any more when a machine is removed, and hourly. `./azure/ssh.sh sudo hibd cleanup -n`
 says what it would delete, and why it keeps the rest. A machine's own snapshots still grow as it
@@ -250,10 +282,10 @@ processes come with it, so a dev server answers in each copy without restarting:
 ```bash
 hib image save app myimg      # save app as image myimg, memory included
 hib image ls                 # built-in and saved images, their memory and creation time
-hib new task -image myimg     # start with everything that was in app
-hib fork app -count 2         # app-1 and app-2. The default is one copy, the most is ten.
+hib new task --image myimg    # start with everything that was in app
+hib fork app --count 2        # app-1 and app-2. The default is one copy, the most is ten.
 hib ls                       # FROM shows which machine a copy came from
-hib rm task
+hib rm task --yes
 hib image rm myimg
 ```
 
@@ -275,7 +307,7 @@ starting at `app-1`. If a later copy fails, the whole copies already made stay, 
 them before printing the error.
 
 Saved names can't replace a built-in image or an existing saved one. If a later built-in image
-takes a saved name, `image ls` marks the saved one as shadowed. `new -image` uses the built-in one.
+takes a saved name, `image ls` marks the saved one as shadowed. `new --image` uses the built-in one.
 `image rm` always means the saved one, and refuses while any running or paused machine uses it.
 Remove those machines first. E2B keeps a deleted image's snapshot files until `hibd`'s cleanup can
 free them.
@@ -289,18 +321,18 @@ value on the way out, and turns it back into the placeholder in the response. Se
 else, the placeholder is a meaningless string.
 
 ```bash
-hib secret add OPENAI -env OPENAI_API_KEY -bind api.openai.com  # asks for the value, hidden
+hib secret add openai --env OPENAI_API_KEY --bind api.openai.com  # asks for the value, hidden
 hib secret ls                         # names, variables, sites and placeholders, never values
 ssh app.hib printenv OPENAI_API_KEY   # the placeholder
 hib log                               # each swap: time, machine, site, method, path and secret
-hib secret rm OPENAI
+hib secret rm openai
 ```
 
 - The value comes from stdin or a hidden prompt, never from an argument. The host seals it with
   AES-256-GCM, under a key only root can read.
 - For GitHub, use `hib connect github` ([below](#github-hib-connect-github-hib-status)). It
   stores the token as secret `github` and sets up git too.
-- `-bind` takes host names, comma-separated. `*.example.com` matches every host under
+- `--bind` takes host names, comma-separated. `*.example.com` matches every host under
   example.com, but not example.com itself.
 - Adding or removing a secret updates every running machine at once, and paused ones when they
   wake. New logins see the change. The proxy uses it from the next request.
@@ -347,6 +379,10 @@ hib status                     # the host, E2B, GitHub and each secret, without 
 - Every source checks the token with GitHub (`GET /user`) and stores it as secret `github`:
   variable `GH_TOKEN`, bound to `github.com`, `api.github.com`, `uploads.github.com` and
   `*.githubcopilot.com`. If GitHub refuses it, nothing is stored.
+- `hib disconnect github` removes the `github` secret and the login's details from the host,
+  waking it if it's asleep. Machines keep their placeholders, so GitHub stops working in them
+  until you run `hib connect github` again. It doesn't revoke the token itself: do that as below,
+  or on the token's page. A host whose hibd is too old for it says to run `make up`.
 - To revoke the host's device login, open `https://github.com/settings/applications`, choose
   **Authorized OAuth Apps**, then **Hibernaut**, then **Revoke**.
 - If your org restricts OAuth Apps, an owner must approve Hibernaut before machines can see the
@@ -364,7 +400,8 @@ hib status                     # the host, E2B, GitHub and each secret, without 
 
 `hib status` checks secrets bound to `api.github.com` with GitHub. It can't test other keys, so
 they show as `unchecked`. It exits 1 when E2B is down or a secret is revoked or failing. If the
-host is asleep, it says so and exits 0, without waking it.
+host is asleep, it says so and exits 0, without waking it. A `Next:` line ends it while something
+is left to set up, such as `hib connect github`, or `hib new NAME` when there are no machines.
 
 Machines made before the `dev` image was rebuilt with M4 don't have gh as git's helper. Run
 `hib image build dev` and recreate them. Their git identity is set either way.
@@ -386,6 +423,10 @@ hib status                     # adds a Codex line: account, plan, token expiry,
 - `hib connect codex` runs Codex's device login on the host. Open the link, sign in to ChatGPT,
   and enter the code within 15 minutes. If ChatGPT refuses, turn on device code login in ChatGPT,
   under Settings, Security. Connecting again replaces the login, even with another account.
+- `hib disconnect codex` removes the Codex login from the host: secrets `codex-access`,
+  `codex-refresh` and `codex-id`, and the login's details. Machines keep `~/.codex/auth.json`
+  with placeholders, and Codex in them stops working until you run `hib connect codex` again.
+  Revoke the login itself in ChatGPT's settings.
 - The host keeps the real tokens as secrets `codex-access`, `codex-refresh` and `codex-id`.
   Machines get `~/.codex/auth.json` with placeholders: running ones at once, paused ones when
   they wake. The proxy swaps the access token on `chatgpt.com`, and answers Codex's refresh
@@ -434,6 +475,122 @@ export E2B_SANDBOX_URL=http://localhost:3002
 
 The API key is the fixed development key from E2B's `DEV-LOCAL.md`. It is not a secret. Only
 SSH (port 22) is reachable from the internet.
+
+### Scripts, completion and colour
+
+`--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one JSON
+object on stdout instead of text, and nothing else there. It changes only the output: `hib status
+--json` doesn't wake the host either. hibd's and ssh's messages still go to stderr, but `hib` adds
+none of its own, such as that it's waking the host.
+
+```bash
+hib ls --json | jq -r '.machines[]?.name'
+```
+
+The fields below are stable. Later releases may add fields, but these keep their names and
+meanings.
+
+| Command     | Fields                                                                          |
+| ----------- | ------------------------------------------------------------------------------- |
+| every one   | `v`, the format's version, 1. `error` when the command failed.                  |
+| `ls`        | `machines`, and `room` on the host.                                             |
+| `new`       | `machine`, the one it made.                                                     |
+| `fork`      | `machines`, the copies. A fork that fails partway still lists the ones it made. |
+| `image ls`  | `images`.                                                                       |
+| `secret ls` | `secrets`.                                                                      |
+| `log`       | `logs`, and `corrupt`, how many lines of the audit log couldn't be read.        |
+| `status`    | `status`, and `host` when the host is an Azure VM.                              |
+
+| Object        | Fields                                                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| machine       | `name`, `id`, `image`, `size`, `forkOf`, `state` (`running` or `paused`), `startedAt`, `endAt` (when it pauses unless it's busy), `idleSeconds` (0 is never) |
+| `room`        | `memoryFreeMB`, `memoryMB`, `diskFreeMB`, `sizes` (each a `size` and how many more `fits`), and `fits` and `image` for the default image                   |
+| image         | `name`, `kind` (`built-in` or `saved`), `memoryMB`, `cpus`, `created`, `built`, `shadowed`                                                                 |
+| secret        | `name`, `env`, `sites`, `placeholder`. Never the value.                                                                                                    |
+| log entry     | `time`, `machine`, `site`, `method`, `path`, `secrets`                                                                                                     |
+| `status`      | `version`, `e2b` (`ok`, `detail`), `github`, `codex`, `secrets` (each a `name`, `sites`, `state` and `detail`), `machines` (how many there are)            |
+| `github`      | `login`, `id`, `name`, `email`, `source`, `scopes`, `scopesKnown`                                                                                          |
+| `codex`       | `email`, `plan`, `accountId`, `health` (`ok`, `dead` or `stuck`), `problem`, `expires`, `lastRefresh`                                                      |
+| `host`        | `state` (`running` or `asleep`), and `detail`, Azure's word for it, such as `VM deallocated`                                                               |
+
+- A field with nothing in it is usually left out: no machines means no `machines`, not an empty
+  list. Times are RFC 3339.
+- An asleep host is `{"v":1,"host":{"state":"asleep","detail":"VM deallocated"}}`, with no
+  `status`, and exit 0. `hib status --json` exits 1 when something is failing, as it does without
+  `--json`.
+- A failure is the same object with `error`, and exit 1. A mistake on the command line still
+  prints help on stderr and exits 2.
+- The output is ASCII. Control and non-ASCII characters are `\uXXXX` escapes, so values decode
+  exactly and printing the JSON can't change the terminal.
+
+**Completion** covers commands, flags, sizes, and the names of your machines and images. The
+names come from what `hib ls` and `hib image ls` last listed, kept in `names.json` in the settings
+directory, so completing never reaches the host. Load it from your shell's startup file:
+
+```bash
+eval "$(hib completion bash)"       # bash, in ~/.bashrc, or ~/.bash_profile on macOS
+source <(hib completion zsh)        # zsh, in ~/.zshrc after compinit
+hib completion fish > ~/.config/fish/completions/hib.fish   # fish, once
+```
+
+**Colour.** On a terminal, `hib ls` shows running machines in green and paused ones in yellow, and
+`hib status` shows ok in green and failing states in red. Set `NO_COLOR=1` to turn colour off.
+It's also off with `TERM=dumb`, when the output isn't a terminal, and with `--json`.
+
+### Command reference
+
+This is what `hib help` prints. `hib help COMMAND` adds a command's flags and examples. Flags
+take one dash or two: `--idle` and `-idle` are the same.
+
+```text
+usage: hib [--config DIR] COMMAND [ARG...]
+
+hib makes machines on your Hibernaut host and runs them, over SSH. ssh NAME.hib logs in to
+one, waking it if it's paused.
+
+commands:
+  init                       set this laptop up for a host
+  new NAME                   make a machine
+  ls                         list machines, and when each pauses unless it's busy
+  rm NAME                    delete a machine and its disk for good
+  pause NAME                 pause a machine; logging in wakes it
+  fork MACHINE               copy a machine
+  ssh NAME [-- CMD]          log in to a machine, or run CMD there
+  exec NAME -- CMD [ARG...]  run CMD on a machine
+  connect github             give machines your GitHub login
+  connect codex              give machines your Codex login on a ChatGPT plan
+  disconnect codex|github    remove a login from the host
+  status                     show the health of the host, E2B, each secret and the Codex login
+  secret add NAME            store a bound secret
+  secret ls                  list bound secrets
+  secret rm NAME             remove a bound secret
+  log                        show secret swap audit entries
+  image build NAME           build an image on the host, in every size
+  image save MACHINE NAME    save a machine as an image, memory included
+  image ls                   list built-in and saved images
+  image rm NAME              remove a saved image no machine uses
+  completion bash|zsh|fish   print a shell completion script
+  bridge NAME.hib            connect to a machine's SSH server; ssh runs this for you
+  version                    print the version
+  help [COMMAND [SUB]]       show help for hib or a command
+
+flags:
+  --config DIR  the settings directory (default ~/.config/hibernaut)
+  --version     print the version
+
+examples:
+  hib init --host azureuser@203.0.113.7
+  hib new app
+  ssh app.hib
+
+exit codes:
+  0    done
+  1    failed
+  2    used wrongly
+  130  stopped by Ctrl-C (128 plus the signal's number)
+
+run hib help COMMAND for a command's flags and examples.
+```
 
 ## Development
 

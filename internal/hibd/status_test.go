@@ -69,7 +69,7 @@ func runStatusText(t *testing.T, a *App, out *bytes.Buffer, s hibapi.Status) int
 	out.Reset()
 	code := a.Run(t.Context(), []string{"status"})
 	var want bytes.Buffer
-	hibapi.PrintStatus(&want, "", s)
+	hibapi.PrintStatus(&want, "", s, nil)
 	if out.String() != want.String() {
 		t.Errorf("status printed\n%s\nwant\n%s", out, &want)
 	}

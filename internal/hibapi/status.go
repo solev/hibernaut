@@ -122,6 +122,9 @@ type Status struct {
 	// Codex is the host's Codex login, or nil if Codex isn't connected. Dead or stuck isn't OK.
 	Codex   *Codex         `json:"codex,omitempty"`
 	Secrets []SecretHealth `json:"secrets"`
+	// Machines is how many machines there are. It's nil when hibd couldn't ask E2B, and older
+	// hibds never send it.
+	Machines *int `json:"machines,omitempty"`
 }
 
 // OK reports whether s shows nothing broken: E2B is up, every secret is fine or has no check, and
@@ -137,6 +140,23 @@ func (s Status) OK() bool {
 	}
 	return s.Codex == nil || s.Codex.Health == CodexOK
 }
+
+// Host is the host VM's power state, from Azure.
+type Host struct {
+	State HostState `json:"state"`
+	// Detail is Azure's own words for the state, such as VM deallocated.
+	Detail string `json:"detail,omitempty"`
+}
+
+// HostState is whether the host VM is up.
+type HostState string
+
+const (
+	// HostAsleep means the VM isn't running. Using a machine wakes it.
+	HostAsleep HostState = "asleep"
+	// HostRunning means the VM is running.
+	HostRunning HostState = "running"
+)
 
 // Health is whether something works, and if not, why.
 type Health struct {

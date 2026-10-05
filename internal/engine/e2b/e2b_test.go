@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -585,8 +586,9 @@ func TestExecRejectsRedirect(t *testing.T) {
 func TestBuildTemplate(t *testing.T) {
 	fastPolls(t)
 	f, e := newFakeE2B(t)
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	entry := func(msg string) map[string]any {
-		return map[string]any{"level": "info", "message": msg, "timestamp": time.Now()}
+		return map[string]any{"level": "info", "step": "3", "message": msg, "timestamp": at}
 	}
 	f.statuses = []map[string]any{
 		{"templateID": "tpl1", "buildID": "build1", "status": "waiting", "logs": []string{}, "logEntries": []any{}},
@@ -594,7 +596,7 @@ func TestBuildTemplate(t *testing.T) {
 		{"templateID": "tpl1", "buildID": "build1", "status": "ready", "logs": []string{}, "logEntries": []any{entry("three")}},
 		{"templateID": "tpl1", "buildID": "build1", "status": "ready", "logs": []string{}, "logEntries": []any{}},
 	}
-	var logs bytes.Buffer
+	var logs []engine.LogEntry
 	id, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{
 		Name:          "hib-dev",
 		FromImage:     "ubuntu:24.04",
@@ -605,15 +607,20 @@ func TestBuildTemplate(t *testing.T) {
 		MemoryMB:      2048,
 		MinFreeDiskMB: 10240,
 		Force:         true,
-	}, &logs)
+	}, func(entry engine.LogEntry) { logs = append(logs, entry) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != "tpl1" {
 		t.Errorf("BuildTemplate = %q, want tpl1", id)
 	}
-	if got := logs.String(); got != "one\ntwo\nthree\n" {
-		t.Errorf("logs = %q, want every entry once, in order", got)
+	want := []engine.LogEntry{
+		{Time: at, Level: "info", Step: "3", Message: "one"},
+		{Time: at, Level: "info", Step: "3", Message: "two"},
+		{Time: at, Level: "info", Step: "3", Message: "three"},
+	}
+	if !slices.Equal(logs, want) {
+		t.Errorf("logs = %+v, want %+v", logs, want)
 	}
 	if got := strings.Join(f.offsets, ","); got != "0,0,2,3" {
 		t.Errorf("logsOffset of each poll = %s, want 0,0,2,3", got)
@@ -650,7 +657,7 @@ func TestBuildTemplateFailure(t *testing.T) {
 }
 
 // E2B quotes a failed step's whole command, which can be most of a megabyte of file contents.
-func TestBuildTemplateElidesLongMessages(t *testing.T) {
+func TestBuildTemplateKeepsFullMessagesAndElidesFailureReason(t *testing.T) {
 	fastPolls(t)
 	f, e := newFakeE2B(t)
 	cmd := "RUN put /x 755 '" + strings.Repeat("QUFB", 5000) + "'; /x"
@@ -660,14 +667,15 @@ func TestBuildTemplateElidesLongMessages(t *testing.T) {
 		{"templateID": "tpl1", "buildID": "build1", "status": "error", "logs": []string{}, "logEntries": []any{},
 			"reason": map[string]any{"message": "failed to run command '" + cmd + "': exit status 1", "step": "1"}},
 	}
-	var logs strings.Builder
-	_, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04"}, &logs)
+	var logs []engine.LogEntry
+	_, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04"},
+		func(entry engine.LogEntry) { logs = append(logs, entry) })
 	if err == nil || len(err.Error()) > 1000 || !strings.Contains(err.Error(), "failed at step 1: failed to run command 'RUN put /x") ||
 		!strings.HasSuffix(err.Error(), "'; /x': exit status 1") || !strings.Contains(err.Error(), "bytes) …") {
 		t.Errorf("BuildTemplate = %v", err)
 	}
-	if line := logs.String(); len(line) > 1000 || !strings.HasPrefix(line, "RUN put /x 755 'QUFB") || !strings.HasSuffix(line, "QUFB'; /x\n") {
-		t.Errorf("logs = %q", line)
+	if len(logs) != 1 || logs[0].Message != cmd {
+		t.Errorf("logs did not preserve the full command")
 	}
 }
 

@@ -17,8 +17,8 @@ func TestSaveAndForkHelpExplainsCostAndContentsBeforeInit(t *testing.T) {
 			"everything in the machine", "placeholders", "public key",
 			"a secret you typed in yourself goes into the image too",
 		} {
-			if !strings.Contains(c.errOut.String(), part) {
-				t.Errorf("%v help lacks %q: %s", args, part, c.errOut)
+			if !strings.Contains(c.out.String(), part) {
+				t.Errorf("%v help lacks %q: %s", args, part, c.out)
 			}
 		}
 	}

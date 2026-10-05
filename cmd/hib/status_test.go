@@ -68,7 +68,7 @@ func TestStatusAsleepHostNeverUsesSSHOrStartsAzure(t *testing.T) {
 		{"stopping", "VM stopping", "VM stopping"},
 		{"deallocating", "VM deallocating", "VM deallocating"},
 		{"starting", "VM starting", "VM starting"},
-		{"terminal controls", "VM deallocated\x1b[2J\nforged", "VM deallocated\\x1b[2J forged"},
+		{"terminal controls", "VM deallocated\x1b[2J\nforged\rx", "VM deallocated\\x1b[2J\\x0aforged\\x0dx"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHost(t)
@@ -196,5 +196,76 @@ func TestStatusRejectsArgumentsSafelyBeforeCheckingHost(t *testing.T) {
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
 		t.Errorf("invalid status ran host commands: %q", calls)
+	}
+}
+
+func TestStatusSaysWhatsNext(t *testing.T) {
+	none, two := 0, 2
+	github := &hibapi.GitHub{Login: "octocat", Email: "1+octocat@users.noreply.github.com"}
+	codex := &hibapi.Codex{Email: "octo@example.com", Plan: "plus", Health: hibapi.CodexOK}
+	for _, tc := range []struct {
+		name   string
+		status hibapi.Status
+		next   string
+	}{
+		{"fresh host", hibapi.Status{Machines: &none}, "Next: hib connect github, hib connect codex (optional), hib new NAME"},
+		{"older hibd", hibapi.Status{}, "Next: hib connect github, hib connect codex (optional)"},
+		{"no machines yet", hibapi.Status{GitHub: github, Codex: codex, Machines: &none}, "Next: hib new NAME"},
+		{"no Codex", hibapi.Status{GitHub: github, Machines: &two}, "Next: hib connect codex (optional)"},
+		{"all done", hibapi.Status{GitHub: github, Codex: codex, Machines: &two}, ""},
+		{"all done with an older hibd", hibapi.Status{GitHub: github, Codex: codex}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			tc.status.Version, tc.status.E2B = "v-test", hibapi.Health{OK: true}
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				return writeTestResponse(stdout, hibapi.Response{Status: &tc.status}), true
+			}
+			if code := c.hib("status"); code != 0 {
+				t.Fatalf("exit %d: %s", code, c.errOut)
+			}
+			out := c.out.String()
+			health, next, found := strings.Cut(out, "secrets  none\n")
+			if !strings.HasPrefix(health, "host     "+testHost+"\nhibd     v-test\n") {
+				t.Errorf("status output %q is missing the health lines", out)
+			}
+			want := ""
+			if tc.next != "" {
+				want = "\n" + tc.next + "\n"
+			}
+			if !found || next != want {
+				t.Errorf("after the health lines %q, want %q", next, want)
+			}
+		})
+	}
+}
+
+func TestInitPointsAtStatus(t *testing.T) {
+	h := newHost(t)
+	c := newClient(t, h)
+	if code := c.hib("init", "-host", testHost); code != 0 {
+		t.Fatalf("init exit %d: %s", code, c.errOut)
+	}
+	if !strings.HasSuffix(c.out.String(), "\nrun hib status to see what's next\n") {
+		t.Errorf("init output %q doesn't end by pointing at hib status", c.out)
+	}
+}
+
+func TestStatusNamesTheAzCheckThatRanOutOfTime(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	c.azLimit = time.Millisecond
+	c.az = func(ctx context.Context, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	code := c.hib("status")
+	got := c.errOut.String()
+	if code != 1 || got != "hib: az didn't say whether the host is asleep within 1ms: check that az works, for example with az login\n" {
+		t.Errorf("exit %d, stderr %q", code, got)
+	}
+	if calls := h.takeCalls(); len(calls) != 0 {
+		t.Errorf("status ran ssh after az ran out of time: %q", calls)
 	}
 }

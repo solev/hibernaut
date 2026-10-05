@@ -35,7 +35,7 @@ func TestQuiescing(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		runHib(ctx, "rm", name)
+		runHib(ctx, "rm", name, "--yes")
 	})
 
 	_, stderr, code := runHib(ctx, "new", name)

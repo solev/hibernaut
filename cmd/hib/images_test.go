@@ -61,7 +61,7 @@ func TestImageSaveAndNewWithSavedImage(t *testing.T) {
 	if code := c.hib("image", "save", "web", "myimg"); code != 0 {
 		t.Fatalf("save = %d; stderr %s", code, c.errOut)
 	}
-	if c.out.String() != "saved image myimg (512 MiB). use it with: hib new NAME -image myimg\n" {
+	if c.out.String() != "saved image myimg (512 MiB). use it with: hib new NAME --image myimg\n" {
 		t.Fatalf("save output = %q", c.out)
 	}
 	if code := c.hib("new", "web2", "-image", "myimg"); code != 0 {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
+	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/vault"
@@ -42,7 +43,7 @@ func (a *App) status(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Status: &s})
 	}
-	hibapi.PrintStatus(a.Stdout, "", s)
+	hibapi.PrintStatus(a.Stdout, "", s, nil)
 	if !s.OK() {
 		return 1
 	}
@@ -63,12 +64,35 @@ func (a *App) hostStatus(ctx context.Context, cfg config) (hibapi.Status, error)
 		return hibapi.Status{}, err
 	}
 	var e2b hibapi.Health
+	var machineCount *int
+	var listErr error
 	var wg sync.WaitGroup
 	wg.Go(func() { e2b = checkE2B(ctx, cfg.healthURLs) })
+	wg.Go(func() {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		e, err := a.engine()
+		if err != nil {
+			listErr = err
+			return
+		}
+		ms, err := e.List(ctx, engine.ListOptions{})
+		if err != nil {
+			listErr = err
+			return
+		}
+		machineCount = new(len(ms))
+	})
 	health, githubUser := a.checkSecrets(ctx, secrets, profile)
 	wg.Wait()
 
-	s := hibapi.Status{Version: version.Version, E2B: e2b, Codex: login, Secrets: health}
+	if listErr != nil {
+		e2b.OK = false
+		e2b.Detail = strings.TrimPrefix(e2b.Detail+". "+listErr.Error()+". Run hib status again after checking E2B on the host", ". ")
+	} else if !e2b.OK {
+		e2b.Detail += ". Run hib status again after checking E2B on the host"
+	}
+	s := hibapi.Status{Version: version.Version, E2B: e2b, Codex: login, Secrets: health, Machines: machineCount}
 	if profile != nil && slices.ContainsFunc(secrets, func(r vault.Revealed) bool { return r.Name == github.SecretName }) {
 		g := profile.Account(githubUser)
 		s.GitHub = &g

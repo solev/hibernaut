@@ -104,7 +104,7 @@ func TestNewSizeSaysWhichSizesStillFit(t *testing.T) {
 	}
 	code, _, err := runJSON(t, a, out, "new", "app", "-size", "large", "-json")
 	if code != 1 || !strings.Contains(errText(err), `no room on the host for "app"`) ||
-		!strings.HasSuffix(errText(err), ". Sizes that still fit: small, medium") {
+		!strings.HasSuffix(errText(err), ". Sizes that still fit: small, medium. Run hib ls, then pause or remove machines you don't need before trying again") {
 		t.Errorf("new -size large = %d, %v; want no room, and the sizes that still fit", code, err)
 	}
 }
@@ -278,7 +278,7 @@ func TestImageBuildChecksRoomBeforeEachSize(t *testing.T) {
 	before := len(e.Built())
 	code, _, err := runJSON(t, a, out, "image", "build", "dev", "-json")
 	wantNoRoom(t, "image build with the host full after medium", code, errText(err), "dev (small)")
-	if !strings.HasSuffix(errText(err), "hib pause NAME. Built: medium. Failed: small. Not tried: large") {
+	if !strings.HasSuffix(errText(err), "hib pause NAME. Built: medium. Failed: small. Not tried: large. Run hib ls, then pause or remove machines you don't need before trying again") {
 		t.Errorf("image build = %v, want it to say which sizes are built", err)
 	}
 	if got := builtNames(e)[before:]; !slices.Equal(got, []string{"hib-dev"}) {

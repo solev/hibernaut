@@ -20,7 +20,7 @@ the [spec](../spec.md): §7 is the plan, §8 is how we test.
 | M7 | [GitHub device flow](m7-github-device-flow.md) | not started | `TestDeviceFlow` |
 | M8 | [Machine sizes](m8-machine-sizes.md) | done | `TestSizes` |
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | not started | `TestPauseCycles` (bounded) |
-| M10 | [CLI friendliness](m10-cli-friendliness.md) | not started | none new (unit tests in `cmd/hib`) |
+| M10 | [CLI friendliness](m10-cli-friendliness.md) | done | none new (unit tests in `cmd/hib`) |
 
 M8 and M9 came last but need only M2, so either can be pulled forward any time after M2. M9
 should come before the host's disk fills: until then, every pause adds to a machine's disk.
