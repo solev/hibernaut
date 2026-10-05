@@ -58,13 +58,23 @@ may yet resume from: `keepHistory` on the machine's slot, from a time `since`.
   runs from. If E2B doesn't say when it started, all of its builds are roots.
 - E2B lists a machine it's still pausing as paused, and records the pause's build only after
   that. So a paused machine counts as running until its pause is done, when its slot has a ready
-  build created after it started, and for an hour after that build finished.
+  build created after it started that's in no image's slot, and for an hour after that build
+  finished. An image save puts its build in the machine's slot as well as the image's, and the
+  machine keeps running.
 - Otherwise `since` is an hour ago: a replaced snapshot stays a root for an hour.
+
+After an image save, E2B resumes the machine from the save's build. With E2B's
+`in-place-checkpoint` flag on, it would keep the machine on the build it was running from, and
+the machine's later snapshots would read through that one. The host sets no E2B flags, so the
+flag is off, and the pause rule doesn't count an image save's build either way.
 
 A machine with no ready snapshot of its own may have started from another machine's: E2B's
 native fork does that, and copies the machine's metadata, so E2B's listing can't tell such a
-machine from a new one. hib never forks that way (`hib fork` saves an image first), and M2's
-deletion already relies on that for removed machines. Still, while E2B lists a machine with no
+machine from a new one. A native fork also checkpoints the machine it forks: a build in that
+machine's slot alone, made while the machine keeps running, which looks like a finished pause.
+hib never forks that way (`hib fork` saves an image first), and M2's deletion already relies on
+that for removed machines. M9 makes sure of it: hib's E2B client is generated without E2B's fork
+endpoint, by an overlay in `internal/engine/e2b`. Still, while E2B lists a machine with no
 snapshot of its own, every machine slot that isn't removed keeps its builds from an hour before
 that machine started, or all of them if E2B doesn't say when it started. M2's startup history
 does the same for images.
@@ -197,6 +207,7 @@ until `test` resumes after a real trim and a host restart.
       synced to disk or not. Its numbers are in Why.
 - [ ] `internal/snapheader`: the strict parser.
 - [ ] Cleanup: the machine roots, root accounting, candidates and the scope.
+- [ ] hib's E2B client without E2B's fork endpoint: an overlay `make generate` applies.
 - [ ] The plan, and punching on Linux (`trim_linux.go`, with a `trim_stub.go` that says trimming
       needs Linux). `hibd cleanup -n` says what it would trim.
 - [ ] `cleanup.lock`, the trim budget, and `HIBD_TRIM` in hibd's usage.
@@ -218,8 +229,9 @@ Unit:
 - [ ] Roots, on an injected clock: a running machine keeps its builds from an hour before it
       started, all of them if its start is unknown. A machine E2B lists as paused before its
       pause's build exists, whose run started from a snapshot replaced over an hour before, keeps
-      that snapshot. A paused machine keeps its last run's input for an hour after its pause's
-      build finished. A replaced snapshot stays a root for an hour. While a machine with no
+      that snapshot. So does one whose slot also holds an image save's build from that run, made
+      over an hour before. A paused machine keeps its last run's input for an hour after its
+      pause's build finished. A replaced snapshot stays a root for an hour. While a machine with no
       snapshot of its own runs, as a native fork would, every other machine's slot that isn't
       removed keeps its builds from an hour before it started. Startup history, saved images and
       the layer cache stay roots in every scope. Deletion keeps the roots.
@@ -237,6 +249,7 @@ Unit:
       inward. A candidate no root maps loses everything.
 - [ ] The sweep: trimming has its own budget, a sweep that runs out of it tries again in a
       minute, and runs cut short again and again still finish the trim.
+- [ ] hib's E2B client has no method that forks a machine natively.
 
 Host (`-tags host`, on ext4 under `/var/tmp`, in `make test-host-remote`):
 
@@ -256,11 +269,12 @@ End-to-end:
       after every resume, reading the disk one after dropping the guest's page cache. It stays a
       measurement.
 - [ ] `TestTrim` (slow). Machine A, with the sentinels, pauses 10 times with the random
-      workload. Machine B pauses twice, and an image is saved from it. The test records each of
-      A's and B's build files: size, allocated blocks, and the SHA-256 of headers, snapfile and
-      metadata. Then it calls `t.Parallel()`, so the hour passes while the rest of
-      `make e2e-slow` runs (`TestBusyPastAnHour` takes 65 minutes). Afterwards, on fresh
-      contexts, holding an SSH session so the host doesn't deallocate:
+      workload. Machine B pauses twice, and an image is saved from it. Once their build
+      directories hold all their files, the test records each of A's and B's build files: size,
+      allocated blocks, and the SHA-256 of headers, snapfile and metadata. Then it calls
+      `t.Parallel()`, so the hour passes while the rest of `make e2e-slow` runs
+      (`TestBusyPastAnHour` takes 65 minutes). Afterwards, on fresh contexts, holding an SSH
+      session so the host doesn't deallocate:
       1. It runs `hibd cleanup -n` until A's old builds are candidates, or the daemon has
          trimmed them, with a deadline.
       2. It runs `hibd cleanup`, and checks the result, not the run. A's builds take less than
@@ -286,9 +300,6 @@ End-to-end:
   chain into one new build for E2B to resume from, which meant writing E2B's database and cache.
   The second deleted the builds the latest headers don't name, but S0 showed they name most of
   them, and hib's save and fork checks expect every build in a chain. So M9 only punches holes,
-  and protects what a running machine may read for as long as it runs. The third review added a
-  machine E2B is still pausing, native forks, warm template caches, and builds an e2e machine
-  shares with a saved image.
-- 2026-10-05: `TestTrim` records A's and B's build files before it calls `t.Parallel()`, not
-  after its `hibd cleanup -n` wait. The daemon's hourly sweep may trim during the wait, and the
-  check needs the sizes from before any trim.
+  and protects what a running machine may read for as long as it runs. The third review and its
+  follow-up added a machine E2B is still pausing, image saves and native forks, warm template
+  caches, builds an e2e machine shares with a saved image, and a baseline taken before the hour.
