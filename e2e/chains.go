@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,18 +22,23 @@ var (
 )
 
 type pauseCycleOptions struct {
-	Cycles int
-	Churn  string
+	Cycles   int
+	Churn    string
+	Workload string
 }
 
 func pauseCycleOptionsFromEnv(lookup func(string) (string, bool)) (pauseCycleOptions, error) {
 	cycles, hasCycles := lookup("HIB_E2E_CYCLES")
 	churn, hasChurn := lookup("HIB_E2E_CHURN")
+	workload, hasWorkload := lookup("HIB_E2E_WORKLOAD")
 	if !hasCycles {
 		cycles = "20"
 	}
 	if !hasChurn {
 		churn = "64M"
+	}
+	if !hasWorkload {
+		workload = "random"
 	}
 	n, err := strconv.Atoi(cycles)
 	if err != nil || !cycleDigits.MatchString(cycles) || n < 1 || n > 200 {
@@ -41,7 +47,10 @@ func pauseCycleOptionsFromEnv(lookup func(string) (string, bool)) (pauseCycleOpt
 	if !churnSize.MatchString(churn) {
 		return pauseCycleOptions{}, fmt.Errorf("HIB_E2E_CHURN must be digits with an optional K, M or G suffix")
 	}
-	return pauseCycleOptions{Cycles: n, Churn: churn}, nil
+	if workload != "random" && workload != "synced" {
+		return pauseCycleOptions{}, fmt.Errorf("invalid HIB_E2E_WORKLOAD. use random or synced")
+	}
+	return pauseCycleOptions{Cycles: n, Churn: churn, Workload: workload}, nil
 }
 
 func (o pauseCycleOptions) timeout() time.Duration {
@@ -51,6 +60,10 @@ func (o pauseCycleOptions) timeout() time.Duration {
 func (o pauseCycleOptions) churnCommand() string {
 	if o.Churn == "0" {
 		return ""
+	}
+	if o.Workload == "synced" {
+		return "dd if=/dev/urandom of=/home/user/churn bs=1M count=" + o.Churn +
+			" iflag=count_bytes conv=notrunc,fsync status=none"
 	}
 	return "head -c " + o.Churn + " /dev/urandom > /home/user/churn"
 }
@@ -65,23 +78,15 @@ func snapshotQuery(id string) (string, error) {
 }
 
 func parseSnapshotBuilds(out string) ([]string, bool, error) {
+	assignments, err := parseSnapshotAssignments(out)
+	if err != nil {
+		return nil, false, err
+	}
 	var builds []string
-	seen := map[string]bool{}
 	done := true
-	for line := range strings.Lines(out) {
-		fields := strings.Split(strings.TrimSuffix(line, "\n"), "|")
-		if len(fields) != 2 || !buildUUID.MatchString(fields[0]) || seen[fields[0]] {
-			return nil, false, fmt.Errorf("invalid snapshot build listing")
-		}
-		switch fields[1] {
-		case "ready", "failed":
-		case "pending", "in_progress":
-			done = false
-		default:
-			return nil, false, fmt.Errorf("snapshot build has an unknown status")
-		}
-		builds = append(builds, fields[0])
-		seen[fields[0]] = true
+	for _, build := range assignments {
+		builds = append(builds, build.ID)
+		done = done && (build.Status == "ready" || build.Status == "failed")
 	}
 	return builds, done, nil
 }
@@ -127,6 +132,10 @@ for b in ` + strings.Join(builds, " ") + `; do
 		printf "header\t%s\t%s\t" "$b" "$f"
 		base64 -w0 -- "$b/$f"
 		printf "\n"
+	done
+	for f in ` + strings.Join(snapshotSidecars[:], " ") + `; do
+		printf "overhead\t%s\t%s\t" "$b" "$f"
+		stat -c "%b %B %s" -- "$b/$f"
 	done
 	if [ "$b" = "` + builds[len(builds)-1] + `" ]; then
 		for f in memfile rootfs.ext4; do
@@ -178,9 +187,10 @@ type bodyStats struct {
 }
 
 type snapshotFiles struct {
-	Disk    int64
-	Headers map[string]cleanup.HeaderStats
-	Bodies  map[string]bodyStats
+	Disk     int64
+	Headers  map[string]cleanup.HeaderStats
+	Bodies   map[string]bodyStats
+	Overhead map[string]uint64
 }
 
 func parseBodyStats(out string) (bodyStats, error) {
@@ -225,7 +235,10 @@ func parseSnapshotFiles(out string, builds []string) (map[string]snapshotFiles, 
 			if err != nil {
 				return nil, err
 			}
-			files[fields[2]] = snapshotFiles{Disk: disk, Headers: map[string]cleanup.HeaderStats{}, Bodies: map[string]bodyStats{}}
+			files[fields[2]] = snapshotFiles{
+				Disk: disk, Headers: map[string]cleanup.HeaderStats{},
+				Bodies: map[string]bodyStats{}, Overhead: map[string]uint64{},
+			}
 			continue
 		}
 		if len(fields) != 4 {
@@ -252,12 +265,24 @@ func parseSnapshotFiles(out string, builds []string) (map[string]snapshotFiles, 
 				return nil, err
 			}
 			file.Bodies[fields[2]] = body
+		case "overhead":
+			if !slices.Contains(snapshotSidecars[:], fields[2]) {
+				return nil, fmt.Errorf("unexpected snapshot overhead file")
+			}
+			if _, duplicate := file.Overhead[fields[2]]; duplicate {
+				return nil, fmt.Errorf("duplicate snapshot overhead file")
+			}
+			stat, err := parseBodyStats(fields[3])
+			if err != nil {
+				return nil, err
+			}
+			file.Overhead[fields[2]] = stat.Allocated
 		default:
 			return nil, fmt.Errorf("unknown snapshot file record")
 		}
 	}
 	for id, file := range files {
-		if len(file.Headers) != 2 || id == latest && len(file.Bodies) != 2 {
+		if len(file.Headers) != 2 || len(file.Overhead) != len(snapshotSidecars) || id == latest && len(file.Bodies) != 2 {
 			return nil, fmt.Errorf("snapshot files are incomplete")
 		}
 	}
@@ -304,6 +329,8 @@ type snapshotMetrics struct {
 	MemoryNeeds, RootfsNeeds, OwnNeeds sourceUsage
 	NeededDisk                         int64
 	Kept, All                          directoryUsage
+	LatestOverhead                     map[string]uint64
+	KeptOverhead                       uint64
 }
 
 func measureSnapshot(latest string, files map[string]snapshotFiles) (snapshotMetrics, error) {
@@ -325,7 +352,12 @@ func measureSnapshot(latest string, files map[string]snapshotFiles) (snapshotMet
 	for id, file := range files {
 		all[id] = file.Disk
 	}
-	kept, err := diskUsage(cleanupClosure(latest, files))
+	closure := cleanupClosure(latest, files)
+	kept, err := diskUsage(closure)
+	if err != nil {
+		return snapshotMetrics{}, err
+	}
+	overhead, err := keptOverhead(files, closure)
 	if err != nil {
 		return snapshotMetrics{}, err
 	}
@@ -341,7 +373,22 @@ func measureSnapshot(latest string, files map[string]snapshotFiles) (snapshotMet
 		Memory: memory, Rootfs: rootfs,
 		MemoryNeeds: sourceTotals(memorySources), RootfsNeeds: sourceTotals(rootfsSources),
 		OwnNeeds: sourceTotals(both), NeededDisk: direct.Bytes, Kept: kept, All: total,
+		LatestOverhead: file.Overhead, KeptOverhead: overhead,
 	}, nil
+}
+
+func keptOverhead(files map[string]snapshotFiles, kept map[string]int64) (uint64, error) {
+	var total uint64
+	for id := range kept {
+		for _, name := range snapshotSidecars {
+			n := files[id].Overhead[name]
+			if total > math.MaxUint64-n {
+				return 0, fmt.Errorf("snapshot overhead is out of range")
+			}
+			total += n
+		}
+	}
+	return total, nil
 }
 
 func ownSources(files map[string]snapshotFiles, headers ...cleanup.HeaderStats) map[string]uint64 {
@@ -400,9 +447,9 @@ func diskUsage(dirs map[string]int64) (directoryUsage, error) {
 }
 
 type pauseCycle struct {
-	Cycle                int
-	Pause, Write, Resume time.Duration
-	Snapshot             snapshotMetrics
+	Cycle                           int
+	Pause, Durable, Cleanup, Resume time.Duration
+	Snapshot                        snapshotMetrics
 }
 
 func formatBytes(n uint64) string {
@@ -414,16 +461,21 @@ func formatBytes(n uint64) string {
 
 func formatPauseCycle(c pauseCycle) string {
 	s := c.Snapshot
-	return fmt.Sprintf("cycle %2d: pause %v. write %v. resume %v. "+
+	return fmt.Sprintf("cycle %2d: pause %v. durable %v. cleanup %v. resume %v. "+
 		"memfile allocated %s, logical %s, %d mappings. rootfs.ext4 allocated %s, logical %s, %d mappings. "+
+		"latest overhead allocated snapfile %s, memfile.header %s, rootfs.ext4.header %s, metadata.json %s. "+
 		"own needed memory %d/%s, rootfs %d/%s, both %d/%s mapped, %s on disk. "+
-		"cleanup keeps %d/%s. snapshots %d/%s.",
-		c.Cycle, c.Pause.Round(time.Millisecond), c.Write.Round(time.Millisecond), c.Resume.Round(time.Millisecond),
+		"cleanup keeps %d/%s, overhead %s. snapshots %d/%s.",
+		c.Cycle, c.Pause.Round(time.Millisecond), c.Durable.Round(time.Millisecond),
+		c.Cleanup.Round(time.Millisecond), c.Resume.Round(time.Millisecond),
 		formatBytes(s.Memory.Allocated), formatBytes(s.Memory.Logical), s.Memory.Mappings,
 		formatBytes(s.Rootfs.Allocated), formatBytes(s.Rootfs.Logical), s.Rootfs.Mappings,
+		formatBytes(s.LatestOverhead["snapfile"]), formatBytes(s.LatestOverhead["memfile.header"]),
+		formatBytes(s.LatestOverhead["rootfs.ext4.header"]), formatBytes(s.LatestOverhead["metadata.json"]),
 		s.MemoryNeeds.Builds, formatBytes(s.MemoryNeeds.Bytes), s.RootfsNeeds.Builds, formatBytes(s.RootfsNeeds.Bytes),
 		s.OwnNeeds.Builds, formatBytes(s.OwnNeeds.Bytes), formatBytes(uint64(s.NeededDisk)),
-		s.Kept.Builds, formatBytes(uint64(s.Kept.Bytes)), s.All.Builds, formatBytes(uint64(s.All.Bytes)))
+		s.Kept.Builds, formatBytes(uint64(s.Kept.Bytes)), formatBytes(s.KeptOverhead),
+		s.All.Builds, formatBytes(uint64(s.All.Bytes)))
 }
 
 func tailSlope(values []float64) float64 {
@@ -447,21 +499,26 @@ func tailSlope(values []float64) float64 {
 
 func pauseCycleSummary(options pauseCycleOptions, cycles []pauseCycle) string {
 	first, last := cycles[0], cycles[len(cycles)-1]
-	var mapped, kept []float64
-	var slowest time.Duration
+	var mapped, kept, overhead []float64
+	var slowest, slowestDurable time.Duration
 	for _, c := range cycles {
 		mapped = append(mapped, float64(c.Snapshot.OwnNeeds.Bytes)/(1<<20))
 		kept = append(kept, float64(c.Snapshot.Kept.Bytes)/(1<<20))
+		overhead = append(overhead, float64(c.Snapshot.KeptOverhead)/(1<<20))
 		slowest = max(slowest, c.Resume)
+		slowestDurable = max(slowestDurable, c.Durable)
 	}
-	return fmt.Sprintf("pause cycles summary: cycles=%d churn=%s. own needed first %d/%s, last %d/%s. "+
-		"cleanup kept first %d/%s, last %d/%s. resume first %v, last %v. "+
-		"last %d slopes own mapped %+.2f MiB/cycle, kept disk %+.2f MiB/cycle. slowest resume %v.",
-		options.Cycles, options.Churn,
+	return fmt.Sprintf("pause cycles summary: cycles=%d workload=%s churn=%s. own needed first %d/%s, last %d/%s. "+
+		"cleanup kept first %d/%s, overhead %s, last %d/%s, overhead %s. durable first %v, last %v, slowest %v. "+
+		"cleanup first %v, last %v. resume first %v, last %v. "+
+		"last %d slopes own mapped %+.2f MiB/cycle, kept disk %+.2f MiB/cycle, kept overhead %+.2f MiB/cycle. slowest resume %v.",
+		options.Cycles, options.Workload, options.Churn,
 		first.Snapshot.OwnNeeds.Builds, formatBytes(first.Snapshot.OwnNeeds.Bytes),
 		last.Snapshot.OwnNeeds.Builds, formatBytes(last.Snapshot.OwnNeeds.Bytes),
-		first.Snapshot.Kept.Builds, formatBytes(uint64(first.Snapshot.Kept.Bytes)),
-		last.Snapshot.Kept.Builds, formatBytes(uint64(last.Snapshot.Kept.Bytes)),
+		first.Snapshot.Kept.Builds, formatBytes(uint64(first.Snapshot.Kept.Bytes)), formatBytes(first.Snapshot.KeptOverhead),
+		last.Snapshot.Kept.Builds, formatBytes(uint64(last.Snapshot.Kept.Bytes)), formatBytes(last.Snapshot.KeptOverhead),
+		first.Durable.Round(time.Millisecond), last.Durable.Round(time.Millisecond), slowestDurable.Round(time.Millisecond),
+		first.Cleanup.Round(time.Millisecond), last.Cleanup.Round(time.Millisecond),
 		first.Resume.Round(time.Millisecond), last.Resume.Round(time.Millisecond),
-		min(5, len(cycles)), tailSlope(mapped), tailSlope(kept), slowest.Round(time.Millisecond))
+		min(5, len(cycles)), tailSlope(mapped), tailSlope(kept), tailSlope(overhead), slowest.Round(time.Millisecond))
 }

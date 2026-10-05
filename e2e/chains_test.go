@@ -19,17 +19,24 @@ import (
 
 func TestPauseCycleOptions(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		env    map[string]string
-		cycles int
-		churn  string
-		limit  time.Duration
+		name     string
+		env      map[string]string
+		cycles   int
+		churn    string
+		workload string
+		limit    time.Duration
 	}{
-		{"defaults", nil, 20, "64M", 50 * time.Minute},
-		{"idle", map[string]string{"HIB_E2E_CYCLES": "1", "HIB_E2E_CHURN": "0"}, 1, "0", 12 * time.Minute},
-		{"maximum", map[string]string{"HIB_E2E_CYCLES": "200", "HIB_E2E_CHURN": "1G"}, 200, "1G", 410 * time.Minute},
-		{"bytes", map[string]string{"HIB_E2E_CHURN": "4096"}, 20, "4096", 50 * time.Minute},
-		{"kilobytes", map[string]string{"HIB_E2E_CHURN": "128K"}, 20, "128K", 50 * time.Minute},
+		{"defaults", nil, 20, "64M", "random", 50 * time.Minute},
+		{"idle", map[string]string{"HIB_E2E_CYCLES": "1", "HIB_E2E_CHURN": "0"}, 1, "0", "random", 12 * time.Minute},
+		{"maximum", map[string]string{"HIB_E2E_CYCLES": "200", "HIB_E2E_CHURN": "1G"}, 200, "1G", "random", 410 * time.Minute},
+		{"bytes", map[string]string{"HIB_E2E_CHURN": "4096"}, 20, "4096", "random", 50 * time.Minute},
+		{"kilobytes", map[string]string{"HIB_E2E_CHURN": "128K"}, 20, "128K", "random", 50 * time.Minute},
+		{"explicit random", map[string]string{"HIB_E2E_WORKLOAD": "random"}, 20, "64M", "random", 50 * time.Minute},
+		{"synced", map[string]string{"HIB_E2E_WORKLOAD": "synced"}, 20, "64M", "synced", 50 * time.Minute},
+		{"synced bytes", map[string]string{"HIB_E2E_WORKLOAD": "synced", "HIB_E2E_CHURN": "4096"}, 20, "4096", "synced", 50 * time.Minute},
+		{"synced kilobytes", map[string]string{"HIB_E2E_WORKLOAD": "synced", "HIB_E2E_CHURN": "128K"}, 20, "128K", "synced", 50 * time.Minute},
+		{"synced gigabytes", map[string]string{"HIB_E2E_WORKLOAD": "synced", "HIB_E2E_CHURN": "1G"}, 20, "1G", "synced", 50 * time.Minute},
+		{"synced idle", map[string]string{"HIB_E2E_WORKLOAD": "synced", "HIB_E2E_CHURN": "0"}, 20, "0", "synced", 50 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := map[string]int{}
@@ -41,13 +48,17 @@ func TestPauseCycleOptions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Cycles != tc.cycles || got.Churn != tc.churn || got.timeout() != tc.limit {
-				t.Errorf("options = %+v, timeout %v, want %d cycles, %s churn, %v", got, got.timeout(), tc.cycles, tc.churn, tc.limit)
+			if got.Cycles != tc.cycles || got.Churn != tc.churn || got.Workload != tc.workload || got.timeout() != tc.limit {
+				t.Errorf("options = %+v, timeout %v, want %d cycles, %s churn, %s workload, %v", got, got.timeout(), tc.cycles, tc.churn, tc.workload, tc.limit)
 			}
-			if reads["HIB_E2E_CYCLES"] != 1 || reads["HIB_E2E_CHURN"] != 1 {
+			if reads["HIB_E2E_CYCLES"] != 1 || reads["HIB_E2E_CHURN"] != 1 || reads["HIB_E2E_WORKLOAD"] != 1 {
 				t.Errorf("environment reads = %v, want one per knob", reads)
 			}
 			wantCommand := "head -c " + tc.churn + " /dev/urandom > /home/user/churn"
+			if tc.workload == "synced" {
+				wantCommand = "dd if=/dev/urandom of=/home/user/churn bs=1M count=" + tc.churn +
+					" iflag=count_bytes conv=notrunc,fsync status=none"
+			}
 			if tc.churn == "0" {
 				wantCommand = ""
 			}
@@ -60,8 +71,9 @@ func TestPauseCycleOptions(t *testing.T) {
 
 func TestPauseCycleOptionsRefuseUnsafeValues(t *testing.T) {
 	for key, values := range map[string][]string{
-		"HIB_E2E_CYCLES": {"", "0", "201", "-1", "+1", "1.5", " 20", "20\n", "999999999999999999999"},
-		"HIB_E2E_CHURN":  {"", "-1", "+1", "1.5M", "1m", "1T", "1MB", " 64M", "1M\n", "1; echo bad", "$(echo bad)"},
+		"HIB_E2E_CYCLES":   {"", "0", "201", "-1", "+1", "1.5", " 20", "20\n", "999999999999999999999"},
+		"HIB_E2E_CHURN":    {"", "-1", "+1", "1.5M", "1m", "1T", "1MB", " 64M", "1M\n", "1; echo bad", "$(echo bad)"},
+		"HIB_E2E_WORKLOAD": {"", "idle", "Random", " synced", "synced\n", "synced; echo bad", "$(echo bad)"},
 	} {
 		for _, value := range values {
 			t.Run(key+"="+value, func(t *testing.T) {
@@ -73,6 +85,10 @@ func TestPauseCycleOptionsRefuseUnsafeValues(t *testing.T) {
 				}
 				if strings.ContainsAny(err.Error(), "\n\x1b") {
 					t.Errorf("error contains raw input: %q", err)
+				}
+				if key == "HIB_E2E_WORKLOAD" && (!strings.HasPrefix(err.Error(), "invalid") ||
+					!strings.Contains(err.Error(), "random or synced")) {
+					t.Errorf("workload error = %q, want lowercase and allowed modes", err)
 				}
 			})
 		}
@@ -109,6 +125,11 @@ func TestSnapshotCommandsCheckHostIDs(t *testing.T) {
 			if !strings.Contains(command, want) {
 				t.Errorf("snapshot command doesn't contain %q", want)
 			}
+		}
+		overheadLoop := strings.Index(command, "for f in memfile.header rootfs.ext4.header snapfile metadata.json")
+		latestOnly := strings.Index(command, `if [ "$b" = "`+chainB+`" ]`)
+		if overheadLoop < 0 || overheadLoop > latestOnly || !strings.Contains(command, `printf "overhead\t%s\t%s\t"`) {
+			t.Fatal("overhead isn't collected for every surviving build")
 		}
 	}
 	for _, invalid := range []string{"", "../build", chainA + ";echo bad", chainA + "\n", "$(echo bad)", "'"} {
@@ -212,6 +233,14 @@ func snapshotWire(t *testing.T) string {
 			lines = append(lines, fmt.Sprintf("header\t%s\t%s\t%s", build, name,
 				wireHeader(t, build, image, map[string]uint64{build: 4096, "": 4096})))
 		}
+		for _, file := range []struct {
+			name            string
+			blocks, logical int
+		}{
+			{"snapfile", 32, 12345}, {"memfile.header", 16, 144}, {"rootfs.ext4.header", 8, 144}, {"metadata.json", 8, 255},
+		} {
+			lines = append(lines, fmt.Sprintf("overhead\t%s\t%s\t%d 512 %d", build, file.name, file.blocks, file.logical))
+		}
 	}
 	return strings.Join(lines, "\n") + "\nbody\t" + chainC + "\tmemfile\t8 512 8192\nbody\t" + chainC + "\trootfs.ext4\t0 512 0\n"
 }
@@ -237,6 +266,11 @@ func TestParseSnapshotFiles(t *testing.T) {
 	if !maps.Equal(got.Headers["memfile.header"].BytesByBuild, map[string]uint64{chainC: 4096}) {
 		t.Error("mapped bytes don't exclude nil ranges")
 	}
+	if !maps.Equal(got.Overhead, map[string]uint64{
+		"snapfile": 16384, "memfile.header": 8192, "rootfs.ext4.header": 4096, "metadata.json": 4096,
+	}) {
+		t.Errorf("latest overhead = %v, want allocated bytes for all four sidecars", got.Overhead)
+	}
 }
 
 func TestParseSnapshotFilesRefusesMalformedOutput(t *testing.T) {
@@ -258,6 +292,11 @@ func TestParseSnapshotFilesRefusesMalformedOutput(t *testing.T) {
 		"unknown record":        wire + "unsafe\t\x1b[31m\n",
 		"unsafe directory ID":   strings.ReplaceAll(wire, chainA, "../bad"),
 		"header before listing": "header\t" + chainA + "\tmemfile.header\t!\n" + wire,
+		"missing overhead":      strings.Replace(wire, "overhead\t"+chainC+"\tmetadata.json\t8 512 255\n", "", 1),
+		"duplicate overhead":    wire + "overhead\t" + chainC + "\tsnapfile\t8 512 4096\n",
+		"unknown overhead":      strings.Replace(wire, "\tsnapfile\t", "\tunknown\t", 1),
+		"negative overhead":     strings.Replace(wire, "snapfile\t32 512 12345", "snapfile\t-32 512 12345", 1),
+		"overhead overflow":     strings.Replace(wire, "snapfile\t32 512 12345", "snapfile\t18446744073709551615 512 12345", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseSnapshotFiles(out, []string{chainA, chainC}); err == nil {
@@ -272,19 +311,22 @@ func TestParseSnapshotFilesRefusesMalformedOutput(t *testing.T) {
 func TestSnapshotMetricsSeparateMappedSourcesFromCleanup(t *testing.T) {
 	files := map[string]snapshotFiles{
 		chainA: {
-			Disk: 1 << 20,
+			Disk:     1 << 20,
+			Overhead: map[string]uint64{"snapfile": 4096, "memfile.header": 4096, "rootfs.ext4.header": 4096, "metadata.json": 4096},
 			Headers: map[string]cleanup.HeaderStats{
 				"memfile.header": {Build: chainA, BaseBuild: image, BytesByBuild: map[string]uint64{chainB: 10}},
 			},
 		},
 		chainB: {
-			Disk: 2 << 20,
+			Disk:     2 << 20,
+			Overhead: map[string]uint64{"snapfile": 8192, "memfile.header": 4096, "rootfs.ext4.header": 4096, "metadata.json": 4096},
 			Headers: map[string]cleanup.HeaderStats{
 				"rootfs.ext4.header": {Build: chainB, BytesByBuild: map[string]uint64{chainA: 20}},
 			},
 		},
 		chainC: {
-			Disk: 3 << 20,
+			Disk:     3 << 20,
+			Overhead: map[string]uint64{"snapfile": 16384, "memfile.header": 8192, "rootfs.ext4.header": 4096, "metadata.json": 4096},
 			Headers: map[string]cleanup.HeaderStats{
 				"memfile.header":     {Build: chainC, BaseBuild: image, Mappings: 4, BytesByBuild: map[string]uint64{chainA: 100, chainC: 200, image: 400}},
 				"rootfs.ext4.header": {Build: chainC, BaseBuild: image, Mappings: 2, BytesByBuild: map[string]uint64{chainC: 300, image: 700}},
@@ -294,7 +336,7 @@ func TestSnapshotMetricsSeparateMappedSourcesFromCleanup(t *testing.T) {
 				"rootfs.ext4": {Allocated: 8 << 20, Logical: 16 << 20},
 			},
 		},
-		"55555555-5555-4555-8555-555555555555": {Disk: 4 << 20},
+		"55555555-5555-4555-8555-555555555555": {Disk: 4 << 20, Overhead: map[string]uint64{"snapfile": 1 << 20}},
 	}
 	got, err := measureSnapshot(chainC, files)
 	if err != nil {
@@ -311,11 +353,18 @@ func TestSnapshotMetricsSeparateMappedSourcesFromCleanup(t *testing.T) {
 	if got.Memory.Mappings != 4 || got.Rootfs.Mappings != 2 || got.Memory.Logical != 80<<20 {
 		t.Errorf("body stats = %+v, want header mapping counts and body logical sizes", got)
 	}
-	line := formatPauseCycle(pauseCycle{Cycle: 3, Pause: 2 * time.Second, Write: 5 * time.Second, Resume: 1100 * time.Millisecond, Snapshot: got})
-	want := "cycle  3: pause 2s. write 5s. resume 1.1s. " +
+	if got.KeptOverhead != 69632 || !maps.Equal(got.LatestOverhead, files[chainC].Overhead) {
+		t.Errorf("overhead = %v latest, %d kept, want the latest sidecars and 69632 B in the closure", got.LatestOverhead, got.KeptOverhead)
+	}
+	line := formatPauseCycle(pauseCycle{
+		Cycle: 3, Pause: 2 * time.Second, Durable: 5 * time.Second,
+		Cleanup: 200 * time.Millisecond, Resume: 1100 * time.Millisecond, Snapshot: got,
+	})
+	want := "cycle  3: pause 2s. durable 5s. cleanup 200ms. resume 1.1s. " +
 		"memfile allocated 64 MiB, logical 80 MiB, 4 mappings. rootfs.ext4 allocated 8 MiB, logical 16 MiB, 2 mappings. " +
+		"latest overhead allocated snapfile 16384 B, memfile.header 8192 B, rootfs.ext4.header 4096 B, metadata.json 4096 B. " +
 		"own needed memory 2/300 B, rootfs 1/300 B, both 2/600 B mapped, 4 MiB on disk. " +
-		"cleanup keeps 3/6 MiB. snapshots 4/10 MiB."
+		"cleanup keeps 3/6 MiB, overhead 69632 B. snapshots 4/10 MiB."
 	if line != want {
 		t.Errorf("cycle line = %q, want %q", line, want)
 	}
@@ -371,26 +420,43 @@ func TestTailSlope(t *testing.T) {
 
 func TestPauseCycleSummary(t *testing.T) {
 	var cycles []pauseCycle
+	durable := []time.Duration{2 * time.Second, 7 * time.Second, 4 * time.Second, 5 * time.Second, 3 * time.Second, 6 * time.Second}
 	for i, resume := range []time.Duration{900 * time.Millisecond, 1100 * time.Millisecond, 1500 * time.Millisecond, time.Second, 1200 * time.Millisecond, 1300 * time.Millisecond} {
 		cycles = append(cycles, pauseCycle{
-			Cycle: i + 1, Resume: resume,
+			Cycle: i + 1, Durable: durable[i], Cleanup: time.Duration(i+1) * 100 * time.Millisecond, Resume: resume,
 			Snapshot: snapshotMetrics{
-				OwnNeeds: sourceUsage{Builds: i + 1, Bytes: uint64(i+1) * 64 << 20},
-				Kept:     directoryUsage{Builds: i + 1, Bytes: int64(i+1) * 280 << 20},
+				OwnNeeds:     sourceUsage{Builds: i + 1, Bytes: uint64(i+1) * 64 << 20},
+				Kept:         directoryUsage{Builds: i + 1, Bytes: int64(i+1) * 280 << 20},
+				KeptOverhead: uint64(i+1) << 20,
 			},
 		})
 	}
-	got := pauseCycleSummary(pauseCycleOptions{Cycles: 6, Churn: "64M"}, cycles)
-	want := "pause cycles summary: cycles=6 churn=64M. own needed first 1/64 MiB, last 6/384 MiB. " +
-		"cleanup kept first 1/280 MiB, last 6/1.6 GiB. resume first 900ms, last 1.3s. " +
-		"last 5 slopes own mapped +64.00 MiB/cycle, kept disk +280.00 MiB/cycle. slowest resume 1.5s."
+	got := pauseCycleSummary(pauseCycleOptions{Cycles: 6, Churn: "64M", Workload: "random"}, cycles)
+	want := "pause cycles summary: cycles=6 workload=random churn=64M. own needed first 1/64 MiB, last 6/384 MiB. " +
+		"cleanup kept first 1/280 MiB, overhead 1 MiB, last 6/1.6 GiB, overhead 6 MiB. durable first 2s, last 6s, slowest 7s. " +
+		"cleanup first 100ms, last 600ms. resume first 900ms, last 1.3s. " +
+		"last 5 slopes own mapped +64.00 MiB/cycle, kept disk +280.00 MiB/cycle, kept overhead +1.00 MiB/cycle. slowest resume 1.5s."
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
-	got = pauseCycleSummary(pauseCycleOptions{Cycles: 1, Churn: "0"}, cycles[:1])
-	if !strings.Contains(got, "last 1 slopes own mapped +0.00 MiB/cycle, kept disk +0.00 MiB/cycle") ||
-		!strings.Contains(got, "slowest resume 900ms") || strings.ContainsAny(got, "\n\r") {
+	got = pauseCycleSummary(pauseCycleOptions{Cycles: 1, Churn: "0", Workload: "synced"}, cycles[:1])
+	if !strings.Contains(got, "last 1 slopes own mapped +0.00 MiB/cycle, kept disk +0.00 MiB/cycle, kept overhead +0.00 MiB/cycle") ||
+		!strings.Contains(got, "slowest resume 900ms") || !strings.Contains(got, "workload=synced churn=0") ||
+		strings.ContainsAny(got, "\n\r") {
 		t.Errorf("single-cycle summary = %q, want finite slopes and one line", got)
+	}
+}
+
+func TestRetainedOverheadRefusesOverflow(t *testing.T) {
+	files := map[string]snapshotFiles{
+		chainA: {Disk: 1, Overhead: map[string]uint64{"snapfile": math.MaxUint64}},
+		chainC: {
+			Disk: 1, Overhead: map[string]uint64{"metadata.json": 1},
+			Headers: map[string]cleanup.HeaderStats{"memfile.header": {Build: chainC, BaseBuild: chainA}},
+		},
+	}
+	if _, err := measureSnapshot(chainC, files); err == nil || !strings.Contains(err.Error(), "overhead") {
+		t.Fatalf("error = %v, want an overhead overflow refusal", err)
 	}
 }
 

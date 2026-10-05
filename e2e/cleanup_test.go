@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -71,6 +72,7 @@ func TestPauseCycles(t *testing.T) {
 	id := machineID(t, ctx, name)
 	sshMachine(t, ctx, name, "tmux new -d -s keep 'sleep 100000'")
 	var cycles []pauseCycle
+	var latest string
 	for i := 1; i <= options.Cycles; i++ {
 		if command := options.churnCommand(); command != "" {
 			sshMachine(t, ctx, name, command)
@@ -80,8 +82,11 @@ func TestPauseCycles(t *testing.T) {
 		hib(t, ctx, "pause", name)
 		cycle.Pause = time.Since(start)
 		start = time.Now()
+		latest = waitForDurableSnapshot(t, ctx, id, latest)
+		cycle.Durable = time.Since(start)
+		start = time.Now()
 		cleanUp(t, ctx)
-		cycle.Write = time.Since(start)
+		cycle.Cleanup = time.Since(start)
 		builds, done := snapshotBuilds(t, ctx, id)
 		if !done {
 			t.Fatal("E2B is still writing the machine's snapshot after cleanup")
@@ -109,21 +114,57 @@ func cleanUp(t *testing.T, ctx context.Context) {
 
 func snapshotBuilds(t *testing.T, ctx context.Context, id string) (builds []string, done bool) {
 	t.Helper()
-	query, err := snapshotQuery(id)
+	out, err := readSnapshotListing(ctx, id)
 	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := vm.ssh(ctx, `sudo docker exec "$(sudo docker ps -q `+
-		`--filter label=com.docker.compose.project=local-dev --filter label=com.docker.compose.service=postgres)" `+
-		`psql -qAt -U postgres -d postgres -c "`+query+`"`)
-	if err != nil {
-		t.Fatalf("reading snapshot builds: %s", termsafe.String(err.Error()))
+		t.Fatal(termsafe.String(err.Error()))
 	}
 	builds, done, err = parseSnapshotBuilds(out)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return builds, done
+}
+
+func readSnapshotListing(ctx context.Context, id string) (string, error) {
+	query, err := snapshotQuery(id)
+	if err != nil {
+		return "", err
+	}
+	out, err := vm.ssh(ctx, `sudo docker exec "$(sudo docker ps -q `+
+		`--filter label=com.docker.compose.project=local-dev --filter label=com.docker.compose.service=postgres)" `+
+		`psql -qAt -U postgres -d postgres -c "`+query+`"`)
+	if err != nil {
+		return "", fmt.Errorf("reading snapshot builds: %w", err)
+	}
+	return out, nil
+}
+
+func waitForDurableSnapshot(t *testing.T, ctx context.Context, id, previous string) string {
+	t.Helper()
+	latest, err := pollDurable(ctx, 5*time.Minute, time.Second, func(ctx context.Context) (string, bool, error) {
+		out, err := readSnapshotListing(ctx, id)
+		if err != nil {
+			return "", false, err
+		}
+		latest, ready, err := latestDurableBuild(out, previous)
+		if err != nil || !ready {
+			return latest, false, err
+		}
+		command, err := durableFilesCommand(latest)
+		if err != nil {
+			return "", false, err
+		}
+		out, err = vm.ssh(ctx, command)
+		if err != nil {
+			return "", false, fmt.Errorf("checking durable snapshot files: %w", err)
+		}
+		ready, err = parseDurableFiles(out)
+		return latest, ready, err
+	})
+	if err != nil {
+		t.Fatal(termsafe.String(err.Error()))
+	}
+	return latest
 }
 
 func snapshotStats(t *testing.T, ctx context.Context, builds []string) snapshotMetrics {
