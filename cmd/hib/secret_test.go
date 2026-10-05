@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +139,89 @@ func TestSecretAddDoesNotPrintAReflectedValue(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func jsonQuoted(t *testing.T, value string, escapeHTML bool) string {
+	t.Helper()
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(escapeHTML)
+	if err := enc.Encode(value); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func TestSecretAddRedactsQuotedForms(t *testing.T) {
+	const value = "sk-review\"q\\b\t<x>&\u00e9\x01\ntail-7f3a9c"
+	quotings := map[string]string{
+		"go":                strconv.Quote(value),
+		"json":              jsonQuoted(t, value, true),
+		"json without html": jsonQuoted(t, value, false),
+	}
+	if distinct := slices.Compact(slices.Sorted(maps.Values(quotings))); len(distinct) != len(quotings) {
+		t.Fatalf("the quotings must differ to test each one: %q", distinct)
+	}
+	for quoting, quoted := range quotings {
+		messages := map[string]string{
+			"text error": "token refused: " + quoted,
+			"json error": `{"error":{"message":"bad token","token":` + quoted + `}}`,
+		}
+		for shape, message := range messages {
+			for _, channel := range []string{"stdout", "stderr"} {
+				t.Run(quoting+"/"+shape+"/"+channel, func(t *testing.T) {
+					h := newHost(t)
+					c := initClient(t, h)
+					h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+						if channel == "stdout" {
+							return writeTestResponse(stdout, hibapi.Response{Error: message}), true
+						}
+						for i := 1; i < len(message); i++ {
+							io.WriteString(stderr, message[:i])
+							io.WriteString(stderr, message[i:]+"\n")
+						}
+						return writeTestResponse(stdout, hibapi.Response{Secret: &hibapi.Secret{
+							Name: "api", Env: "API_KEY", Sites: []string{"api.example.com"}, Placeholder: "ph",
+						}}), true
+					}
+					c.app.stdin = strings.NewReader(value)
+					c.hib("secret", "add", "api", "--env", "API_KEY", "--bind", "api.example.com")
+					output := c.out.String() + c.errOut.String()
+					for _, leak := range []string{"review", "7f3a9c"} {
+						if strings.Contains(output, leak) {
+							t.Fatalf("part of the value reached the output: %q", output)
+						}
+					}
+					want := 1
+					if channel == "stderr" {
+						want = len(message) - 1
+					}
+					if got := strings.Count(output, "[redacted]"); got != want {
+						t.Errorf("%d redactions, want %d: %q", got, want, output)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAPlainSecretKeepsOneRedactingWriterPerStream(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := &app{stdout: &stdout, stderr: &stderr}
+	hidden, flush := a.hidingSecret("abc123XYZ")
+	for _, got := range []struct {
+		w    io.Writer
+		next io.Writer
+	}{{hidden.stdout, &stdout}, {hidden.stderr, &stderr}} {
+		if w, ok := got.w.(*secretWriter); !ok || w.w != got.next {
+			t.Errorf("a plain value got a chain of writers: %#v", got.w)
+		}
+	}
+	io.WriteString(hidden.stdout, `token "abc123XYZ" and abc123XYZ`)
+	flush()
+	if want := `token "[redacted]" and [redacted]`; stdout.String() != want {
+		t.Errorf("printed %q, want %q", stdout.String(), want)
 	}
 }
 

@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -26,12 +29,30 @@ func (a *app) hidingSecret(value string) (*app, func()) {
 
 func printedForms(value string) []string {
 	var forms []string
-	for _, form := range []string{value, termsafe.String(value), termsafe.Line(value)} {
-		if form != "" && !slices.Contains(forms, form) {
-			forms = append(forms, form)
+	for _, text := range append([]string{value}, quotedForms(value)...) {
+		for _, form := range []string{text, termsafe.String(text), termsafe.Line(text)} {
+			if form != "" && !slices.Contains(forms, form) {
+				forms = append(forms, form)
+			}
 		}
 	}
 	return forms
+}
+
+func quotedForms(value string) []string {
+	quoted := []string{strconv.Quote(value)}
+	for _, escapeHTML := range []bool{true, false} {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(escapeHTML)
+		if enc.Encode(value) == nil {
+			quoted = append(quoted, strings.TrimSuffix(b.String(), "\n"))
+		}
+	}
+	for i, q := range quoted {
+		quoted[i] = q[1 : len(q)-1]
+	}
+	return quoted
 }
 
 type secretWriter struct {
