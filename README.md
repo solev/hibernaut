@@ -480,7 +480,8 @@ SSH (port 22) is reachable from the internet.
 
 `--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one JSON
 object on stdout instead of text, and nothing else there. It changes only the output: `hib status
---json` doesn't wake the host either. hibd's messages still go to stderr.
+--json` doesn't wake the host either. hibd's and ssh's messages still go to stderr, but `hib` adds
+none of its own, such as that it's waking the host.
 
 ```bash
 hib ls --json | jq -r '.machines[]?.name'

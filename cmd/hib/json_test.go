@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -253,5 +254,39 @@ func TestJSONIsOnlyForThatRun(t *testing.T) {
 	h.override = func([]string, io.Writer, io.Writer) (int, bool) { return 255, true }
 	if code := c.hib("ls"); code != 1 || c.out.Len() != 0 || !strings.HasPrefix(c.errOut.String(), "hib: couldn't reach") {
 		t.Errorf("ls after ls --json: exit %d, stdout %q, stderr %q", code, c.out, c.errOut)
+	}
+}
+
+func TestJSONWakesTheHostWithoutHibsMessages(t *testing.T) {
+	wakeMessages := []string{
+		"hib: the host is asleep (VM deallocated); starting it, which takes a few minutes",
+		"hib: the host is up after",
+	}
+	for _, args := range [][]string{{"ls", "--json"}, {"new", "app", "--json"}, {"ls"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			h.sleep("VM deallocated")
+			if code := c.hib(args...); code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, c.errOut)
+			}
+			if !slices.Contains(args, "--json") {
+				for _, want := range wakeMessages {
+					if !strings.Contains(c.errOut.String(), want) {
+						t.Errorf("stderr %q, want %q", c.errOut, want)
+					}
+				}
+				return
+			}
+			decodeOne(t, c.out.String())
+			for line := range strings.Lines(c.errOut.String()) {
+				if strings.HasPrefix(line, "hib") {
+					t.Errorf("stderr has hib's own %q, want only what ssh and the host wrote", line)
+				}
+			}
+			if !strings.Contains(c.errOut.String(), "ssh: connect to host") {
+				t.Errorf("stderr %q, want ssh's message passed on", c.errOut)
+			}
+		})
 	}
 }

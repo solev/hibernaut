@@ -114,7 +114,9 @@ so pass --yes when there's no terminal to ask on", exit 2. The e2e tests and the
   on stderr, exit 2.
 - The bytes are ASCII: every control character, DEL and non-ASCII character is written as
   `\uXXXX`. Decoded values are exact, and printing the JSON can't affect the terminal.
-- No colour, hints or progress, ever.
+- No colour, hints or progress, ever. hib adds nothing of its own on stderr, not even that it's
+  waking the host. It still passes on what ssh and the host write there, escaped as without
+  `--json`, so a failure keeps its reason.
 - The README lists the fields, and says they're stable.
 
 **Colour** with Lip Gloss v2, for states only: running and paused in `hib ls`, ok and failing in

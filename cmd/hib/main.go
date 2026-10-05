@@ -481,6 +481,12 @@ func (a *app) configDir(dir string) (string, error) {
 	return filepath.Abs(dir)
 }
 
+func (a *app) note(format string, args ...any) {
+	if !a.json {
+		fmt.Fprintf(a.stderr, "hib: "+format+"\n", args...)
+	}
+}
+
 func (a *app) fail(err error) int {
 	if a.json {
 		return a.reply(hibapi.Response{}, err)
