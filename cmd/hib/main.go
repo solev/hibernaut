@@ -251,7 +251,7 @@ func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 		return a.reply(hibapi.Response{Machines: r.Machines, Room: r.Room}, nil)
 	}
 	now := a.now()
-	tw := hibapi.NewTable(a.stdout, nil)
+	tw := hibapi.NewTable(a.stdout, a.style())
 	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
 	for _, m := range r.Machines {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),

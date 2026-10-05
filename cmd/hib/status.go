@@ -40,7 +40,7 @@ func (a *app) status(ctx context.Context, cfg *config, _ []string) int {
 	if a.json {
 		a.reply(hibapi.Response{Status: r.Status, Host: host}, nil)
 	} else {
-		hibapi.PrintStatus(a.stdout, cfg.Host, *r.Status, nil)
+		hibapi.PrintStatus(a.stdout, cfg.Host, *r.Status, a.style())
 		if next := nextSteps(*r.Status); len(next) > 0 {
 			fmt.Fprintf(a.stdout, "\nNext: %s\n", strings.Join(next, ", "))
 		}
