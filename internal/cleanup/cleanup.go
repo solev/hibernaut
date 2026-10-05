@@ -346,23 +346,53 @@ const (
 // ParseHeader returns the builds a header names: its own, its base, and every build holding a
 // range of its data. It reads only E2B's uncompressed headers, versions 1 to 3.
 func ParseHeader(b []byte) ([]string, error) {
-	if len(b) < metadataSize {
-		return nil, fmt.Errorf("header is %d bytes, too short", len(b))
+	stats, err := ParseHeaderStats(b)
+	if err != nil {
+		return nil, err
 	}
-	// The low 16 bits are the format; the rest are flags.
-	if v := binary.LittleEndian.Uint64(b) & 0xFFFF; v < 1 || v > 3 {
-		return nil, fmt.Errorf("header version %d isn't supported", v)
-	}
-	if (len(b)-metadataSize)%mappingSize != 0 {
-		return nil, fmt.Errorf("header is %d bytes: its mappings are cut short", len(b))
-	}
-	ids := []string{uuid(b[32:48]), uuid(b[48:64])}
-	for m := b[metadataSize:]; len(m) > 0; m = m[mappingSize:] {
-		ids = append(ids, uuid(m[16:32]))
-	}
+	ids := append([]string{stats.Build, stats.BaseBuild}, slices.Collect(maps.Keys(stats.BytesByBuild))...)
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
 	return slices.DeleteFunc(ids, func(id string) bool { return id == nilUUID }), nil
+}
+
+// HeaderStats describes a header's metadata and the bytes mapped to each nonzero source UUID.
+type HeaderStats struct {
+	Version, BlockSize, Size, Generation uint64
+	Build, BaseBuild                     string
+	BytesByBuild                         map[string]uint64
+	Mappings                             int
+}
+
+// ParseHeaderStats reads metadata and mappings from E2B's uncompressed headers, versions 1 to 3.
+func ParseHeaderStats(b []byte) (HeaderStats, error) {
+	if len(b) < metadataSize {
+		return HeaderStats{}, fmt.Errorf("header is %d bytes, too short", len(b))
+	}
+	// The low 16 bits are the format; the rest are flags.
+	version := binary.LittleEndian.Uint64(b) & 0xFFFF
+	if version < 1 || version > 3 {
+		return HeaderStats{}, fmt.Errorf("header version %d isn't supported", version)
+	}
+	if (len(b)-metadataSize)%mappingSize != 0 {
+		return HeaderStats{}, fmt.Errorf("header is %d bytes: its mappings are cut short", len(b))
+	}
+	stats := HeaderStats{
+		Version:      version,
+		BlockSize:    binary.LittleEndian.Uint64(b[8:]),
+		Size:         binary.LittleEndian.Uint64(b[16:]),
+		Generation:   binary.LittleEndian.Uint64(b[24:]),
+		Build:        uuid(b[32:48]),
+		BaseBuild:    uuid(b[48:64]),
+		BytesByBuild: map[string]uint64{},
+		Mappings:     (len(b) - metadataSize) / mappingSize,
+	}
+	for m := b[metadataSize:]; len(m) > 0; m = m[mappingSize:] {
+		if id := uuid(m[16:32]); id != nilUUID {
+			stats.BytesByBuild[id] += binary.LittleEndian.Uint64(m[8:])
+		}
+	}
+	return stats, nil
 }
 
 const nilUUID = "00000000-0000-0000-0000-000000000000"

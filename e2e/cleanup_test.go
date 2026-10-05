@@ -4,16 +4,13 @@ package e2e
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/solev/hibernaut/internal/cleanup"
-	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 // TestSnapshotCleanup checks that once a machine is removed, hibd deletes its snapshots from the
@@ -61,30 +58,47 @@ func TestSnapshotCleanup(t *testing.T) {
 	survivesPause(t, ctx, newHibMachine(t, ctx))
 }
 
-// TestPauseCycles pauses and resumes one machine 20 times, cleaning up after each pause, and
-// logs how long each resume takes, the disk its snapshots use, and how many of them its latest
-// snapshot needs.
+// TestPauseCycles measures snapshot sources and cleanup retention across pauses and resumes.
 func TestPauseCycles(t *testing.T) {
-	if os.Getenv("HIB_E2E_SLOW") == "" {
-		t.Skip("takes about 10 minutes; run make e2e-slow")
+	options, err := pauseCycleOptionsFromEnv(os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
 	}
-	ctx := testContext(t, 40*time.Minute)
+	if os.Getenv("HIB_E2E_SLOW") == "" {
+		t.Skip("takes about 10 minutes by default. run make e2e-slow")
+	}
+	ctx := testContext(t, options.timeout())
 	name := newHibMachine(t, ctx)
 	id := machineID(t, ctx, name)
 	sshMachine(t, ctx, name, "tmux new -d -s keep 'sleep 100000'")
-	for i := 1; i <= 20; i++ {
-		sshMachine(t, ctx, name, "head -c 64M /dev/urandom > /home/user/churn")
-		hib(t, ctx, "pause", name)
-		cleanUp(t, ctx)
-		builds, _ := snapshotBuilds(t, ctx, id)
-		dirs, used := buildDirs(t, ctx, builds)
-		needs := latestNeeds(t, ctx, builds)
-		_, needed := buildDirs(t, ctx, needs)
+	var cycles []pauseCycle
+	var latest string
+	for i := 1; i <= options.Cycles; i++ {
+		if command := options.churnCommand(); command != "" {
+			sshMachine(t, ctx, name, command)
+		}
+		cycle := pauseCycle{Cycle: i}
 		start := time.Now()
+		hib(t, ctx, "pause", name)
+		cycle.Pause = time.Since(start)
+		start = time.Now()
+		latest = waitForDurableSnapshot(t, ctx, id, latest)
+		cycle.Durable = time.Since(start)
+		start = time.Now()
+		cleanUp(t, ctx)
+		cycle.Cleanup = time.Since(start)
+		builds, done := snapshotBuilds(t, ctx, id)
+		if !done {
+			t.Fatal("E2B is still writing the machine's snapshot after cleanup")
+		}
+		cycle.Snapshot = snapshotStats(t, ctx, builds)
+		start = time.Now()
 		sshMachine(t, ctx, name, "tmux has-session -t keep")
-		t.Logf("cycle %2d: resumed in %v; its snapshots use %s in %d build directories; the latest needs %d of them, %s",
-			i, time.Since(start).Round(time.Millisecond), hibapi.FormatMB(used>>20), dirs, len(needs), hibapi.FormatMB(needed>>20))
+		cycle.Resume = time.Since(start)
+		cycles = append(cycles, cycle)
+		t.Log(formatPauseCycle(cycle))
 	}
+	t.Log(pauseCycleSummary(options, cycles))
 }
 
 func cleanUp(t *testing.T, ctx context.Context) {
@@ -92,7 +106,7 @@ func cleanUp(t *testing.T, ctx context.Context) {
 	waitFor(t, ctx, "hibd cleanup to run", time.Minute, func() bool {
 		_, err := vm.ssh(ctx, "sudo hibd cleanup")
 		if err != nil && !strings.Contains(err.Error(), "E2B is writing a build") {
-			t.Fatal(err)
+			t.Fatalf("hibd cleanup: %s", termsafe.String(err.Error()))
 		}
 		return err == nil
 	})
@@ -100,65 +114,100 @@ func cleanUp(t *testing.T, ctx context.Context) {
 
 func snapshotBuilds(t *testing.T, ctx context.Context, id string) (builds []string, done bool) {
 	t.Helper()
-	query := fmt.Sprintf("SELECT b.id, b.status_group FROM snapshots s "+
-		"JOIN env_build_assignments a ON a.env_id = s.env_id JOIN env_builds b ON b.id = a.build_id "+
-		"WHERE s.sandbox_id = '%s' GROUP BY b.id, b.status_group ORDER BY max(a.created_at)", id)
-	out := mustSSH(t, ctx, `sudo docker exec "$(sudo docker ps -q `+
-		`--filter label=com.docker.compose.project=local-dev --filter label=com.docker.compose.service=postgres)" `+
-		`psql -qAt -U postgres -d postgres -c "`+query+`"`)
-	done = true
-	for line := range strings.Lines(out) {
-		build, status, _ := strings.Cut(strings.TrimSpace(line), "|")
-		builds = append(builds, build)
-		done = done && status != "pending" && status != "in_progress"
+	out, err := readSnapshotListing(ctx, id)
+	if err != nil {
+		t.Fatal(termsafe.String(err.Error()))
+	}
+	builds, done, err = parseSnapshotBuilds(out)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return builds, done
 }
 
-func latestNeeds(t *testing.T, ctx context.Context, builds []string) []string {
+func readSnapshotListing(ctx context.Context, id string) (string, error) {
+	query, err := snapshotQuery(id)
+	if err != nil {
+		return "", err
+	}
+	out, err := vm.ssh(ctx, `sudo docker exec "$(sudo docker ps -q `+
+		`--filter label=com.docker.compose.project=local-dev --filter label=com.docker.compose.service=postgres)" `+
+		`psql -qAt -U postgres -d postgres -c "`+query+`"`)
+	if err != nil {
+		return "", fmt.Errorf("reading snapshot builds: %w", err)
+	}
+	return out, nil
+}
+
+func waitForDurableSnapshot(t *testing.T, ctx context.Context, id, previous string) string {
 	t.Helper()
-	if len(builds) == 0 {
-		t.Fatal("the machine has no snapshots")
-	}
-	out := mustSSH(t, ctx, "sudo sh -c 'cd /var/lib/e2b/local-template-storage/"+builds[len(builds)-1]+" && "+
-		"for f in "+strings.Join(cleanup.Headers, " ")+"; do base64 -w0 $f && echo || exit 1; done'")
-	named := map[string]bool{}
-	for line := range strings.Lines(out) {
-		b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(line))
+	latest, err := pollDurable(ctx, 5*time.Minute, time.Second, func(ctx context.Context) (string, bool, error) {
+		out, err := readSnapshotListing(ctx, id)
 		if err != nil {
-			t.Fatal(err)
+			return "", false, err
 		}
-		refs, err := cleanup.ParseHeader(b)
+		latest, ready, err := latestDurableBuild(out, previous)
+		if err != nil || !ready {
+			return latest, false, err
+		}
+		command, err := durableFilesCommand(latest)
 		if err != nil {
-			t.Fatal(err)
+			return "", false, err
 		}
-		for _, r := range refs {
-			named[r] = true
+		out, err = vm.ssh(ctx, command)
+		if err != nil {
+			return "", false, fmt.Errorf("checking durable snapshot files: %w", err)
 		}
+		ready, err = parseDurableFiles(out)
+		return latest, ready, err
+	})
+	if err != nil {
+		t.Fatal(termsafe.String(err.Error()))
 	}
-	var needs []string
-	for _, b := range builds {
-		if named[b] {
-			needs = append(needs, b)
-		}
+	return latest
+}
+
+func snapshotStats(t *testing.T, ctx context.Context, builds []string) snapshotMetrics {
+	t.Helper()
+	command, err := snapshotReadCommand(builds)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return needs
+	out, err := vm.ssh(ctx, command)
+	if err != nil {
+		t.Fatalf("reading snapshot files: %s", termsafe.String(err.Error()))
+	}
+	files, err := parseSnapshotFiles(out, builds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := measureSnapshot(builds[len(builds)-1], files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stats
 }
 
 func buildDirs(t *testing.T, ctx context.Context, builds []string) (dirs int, used int64) {
 	t.Helper()
-	if len(builds) == 0 {
+	command, err := buildDirsCommand(builds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command == "" {
 		return 0, 0
 	}
-	out := mustSSH(t, ctx, "sudo sh -c 'cd /var/lib/e2b/local-template-storage && "+
-		"ls -d "+strings.Join(builds, " ")+" 2>/dev/null | xargs -r du -sB1'")
-	for line := range strings.Lines(out) {
-		n, err := strconv.ParseInt(strings.Fields(line)[0], 10, 64)
-		if err != nil {
-			t.Fatalf("du printed %q", line)
-		}
-		dirs++
-		used += n
+	out, err := vm.ssh(ctx, command)
+	if err != nil {
+		t.Fatalf("reading snapshot directories: %s", termsafe.String(err.Error()))
 	}
-	return dirs, used
+	bytes, err := parseBuildDirs(out, builds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := diskUsage(bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return usage.Builds, usage.Bytes
 }
