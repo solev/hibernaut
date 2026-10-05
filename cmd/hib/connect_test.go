@@ -640,6 +640,44 @@ func TestConnectGitHubDoesNotPrintReflectedToken(t *testing.T) {
 	}
 }
 
+func TestConnectGitHubRedactsQuotedTokensInGHDiagnostics(t *testing.T) {
+	const token = "gho_\"quote\\slash<x>&\x01-7f3a9c"
+	quotings := []string{strconv.Quote(token), jsonQuoted(t, token, true), jsonQuoted(t, token, false)}
+	if distinct := slices.Compact(slices.Sorted(slices.Values(quotings))); len(distinct) != len(quotings) {
+		t.Fatalf("the quotings must differ to test each one: %q", distinct)
+	}
+	h := newHost(t)
+	c := initClient(t, h)
+	c.gh = func(_ context.Context, _ []string, _ io.Reader, stdout, stderr io.Writer) (int, error) {
+		io.WriteString(stdout, token+"\n")
+		io.WriteString(stderr, "gh: "+token+"\n")
+		for _, quoted := range quotings {
+			io.WriteString(stderr, "gh: "+quoted+"\n")
+		}
+		return 0, nil
+	}
+	h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
+			Login: "octocat", Email: "1+octocat@users.noreply.github.com",
+		}}), true
+	}
+	code := c.hib("connect", "github", "--from-gh")
+	assertTokenPrivate(t, c, h.takeCalls(), token)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	output := c.out.String() + c.errOut.String()
+	for _, form := range append([]string{token}, quotings...) {
+		if interior := strings.Trim(form, `"`); strings.Contains(output, interior[1:]) {
+			t.Errorf("part of %q reached the output: %q", form, output)
+		}
+	}
+	want := "gh: [redacted]\n" + strings.Repeat("gh: \"[redacted]\"\n", len(quotings))
+	if c.errOut.String() != want {
+		t.Errorf("printed %q on stderr, want %q", c.errOut.String(), want)
+	}
+}
+
 func TestConnectGitHubRemoteErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

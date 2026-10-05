@@ -123,7 +123,7 @@ func (a *app) readGitHubToken(ctx context.Context) (string, error) {
 	defer stderr.Flush()
 	code, err := a.gh(ctx, []string{"auth", "token", "--hostname", "github.com"}, nil, &out, &diagnostics)
 	value, valueErr := vault.ReadValue(bytes.NewReader(out.buffer.Bytes()))
-	redacted := newSecretWriter(stderr, value)
+	redacted := newSecretWriter(stderr, printedForms(value)...)
 	redacted.Write(diagnostics.buffer.Bytes())
 	redacted.Flush()
 	if diagnostics.overflow {
