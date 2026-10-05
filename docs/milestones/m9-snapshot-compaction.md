@@ -101,42 +101,85 @@ including the replaced roots kept by `SelectionGrace`.
 **Save records.** After preparing the origin, and a final cancellation check, hibd publishes a
 private, state-owner-owned JSON file in its state directory's `saves` directory before dispatch.
 Each save has a unique file. It records the engine ID, name, wall-clock start, boot ID, zero end
-and `answered: false`. Files are opened without following symlinks. Publication syncs the file
+and `succeeded: false`. Files are opened without following symlinks. Publication syncs the file
 and directories. The save POST and readback use `context.WithoutCancel`, with a ten-minute
 `saveCallTimeout` backstop. Ctrl-C after dispatch no longer cancels that save in hibd. Losing SSH
 can still end hibd, so this does not promise an image appears. Check `hib image ls` and `hib ls`
 before retrying. Fork templates left without copies are swept as before.
 
 Immediately after the call, before restoring the origin or cleaning an alias, hibd deletes the
-record for a 404 or 409 that created nothing. Otherwise it writes the end time and whether E2B
-answered the POST. Every HTTP status counts as answered, including a 201 followed by a failed
-readback or an invalid response body. A transport failure without an HTTP answer does not. A
-record write or removal failure fails the operation and leaves cleanup inhibited.
+record for a 404 or 409 that created nothing. Otherwise it writes the end time and whether
+`SaveTemplate` succeeded: a 201 and a good template readback. An HTTP error, a failed readback,
+an invalid response body and a transport failure are all unsuccessful. Legacy records with
+`answered: true` but no `succeeded` remain readable and count as unsuccessful.
+
+An HTTP answer alone is not proof. E2B marks the build failed when its 70-second deadline ends,
+but the node may already run the machine from that build and keep uploading for up to 20 minutes.
+The failed build stays whole while a record inhibits cleanup. A later ready pause keeps that
+input through its headers, and trimming never punches a failed build.
+
+A record write or removal failure reports an error and leaves cleanup inhibited. It does not
+choose the save's outcome. Failed saves still restore the origin and clean their alias.
+Successful saves still re-pause a paused origin and keep their image if only recording failed.
+Their normal re-pause failure handling stays unchanged. The error gives the recovery threshold
+and a next step. Callers keep a returned image with an error. A fork stops, leaving its hidden
+template to the existing sweep.
 
 Cleanup settles a record only when one of these is proved by its locked read:
 
-- E2B answered, and the listing shows the machine running.
+- The save succeeded, and the listing shows the machine running.
 - The machine's slot has a ready build in no image's slot, created after the recorded end.
   With no end, it must be created after start plus `saveCallTimeout`. Removed images count
   as images when checking the build's assignments.
 - The machine has a slot, and every slot of it is deleted.
 - Both boot IDs are known and differ. Nothing the old host boot ran survives.
 
-An unanswered record never settles just because the listing says running. Cleanup checks every
-record before deleting settled ones. A dry run only says it would clear them. Any unsettled or
-unreadable record stops deletion and trimming, naming the machine and start when readable.
-The sweep retries in a minute and logs the problem only when it changes. A readable record clears
-when one of the proofs holds. An unreadable record must be repaired first. An unknown current boot
-ID is not proof of a restart.
+An unsuccessful record never settles just because the listing says running. Cleanup checks every
+record before deleting settled ones. A dry run only says it would clear them. An unknown current
+boot ID is not proof of a restart.
+
+Only `saveOrigin` publishes records. Its save and fork callers hold `hibd.lock`, and cleanup
+evaluates records under that lock. No publication is in flight during the read. Record names are
+`<engine ID>-<32 lowercase hex>`. Publication debris names are
+`.<record name>.tmp-<32 lowercase hex>`. Cleanup classifies each entry by its exact name and
+`Lstat`, never following symlinks. Debris must be a regular file owned by the state owner or hibd's
+effective UID, since a crash can happen before chown. Its contents are not read.
+
+A real run removes all debris and syncs the directory before reading records. A record then has
+one link. A dry run removes nothing and reports the debris. It allows one link plus the debris
+entries that `os.SameFile` identifies as the same inode. Unexplained links fail closed.
+
+An unexpected entry, including a debris-named symlink or directory, stops deletion and trimming.
+The error gives its full path and says to move it out of `saves/`. Hibd never writes that entry,
+so no restart is needed. A record-named file that cannot be read also stops cleanup. No mtime or
+guessed contents can settle it. Once the host has restarted, nothing the old boot ran survives.
+Then move exactly the file the error names out of `saves/`, preserving it for inspection:
+
+```
+sudo mkdir -p <state>/saves-damaged && sudo mv <path> <state>/saves-damaged/
+```
+
+The random token identifies one record from before the restart. The error supplies shell-quoted
+paths for this procedure and names the machine ID from the file name, without a guessed start.
+
+Readable unsettled records name the machine and give UTC RFC3339 times. The threshold is the end,
+or start plus `saveCallTimeout` if the end is zero. A running machine needs to pause after that
+threshold. A paused or unlisted machine needs to run and pause again. The next step is
+`hib pause NAME`, or `hib exec NAME -- true` then `hib pause NAME`. Before the threshold, the
+message says to wait until that time. Removal or a host restart can also settle the record.
+The sweep retries in a minute and logs only when the record, listing state or threshold branch
+changes, not as the current time advances within a branch.
 
 **Save-safety residue.** Hibd's E2B client must reach the API directly, as the default
 `http://127.0.0.1:3000` does. A dropped connection must cancel E2B's handler, not leave it running
 behind a proxy. This design relies on the handler finishing its save transition before answering,
 pauses being unable to start during a save, kill soft-deleting the machine's slot, and E2B's
-70-second request deadline. Its write deadline is 75 seconds. The ten-minute client bound is a
-backstop. SIGPIPE on closed stdout or stderr can still end hibd. The persisted record, not process
-survival, protects cleanup. Host clock jumps between a recorded end and a later pause build can
-defeat that time comparison. Save records do not serialize external direct API saves.
+70-second request deadline. It also relies on the node publishing the checkpoint's resumed run
+before upload, with the old lifecycle removed atomically. A later pause then captures that run,
+including the failed build it may read. The write deadline is 75 seconds. The ten-minute client
+bound is a backstop. SIGPIPE on closed stdout or stderr can still end hibd. The persisted record,
+not process survival, protects cleanup. Host clock jumps between a recorded end and a later pause
+build can defeat that time comparison. Save records do not serialize external direct API saves.
 
 **Candidates** are the build directories cleanup keeps that aren't roots and hold only a
 machine's pauses: ready, unchanged for `MinAge`, put in at least one slot and only in machines'
@@ -232,8 +275,11 @@ trimming`. A real run prints a line per file it trims or leaves, and the total i
 A dry run's sizes are estimates from the files' extents. A real run's are the blocks it freed.
 Before those lines, the command may say `waiting for another cleanup` or
 `waiting for an image save or fork to finish`. Settled save records produce
-`cleared settled save record <file>`, or `would clear settled save record <file>` in a dry run.
-An unsettled or unreadable save record instead stops cleanup with the record's problem.
+`cleared settled save record <file> for <name>. Check it with: hib ls.`, or the same line starting
+with `would clear` in a dry run. Publication debris produces
+`removed save publication debris <path> for <machine ID>. Check machines with: hib ls.`, or the
+same line starting with `would remove` in a dry run. An unsettled, damaged or unexpected save
+entry instead stops cleanup with its problem and one next step.
 
 **Why it's safe.**
 
@@ -268,8 +314,9 @@ until `test` resumes after a real trim and a host restart.
 - [ ] `internal/snapheader`: the strict parser.
 - [ ] Cleanup: the machine roots, root accounting, candidates and the scope. Read under
       `hibd.lock` and settle persistent save records before deleting or trimming.
-- [ ] Saves: uncancellable dispatched calls with a ten-minute backstop, POST answer accounting,
-      and private save records written before dispatch and ended before restoration.
+- [ ] Saves: uncancellable dispatched calls with a ten-minute backstop, successful-save
+      accounting, and private save records written before dispatch and ended before restoration.
+      Recover publication debris and join record errors without changing the save's outcome.
 - [ ] hib's E2B client without E2B's fork endpoint: an overlay `make generate` applies.
 - [ ] The plan, and punching on Linux (`trim_linux.go`, with a `trim_stub.go` that says trimming
       needs Linux). `hibd cleanup -n` says what it would trim.
@@ -304,13 +351,27 @@ Unit:
       wait once. An unlocked resume during the read keeps the latest and warm-cache roots whole.
 - [ ] Save outcomes: pre-dispatch cancellation writes nothing and sends nothing. Cancellation
       during the call leaves a live, bounded context. The record exists before dispatch and ends
-      before restoration. Success, an HTTP error and a 201 with failed readback are answered.
-      A no-answer transport failure is not. A 404 or 409 removes its record. Write failures
-      inhibit cleanup. The ten-minute backstop leaves an ended, unanswered record.
-- [ ] Record settlement: each proof above, no running-only proof for unanswered records, no
+      before restoration. Only a 201 with a good readback succeeds. An HTTP error, a 201 with
+      failed readback and a transport failure do not. A 404 or 409 removes its record. Write
+      failures inhibit cleanup but do not skip restoration or turn success into failed-save
+      cleanup. The ten-minute backstop leaves an ended, unsuccessful record.
+- [ ] Record settlement: each proof above, no running-only proof for unsuccessful or legacy
+      answered records, no
       proof from a paused listing, an image save, an older build or a pending build. Interrupted
       saves use start plus the call timeout. Dry runs keep records. New Managers and Apps still
       see records after a process restart. Unreadable and unsettled records stop all changes.
+- [ ] Failed input: a later ready pause keeps the failed save build through its headers.
+      Trimming never punches that failed build and preserves ranges in its other sources.
+      Without a later pause, the unsettled record stops deletion and trimming.
+- [ ] Publication debris, in real and dry runs: partial and complete staging files, replacement
+      debris with an old record, and a record linked to its staging file. Real runs remove
+      debris. Dry runs account for same-inode links. Unexplained links, unexpected names and
+      staging-named symlinks or directories fail closed with the correct manual procedure.
+      Debris owned by the state owner or hibd's effective UID is accepted.
+- [ ] Recovery messages: running, paused and unlisted machines, before and at or after the
+      threshold. Times are UTC RFC3339 and stable within a branch. Damaged records give the exact
+      path and post-restart procedure without a zero time. Every message names the machine and
+      ends with one next step.
 - [ ] Cross-process, with real flock on macOS and Linux: one process saves against a gated E2B
       handler while another runs cleanup on the same state directory. Cleanup logs its wait
       once, makes no List call until the save ends, then clears the settled record and completes.
@@ -388,3 +449,9 @@ End-to-end:
   distinguishes an HTTP answer from no answer. Records inhibit cleanup until a later lifecycle
   fact proves the save over. Documented direct API access, E2B's deadlines, process death and
   host clock jumps as the remaining assumptions.
+- 2026-10-05: The v5 review found that an HTTP error answer can leave a machine running from a
+  failed build while the node continues uploading. Running-only settlement now requires a
+  successful save. Legacy answered records remain unsuccessful. Cleanup recovers publication
+  debris, accounts for dry-run hard links and gives exact-file manual recovery for damaged or
+  unexpected entries. Recovery messages follow the listing and time threshold. Record-end
+  failures no longer skip restoration or choose the save's success path.

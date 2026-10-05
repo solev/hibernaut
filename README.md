@@ -273,7 +273,8 @@ Ctrl-C still stops a save or fork before dispatch. Once E2B starts saving, hibd 
 that call when the client disconnects. It has a ten-minute backstop. Losing SSH can still end the
 host process, so an image is not guaranteed to appear. Check `hib image ls` and `hib ls` before
 retrying. A fork's leftover hidden template is swept as before. Persistent save records stop
-snapshot cleanup until the save is known to be over.
+snapshot cleanup until the save is known to be over. After a failed save, cleanup also waits until
+the machine pauses again, is removed, or the host restarts.
 
 Copies get fresh SSH host keys, the current placeholder setup and your authorized public keys.
 Forks keep the origin's image, size and idle policy. Their names use the lowest free suffix,

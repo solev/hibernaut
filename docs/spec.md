@@ -570,7 +570,9 @@ and refuses a paused machine, so Hibernaut doesn't use it
   that call on client disconnect. The POST and readback have a ten-minute backstop. SSH loss or
   SIGPIPE can still end hibd, so this does not promise an image appears. Check `hib image ls` and
   `hib ls` before retrying. A fork's hidden template is swept as before. Persistent per-save
-  records inhibit snapshot cleanup until a later lifecycle fact proves the save over.
+  records inhibit snapshot cleanup until a later lifecycle fact proves the save over. A running
+  listing settles only a successful save. After a failed save, cleanup waits until a later pause,
+  removal or host restart proves it safe.
 
 ## 6. Decisions
 
