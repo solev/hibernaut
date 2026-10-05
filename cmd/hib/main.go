@@ -58,6 +58,8 @@ func main() {
 	}
 	if stderrTerminal {
 		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
+		a.stderrSize = func() (int, int, error) { return term.GetSize(int(os.Stderr.Fd())) }
+		a.resizes = watchResizes
 	}
 	os.Exit(a.run(ctx, os.Args[1:]))
 }
@@ -98,6 +100,8 @@ type app struct {
 	azLimit        time.Duration
 	liveAfter      time.Duration
 	stderrTerminal bool
+	stderrSize     func() (width, height int, err error)
+	resizes        func() (<-chan os.Signal, func())
 	live           *live
 	now            func() time.Time
 	colour         bool

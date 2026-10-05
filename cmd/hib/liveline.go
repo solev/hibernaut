@@ -5,7 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -26,10 +29,12 @@ func (a *app) showLive(ctx context.Context, text string) (stop func()) {
 	}
 	now := a.now()
 	l := &live{
-		out:   a.stderr,
-		ctx:   ctx,
-		env:   []string{"TERM=" + a.getenv("TERM")},
-		model: liveLine{text: text, since: now, now: now, clock: a.now},
+		out:     a.stderr,
+		ctx:     ctx,
+		env:     []string{"TERM=" + a.getenv("TERM")},
+		size:    a.liveSize,
+		resizes: a.resizes,
+		model:   liveLine{text: text, since: now, now: now, clock: a.now},
 	}
 	a.stderr, a.live = l, l
 	if a.liveAfter > 0 {
@@ -43,17 +48,35 @@ func (a *app) showLive(ctx context.Context, text string) (stop func()) {
 	}
 }
 
+func (a *app) liveSize() (width, height int) {
+	if a.stderrSize != nil {
+		if width, height, err := a.stderrSize(); err == nil && width > 0 && height > 0 {
+			return width, height
+		}
+	}
+	return liveWidth, liveHeight
+}
+
+func watchResizes() (<-chan os.Signal, func()) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGWINCH)
+	return signals, func() { signal.Stop(signals) }
+}
+
 // live runs a liveLine in an inline Bubble Tea program that reads no input, so it sends the
 // terminal no queries and leaves its modes and Ctrl-C alone.
 type live struct {
-	out io.Writer
-	ctx context.Context
-	env []string
+	out     io.Writer
+	ctx     context.Context
+	env     []string
+	size    func() (width, height int)
+	resizes func() (<-chan os.Signal, func())
 
 	mu      sync.Mutex
 	model   liveLine
 	program *tea.Program
 	done    chan struct{}
+	watched <-chan struct{}
 	timer   *time.Timer
 	partial []byte
 	stopped bool
@@ -65,7 +88,8 @@ func (l *live) show() {
 	if l.stopped || l.ctx.Err() != nil {
 		return
 	}
-	l.model.now = l.model.clock()
+	width, height := l.size()
+	l.model.now, l.model.width = l.model.clock(), width
 	out := &firstWrite{w: l.out, written: make(chan struct{})}
 	p := tea.NewProgram(l.model,
 		tea.WithInput(nil),
@@ -73,20 +97,44 @@ func (l *live) show() {
 		tea.WithoutSignalHandler(),
 		tea.WithContext(l.ctx),
 		tea.WithEnvironment(l.env),
-		tea.WithWindowSize(liveWidth, liveHeight),
+		tea.WithWindowSize(width, height),
 	)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		p.Run()
 	}()
+	watched := l.follow(p, done)
 	// Until Bubble Tea has drawn its first frame, it places printed lines as if the frame filled
 	// the window, at the top of the screen.
 	select {
 	case <-out.written:
 	case <-done:
 	}
-	l.program, l.done = p, done
+	l.program, l.done, l.watched = p, done, watched
+}
+
+func (l *live) follow(p *tea.Program, done <-chan struct{}) <-chan struct{} {
+	watched := make(chan struct{})
+	if l.resizes == nil {
+		close(watched)
+		return watched
+	}
+	signals, unwatch := l.resizes()
+	go func() {
+		defer close(watched)
+		defer unwatch()
+		for {
+			select {
+			case <-done:
+				return
+			case <-signals:
+				width, height := l.size()
+				p.Send(tea.WindowSizeMsg{Width: width, Height: height})
+			}
+		}
+	}()
+	return watched
 }
 
 type firstWrite struct {
@@ -166,6 +214,7 @@ func (l *live) stop() {
 	if l.program != nil {
 		l.program.Send(liveDone{})
 		<-l.done
+		<-l.watched
 		l.program = nil
 	}
 	if len(l.partial) > 0 {

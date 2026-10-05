@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -183,6 +186,90 @@ func TestNoLiveLineWithoutATerminal(t *testing.T) {
 			}
 		})
 	}
+}
+
+const longWait = "making app from the image called a-rather-long-image-name, on a host that has never seen it before"
+
+type fakeResizes struct {
+	signals chan os.Signal
+	stopped chan struct{}
+}
+
+func watchFakeResizes(a *app) *fakeResizes {
+	r := &fakeResizes{signals: make(chan os.Signal), stopped: make(chan struct{})}
+	a.resizes = func() (<-chan os.Signal, func()) {
+		return r.signals, func() { close(r.stopped) }
+	}
+	return r
+}
+
+func (r *fakeResizes) checkUnwatched(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the live line never stopped watching for resizes")
+	}
+	select {
+	case r.signals <- syscall.SIGWINCH:
+		t.Error("a goroutine still waits for resizes")
+	default:
+	}
+}
+
+func TestLiveLineFitsTheTerminalsWidth(t *testing.T) {
+	term := newSizedTerminal(t, 40, 24)
+	a := newLiveApp(t, term)
+	a.stderrSize = func() (int, int, error) { return 40, 24, nil }
+	stop := a.showLive(t.Context(), longWait)
+	term.waitFor("making app from the image called … (0s)")
+	if strings.Contains(term.String(), "a-rather") {
+		t.Errorf("a frame was wider than the terminal's 40 columns: %q", term)
+	}
+	stop()
+	checkLines(t, term)
+}
+
+func TestLiveLineFollowsResizes(t *testing.T) {
+	term := newSizedTerminal(t, 40, 24)
+	a := newLiveApp(t, term)
+	var width atomic.Int64
+	width.Store(40)
+	a.stderrSize = func() (int, int, error) { return int(width.Load()), 24, nil }
+	r := watchFakeResizes(a)
+	stop := a.showLive(t.Context(), longWait)
+	term.waitFor("making app from the image called … (0s)")
+	width.Store(30)
+	r.signals <- syscall.SIGWINCH
+	term.waitFor("making app from the ima… (0s)")
+	if got := term.lines(); len(got) != 1 || got[0] != "making app from the ima… (0s)" {
+		t.Errorf("after the resize the terminal shows %q, want the line shortened to 29 columns. It got %q", got, term)
+	}
+	stop()
+	r.checkUnwatched(t)
+	checkLines(t, term)
+}
+
+func TestLiveLineAssumes80ColumnsWithoutASize(t *testing.T) {
+	term := newTerminal(t)
+	a := newLiveApp(t, term)
+	a.stderrSize = func() (int, int, error) { return 0, 0, errors.New("inappropriate ioctl for device") }
+	stop := a.showLive(t.Context(), longWait)
+	term.waitFor("making app from the image called a-rather-long-image-name, on a host that… (0s)")
+	stop()
+	checkLines(t, term)
+}
+
+func TestLiveLineStopsWatchingResizesWhenItEnds(t *testing.T) {
+	term := newTerminal(t)
+	a := newLiveApp(t, term)
+	r := watchFakeResizes(a)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	stop := a.showLive(ctx, "making app")
+	term.waitFor("making app (0s)")
+	cancel(stopped{syscall.SIGINT})
+	r.checkUnwatched(t)
+	stop()
 }
 
 func liveClient(t *testing.T, h *host, termName string) (*client, *terminal) {

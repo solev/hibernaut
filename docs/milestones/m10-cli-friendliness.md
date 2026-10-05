@@ -158,6 +158,10 @@ for and for how long: "waking the host (40s)", then "making app (12s)".
 - It uses Bubble Tea v2.0.10, inline, with `WithInput(nil)`, `WithOutput(stderr)`,
   `WithoutSignalHandler()` and `WithContext`. Without input, Bubble Tea sends no terminal queries,
   and leaves the terminal and Ctrl-C alone.
+- The line fits the terminal's width and follows resizes. hib reads stderr's size itself and
+  passes it with `WithWindowSize`. While the line runs, hib watches SIGWINCH and sends Bubble Tea
+  each new size. Bubble Tea never gets the terminal's file, so it can't read the size itself.
+  Without a size, hib assumes 80 columns and 24 rows.
 - What hib and hibd write on stderr while hib waits prints above the live line. The line stops,
   and is cleared, before hib prints anything else, so lines never mix.
 - There's no live line when stderr isn't a terminal, with `--json`, or when `TERM` is `dumb`.

@@ -198,7 +198,11 @@ type terminal struct {
 }
 
 func newTerminal(t *testing.T) *terminal {
-	return &terminal{t: t, screen: newScreen(t, liveWidth, liveHeight), changed: make(chan struct{})}
+	return newSizedTerminal(t, liveWidth, liveHeight)
+}
+
+func newSizedTerminal(t *testing.T, width, height int) *terminal {
+	return &terminal{t: t, screen: newScreen(t, width, height), changed: make(chan struct{})}
 }
 
 func (term *terminal) Write(p []byte) (int, error) {
