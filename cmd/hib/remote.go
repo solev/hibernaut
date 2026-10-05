@@ -291,8 +291,6 @@ func (a *app) sleep(ctx context.Context) error {
 	}
 }
 
-// timeLimit is the cause of a context that ran out of time, so the error names what ran out and
-// its limit.
 type timeLimit struct {
 	what  string
 	limit time.Duration
