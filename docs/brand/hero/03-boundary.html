@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · give agents GitHub access, keep your tokens on your host</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hero.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  .top { display: grid; grid-template-columns: 1.25fr 1fr; gap: 56px; align-items: end; }
+  h1 { font-size: clamp(38px, 5vw, 64px); }
+  .top .sub { margin-top: 0; }
+
+  .diagram {
+    position: relative; margin-top: 56px; display: grid; align-items: center;
+    grid-template-columns: minmax(0, 1fr) 220px; gap: 0;
+  }
+  .hostzone {
+    position: relative; display: grid; grid-template-columns: minmax(0, 1.5fr) 1fr minmax(0, .9fr) 1fr; align-items: center;
+    border: 1px dashed var(--line-2); border-radius: 22px; padding: 34px 0 26px 22px;
+  }
+  .zlabel { position: absolute; top: -9px; left: 22px; background: var(--bg); padding: 0 8px; font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .box { border: 1px solid var(--line-2); border-radius: 16px; background: var(--surface); padding: 14px 16px; position: relative; font-size: 12.5px; }
+  .box h3 { margin: 0 0 8px; font: 500 11px "JetBrains Mono"; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .machine { display: grid; grid-template-columns: 76px 1fr; gap: 6px 14px; align-items: center; background: var(--bg); }
+  .machine hib-bot { width: 76px; height: 76px; grid-row: span 2; }
+  .env { font-size: 12px; overflow: hidden; }
+  .env .k { color: var(--muted); }
+  .ph { color: var(--muted); background: var(--surface-2); border-radius: 5px; padding: 0 5px; }
+  .shell { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 2.6em; }
+  .shell .p { color: var(--accent); }
+  .proxy { text-align: center; }
+  .proxy .swap { display: grid; gap: 4px; font-size: 11.5px; color: var(--muted); }
+  .proxy .vault { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--fg); border: 1px solid var(--line-2); border-radius: 7px; padding: 2px 8px; }
+  .proxy.hit { border-color: var(--accent); box-shadow: 0 0 0 4px var(--glow); }
+  .wire { height: 2px; background: repeating-linear-gradient(90deg, var(--line-2) 0 6px, transparent 6px 11px); margin: 0 10px; }
+  .wire.out { margin-right: 0; }
+  .wire.hot { background: var(--accent); }
+  .site { text-align: center; margin-left: -1px; }
+  .site .big { font: 600 18px "Oxanium"; }
+  .site.hit { border-color: var(--accent); }
+  .packet {
+    position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; opacity: 0;
+    font-size: 11px; padding: 3px 8px; border-radius: 7px; white-space: nowrap;
+    background: var(--bg); color: var(--muted); border: 1px solid var(--line-2);
+    box-shadow: 0 6px 18px rgba(0,0,0,.08);
+  }
+  .packet.real { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+  .log { margin-top: 18px; font-size: 12.5px; }
+  .log .head, .log .row { display: grid; grid-template-columns: 90px 70px 120px 140px 1fr; gap: 12px; padding: 6px 14px; }
+  .log .head { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  .log .row { border-top: 1px solid var(--line); opacity: 0; transform: translateY(-4px); transition: opacity .35s, transform .35s; }
+  .log .row.in { opacity: 1; transform: none; }
+  .log .row .t { color: var(--accent); }
+  .log .cmdline { padding: 0 14px 6px; color: var(--muted); }
+  .log .cmdline .p { color: var(--accent); }
+
+  @media (max-width: 1000px) {
+    .top { grid-template-columns: 1fr; gap: 20px; }
+    .diagram { grid-template-columns: 1fr; }
+    .hostzone { grid-template-columns: 1fr; padding: 30px 16px 16px; }
+    .wire { width: 2px; height: 34px; margin: 6px auto; background: repeating-linear-gradient(180deg, var(--line-2) 0 6px, transparent 6px 11px); }
+    .wire.out { margin-bottom: -16px; }
+    .site { margin: 34px 0 0; }
+    .log .head, .log .row { grid-template-columns: 70px 1fr 1fr; }
+    .log .head span:nth-child(n+4), .log .row span:nth-child(n+4) { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Docs</a><a href="#">Roadmap</a></nav>
+  <a class="gh" href="https://github.com/solev/hibernaut">GitHub</a>
+</header>
+
+<main class="hero">
+  <div class="top">
+    <div>
+      <span class="eyebrow">Self-hosted machines with host-held credentials</span>
+      <h1>Give agents GitHub access. Keep your tokens on your host.</h1>
+    </div>
+    <div>
+      <p class="sub">Machines only ever see a placeholder. When a request leaves for github.com, your host's proxy swaps in the real token and <code>hib log</code> records the swap.</p>
+      <div class="ctas">
+        <a class="btn primary" href="#">Set up your host <span class="arr">→</span></a>
+        <a class="btn ghost" href="#">Read the credential design</a>
+      </div>
+    </div>
+  </div>
+
+  <section class="diagram" id="diagram" aria-label="Illustration: a placeholder token is swapped for the real one at the host proxy">
+    <div class="hostzone">
+      <span class="zlabel">your host</span>
+      <div class="box machine">
+        <hib-bot tight id="bot" state="idle"></hib-bot>
+        <div>
+          <h3>app.hib · microVM</h3>
+          <div class="env"><span class="k">GH_TOKEN=</span><span class="ph">hib_ph_7Kq2…</span></div>
+          <div class="env"><span class="k">real secrets:</span> 0</div>
+        </div>
+        <div class="shell"><span class="p">$</span> <span id="cmd"></span></div>
+      </div>
+      <div class="wire" id="w1"></div>
+      <div class="box proxy" id="proxy">
+        <h3>egress proxy</h3>
+        <div class="swap"><span>hib_ph_7Kq2…</span><span>↓</span><span>ghp_••••a91</span></div>
+        <span class="vault">▣ vault</span>
+      </div>
+      <div class="wire out" id="w2"></div>
+    </div>
+    <div class="box site" id="github"><h3>internet</h3><div class="big">github.com</div><div class="dim" style="color:var(--muted);font-size:11.5px">sees the real token</div></div>
+    <span class="packet" id="packet">hib_ph_7Kq2…</span>
+  </section>
+
+  <div class="log term">
+    <div class="head"><span>time</span><span>machine</span><span>site</span><span>credential</span><span>request</span></div>
+    <div id="rows"></div>
+  </div>
+</main>
+
+<nav class="switcher"><a href="index.html">all</a><a href="01-fleet.html">01</a><a href="02-save-point.html">02</a><a href="03-boundary.html" aria-current="page">03</a><a href="04-fork.html">04</a><a href="05-address.html">05</a></nav>
+
+<script type="module">
+  import { story, $, reduced } from './hero.js';
+  const bot = $('#bot'), cmd = $('#cmd'), packet = $('#packet'), diagram = $('#diagram');
+  const center = (el) => {
+    const r = el.getBoundingClientRect(), d = diagram.getBoundingClientRect();
+    return [r.left - d.left + r.width / 2, r.top - d.top + r.height / 2];
+  };
+  async function fly(from, to, ms) {
+    const [x0, y0] = center(from), [x1, y1] = center(to);
+    const pw = packet.offsetWidth / 2, ph = packet.offsetHeight / 2;
+    const a = packet.animate(
+      [{ transform: `translate(${x0 - pw}px, ${y0 - ph}px)` }, { transform: `translate(${x1 - pw}px, ${y1 - ph}px)` }],
+      { duration: reduced ? 0 : ms, easing: 'cubic-bezier(.5,0,.3,1)', fill: 'forwards' },
+    );
+    await a.finished;
+  }
+  const JOBS = [
+    ['git clone github.com/solev/rocket', 'git clone'],
+    ['gh pr create --fill', 'POST /pulls'],
+    ['git push origin fix/health', 'git push'],
+  ];
+  let n = 0;
+  const rows = $('#rows');
+
+  story(async (s) => {
+    const [line, req] = JOBS[n++ % JOBS.length];
+    cmd.textContent = '';
+    s.bot(bot, 'idle');
+    await s.wait(1200);
+    s.bot(bot, 'working');
+    await s.type(cmd, line, 45);
+    await s.wait(300);
+
+    packet.textContent = 'hib_ph_7Kq2…'; packet.classList.remove('real');
+    packet.style.opacity = 1;
+    $('#w1').classList.add('hot');
+    await fly($('#w1'), $('#proxy'), 900); s.check();
+    $('#proxy').classList.add('hit');
+    await s.wait(450);
+    packet.textContent = 'ghp_••••a91'; packet.classList.add('real');
+    await s.wait(450);
+    $('#w2').classList.add('hot');
+    await fly($('#proxy'), $('#github'), 900); s.check();
+    $('#github').classList.add('hit');
+    packet.style.opacity = 0;
+
+    const now = new Date(), t = now.toTimeString().slice(0, 8);
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<span class="t">${t}</span><span>app</span><span>github.com</span><span>ghp_••••a91</span><span>${req} · 200</span>`;
+    rows.prepend(row);
+    requestAnimationFrame(() => row.classList.add('in'));
+    while (rows.children.length > 3) rows.lastChild.remove();
+
+    s.bot(bot, 'happy');
+    await s.settled(bot);
+    $('#proxy').classList.remove('hit'); $('#github').classList.remove('hit');
+    $('#w1').classList.remove('hot'); $('#w2').classList.remove('hot');
+    await s.wait(1600);
+  }, { gap: 600 });
+</script>
+</body>
+</html>

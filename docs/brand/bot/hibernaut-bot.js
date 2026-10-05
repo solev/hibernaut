@@ -1,5 +1,7 @@
-// <hib-bot state="asleep|wake|idle|listening|thinking|working|happy|fork|hibernate" tight>
+// <hib-bot state="asleep|wake|idle|listening|thinking|working|happy|fork|hibernate" tight follow>
 // Body = currentColor, effects = --hib-accent. Geometry matches docs/brand/svg/hibernaut-mark.svg.
+// `follow`: eyes track the pointer while idle or listening. `bot.stir()` nudges a sleeping bot.
+// `paused`: freezes the animation in place.
 
 const NS = 'http://www.w3.org/2000/svg';
 const BODY_D =
@@ -16,6 +18,18 @@ const SHAPES = {
 };
 
 const TRANSIENT = { wake: 'idle', happy: 'idle', hibernate: 'asleep' };
+const FOLLOWS = new Set(['idle', 'listening']);
+
+// One shared pointer for every bot with `follow`.
+const pointer = { x: 0, y: 0, at: -Infinity };
+let pointerBound = false;
+function bindPointer() {
+  if (pointerBound) return;
+  pointerBound = true;
+  const track = (e) => { pointer.x = e.clientX; pointer.y = e.clientY; pointer.at = performance.now(); };
+  addEventListener('pointermove', track, { passive: true });
+  addEventListener('pointerdown', track, { passive: true });
+}
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
@@ -258,6 +272,13 @@ class HibBot extends HTMLElement {
       'aria-label': 'Hibernaut',
     });
     this.svg.style.cssText = 'display:block;width:100%;height:100%;overflow:visible';
+    this.follow = this.hasAttribute('follow') && !this.reduced;
+    if (this.follow) bindPointer();
+    // Body center as a fraction of the element box, for pointer tracking.
+    this.anchor = this.tight ? [56 / 112, 64 / 116] : [95 / 190, 105 / 175];
+    this.visible = true;
+    this.io = new IntersectionObserver(([e]) => { this.visible = e.isIntersecting; });
+    this.io.observe(this);
     this.back = el('g'); this.mid = el('g'); this.front = el('g');
     this.svg.append(this.back, this.mid, this.front);
     this.append(this.svg);
@@ -272,12 +293,12 @@ class HibBot extends HTMLElement {
       this.raf = requestAnimationFrame(loop);
       const dt = Math.min(0.05, (now - this.last) / 1000);
       this.last = now;
-      this.step(dt);
+      if (this.visible && !this.hasAttribute('paused')) this.step(dt);
     };
     this.raf = requestAnimationFrame(loop);
   }
 
-  disconnectedCallback() { cancelAnimationFrame(this.raf); this.svg?.remove(); this.svg = null; }
+  disconnectedCallback() { cancelAnimationFrame(this.raf); this.io?.disconnect(); this.svg?.remove(); this.svg = null; }
 
   attributeChangedCallback(_, __, v) {
     if (this.svg && v && v !== this.current) this.go(v);
@@ -316,6 +337,28 @@ class HibBot extends HTMLElement {
   blink(body) {
     body.lid.to(0.06, 45);
     this.at(0.09, () => body.lid.to(body.lidBase, 22));
+  }
+
+  stir() {
+    if (this.current !== 'asleep' || this.reduced) return;
+    const m = this.main;
+    m.pose(1.05, 0.93, 0, 18);
+    this.at(0.14, () => m.pose(0.98, 1.03, -2, 14));
+    this.at(0.32, () => m.pose(1, 1, 0, 8));
+    if (!this.tight) this.spawnZ();
+  }
+
+  track() {
+    const now = performance.now();
+    if (now - pointer.at > 3500) return;
+    if (!this.rect || now - this.rectAt > 400) { this.rect = this.getBoundingClientRect(); this.rectAt = now; }
+    const r = this.rect;
+    const sat = (d) => d / (Math.abs(d) + 240);
+    const gx = 9 * sat(pointer.x - (r.left + r.width * this.anchor[0]));
+    const gy = 6.5 * sat(pointer.y - (r.top + r.height * this.anchor[1]));
+    const m = this.main;
+    m.gaze(gx, gy, 12);
+    if (this.current === 'idle') { m.tx.to(gx * 0.3, 6); m.rot.to(gx * 0.3, 6); }
   }
 
   spawnClone() {
@@ -386,6 +429,7 @@ class HibBot extends HTMLElement {
     }
     const st = STATES[this.current];
     if (st.tick && !this.reduced) st.tick(this, this.main, this.time - this.stateStart, dt);
+    if (this.follow && FOLLOWS.has(this.current)) this.track();
     this.main.step(dt);
     if (this.clone) this.clone.step(dt);
     this.fx = this.fx.filter((f) => {

@@ -25,6 +25,21 @@ A local check of `hib` at `af11404` (2026-10-04) found:
 - `hib image build` streams every build command's output, so the step that matters is hard to
   find.
 
+## Terminal UI libraries
+
+`hib` stays a plain Go CLI that prints line by line. It doesn't take over the screen. It uses
+Charm's libraries, a little at a time. Why we chose them is in
+[docs/research/modern-cli-tui-stacks.md](../research/modern-cli-tui-stacks.md).
+
+- **Lip Gloss v2** for colour and styling. Only on a terminal, and never with `NO_COLOR`.
+- **Bubble Tea v2**, inline only (no alternate screen), for live progress: waiting in `hib new`
+  and the per-step lines in `hib image build`. Add it when that work starts, not before.
+- **`golang.org/x/term`**, which `hib` already has, for the `hib rm` question and terminal
+  checks.
+
+Ratatui, Ink and OpenTUI are out: each needs a second language. A full-screen view (such as a
+future `hib top`) would use Bubble Tea too.
+
 ## Tasks
 
 **Help**

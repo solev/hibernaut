@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · a machine for every project that wakes over SSH</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hero.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 64px; align-items: center; }
+  h1 { font-size: clamp(38px, 5vw, 62px); }
+
+  .spec { border-top: 2px solid var(--fg); padding-top: 10px; }
+  .spec .fig { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 14px; }
+  .addr { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 18px; padding: 4px 0 18px; border-bottom: 1px solid var(--line); }
+  .addr hib-bot { width: 92px; height: 92px; }
+  .addr .name { font: 600 clamp(28px, 3vw, 40px)/1 "Oxanium"; letter-spacing: -.02em; }
+  .addr .name span { color: var(--accent); }
+  .addr .st { font-size: 12px; color: var(--muted); margin-top: 8px; display: inline-flex; gap: 8px; align-items: center; }
+  .addr .st::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--line-2); transition: background .3s; }
+  .addr[data-awake="true"] .st::before { background: var(--accent); }
+
+  .tty { margin-top: 18px; padding: 16px 18px; min-height: 300px; font-size: 13.5px; line-height: 1.75; }
+  .tty .l { white-space: pre; opacity: 0; transition: opacity .2s; }
+  .tty .l.in { opacity: 1; }
+  .tty .row { display: grid; grid-template-columns: 22px 70px 80px 1fr; align-items: center; gap: 8px; padding-left: 2px; }
+  .tty .row hib-bot { width: 18px; height: 18px; }
+  .tty .row.hd { color: var(--muted); font-size: 11.5px; letter-spacing: .04em; }
+  .tty .awake { color: var(--accent); }
+  .tty .indent { padding-left: 2px; color: var(--muted); }
+
+  @media (max-width: 980px) {
+    .hero { grid-template-columns: 1fr; gap: 40px; }
+  }
+  @media (max-width: 520px) {
+    .addr { grid-template-columns: 64px 1fr; gap: 12px; }
+    .addr hib-bot { width: 64px; height: 64px; }
+    .tty { font-size: 12px; padding: 12px; }
+    .tty .row { grid-template-columns: 20px 54px 64px 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Docs</a><a href="#">Roadmap</a></nav>
+  <a class="gh" href="https://github.com/solev/hibernaut">GitHub</a>
+</header>
+
+<main class="hero">
+  <div>
+    <span class="eyebrow">Self-hosted dev machines</span>
+    <h1>Give every project a machine that wakes over SSH.</h1>
+    <p class="sub"><code>hib new app</code> creates a named microVM on your server. <code>ssh app.hib</code> gets you in, and when you walk away it sleeps with your files and processes intact.</p>
+    <div class="ctas">
+      <a class="btn primary" href="#">Set up your first machine <span class="arr">→</span></a>
+      <a class="btn ghost" href="#">Read the machine guide</a>
+    </div>
+    <div class="micro"><span>uses your ssh config</span><span>a real VM per project</span><span>open source</span></div>
+  </div>
+
+  <section class="spec" aria-label="Illustration: creating and waking machines from a terminal">
+    <div class="fig"><span>fig. 1</span><span>one address per project</span></div>
+    <div class="addr" id="addr">
+      <hib-bot tight id="big" state="asleep"></hib-bot>
+      <div>
+        <div class="name" id="name">app<span>.hib</span></div>
+        <div class="st" id="st">not created yet</div>
+      </div>
+    </div>
+    <div class="term tty" id="tty"></div>
+  </section>
+</main>
+
+<nav class="switcher"><a href="index.html">all</a><a href="01-fleet.html">01</a><a href="02-save-point.html">02</a><a href="03-boundary.html">03</a><a href="04-fork.html">04</a><a href="05-address.html" aria-current="page">05</a></nav>
+
+<script type="module">
+  import { story, $ } from './hero.js';
+  const tty = $('#tty'), big = $('#big'), addr = $('#addr');
+  const SLEEP = new Set(['asleep', 'hibernate']);
+  big.addEventListener('statechange', (e) => (addr.dataset.awake = !SLEEP.has(e.detail)));
+
+  function line(html = '', cls = '') {
+    const d = document.createElement('div');
+    d.className = 'l ' + cls;
+    d.innerHTML = html;
+    tty.append(d);
+    requestAnimationFrame(() => d.classList.add('in'));
+    return d;
+  }
+  async function prompt(s, text, ps = '~ $') {
+    const d = line(`<span class="p">${ps}</span> <span class="c"></span><span class="caret"></span>`);
+    await s.type(d.querySelector('.c'), text, 60);
+    await s.wait(280);
+    d.querySelector('.caret').remove();
+  }
+  const machine = (name, st) => { $('#name').innerHTML = `${name}<span>.hib</span>`; $('#st').textContent = st; };
+
+  story(async (s) => {
+    tty.innerHTML = '';
+    machine('app', 'not created yet');
+    s.bot(big, 'asleep');
+    await s.wait(900);
+
+    await prompt(s, 'hib new app');
+    await s.wait(500);
+    s.bot(big, 'wake');
+    line('<span class="ok">✓</span> app.hib is ready <span class="dim">· dev image · 2 vCPU · 512 MB</span>');
+    machine('app', 'awake · just created');
+    await s.settled(big);
+    await s.wait(900);
+
+    await prompt(s, 'hib ls');
+    line('<span></span><span>NAME</span><span>STATE</span><span>LAST USED</span>', 'row hd');
+    const rows = [['app', 'idle', 'awake', 'now'], ['api', 'asleep', 'asleep', '3h ago'], ['docs', 'asleep', 'asleep', '2d ago']]
+      .map(([n, b, st, t]) => line(`<hib-bot tight state="${b}"></hib-bot><span>${n}</span><span class="${st === 'awake' ? 'awake' : 'dim'}">${st}</span><span class="dim">${t}</span>`, 'row'));
+    await s.wait(1800);
+
+    await prompt(s, 'ssh api.hib');
+    machine('api', 'asleep · paused 3h ago');
+    s.bot(big, 'asleep');
+    await s.wait(500);
+    s.bot(big, 'wake');
+    const apiBot = rows[1].querySelector('hib-bot');
+    s.bot(apiBot, 'wake');
+    rows[1].children[2].className = 'awake'; rows[1].children[2].textContent = 'awake'; rows[1].children[3].textContent = 'now';
+    line('<span class="dim">waking api… resumed in 0.36 s</span>');
+    await s.settled(big);
+    machine('api', 'awake · tmux and dev server still running');
+    line('<span class="p">api:~/rocket $</span> <span class="caret"></span>');
+    s.bot(big, 'working');
+    await s.wait(4200);
+  }, { gap: 400 });
+</script>
+</body>
+</html>

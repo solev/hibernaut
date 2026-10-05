@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-theme="lamplight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hibernaut · fork a warm machine</title>
+<link rel="icon" href="../svg/hibernaut-favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="hero.css">
+<script src="../bot/hibernaut-bot.js"></script>
+<style>
+  .hero { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.1fr); gap: 56px; align-items: center; }
+  .eyebrow { gap: 12px; }
+
+  .tree { position: relative; }
+  .cmdbar { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; margin: 0 auto 18px; max-width: 420px; }
+  .cmdbar .p { color: var(--accent); }
+  .parent {
+    width: 230px; margin: 0 auto; border: 1px solid var(--line-2); border-radius: 18px; background: var(--surface);
+    padding: 6px 14px 14px; text-align: center; position: relative; z-index: 1;
+  }
+  .parent hib-bot { width: 180px; margin: 0 auto -8px; }
+  .label { font-size: 13px; font-weight: 500; }
+  .meta { font-size: 11px; color: var(--muted); }
+  .links { display: block; width: 100%; height: 70px; margin: -2px 0 -2px; }
+  .links path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-dasharray: 1; stroke-dashoffset: 1; opacity: .7; }
+  .kids { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .kid {
+    border: 1px solid var(--line); border-radius: 16px; background: var(--surface); padding: 4px 12px 12px; text-align: center;
+    opacity: 0; transform: translateY(-14px) scale(.85); transition: opacity .35s ease, transform .5s cubic-bezier(.3,1.5,.5,1), border-color .4s, box-shadow .4s;
+  }
+  .kid.in { opacity: 1; transform: none; }
+  .kid hib-bot { width: 140px; margin: 0 auto -6px; }
+  .kid .task { min-height: 2.9em; line-height: 1.45; margin-top: 2px; }
+  .kid .result { margin-top: 4px; font-size: 11.5px; min-height: 1.5em; color: var(--muted); }
+  .kid.win { border-color: var(--accent); box-shadow: 0 0 0 4px var(--glow); }
+  .kid.win .result { color: var(--accent); }
+  .kid.lose { opacity: .55; }
+
+  @media (max-width: 980px) {
+    .hero { grid-template-columns: 1fr; gap: 40px; }
+  }
+  @media (max-width: 520px) {
+    .kids { gap: 8px; }
+    .kid { padding: 4px 6px 10px; }
+    .kid hib-bot { width: 84px; }
+    .kid .task { font-size: 10.5px; }
+    .parent { width: 170px; }
+    .parent hib-bot { width: 120px; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#"><hib-bot tight state="asleep"></hib-bot>hibernaut</a>
+  <nav><a href="#">How it works</a><a href="#">Docs</a><a href="#">Roadmap</a></nav>
+  <a class="gh" href="https://github.com/solev/hibernaut">GitHub</a>
+</header>
+
+<main class="hero">
+  <div>
+    <span class="eyebrow">Fork a running machine <span class="pill">coming in v1</span></span>
+    <h1>Fork a warm machine. Let three agents <em>try at once</em>.</h1>
+    <p class="sub"><code>hib fork app --count 3</code> copies a running machine, dev server and all, into three new microVMs. Give each copy to an agent, keep the best result and let the rest sleep.</p>
+    <div class="ctas">
+      <a class="btn primary" href="#">Read the fork design <span class="arr">→</span></a>
+      <a class="btn ghost" href="https://github.com/solev/hibernaut">View on GitHub</a>
+    </div>
+    <div class="micro"><span>the original keeps running</span><span>each copy is its own VM</span><span>open source</span></div>
+  </div>
+
+  <section class="tree" aria-label="Illustration: one machine forks into three">
+    <div class="term cmdbar"><span><span class="p">~ $</span> <span id="cmd"></span><span class="caret"></span></span></div>
+    <div class="parent">
+      <hib-bot id="parent" state="working"></hib-bot>
+      <div class="label">app.hib</div>
+      <div class="meta">deps installed · dev server :3000</div>
+    </div>
+    <svg class="links" viewBox="0 0 600 70" preserveAspectRatio="none" aria-hidden="true">
+      <path pathLength="1" d="M300 0 C300 40 100 30 100 70"/>
+      <path pathLength="1" d="M300 0 L300 70"/>
+      <path pathLength="1" d="M300 0 C300 40 500 30 500 70"/>
+    </svg>
+    <div class="kids">
+      <article class="kid"><hib-bot state="asleep"></hib-bot><div class="label">app-1</div><div class="meta task">codex · try a redis cache</div><div class="result"></div></article>
+      <article class="kid"><hib-bot state="asleep"></hib-bot><div class="label">app-2</div><div class="meta task">codex · try an sql index</div><div class="result"></div></article>
+      <article class="kid"><hib-bot state="asleep"></hib-bot><div class="label">app-3</div><div class="meta task">copilot · try batching</div><div class="result"></div></article>
+    </div>
+  </section>
+</main>
+
+<nav class="switcher"><a href="index.html">all</a><a href="01-fleet.html">01</a><a href="02-save-point.html">02</a><a href="03-boundary.html">03</a><a href="04-fork.html" aria-current="page">04</a><a href="05-address.html">05</a></nav>
+
+<script type="module">
+  import { story, $, $$, reduced } from './hero.js';
+  const parent = $('#parent'), cmd = $('#cmd');
+  const kids = $$('.kid').map((el) => ({ el, bot: $('hib-bot', el), result: $('.result', el) }));
+  const paths = $$('.links path');
+  const draw = (p, on, ms = 600) => p.animate(
+    [{ strokeDashoffset: on ? 1 : 0 }, { strokeDashoffset: on ? 0 : 1 }],
+    { duration: reduced ? 0 : ms, easing: 'ease-out', fill: 'forwards' },
+  ).finished;
+  const RESULTS = [
+    ['✓ p95 41 ms', '✓ p95 18 ms', '✗ 2 tests fail'],
+    ['✗ 3 tests fail', '✓ p95 22 ms', '✓ p95 35 ms'],
+  ];
+  let round = 0;
+
+  story(async (s) => {
+    const res = RESULTS[round++ % RESULTS.length];
+    const best = res.reduce((b, r, i) => (r.startsWith('✓') && (b < 0 || +r.match(/(\d+) ms/)[1] < +res[b].match(/(\d+) ms/)[1]) ? i : b), -1);
+    cmd.textContent = '';
+    s.bot(parent, 'working');
+    await s.wait(1400);
+    await s.type(cmd, 'hib fork app --count 3', 50);
+    await s.wait(300);
+
+    for (const [i, k] of kids.entries()) {
+      draw(paths[i], true);
+      await s.wait(160);
+      k.el.classList.add('in');
+      s.bot(k.bot, 'wake');
+    }
+    await s.wait(1300);
+    kids.forEach((k, i) => s.bot(k.bot, i === 1 ? 'thinking' : 'working'));
+    await s.wait(1600);
+    kids.forEach((k, i) => s.bot(k.bot, i === 1 ? 'working' : 'thinking'));
+    await s.wait(1600);
+
+    for (const [i, k] of kids.entries()) {
+      k.result.textContent = res[i];
+      await s.wait(350);
+    }
+    await s.wait(400);
+    kids.forEach((k, i) => {
+      if (i === best) { k.el.classList.add('win'); k.result.textContent = res[i] + ' · keep'; s.bot(k.bot, 'happy'); }
+      else { k.el.classList.add('lose'); s.bot(k.bot, 'hibernate'); }
+    });
+    await s.wait(4200);
+
+    cmd.textContent = '';
+    paths.forEach((p) => draw(p, false, 400));
+    kids.forEach((k) => { k.el.classList.remove('in', 'win', 'lose'); k.result.textContent = ''; });
+    await s.wait(500);
+    kids.forEach((k) => s.bot(k.bot, 'asleep'));
+  }, { gap: 600 });
+</script>
+</body>
+</html>
