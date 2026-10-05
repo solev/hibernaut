@@ -160,9 +160,10 @@ func readySlots(builds []Build, envs map[string]Env) (map[slot][]placed, map[str
 		if b.Status != "ready" {
 			continue
 		}
+		inImage := slices.ContainsFunc(b.In, func(a Assignment) bool { return envs[a.Env].Machine == "" })
 		for _, a := range b.In {
 			s := slot{a.Env, a.Tag}
-			slots[s] = append(slots[s], placed{build: b.ID, at: a.At, finished: finished(b), created: b.Created, recordedFinish: b.Finished})
+			slots[s] = append(slots[s], placed{build: b.ID, at: a.At, finished: finished(b), created: b.Created, recordedFinish: b.Finished, inImage: inImage})
 			if m := envs[a.Env].Machine; m != "" {
 				snapshotted[m] = true
 			}
@@ -278,7 +279,7 @@ func pauseSettled(ps []placed, started time.Time, grace time.Duration, now time.
 	var latest *placed
 	for i := range ps {
 		p := &ps[i]
-		if p.created.After(started) && (latest == nil || p.created.After(latest.created)) {
+		if !p.inImage && p.created.After(started) && (latest == nil || p.created.After(latest.created)) {
 			latest = p
 		}
 	}
@@ -311,6 +312,7 @@ type placed struct {
 	build                   string
 	at, finished            time.Time
 	created, recordedFinish time.Time
+	inImage                 bool
 }
 
 func later(a, b time.Time) time.Time {

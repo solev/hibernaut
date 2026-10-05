@@ -1,12 +1,49 @@
 package cleanup_test
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/solev/hibernaut/internal/cleanup"
 )
+
+func TestImageSaveDoesNotEndPausingMachinesRunProtection(t *testing.T) {
+	for _, removed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("image removed=%v", removed), func(t *testing.T) {
+			image := cleanup.Env{ID: "saved"}
+			if removed {
+				image.Deleted = ago(2 * time.Hour)
+			}
+			save := ready("save", "snap-web", ago(3*time.Hour))
+			save.In = append(save.In, cleanup.Assignment{Env: "saved", Tag: "default", At: ago(3 * time.Hour)})
+			replacement := ready("replacement", "snap-web", ago(11*time.Hour))
+			replacement.In[0].At = ago(9 * time.Hour)
+			l := cleanup.Listing{
+				Envs: []cleanup.Env{{ID: "snap-web", Machine: "web"}, image},
+				Builds: []cleanup.Build{
+					ready("input", "snap-web", ago(12*time.Hour)),
+					replacement,
+					save,
+				},
+				Dirs: []cleanup.Dir{
+					dir("input", ago(12*time.Hour)),
+					dir("replacement", ago(9*time.Hour)),
+					dir("save", ago(3*time.Hour)),
+				},
+				Machines: []cleanup.Machine{{ID: "web", Started: ago(10 * time.Hour), Paused: true}},
+			}
+			p, err := cleanup.Garbage(l, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, root := p.Roots["input"]; !root || slices.Contains(p.Delete, "input") {
+				t.Fatalf("image save ended protection of the run's input: %+v", p)
+			}
+		})
+	}
+}
 
 func TestMachineSelectionRoots(t *testing.T) {
 	for _, tc := range []struct {
