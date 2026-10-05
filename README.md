@@ -176,12 +176,13 @@ over plain `ssh`:
 
 ```bash
 hib init -host azureuser@20.91.197.185 -azure-group rg-e2b-test -azure-vm e2b-test
-hib image build dev        # build the dev image as an E2B template (first time, ~1m40s)
+hib image build dev        # build the dev image in every size, as E2B templates
 hib new app                # create a machine named app
+hib new tiny --size small  # a small one (small, medium or large; default medium)
 hib new big -idle 2h       # one that pauses after 2 idle hours (default 15m; 0 = never)
 ssh app.hib                # shell in; if the VM is asleep, hib wakes it first
 hib exec app -- uname -a   # run one command, no interactive shell
-hib ls                     # machines, running and paused, when they pause, and room left
+hib ls                     # machines, running and paused, their size, when they pause, room left
 hib pause app              # pause it now; ssh app.hib resumes it
 hib rm app                 # delete it
 ```
@@ -203,11 +204,36 @@ left off. Nothing else wakes it. After 30 minutes with no machine running and no
 the VM deallocates itself, and every night at 20:00 UTC it pauses every machine and deallocates
 regardless (see [Costs and auto-off](#costs-and-auto-off)). `make down` does that now.
 
-**About three machines run at once.** Each `dev` machine takes 2 GiB of the VM's memory pool
-while it runs. Paused ones take only disk. `hib ls` ends with how many more fit. When the VM is
-full, `hib new` and waking a paused machine fail at once with a message naming the running
-machines: `hib pause NAME` frees memory, `hib rm NAME` frees disk. CPU is shared, so busy
-machines slow each other down but nothing fails.
+**About three machines run at once.** Running machines share the VM's memory pool of 6.25 GiB.
+Paused ones take only disk. `hib ls` ends with how many more of each size fit, for example
+`Room for more machines: 4 small, 2 medium or 1 large.` Each count is on its own, not a mix. When
+the VM is full, `hib new` and waking a paused machine fail at once with a message naming the
+running machines: `hib pause NAME` frees memory, `hib rm NAME` frees disk. `hib new` with a
+built-in image also says which sizes still fit. CPU is shared, so busy machines slow each other
+down but nothing fails.
+
+**Machines come in three sizes.** `hib new app --size small` picks one. The default is medium,
+the size every machine had before sizes.
+
+| Size   | vCPU | RAM   | At once on today's VM         |
+| ------ | ---- | ----- | ----------------------------- |
+| small  | 1    | 1 GiB | 6                             |
+| medium | 2    | 2 GiB | 3                             |
+| large  | 4    | 4 GiB | 1, plus a small or medium one |
+
+Sizes mix in the one pool: two medium and two small machines fit too. Disk is 10 GiB for every
+size.
+
+**A machine keeps its size for life.** E2B can't change a snapshot's CPUs or RAM. To move to
+another size, make a new machine and copy your files over, for example
+`scp -3 -r app.hib:project tiny.hib:` or rsync. Saved images and forks keep the size of the
+machine they came from, so `hib new --image myimg` takes no `--size`. A large machine can't be
+saved or forked on today's VM: that needs 8 GiB at once, and `hib` says so.
+
+**Each size is its own E2B template**, so `hib image build dev` builds every size: medium first,
+then small and large. They share the build steps, so each extra size adds only its final boot
+and snapshot. After updating hibd, run `hib image build dev` once before making small or large
+machines.
 
 E2B keeps every snapshot it writes, even a removed machine's. `hibd` deletes the ones nothing
 needs any more when a machine is removed, and hourly. `./azure/ssh.sh sudo hibd cleanup -n`
@@ -243,9 +269,9 @@ E2B can hide a failed save's template for a few minutes. If `hib` can't confirm 
 says so, and for an image it says how to remove it.
 
 Copies get fresh SSH host keys, the current placeholder setup and your authorized public keys.
-Forks keep the origin's image and idle policy. Their names use the lowest free suffix, starting at
-`app-1`. If a later copy fails, the whole copies already made stay, and `hib` names them before
-printing the error.
+Forks keep the origin's image, size and idle policy. Their names use the lowest free suffix,
+starting at `app-1`. If a later copy fails, the whole copies already made stay, and `hib` names
+them before printing the error.
 
 Saved names can't replace a built-in image or an existing saved one. If a later built-in image
 takes a saved name, `image ls` marks the saved one as shadowed. `new -image` uses the built-in one.
