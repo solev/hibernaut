@@ -197,6 +197,12 @@ Ctrl-C stops `hib` waiting, not the host. Work the host has started, such as mak
 pausing or deleting a machine, carries on. `hib` says what may be left behind and how to check
 it, for example "stopped waiting. The host may still be making app: check hib ls", and exits 130.
 
+**`hib new` shows what it waits for.** After 2 seconds, a live line at the bottom of the terminal
+says what for and for how long: `waking the host (40s)`, then `making app (12s)`. Messages from
+`hib` and the host print above it, and it's cleared before `hib` prints its result. There's no
+live line when stderr isn't a terminal, such as a pipe or a file, when `TERM` is `dumb`, or with
+`--json`. So `TERM=dumb hib new app` turns it off.
+
 `hib image build dev` bakes the Hibernaut CA into the image, so machines can trust the host proxy.
 Machines made before that rebuild need to be recreated to trust it.
 
@@ -244,6 +250,23 @@ saved or forked on today's VM: that needs 8 GiB at once, and `hib` says so.
 then small and large. They share the build steps, so each extra size adds only its final boot
 and snapshot. After updating hibd, run `hib image build dev` once before making small or large
 machines.
+
+**`hib image build` prints a line as each step ends**, with its time, or `reused` when E2B had it
+from an earlier build:
+
+```text
+dev (small)  3/12  RUN apt-get install -y git curl  reused
+dev (small)  4/12  RUN npm i -g @openai/codex  built in 41s
+```
+
+- On a terminal, a live line below them shows the step that's running and its time so far.
+  `hib` never guesses which step comes next or how long is left.
+- A failed step prints its last 20 lines. `--verbose` prints E2B's full log instead.
+- If `hib` can't read the host's progress, it stops waiting and says the build may still be
+  running on the host. Check `hib image ls` a few minutes later. `hib` never starts the build
+  again by itself.
+- With a pipe, or `TERM=dumb`, the same step lines print with no live line. A host whose hibd is
+  older than M10 prints the full log.
 
 E2B keeps every snapshot it writes, even a removed machine's. `hibd` deletes the ones nothing
 needs any more when a machine is removed, and hourly. `./azure/ssh.sh sudo hibd cleanup -n`
@@ -356,6 +379,10 @@ hib status                     # the host, E2B, GitHub and each secret, without 
 - Every source checks the token with GitHub (`GET /user`) and stores it as secret `github`:
   variable `GH_TOKEN`, bound to `github.com`, `api.github.com`, `uploads.github.com` and
   `*.githubcopilot.com`. If GitHub refuses it, nothing is stored.
+- `hib disconnect github` removes the `github` secret and the login's details from the host,
+  waking it if it's asleep. Machines keep their placeholders, so GitHub stops working in them
+  until you run `hib connect github` again. It doesn't revoke the token itself: do that as below,
+  or on the token's page. A host whose hibd is too old for it says to run `make up`.
 - To revoke the host's device login, open `https://github.com/settings/applications`, choose
   **Authorized OAuth Apps**, then **Hibernaut**, then **Revoke**.
 - If your org restricts OAuth Apps, an owner must approve Hibernaut before machines can see the
@@ -396,6 +423,10 @@ hib status                     # adds a Codex line: account, plan, token expiry,
 - `hib connect codex` runs Codex's device login on the host. Open the link, sign in to ChatGPT,
   and enter the code within 15 minutes. If ChatGPT refuses, turn on device code login in ChatGPT,
   under Settings, Security. Connecting again replaces the login, even with another account.
+- `hib disconnect codex` removes the Codex login from the host: secrets `codex-access`,
+  `codex-refresh` and `codex-id`, and the login's details. Machines keep `~/.codex/auth.json`
+  with placeholders, and Codex in them stops working until you run `hib connect codex` again.
+  Revoke the login itself in ChatGPT's settings.
 - The host keeps the real tokens as secrets `codex-access`, `codex-refresh` and `codex-id`.
   Machines get `~/.codex/auth.json` with placeholders: running ones at once, paused ones when
   they wake. The proxy swaps the access token on `chatgpt.com`, and answers Codex's refresh
