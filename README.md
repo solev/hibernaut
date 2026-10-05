@@ -329,9 +329,9 @@ hib status                     # the host, E2B, GitHub and each secret, without 
 - Commits are yours. `hibd` sets git's `user.name` to your GitHub name, and `user.email` to your
   noreply address (`ID+LOGIN@users.noreply.github.com`), so no email scope is needed.
 - **The `workflow` scope.** The device flow asks for it. gh's token has `repo`, `read:org` and
-  `gist`, but not `workflow`.
-  Without it, GitHub refuses pushes that change `.github/workflows/`, and `hib connect` warns.
-  To fix it: `gh auth refresh -h github.com -s workflow`, then `hib connect github --from-gh`.
+  `gist`, but not `workflow`. Without it, GitHub refuses pushes that change `.github/workflows/`,
+  and `hib connect` warns. To fix it: `gh auth refresh -h github.com -s workflow`, then
+  `hib connect github --from-gh`.
 - With `--from-gh`, the laptop and the host share gh's token. Logging gh in on many devices can
   make GitHub revoke it. `hib status` then says `revoked: run hib connect github --from-gh again`.
 
