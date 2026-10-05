@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,12 @@ func TestScopeWarning(t *testing.T) {
 				"To fix it, make a classic token with the workflow scope, then run hib connect github --token again.",
 		},
 		{
+			name: "no workflow, from the device flow",
+			gh:   hibapi.GitHub{Source: hibapi.GitHubFromDevice, Scopes: []string{"read:org", "repo"}, ScopesKnown: true},
+			want: "the token has no workflow scope, so machines can't push changes under .github/workflows. " +
+				"To fix it, run hib connect github again.",
+		},
+		{
 			name: "no scopes, from a token",
 			gh:   hibapi.GitHub{Source: hibapi.GitHubFromToken, Scopes: []string{}, ScopesKnown: true},
 			want: "the token has no repo or workflow scope, so machines can't clone private repos or push. " +
@@ -60,12 +67,52 @@ func TestScopeWarning(t *testing.T) {
 
 func TestReconnect(t *testing.T) {
 	for source, want := range map[string]string{
-		hibapi.GitHubFromGH:    "hib connect github --from-gh",
-		"":                     "hib connect github --from-gh",
-		hibapi.GitHubFromToken: "hib connect github --token",
+		hibapi.GitHubFromGH:     "hib connect github --from-gh",
+		"":                      "hib connect github --from-gh",
+		hibapi.GitHubFromToken:  "hib connect github --token",
+		hibapi.GitHubFromDevice: "hib connect github",
 	} {
 		if got := (hibapi.GitHub{Source: source}).Reconnect(); got != want {
 			t.Errorf("Reconnect() from %q = %q, want %q", source, got, want)
+		}
+	}
+}
+
+func TestGitHubDevicePrompt(t *testing.T) {
+	for _, tc := range []struct {
+		code      string
+		expiresIn time.Duration
+		want      string
+	}{
+		{"WDJB-MJHT", 15 * time.Minute, "To connect GitHub, open https://github.com/login/device and enter the code WDJB-MJHT within 15 minutes.\n"},
+		{"WDJB-MJHT", 899 * time.Second, "To connect GitHub, open https://github.com/login/device and enter the code WDJB-MJHT within 14 minutes.\n"},
+		{"AB12", time.Minute, "To connect GitHub, open https://github.com/login/device and enter the code AB12 within 1 minute.\n"},
+		{"AB12", 30 * time.Second, "To connect GitHub, open https://github.com/login/device and enter the code AB12 within 1 minute.\n"},
+	} {
+		got := hibapi.GitHubDevicePrompt(tc.code, tc.expiresIn)
+		if got != tc.want {
+			t.Errorf("GitHubDevicePrompt(%q, %v) =\n%q, want\n%q", tc.code, tc.expiresIn, got, tc.want)
+		}
+		if line := strings.TrimSuffix(got, "\n"); !hibapi.IsGitHubDevicePrompt(line) {
+			t.Errorf("IsGitHubDevicePrompt(%q) = false, want true", line)
+		}
+	}
+	const prompt = "To connect GitHub, open https://github.com/login/device and enter the code WDJB-MJHT within 15 minutes."
+	for _, line := range []string{
+		prompt + "\n",
+		prompt + " ",
+		"hibd: " + prompt,
+		strings.Replace(prompt, "https://github.com/login/device", "https://github.com/login/device.example", 1),
+		strings.Replace(prompt, "https://github.com/login/device", "https://evil.example/login/device", 1),
+		strings.Replace(prompt, "WDJB-MJHT", "WDJB MJHT", 1),
+		strings.Replace(prompt, "WDJB-MJHT", "WDJB-", 1),
+		strings.Replace(prompt, "15 minutes", "0 minutes", 1),
+		strings.Replace(prompt, "15 minutes", "15 minutes or so", 1),
+		"Waiting for GitHub. Press Ctrl-C to cancel.",
+		"",
+	} {
+		if hibapi.IsGitHubDevicePrompt(line) {
+			t.Errorf("IsGitHubDevicePrompt(%q) = true, want false", line)
 		}
 	}
 }

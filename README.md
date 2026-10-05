@@ -23,7 +23,7 @@ on a single Azure VM, plus scripts that switch that VM off whenever nobody is us
 - Setup is scripted: `make up` starts everything, `make down` stops paying.
 - **Secrets stay on the host.** Machines hold look-alike placeholders. The host's proxy swaps in
   the real value only on HTTPS calls to the sites a secret is bound to.
-- **GitHub is connected once.** `hib connect github --from-gh` gives every machine your GitHub
+- **GitHub is connected once.** `hib connect github` gives every machine your GitHub
   login: `git clone`, `git push` and `gh` work, with only a placeholder inside.
 - **So are AI tools.** `hib connect codex` logs Codex in with your ChatGPT plan, and Copilot uses
   the GitHub connection. Both work in every machine, with only placeholders inside.
@@ -301,27 +301,39 @@ Connect GitHub once. Every machine can then clone your private repos, push, and 
 login inside it:
 
 ```bash
-hib connect github --from-gh   # copies your laptop's gh login to the host
+hib connect github            # shows a code and opens a browser to approve the host's login
 ssh app.hib
   git clone https://github.com/solev/rocket   # git@github.com:solev/rocket.git works too
   gh pr create
 hib status                     # the host, E2B, GitHub and each secret, without waking the host
 ```
 
-- `--from-gh` takes the token from `gh auth token` on your laptop. The host checks it with
-  GitHub (`GET /user`) and stores it as secret `github`: variable `GH_TOKEN`, bound to
-  `github.com`, `api.github.com` and `uploads.github.com`. If GitHub refuses it, nothing is stored.
+- `hib connect github` shows a code and opens `https://github.com/login/device`. Sign in and
+  enter the code to approve Hibernaut. The host gets its own token, which never touches the
+  laptop. It asks for `repo`, `read:org` and `workflow`.
+- Ctrl-C cancels the login. If you cancelled, run `hib status` to see whether GitHub is connected.
+  GitHub may have granted the token just before you cancelled.
+- `hib connect github --from-gh` takes the token from `gh auth token` on your laptop instead, to
+  reuse your existing login.
 - `hib connect github --token` takes a token you made, such as a fine-grained one limited to some
   repos. It asks for it hidden, or reads stdin. Never pass it as an argument.
+- Every source checks the token with GitHub (`GET /user`) and stores it as secret `github`:
+  variable `GH_TOKEN`, bound to `github.com`, `api.github.com`, `uploads.github.com` and
+  `*.githubcopilot.com`. If GitHub refuses it, nothing is stored.
+- To revoke the host's device login, open `https://github.com/settings/applications`, choose
+  **Authorized OAuth Apps**, then **Hibernaut**, then **Revoke**.
+- If your org restricts OAuth Apps, an owner must approve Hibernaut before machines can see the
+  org's repos.
 - In the `dev` image, `/etc/gitconfig` makes gh git's credential helper for GitHub, and rewrites
   `git@github.com:` URLs to HTTPS. gh answers with the placeholder, and the proxy swaps it.
 - Commits are yours. `hibd` sets git's `user.name` to your GitHub name, and `user.email` to your
   noreply address (`ID+LOGIN@users.noreply.github.com`), so no email scope is needed.
-- **The `workflow` scope.** gh's token has `repo`, `read:org` and `gist`, but not `workflow`.
-  Without it, GitHub refuses pushes that change `.github/workflows/`, and `hib connect` warns.
-  To fix it: `gh auth refresh -h github.com -s workflow`, then `hib connect github --from-gh`.
-- The laptop and the host share gh's token. Logging gh in on many devices can make GitHub revoke
-  it. `hib status` then says `revoked: run hib connect github --from-gh again`.
+- **The `workflow` scope.** The device flow asks for it. gh's token has `repo`, `read:org` and
+  `gist`, but not `workflow`. Without it, GitHub refuses pushes that change `.github/workflows/`,
+  and `hib connect` warns. To fix it: `gh auth refresh -h github.com -s workflow`, then
+  `hib connect github --from-gh`.
+- With `--from-gh`, the laptop and the host share gh's token. Logging gh in on many devices can
+  make GitHub revoke it. `hib status` then says `revoked: run hib connect github --from-gh again`.
 
 `hib status` checks secrets bound to `api.github.com` with GitHub. It can't test other keys, so
 they show as `unchecked`. It exits 1 when E2B is down or a secret is revoked or failing. If the
@@ -337,7 +349,7 @@ both work in every machine with no login and no real token inside:
 
 ```bash
 hib connect codex              # Codex, with your ChatGPT plan: prints a code and a link
-hib connect github --from-gh   # Copilot uses the GitHub connection
+hib connect github            # Copilot uses the GitHub connection
 ssh app.hib
   codex                        # or: codex exec "…"
   copilot                      # or: copilot -p "…"
@@ -413,6 +425,9 @@ Mac.
 The GitHub tests connect your laptop's gh login and use the private fixture repo
 `solev/hibernaut-e2e`. They remove the `e2e-` branches and PRs they make, and ones that killed
 runs left. `TestWorkflowPush` skips until gh's token has the `workflow` scope.
+`TestDeviceFlow` uses the host's own token instead. It skips unless `HIB_E2E_DEVICE_FLOW=1`.
+Run it with `HIB_E2E_DEVICE_FLOW=1 go test -tags e2e -run '^TestDeviceFlow$' -v -timeout 40m ./e2e`
+and approve the code by hand. The account you approve needs access to the fixture repo.
 
 CI (`lint`, `test` and the `generate` check) is parked: GitHub Actions is off for this repo, so
 nothing runs on push. Run `make lint test` before you push. To turn it back on:

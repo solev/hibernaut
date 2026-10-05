@@ -4,16 +4,384 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const testGitHubToken = "gho_testOnlyToken1234567890"
+
+func TestConnectGitHubDefaultsToDeviceFlow(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		browser bool
+	}{
+		{"no flags", []string{"connect", "github"}, true},
+		{"false token flag", []string{"connect", "github", "--token=false"}, true},
+		{"nil browser", []string{"connect", "github"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			if tc.browser {
+				c.browser = func(context.Context, string) error { return nil }
+			}
+			prompt := hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute)
+			var deadline time.Time
+			run := c.ssh
+			c.ssh = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+				deadline, _ = ctx.Deadline()
+				return run(ctx, args, stdin, stdout, stderr)
+			}
+			h.override = func(words []string, stdout, stderr io.Writer) (int, bool) {
+				if want := []string{"sudo", "-n", "hibd", "connect", "github", "--source", "device", "--json"}; !slices.Equal(words, want) {
+					t.Error("connect didn't select the device source through sudo")
+				}
+				io.WriteString(stderr, prompt)
+				return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
+					Login: "octocat", Email: "1+octocat@users.noreply.github.com",
+					Source: hibapi.GitHubFromDevice, ScopesKnown: true, Scopes: []string{"repo", "read:org"},
+				}}), true
+			}
+			start := time.Now()
+			code := c.hib(tc.args...)
+			end := time.Now()
+			if code != 0 {
+				t.Fatalf("device connect exited %d: %s", code, c.errOut)
+			}
+			if c.out.String() != "connected GitHub as octocat. Machines commit as 1+octocat@users.noreply.github.com\n" {
+				t.Error("device connect changed the success output")
+			}
+			if !strings.Contains(c.errOut.String(), "run hib connect github again.") {
+				t.Error("device connect didn't show the scope warning")
+			}
+			if !strings.HasPrefix(c.errOut.String(), prompt) {
+				t.Error("device connect didn't stream the prompt")
+			}
+			calls := h.takeCalls()
+			if len(calls) != 1 || !slices.Contains(calls[0], "StdinNull=no") {
+				t.Error("device connect didn't pin SSH's stdin open")
+			}
+			if deadline.Before(start.Add(17*time.Minute)) || deadline.After(end.Add(17*time.Minute)) {
+				t.Error("device connect didn't give hibd 17 minutes")
+			}
+		})
+	}
+}
+
+func TestConnectGitHubDeviceHoldsStdinForEachAttempt(t *testing.T) {
+	for _, wake := range []bool{false, true} {
+		t.Run("wake "+strconv.FormatBool(wake), func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			var opens int
+			c.browser = func(context.Context, string) error {
+				opens++
+				return nil
+			}
+			var inputs []int
+			var deadlines []time.Time
+			h.sshInput = func(ctx context.Context, args []string, stdin io.Reader) {
+				if !strings.Contains(strings.Join(args, " "), "'connect' 'github'") {
+					if stdin != nil {
+						t.Error("an unattended host call received stdin")
+					}
+					return
+				}
+				fd := duplicateSSHStdin(t, stdin)
+				assertSSHStdinOpen(t, fd)
+				if len(inputs) > 0 {
+					assertSSHStdinEOF(t, inputs[len(inputs)-1])
+				}
+				inputs = append(inputs, fd)
+				deadline, _ := ctx.Deadline()
+				deadlines = append(deadlines, deadline)
+			}
+			h.override = func(words []string, stdout, stderr io.Writer) (int, bool) {
+				if words[0] != "sudo" {
+					return 0, false
+				}
+				io.WriteString(stderr, hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute))
+				if wake && len(inputs) == 1 {
+					h.states = []string{"VM deallocated"}
+					return 255, true
+				}
+				assertSSHStdinOpen(t, inputs[len(inputs)-1])
+				return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{
+					Login: "octocat", Email: "1+octocat@users.noreply.github.com",
+				}}), true
+			}
+			if code := c.hib("connect", "github"); code != 0 {
+				t.Fatalf("device connect exited %d: %s", code, c.errOut)
+			}
+			want := 1
+			if wake {
+				want = 2
+			}
+			if len(inputs) != want {
+				t.Fatalf("connect attempts = %d, want %d", len(inputs), want)
+			}
+			for _, fd := range inputs {
+				assertSSHStdinEOF(t, fd)
+			}
+			if opens != 1 {
+				t.Errorf("browser opens = %d, want one across all attempts", opens)
+			}
+			if wake && !deadlines[1].After(deadlines[0]) {
+				t.Error("the device login timeout didn't restart after waking")
+			}
+		})
+	}
+}
+
+func duplicateSSHStdin(t *testing.T, stdin io.Reader) int {
+	t.Helper()
+	file, ok := stdin.(*os.File)
+	if !ok {
+		t.Fatal("attended SSH didn't receive a pipe file descriptor")
+	}
+	fd, err := syscall.Dup(int(file.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Close(fd) })
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		t.Fatal(err)
+	}
+	return fd
+}
+
+func assertSSHStdinOpen(t *testing.T, fd int) {
+	t.Helper()
+	n, err := syscall.Read(fd, make([]byte, 1))
+	if n > 0 || !errors.Is(err, syscall.EAGAIN) {
+		t.Error("attended SSH's stdin got bytes or EOF before the call ended")
+	}
+}
+
+func assertSSHStdinEOF(t *testing.T, fd int) {
+	t.Helper()
+	n, err := syscall.Read(fd, make([]byte, 1))
+	if n != 0 || err != nil {
+		t.Error("attended SSH's stdin didn't reach EOF after the call ended")
+	}
+}
+
+func TestConnectGitHubDeviceCancellationIsHonest(t *testing.T) {
+	for _, reply := range []string{"ssh cancelled", "hibd cancelled", "already stored"} {
+		t.Run(reply, func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			fd := -1
+			h.sshInput = func(_ context.Context, _ []string, stdin io.Reader) {
+				fd = duplicateSSHStdin(t, stdin)
+				assertSSHStdinOpen(t, fd)
+			}
+			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+				cancel()
+				if reply == "already stored" {
+					return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}}), true
+				}
+				return writeTestResponse(stdout, hibapi.Response{Error: "the GitHub login was cancelled. Nothing was stored"}), true
+			}
+			if reply == "ssh cancelled" {
+				run := c.ssh
+				c.ssh = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+					run(ctx, args, stdin, stdout, stderr)
+					return -1, ctx.Err()
+				}
+			}
+			c.out.Reset()
+			c.errOut.Reset()
+			code := c.run(ctx, []string{"-config", c.dir, "connect", "github"})
+			want := "hib: the GitHub login was cancelled. Run hib status to see whether GitHub is connected\n"
+			if code != 1 || c.out.Len() != 0 || c.errOut.String() != want {
+				t.Errorf("cancelled login: exit %d, stdout %q, stderr %q", code, c.out, c.errOut)
+			}
+			assertSSHStdinEOF(t, fd)
+		})
+	}
+}
+
+func TestConnectGitHubDeviceOpensBrowserOnceAfterCompletePrompt(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	opened := make(chan string, 2)
+	c.browser = func(_ context.Context, url string) error {
+		opened <- url
+		return nil
+	}
+	prompt := hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute)
+	log := strings.Repeat("l", 2048) + "\n\x1b[2Jhost log\x1b[K\n"
+	h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+		io.WriteString(stderr, log)
+		for _, part := range []string{prompt[:17], prompt[17:50], prompt[50 : len(prompt)-1]} {
+			io.WriteString(stderr, part)
+		}
+		select {
+		case <-opened:
+			t.Error("the browser opened before the complete prompt line")
+		default:
+		}
+		io.WriteString(stderr, "\n")
+		if url := <-opened; url != "https://github.com/login/device" {
+			t.Error("the browser didn't receive the fixed device URL")
+		}
+		io.WriteString(stderr, prompt+prompt)
+		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}}), true
+	}
+	if code := c.hib("connect", "github"); code != 0 {
+		t.Fatalf("device connect exited %d: %s", code, c.errOut)
+	}
+	select {
+	case <-opened:
+		t.Error("the browser opened more than once")
+	default:
+	}
+	if c.errOut.String() != termsafe.String(log)+strings.Repeat(prompt, 3) {
+		t.Error("the streamed diagnostics weren't preserved and terminal-safe")
+	}
+}
+
+func TestConnectGitHubDeviceDoesNotOpenBrowserForOtherLines(t *testing.T) {
+	prompt := hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute)
+	for _, line := range []string{
+		"Waiting for GitHub. Press Ctrl-C to cancel.\n",
+		"See https://github.com/login/device yourself.\n",
+		strings.Replace(prompt, "https://github.com/login/device", "https://example.org/login/device", 1),
+		strings.Replace(prompt, "WDJB-MJHT", strings.Repeat("A", 2048), 1),
+		strings.Repeat("x", 2048) + prompt,
+		strings.Repeat("\x1b[0m", 512) + prompt,
+		strings.TrimSuffix(prompt, "\n"),
+	} {
+		t.Run(strconv.Itoa(len(line))+line[:min(16, len(line))], func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			c.browser = func(context.Context, string) error {
+				t.Error("the browser opened for something other than a bounded prompt line")
+				return nil
+			}
+			h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+				for i := 0; i < len(line); i += 31 {
+					io.WriteString(stderr, line[i:min(i+31, len(line))])
+				}
+				return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}}), true
+			}
+			if code := c.hib("connect", "github"); code != 0 || c.errOut.String() != termsafe.String(line) {
+				t.Error("non-prompt diagnostics weren't passed through")
+			}
+		})
+	}
+}
+
+func TestConnectGitHubBrowserOnlyWatchesDeviceCalls(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	c.browser = func(context.Context, string) error {
+		t.Error("the browser opened outside the device flow")
+		return nil
+	}
+	h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+		io.WriteString(stderr, hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute))
+		return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}}), true
+	}
+	c.stdin = strings.NewReader(testGitHubToken)
+	if code := c.hib("connect", "github", "--token"); code != 0 {
+		t.Errorf("token connect exited %d", code)
+	}
+}
+
+func TestConnectGitHubDeviceWaitsForBrowserAndSerializesFailureNote(t *testing.T) {
+	for _, ending := range []string{"\n", ""} {
+		t.Run("line ending "+strconv.Itoa(len(ending)), func(t *testing.T) {
+			h := newHost(t)
+			c := initClient(t, h)
+			prompt := hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute)
+			synctest.Test(t, func(t *testing.T) {
+				started := make(chan struct{})
+				release := make(chan struct{})
+				failed := make(chan struct{})
+				sshReturned := make(chan struct{})
+				c.browser = func(context.Context, string) error {
+					close(started)
+					<-release
+					close(failed)
+					return errors.New("opener failed\x1b[2J")
+				}
+				h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+					io.WriteString(stderr, prompt)
+					<-started
+					io.WriteString(stderr, "host partial ")
+					close(sshReturned)
+					<-failed
+					synctest.Wait()
+					io.WriteString(stderr, "line"+ending)
+					return writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}}), true
+				}
+				done := make(chan int, 1)
+				go func() { done <- c.hib("connect", "github") }()
+				<-sshReturned
+				synctest.Wait()
+				close(release)
+				if code := <-done; code != 0 {
+					t.Errorf("a failed browser changed connect's result to %d", code)
+				}
+				want := prompt + "host partial line\nhib: note: couldn't open a browser (opener failed\\x1b[2J). " +
+					"Open https://github.com/login/device yourself\n"
+				if c.errOut.String() != want {
+					t.Errorf("browser note interleaved with a host line: %q", c.errOut)
+				}
+			})
+		})
+	}
+}
+
+func TestConnectGitHubDeviceWaitsForSlowBrowserAfterSSHReturns(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h)
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		sshReturned := make(chan struct{})
+		c.browser = func(context.Context, string) error {
+			close(started)
+			<-release
+			return nil
+		}
+		h.override = func(_ []string, stdout, stderr io.Writer) (int, bool) {
+			io.WriteString(stderr, hibapi.GitHubDevicePrompt("WDJB-MJHT", 15*time.Minute))
+			<-started
+			code := writeTestResponse(stdout, hibapi.Response{GitHub: &hibapi.GitHub{Login: "octocat"}})
+			close(sshReturned)
+			return code, true
+		}
+		done := make(chan int, 1)
+		go func() { done <- c.hib("connect", "github") }()
+		<-sshReturned
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Error("connect returned while its browser opener was still running")
+		default:
+		}
+		close(release)
+		if code := <-done; code != 0 {
+			t.Errorf("device connect exited %d", code)
+		}
+	})
+}
 
 func TestConnectGitHubFromGH(t *testing.T) {
 	h := newHost(t)
@@ -160,9 +528,7 @@ func TestConnectGitHubRejectsArguments(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"both sources", []string{"github", "--from-gh", "--token"}, "choose exactly one"},
-		{"neither source", []string{"github"}, "choose exactly one"},
-		{"false source", []string{"github", "--token=false"}, "choose exactly one"},
+		{"both sources", []string{"github", "--from-gh", "--token"}, "choose at most one"},
 		{"another provider", []string{"gitlab", "--token"}, "only GitHub and Codex are supported"},
 		{"codex with a flag", []string{"codex", "--token"}, "hib connect codex takes no flags"},
 		{"codex with a false flag", []string{"codex", "--from-gh=false"}, "hib connect codex takes no flags"},
@@ -185,7 +551,7 @@ func TestConnectGitHubRejectsArguments(t *testing.T) {
 			code := c.hib(append([]string{"connect"}, tc.args...)...)
 			calls := h.takeCalls()
 			assertTokenPrivate(t, c, calls, testGitHubToken)
-			if code == 0 || !strings.Contains(c.errOut.String(), tc.want) {
+			if code != 2 || !strings.Contains(c.errOut.String(), tc.want) {
 				t.Errorf("exit %d, expected rejection explaining %s", code, tc.want)
 			}
 			if len(calls) != 0 {
@@ -281,22 +647,38 @@ func TestConnectGitHubRemoteErrors(t *testing.T) {
 			"GitHub refused the token: connect again\\x1b[2J"},
 		{"no sudo", hibapi.Response{}, true, "hibd needs passwordless sudo on the host"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHost(t)
-			c := initClient(t, h)
-			c.stdin = strings.NewReader(testGitHubToken)
-			h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
-				if tc.empty {
-					return 1, true
+		for _, source := range []string{"token", "device"} {
+			t.Run(tc.name+" "+source, func(t *testing.T) {
+				h := newHost(t)
+				c := initClient(t, h)
+				c.stdin = strings.NewReader(testGitHubToken)
+				fd := -1
+				if source == "device" {
+					h.sshInput = func(_ context.Context, _ []string, stdin io.Reader) {
+						fd = duplicateSSHStdin(t, stdin)
+						assertSSHStdinOpen(t, fd)
+					}
 				}
-				return writeTestResponse(stdout, tc.response), true
-			}
-			code := c.hib("connect", "github", "--token")
-			assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
-			if code != 1 || c.out.Len() != 0 || !strings.Contains(c.errOut.String(), tc.want) {
-				t.Errorf("exit %d, expected the host's failure explanation", code)
-			}
-		})
+				h.override = func(_ []string, stdout, _ io.Writer) (int, bool) {
+					if tc.empty {
+						return 1, true
+					}
+					return writeTestResponse(stdout, tc.response), true
+				}
+				args := []string{"connect", "github"}
+				if source == "token" {
+					args = append(args, "--token")
+				}
+				code := c.hib(args...)
+				assertTokenPrivate(t, c, h.takeCalls(), testGitHubToken)
+				if code != 1 || c.out.Len() != 0 || !strings.Contains(c.errOut.String(), tc.want) {
+					t.Errorf("exit %d, expected the host's failure explanation", code)
+				}
+				if source == "device" {
+					assertSSHStdinEOF(t, fd)
+				}
+			})
+		}
 	}
 }
 

@@ -53,8 +53,10 @@ commands:
   secret ls         list bound secrets
   secret rm NAME    remove a bound secret
   log               show secret swap audit entries (-n, default 50)
-  connect github    store a GitHub token from stdin as secret github, after GitHub accepts it,
-                    and give machines git's identity, as root (-source gh|token)
+  connect github    store a GitHub token as secret github, after GitHub accepts it, and give
+                    machines git's identity, as root. -source gh|token reads the token from
+                    stdin. -source device gets one with GitHub's device flow, and stops when
+                    stdin ends
   connect codex     log in to Codex on a ChatGPT plan with a device code, keep the login, and
                     give machines a login file of placeholders, as root
   codex refresh     refresh the Codex login once half its token's lifetime has passed, as root
@@ -137,6 +139,9 @@ type App struct {
 	// GitHubClient is the HTTP client for GitHub's API, for tests only. If it's nil, App uses
 	// github.NewClient().
 	GitHubClient *http.Client
+	// GitHubDeviceFlow runs hibd connect github -source device, for tests only. If it's nil, App
+	// uses a DeviceFlow with github.ClientID and the rest of its defaults.
+	GitHubDeviceFlow *github.DeviceFlow
 	// CodexBin is the codex that hibd connect codex runs, for tests only. If it's "", App uses
 	// /usr/local/bin/codex.
 	CodexBin string

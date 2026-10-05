@@ -2,8 +2,10 @@ package hibapi
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // GitHub is the GitHub account hibd connected. It never carries the token.
@@ -14,7 +16,7 @@ type GitHub struct {
 	Name string `json:"name"`
 	// Email is the account's noreply address, which machines commit as.
 	Email string `json:"email"`
-	// Source is how the token reached hibd: GitHubFromGH or GitHubFromToken.
+	// Source is how the token reached hibd: GitHubFromGH, GitHubFromToken or GitHubFromDevice.
 	Source string `json:"source"`
 	// Scopes are the token's OAuth scopes if ScopesKnown. GitHub doesn't report scopes for
 	// fine-grained and app tokens.
@@ -27,12 +29,42 @@ const (
 	GitHubFromGH = "gh"
 	// GitHubFromToken is hib connect github --token: a token the user pasted.
 	GitHubFromToken = "token"
+	// GitHubFromDevice is hib connect github with no flag: GitHub's device flow, which hibd runs
+	// and the user approves in a browser.
+	GitHubFromDevice = "device"
+	// GitHubDeviceURL is the page where the user enters the device flow's code. hib opens only
+	// this page, never a URL that hibd sends.
+	GitHubDeviceURL = "https://github.com/login/device"
 )
+
+var githubDevicePromptRE = regexp.MustCompile(`^To connect GitHub, open ` + regexp.QuoteMeta(GitHubDeviceURL) +
+	` and enter the code [A-Za-z0-9]+(-[A-Za-z0-9]+)* within [1-9][0-9]* minutes?\.$`)
+
+// GitHubDevicePrompt is the line hibd prints to stderr when the device flow has a code: open
+// GitHubDeviceURL and enter userCode within expiresIn, in whole minutes and at least one. It ends
+// in a newline.
+func GitHubDevicePrompt(userCode string, expiresIn time.Duration) string {
+	minutes := max(int(expiresIn/time.Minute), 1)
+	unit := "minutes"
+	if minutes == 1 {
+		unit = "minute"
+	}
+	return fmt.Sprintf("To connect GitHub, open %s and enter the code %s within %d %s.\n", GitHubDeviceURL, userCode, minutes, unit)
+}
+
+// IsGitHubDevicePrompt reports whether line, without its line ending, is a line that
+// GitHubDevicePrompt makes. hib opens GitHubDeviceURL in a browser when hibd prints one.
+func IsGitHubDevicePrompt(line string) bool {
+	return githubDevicePromptRE.MatchString(line)
+}
 
 // Reconnect is the command that connects GitHub again the way g was connected.
 func (g GitHub) Reconnect() string {
-	if g.Source == GitHubFromToken {
+	switch g.Source {
+	case GitHubFromToken:
 		return "hib connect github --token"
+	case GitHubFromDevice:
+		return "hib connect github"
 	}
 	return "hib connect github --from-gh"
 }
@@ -67,12 +99,15 @@ func (g GitHub) ScopeWarning() string {
 		cant = "push changes under .github/workflows"
 	}
 	fix := fmt.Sprintf("run gh auth refresh -h github.com -s %s, then %s again", strings.Join(missing, ","), g.Reconnect())
-	if g.Source == GitHubFromToken {
+	switch g.Source {
+	case GitHubFromToken:
 		noun := "scope"
 		if len(missing) > 1 {
 			noun = "scopes"
 		}
 		fix = fmt.Sprintf("make a classic token with the %s %s, then run %s again", strings.Join(missing, " and "), noun, g.Reconnect())
+	case GitHubFromDevice:
+		fix = fmt.Sprintf("run %s again", g.Reconnect())
 	}
 	return fmt.Sprintf("the token has no %s scope, so machines can't %s. To fix it, %s.", strings.Join(missing, " or "), cant, fix)
 }
