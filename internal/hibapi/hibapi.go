@@ -39,6 +39,8 @@ type Machine struct {
 	Name  string `json:"name,omitempty"`
 	ID    string `json:"id"`
 	Image string `json:"image,omitempty"`
+	// ForkOf is the name of the machine this one was forked from, if it was.
+	ForkOf string `json:"forkOf,omitempty"`
 	// State is "running" or "paused".
 	State     string    `json:"state"`
 	StartedAt time.Time `json:"startedAt"`
@@ -86,8 +88,8 @@ func FormatMB(mb int64) string {
 	return fmt.Sprintf("%d GiB", mb/1024)
 }
 
-// Response is what a hibd command prints with --json: one object, then the command exits. A
-// failed command prints only Error, and exits 1.
+// Response is what a hibd command prints with -json: one object, then the command exits. A
+// failed command carries Error, may carry partial results, and exits 1.
 type Response struct {
 	V        int        `json:"v"`
 	Error    string     `json:"error,omitempty"`
@@ -99,6 +101,10 @@ type Response struct {
 	Corrupt  int        `json:"corrupt,omitempty"`
 	// Room is the room on the host, from ls. It's nil if hibd couldn't read it.
 	Room *Room `json:"room,omitempty"`
+	// Image is the image image save saved.
+	Image *Image `json:"image,omitempty"`
+	// Images are the images image ls lists.
+	Images []Image `json:"images,omitempty"`
 	// Template is the ID of the template an image was built into.
 	Template string `json:"template,omitempty"`
 	// Version is hibd's release.
@@ -170,6 +176,29 @@ type Room struct {
 	DiskFreeMB int64 `json:"diskFreeMB"`
 }
 
+const (
+	// KindBuiltIn is an image in hibd's catalog, which hib image build builds.
+	KindBuiltIn = "built-in"
+	// KindSaved is an image saved from a machine.
+	KindSaved = "saved"
+)
+
+// Image is an image machines can be made from, as hibd reports it.
+type Image struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	MemoryMB int    `json:"memoryMB"`
+	CPUs     int    `json:"cpus"`
+	// Created is when the image was last built or saved. It's zero for a built-in image that
+	// isn't built.
+	Created time.Time `json:"created,omitzero"`
+	// Built says whether a built-in image is built. Saved images always are.
+	Built bool `json:"built"`
+	// Shadowed says a saved image has a built-in image's name. hib new --image NAME then makes
+	// the built-in one, and hib image rm NAME removes the saved one.
+	Shadowed bool `json:"shadowed,omitempty"`
+}
+
 // ErrVersion is returned for a response or header of another protocol version.
 var ErrVersion = errors.New("hib and hibd speak different versions")
 
@@ -178,8 +207,8 @@ type RemoteError struct{ Msg string }
 
 func (e *RemoteError) Error() string { return e.Msg }
 
-// DecodeResponse parses hibd's output. It returns a *RemoteError for a response that reports
-// one, and an error wrapping ErrVersion for a response of another version.
+// DecodeResponse parses hibd's output. It returns the response with a *RemoteError when hibd
+// reports an error, keeping partial results. Another version returns an error wrapping ErrVersion.
 func DecodeResponse(data []byte) (Response, error) {
 	var r Response
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -189,7 +218,7 @@ func DecodeResponse(data []byte) (Response, error) {
 		return Response{}, versionError(r.V)
 	}
 	if r.Error != "" {
-		return Response{}, &RemoteError{r.Error}
+		return r, &RemoteError{r.Error}
 	}
 	return r, nil
 }

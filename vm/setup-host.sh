@@ -19,6 +19,10 @@ user="${SUDO_USER:-}"
 [[ -n "$user" && "$user" != root ]] || { echo "Run this as the user hibd runs as; it uses sudo" >&2; exit 1; }
 group="$(id -gn "$user")"
 [[ -f /etc/hibernaut/hibd.env ]] || install -D -m 640 "$here/hibd/hibd.env" /etc/hibernaut/hibd.env
+# Image save and fork run hibd under sudo, which gives it root's HOME and root's keys.
+home="$(getent passwd "$user" | cut -d: -f6)"
+grep -q '^HIBD_AUTHORIZED_KEYS=' /etc/hibernaut/hibd.env ||
+  echo "HIBD_AUTHORIZED_KEYS=$home/.ssh/authorized_keys" >> /etc/hibernaut/hibd.env
 chown "root:$group" /etc/hibernaut/hibd.env
 chmod 640 /etc/hibernaut/hibd.env
 install -d -m 700 -o "$user" -g "$group" /var/lib/hibernaut

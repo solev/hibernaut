@@ -1,4 +1,5 @@
-// Package room says whether one more machine fits on the host (spec §5, Room on the host).
+// Package room says whether machines and their snapshots fit on the host
+// (spec §5, Room on the host).
 //
 // A running machine's RAM comes from the host's pool of huge pages, reserved in full as it
 // starts or resumes. A paused machine holds none. E2B refuses a start the pool can't hold, but
@@ -17,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 // SnapshotDir is where E2B keeps the snapshots of paused machines.
@@ -26,7 +28,7 @@ const SnapshotDir = "/var/lib/e2b"
 // since its last pause.
 const DiskMargin = 1 << 30
 
-// ErrFull is wrapped by the errors of Check.
+// ErrFull is wrapped by the errors of Check and CheckPlan.
 var ErrFull = errors.New("no room on the host")
 
 // Host is a reading of the room on the host.
@@ -112,9 +114,16 @@ func (h Host) Fits(memoryMB int, running []Machine) int {
 // Check returns nil if machine name, with memoryMB of RAM, fits next to the running machines.
 // Otherwise it returns an error wrapping ErrFull that says what to do.
 func (h Host) Check(name string, memoryMB int, running []Machine) error {
+	return h.CheckPlan(name, Plan{MemoryMB: memoryMB, Running: 1, Snapshots: 1}, running)
+}
+
+// CheckPlan returns nil if plan p, for the operation on machine name, fits next to the running
+// machines. Otherwise it returns an error wrapping ErrFull that says what to do. Check(name,
+// memoryMB, running) is CheckPlan with Plan{MemoryMB: memoryMB, Running: 1, Snapshots: 1}.
+func (h Host) CheckPlan(name string, p Plan, running []Machine) error {
 	names := make([]string, len(running))
 	for i, m := range running {
-		names[i] = m.Name
+		names[i] = termsafe.String(m.Name)
 	}
 	slices.Sort(names)
 	runningNow := ""
@@ -122,23 +131,40 @@ func (h Host) Check(name string, memoryMB int, running []Machine) error {
 		runningNow = " Running now: " + strings.Join(names, ", ") + "."
 	}
 
-	if h.FreePages < h.pages(memoryMB) {
+	if h.FreePages < h.pages(p.MemoryMB)*int64(p.Running) {
 		free, _ := h.MemoryMB()
-		msg := fmt.Sprintf("it needs %s of memory and %s is free.", hibapi.FormatMB(int64(memoryMB)), hibapi.FormatMB(free))
+		msg := fmt.Sprintf("it needs %s of memory and %s is free.", hibapi.FormatMB(int64(p.MemoryMB)*int64(p.Running)), hibapi.FormatMB(free))
 		if len(running) == 0 {
 			return fmt.Errorf("%w for %q: %s No machine is running, so an image build may be using it: try again when it's done", ErrFull, name, msg)
 		}
 		return fmt.Errorf("%w for %q: %s%s To free memory, pause one: hib pause NAME", ErrFull, name, msg, runningNow)
 	}
-	if need := pauseDisk(running...) + pauseDisk(Machine{MemoryMB: memoryMB}); h.DiskFree < need {
+	if need := pauseDisk(running...) + int64(p.Snapshots)*pauseDisk(Machine{MemoryMB: p.MemoryMB}); h.DiskFree < need {
 		who := "it and the running machines"
 		if len(running) == 0 {
 			who = "it"
+		}
+		if p.Snapshots != 1 {
+			who = "the operation and the running machines"
+			if len(running) == 0 {
+				who = "the operation"
+			}
 		}
 		return fmt.Errorf("%w for %q: %s may need %s of disk to pause, and %s is free.%s To free disk, remove machines you don't need: hib rm NAME",
 			ErrFull, name, who, hibapi.FormatMB(need>>20), hibapi.FormatMB(h.DiskFree>>20), runningNow)
 	}
 	return nil
+}
+
+// Plan is what an operation adds to the host at its peak, in machines of one size.
+type Plan struct {
+	// MemoryMB is the RAM of each machine.
+	MemoryMB int
+	// Running is how many more machines run at once.
+	Running int
+	// Snapshots is how many more snapshots the operation may write, each up to MemoryMB and
+	// DiskMargin, its machines' future pauses included.
+	Snapshots int
 }
 
 func (h Host) pages(memoryMB int) int64 {

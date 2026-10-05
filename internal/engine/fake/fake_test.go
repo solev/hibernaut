@@ -17,12 +17,23 @@ import (
 )
 
 func TestContract(t *testing.T) {
-	enginetest.Run(t, enginetest.Config{
-		Engine:   fake.New(fake.WithLocalExec(t.TempDir()), fake.WithTemplates("base")),
-		Template: "base",
-		Metadata: map[string]string{"hib-test": "unit"},
-		Wait:     time.Second,
-	})
+	for _, tc := range []struct {
+		name string
+		opts []fake.Option
+	}{
+		{"WithoutAliasCache", nil},
+		{"WithAliasCache", []fake.Option{fake.WithAliasCache()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]fake.Option{fake.WithLocalExec(t.TempDir()), fake.WithTemplates("base")}, tc.opts...)
+			enginetest.Run(t, enginetest.Config{
+				Engine:   fake.New(opts...),
+				Template: "base",
+				Metadata: map[string]string{"hib-test": "unit"},
+				Wait:     time.Second,
+			})
+		})
+	}
 }
 
 func TestKillRemovesHome(t *testing.T) {
@@ -139,12 +150,25 @@ func TestWithTemplatesAddsBuiltOnes(t *testing.T) {
 	if _, err := e.Create(t.Context(), engine.CreateOptions{Template: "hib-dev"}); !errors.Is(err, engine.ErrNoTemplate) {
 		t.Fatalf("Create before build = %v, want ErrNoTemplate", err)
 	}
-	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04"}, nil); err != nil {
+	if _, err := e.Template(t.Context(), "hib-dev"); !errors.Is(err, engine.ErrNoTemplate) {
+		t.Fatalf("Template before build = %v, want ErrNoTemplate", err)
+	}
+	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{Name: "hib-dev", FromImage: "ubuntu:24.04", CPUs: 4, MemoryMB: 2048}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, tmpl := range []string{"base", "hib-dev", "tmpl-hib-dev"} {
 		if _, err := e.Create(t.Context(), engine.CreateOptions{Template: tmpl}); err != nil {
 			t.Errorf("Create(%s) = %v", tmpl, err)
+		}
+	}
+	for _, want := range []engine.TemplateInfo{
+		{ID: "base", Alias: "base", CPUs: fake.DefaultCPUs, MemoryMB: fake.DefaultMemoryMB},
+		{ID: "tmpl-hib-dev", Alias: "hib-dev", CPUs: 4, MemoryMB: 2048},
+	} {
+		got, err := e.Template(t.Context(), want.Alias)
+		got.Created = time.Time{}
+		if err != nil || got != want {
+			t.Errorf("Template(%s) = %+v, %v, want %+v", want.Alias, got, err, want)
 		}
 	}
 }

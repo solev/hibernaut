@@ -25,21 +25,26 @@ lint:
 test:
 	go test -race ./...
 
-# Tests that need root on a Linux host. Only the hook package runs under sudo.
+# Tests that need root on a Linux host. Every hook test runs under sudo. Of the machines tests,
+# only those named TestHost do, because the rest expect an ordinary user.
 test-host:
 	go test -tags host -exec sudo ./internal/egress/hook/
+	go test -tags host -exec sudo -run '^TestHost' ./internal/machines/
 
-# Cross-compiles the hook host tests, runs them on the Azure host and removes the binary.
+# Cross-compiles the host tests, runs them on the Azure host and removes the binaries.
 test-host-remote:
 	@set -e; \
-	tmp=$$(mktemp -t hibernaut-hook-test.XXXXXX); \
-	remote=/tmp/hibernaut-hook-test-$$$$; \
-	trap 'rm -f "$$tmp"' EXIT; \
-	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$tmp" ./internal/egress/hook; \
+	dir=$$(mktemp -d -t hibernaut-host-test.XXXXXX); \
+	remote=/tmp/hibernaut-host-test-$$$$; \
+	trap 'rm -rf "$$dir"' EXIT; \
+	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/hook.test" ./internal/egress/hook; \
+	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/machines.test" ./internal/machines; \
 	azure/start.sh || { echo "Azure host is not reachable. Run azure/start.sh and retry." >&2; exit 1; }; \
 	target=$$(bash -c 'source azure/common.sh; printf "%s@%s" "$$VM_USER" "$$(vm_ip)"'); \
-	scp "$$tmp" "$$target:$$remote"; \
-	azure/ssh.sh "sudo $$remote -test.v; status=\$$?; rm -f $$remote; exit \$$status"
+	scp -r "$$dir" "$$target:$$remote"; \
+	azure/ssh.sh "status=0; sudo $$remote/hook.test -test.v || status=1; \
+		sudo $$remote/machines.test -test.v -test.run '^TestHost' || status=1; \
+		rm -rf $$remote; exit \$$status"
 
 generate:
 	go generate ./...

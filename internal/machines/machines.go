@@ -27,6 +27,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 const (
@@ -42,6 +43,7 @@ const (
 	labelName  = "hib.name"
 	labelImage = "hib.image"
 	labelIdle  = "hib.idle"
+	labelFork  = "hib.forkof"
 
 	maxKeysFile    = 64 << 10
 	initTimeout    = 2 * time.Minute
@@ -53,6 +55,9 @@ var (
 	ErrNoMachine = errors.New("no machine")
 	// ErrExists is returned when creating a machine whose name is taken.
 	ErrExists = errors.New("there is already a machine")
+	// ErrBusy is wrapped by SweepForks' error when another call holds the state lock, such as a
+	// fork still making its copies. Try again later.
+	ErrBusy = errors.New("the state lock is held")
 )
 
 var idRE = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
@@ -60,8 +65,11 @@ var idRE = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
 // Config configures a Manager.
 type Config struct {
 	Engine engine.Engine
-	// StateDir is where the lock and pinned host keys are kept. It must exist, belong to the
-	// user hibd runs as, and be writable by no one else. Only Create, Remove and Dial use it.
+	// StateDir is where the lock and pinned host keys are kept. It must exist and be writable
+	// only by its owner. Non-root callers must own it. Root may use trusted user-owned state,
+	// and keeps its owner's UID and GID on new directories, locks and pins.
+	// Lifecycle operations use its lock.
+	// Create, Fork, Remove and Dial also use its pinned host keys.
 	StateDir string
 	// AuthorizedKeys is the authorized_keys file whose keys may log in to new machines: the
 	// host's own. Only keys without options are copied: options restrict a key on the host,
@@ -69,22 +77,33 @@ type Config struct {
 	AuthorizedKeys string
 	// Now tells the time. Default time.Now.
 	Now func() time.Time
-	// ReadRoom reads the room on the host, which Create and Dial check before they start or
-	// resume a machine. Default room.Read.
+	// ReadRoom reads the room on the host for creates, resumes, saves and forks. Default room.Read.
 	ReadRoom func() (room.Host, error)
-	// Setup is written into each new machine after machine-init. An empty Setup writes nothing.
+	// Setup is written into each new machine after machine-init. An empty Setup writes nothing
+	// for built-in images, and clears the managed environment block in saved-image and fork copies.
 	Setup Setup
+	// Durable returns once machine id's newest snapshot is on disk. SaveImage and Fork call it
+	// on the machine they save, before saving, and refuse to run without it.
+	Durable func(ctx context.Context, id string) error
+	// Awake returns why, if the host is going to sleep. SaveImage and Fork call it when they
+	// start, before they save, and before each copy. Default: always awake.
+	Awake func() error
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
 // processes sharing its state directory.
 type Manager struct {
-	e        engine.Engine
-	dir      string
-	keysFile string
-	now      func() time.Time
-	readRoom func() (room.Host, error)
-	setup    Setup
+	e         engine.Engine
+	dir       string
+	keysFile  string
+	now       func() time.Time
+	readRoom  func() (room.Host, error)
+	setup     Setup
+	durable   func(ctx context.Context, id string) error
+	awake     func() error
+	euid      func() int
+	chownFile func(*os.File, int, int) error
+	waitCut   func(context.Context, time.Duration) error
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -97,7 +116,16 @@ func New(cfg Config) *Manager {
 	if readRoom == nil {
 		readRoom = room.Read
 	}
-	return &Manager{e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom, setup: cfg.Setup}
+	awake := cfg.Awake
+	if awake == nil {
+		awake = func() error { return nil }
+	}
+	return &Manager{
+		e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom,
+		setup: cfg.Setup, durable: cfg.Durable, awake: awake,
+		euid: os.Geteuid, chownFile: (*os.File).Chown,
+		waitCut: waitCut,
+	}
 }
 
 // Name returns the name of machine em, or "" if hibd didn't make it.
@@ -135,7 +163,7 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 	if err := hibapi.CheckName(name); err != nil {
 		return hibapi.Machine{}, err
 	}
-	memoryMB, err := images.MemoryMB(image)
+	memoryMB, err := m.imageMemory(ctx, image)
 	if err != nil {
 		return hibapi.Machine{}, err
 	}
@@ -170,35 +198,44 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 		Timeout:  timeoutFor(idle),
 		Metadata: map[string]string{labelName: name, labelImage: image, labelIdle: idle.String()},
 	})
-	if errors.Is(err, engine.ErrNoTemplate) {
-		return hibapi.Machine{}, fmt.Errorf("image %q isn't built yet (run: hib image build %s)", image, image)
-	}
 	if err != nil {
-		return hibapi.Machine{}, m.refused(ctx, name, memoryMB, fmt.Errorf("creating %q: %w", name, err))
+		cause := fmt.Errorf("creating %q: %w", name, safeError(err))
+		if errors.Is(err, engine.ErrNoTemplate) && images.IsBuiltIn(image) {
+			cause = describe(err, fmt.Sprintf("image %q isn't built yet (run: hib image build %s)", image, image))
+		}
+		cause = m.refused(ctx, name, memoryMB, cause)
+		return hibapi.Machine{}, m.failedCreate(ctx, name, cause)
 	}
-	if err := m.setupMachine(ctx, em.ID, keys); err != nil {
+	setup := m.setupMachine
+	if !images.IsBuiltIn(image) {
+		setup = m.setupCopy
+	}
+	if err := setup(ctx, em.ID, keys); err != nil {
 		return hibapi.Machine{}, m.killFailedSetup(ctx, name, em.ID, err)
 	}
 	return toAPI(em), nil
 }
 
 func (m *Manager) setupMachine(ctx context.Context, id string, keys []byte) error {
-	if _, err := m.initMachine(ctx, id, keys); err != nil {
-		return err
-	}
-	if m.setup.empty() {
-		return nil
-	}
-	return m.setup.Write(ctx, m.e, id)
+	return m.retryCut(ctx, func(ctx context.Context) error {
+		if _, err := m.initMachine(ctx, id, keys); err != nil {
+			return err
+		}
+		if m.setup.empty() {
+			return nil
+		}
+		return m.setup.Write(ctx, m.e, id)
+	})
 }
 
 func (m *Manager) killFailedSetup(ctx context.Context, name, id string, err error) error {
 	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	if kerr := m.e.Kill(kctx, id); kerr != nil && !errors.Is(kerr, engine.ErrNotFound) {
-		return fmt.Errorf("setting up %q: %w (and killing machine %s: %v)", name, err, id, kerr)
+	cause := fmt.Errorf("setting up %q: %w", name, safeError(err))
+	if kerr := m.killCopy(kctx, id); kerr != nil {
+		return m.copyLeftBehind(cause, name, id, kerr)
 	}
-	return fmt.Errorf("setting up %q: %w", name, err)
+	return cause
 }
 
 // List returns the machines in state, or all machines if state is "". Machines hibd didn't
@@ -210,7 +247,7 @@ func (m *Manager) List(ctx context.Context, state engine.State) ([]hibapi.Machin
 	}
 	ems, err := m.e.List(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, safeError(err)
 	}
 	out := make([]hibapi.Machine, len(ems))
 	for i, em := range ems {
@@ -224,6 +261,11 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if err := m.checkState(); err != nil {
 		return err
 	}
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	em, err := m.lookup(ctx, name)
 	if err != nil {
 		return err
@@ -243,6 +285,14 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 
 // Pause pauses the machine called name. Pausing a paused machine does nothing.
 func (m *Manager) Pause(ctx context.Context, name string) error {
+	if err := m.checkState(); err != nil {
+		return err
+	}
+	unlock, err := m.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	em, err := m.lookup(ctx, name)
 	if err != nil {
 		return err
@@ -335,7 +385,7 @@ func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int) erro
 
 // Room returns the room on the host for more machines of image.
 func (m *Manager) Room(ctx context.Context, image string) (hibapi.Room, error) {
-	memoryMB, err := images.MemoryMB(image)
+	memoryMB, err := m.imageMemory(ctx, image)
 	if err != nil {
 		return hibapi.Room{}, err
 	}
@@ -388,7 +438,13 @@ func (m *Manager) repin(ctx context.Context, id string, idle time.Duration) (ssh
 	if _, err := m.e.Resume(ctx, id, timeoutFor(idle)); err != nil {
 		return nil, err
 	}
-	return m.initMachine(ctx, id, keys)
+	var key ssh.PublicKey
+	err = m.retryCut(ctx, func(ctx context.Context) error {
+		var err error
+		key, err = m.initMachine(ctx, id, keys)
+		return err
+	})
+	return key, err
 }
 
 func (m *Manager) keepalive(ctx context.Context, id string, idle time.Duration, done chan<- struct{}) {
@@ -438,7 +494,7 @@ func (m *Manager) lookup(ctx context.Context, name string) (engine.Machine, erro
 	}
 	ems, err := m.e.List(ctx, engine.ListOptions{Metadata: map[string]string{labelName: name}})
 	if err != nil {
-		return engine.Machine{}, err
+		return engine.Machine{}, safeError(err)
 	}
 	var found []engine.Machine
 	for _, em := range ems {
@@ -454,7 +510,7 @@ func (m *Manager) lookup(ctx context.Context, name string) (engine.Machine, erro
 	}
 	ids := make([]string, len(found))
 	for i, em := range found {
-		ids[i] = em.ID
+		ids[i] = termsafe.String(em.ID)
 	}
 	return engine.Machine{}, fmt.Errorf("%d machines are called %q (%s)", len(found), name, strings.Join(ids, ", "))
 }
@@ -463,8 +519,6 @@ func (m *Manager) initMachine(ctx context.Context, id string, keys []byte) (ssh.
 	if _, err := m.pinPath(id); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, initTimeout)
-	defer cancel()
 	res, err := m.e.Exec(ctx, id, engine.ExecRequest{
 		Cmd:  images.MachineInit,
 		Args: []string{base64.StdEncoding.EncodeToString(keys)},
@@ -532,39 +586,25 @@ func (m *Manager) checkState() error {
 	if m.dir == "" {
 		return errors.New("no state directory configured")
 	}
-	if err := checkDir(m.dir); err != nil {
+	root, owner, err := m.stateRoot()
+	if err != nil {
 		return err
 	}
-	pins := filepath.Join(m.dir, "host-keys")
-	if err := os.Mkdir(pins, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
-	return checkDir(pins)
+	defer root.Close()
+	return m.ensurePins(root, owner)
 }
 
-func checkDir(dir string) error {
+func checkDir(dir string, uid int) error {
 	fi, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("state directory: %w", err)
 	}
-	if !fi.IsDir() {
-		return fmt.Errorf("state directory %s: not a directory", dir)
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("state directory %s: can't tell its owner", dir)
-	}
-	if uid := os.Geteuid(); int(st.Uid) != uid {
-		return fmt.Errorf("state directory %s: belongs to uid %d, not %d", dir, st.Uid, uid)
-	}
-	if fi.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("state directory %s: others can write to it (%v)", dir, fi.Mode().Perm())
-	}
-	return nil
+	_, err = directoryOwner(fi, dir, uid)
+	return err
 }
 
 func (m *Manager) lock(ctx context.Context) (unlock func(), err error) {
-	f, err := os.OpenFile(filepath.Join(m.dir, "hibd.lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	f, err := m.openLock()
 	if err != nil {
 		return nil, err
 	}
@@ -614,6 +654,9 @@ func (m *Manager) writePin(id string, key ssh.PublicKey) error {
 	if err != nil {
 		return err
 	}
+	if m.euid() == 0 {
+		return m.writeOwnedPin(id, []byte(hibapi.FormatHostKey(key)+"\n"))
+	}
 	return atomicfile.WriteFile(path, []byte(hibapi.FormatHostKey(key)+"\n"), 0o600)
 }
 
@@ -622,6 +665,10 @@ func toAPI(em engine.Machine) hibapi.Machine {
 	if hibapi.CheckName(image) != nil {
 		image = ""
 	}
+	forkOf := em.Metadata[labelFork]
+	if hibapi.CheckName(forkOf) != nil {
+		forkOf = ""
+	}
 	var idleSeconds *int64
 	if idle, ok := Idle(em); ok {
 		s := int64((idle + time.Second - 1) / time.Second)
@@ -629,9 +676,10 @@ func toAPI(em engine.Machine) hibapi.Machine {
 	}
 	return hibapi.Machine{
 		Name:        name,
-		ID:          em.ID,
+		ID:          termsafe.String(em.ID),
 		Image:       image,
-		State:       string(em.State),
+		ForkOf:      forkOf,
+		State:       termsafe.String(string(em.State)),
 		StartedAt:   em.StartedAt,
 		EndAt:       em.EndAt,
 		IdleSeconds: idleSeconds,

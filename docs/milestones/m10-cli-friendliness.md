@@ -74,7 +74,8 @@ A local check of `hib` at `af11404` (2026-10-04) found:
 
 **Output for scripts**
 
-- [ ] `--json` on `ls`, `status`, `secret ls`, `log` and `new`, using the `hibapi` types. The
+- [ ] `--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls`, using the
+      `hibapi` types. A fork that fails partway returns the copies it made and the error. The
       README says the fields are stable.
 - [ ] Colour for states (running, paused, ok, failing) only on a terminal, and never when
       `NO_COLOR` is set.

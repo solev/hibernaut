@@ -12,8 +12,10 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/hibapi"
 )
 
 // Default is the image machines are created from when no other is asked for.
@@ -28,6 +30,12 @@ const (
 )
 
 const lib = "/usr/lib/hibernaut"
+
+const (
+	builtPrefix = "hib-"
+	savedPrefix = "hibimg-"
+	forkPrefix  = "hibfork-"
+)
 
 //go:embed dev
 var files embed.FS
@@ -111,9 +119,47 @@ func Names() []string {
 	return names
 }
 
-// Template returns the name of the template image name is built into.
+// Template returns the template image name is in. A name in the catalog is a built-in image,
+// built into hib-NAME. Any other name is a saved image, in hibimg-NAME, so a saved image never
+// takes over a built-in one.
 func Template(name string) string {
-	return "hib-" + name
+	if IsBuiltIn(name) {
+		return builtPrefix + name
+	}
+	return SavedTemplate(name)
+}
+
+// IsBuiltIn says whether name is an image in the catalog.
+func IsBuiltIn(name string) bool {
+	_, ok := catalog[name]
+	return ok
+}
+
+// SavedTemplate returns the template saved image name is in, even if a built-in image has
+// that name.
+func SavedTemplate(name string) string {
+	return savedPrefix + name
+}
+
+// SavedName returns the name of the saved image in template alias, and whether alias holds
+// one.
+func SavedName(alias string) (string, bool) {
+	name, ok := strings.CutPrefix(alias, savedPrefix)
+	if !ok || hibapi.CheckName(name) != nil {
+		return "", false
+	}
+	return name, true
+}
+
+// ForkTemplate returns the alias of the hidden template a fork of machine id, begun at at,
+// saves the machine into.
+func ForkTemplate(id string, at time.Time) string {
+	return fmt.Sprintf("%s%s-%d", forkPrefix, id, at.UnixMilli())
+}
+
+// IsForkTemplate says whether alias is a fork's hidden template.
+func IsForkTemplate(alias string) bool {
+	return strings.HasPrefix(alias, forkPrefix)
 }
 
 // MemoryMB returns the memory image name needs on the host.

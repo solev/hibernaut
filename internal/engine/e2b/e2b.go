@@ -324,7 +324,7 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 
 	stream, err := e.envd.Start(ctx, r)
 	if err != nil {
-		return engine.ExecResult{}, fmt.Errorf("exec %s: %w", id, err)
+		return engine.ExecResult{}, execError(id, err)
 	}
 	defer stream.Close()
 
@@ -344,12 +344,22 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return engine.ExecResult{}, fmt.Errorf("exec %s: %w", id, err)
+		return engine.ExecResult{}, execError(id, err)
 	}
 	if !ended {
-		return engine.ExecResult{}, fmt.Errorf("exec %s: stream closed before the command exited", id)
+		return engine.ExecResult{}, fmt.Errorf("exec %s: %w: the stream ended without the command's exit", id, engine.ErrConnectionLost)
 	}
 	return res, nil
+}
+
+// E2B's sandbox proxy ends a stream it loses mid-body with code unavailable, and connect-go gives
+// transport errors and HTTP 429, 502, 503 and 504 that code too. A cut stream doesn't stop the
+// command in the machine.
+func execError(id string, err error) error {
+	if connect.CodeOf(err) == connect.CodeUnavailable {
+		return fmt.Errorf("exec %s: %w: %w", id, engine.ErrConnectionLost, err)
+	}
+	return fmt.Errorf("exec %s: %w", id, err)
 }
 
 func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
@@ -507,11 +517,7 @@ func (e *Engine) running(ctx context.Context, id string) (*e2bapi.SandboxDetail,
 }
 
 func apiError(op, id string, status int, body []byte) error {
-	msg := string(body)
-	var apiErr e2bapi.Error
-	if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
-		msg = apiErr.Message
-	}
+	msg := apiMessage(body)
 	subject := op
 	if id != "" {
 		subject += " " + id
@@ -523,6 +529,14 @@ func apiError(op, id string, status int, body []byte) error {
 		return fmt.Errorf("%s: %s: %w", subject, msg, engine.ErrNotRunning)
 	}
 	return fmt.Errorf("%s: E2B returned %d: %s", subject, status, msg)
+}
+
+func apiMessage(body []byte) string {
+	var apiErr e2bapi.Error
+	if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
+		return apiErr.Message
+	}
+	return string(body)
 }
 
 func seconds(d time.Duration) int32 {

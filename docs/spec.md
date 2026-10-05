@@ -61,8 +61,8 @@ Golden images:
 
 ```bash
 hib image save app rocket        # capture app: repo, dependencies, dev server running
-hib new task-1 --from rocket     # ready in ~1 s with all of that in place
-hib fork app --count 3           # app-1..3 = copies of app as it is right now; app keeps running
+hib new task-1 --image rocket    # ready in ~1 s with all of that in place
+hib fork app --count 2           # app-1 and app-2: copies of app as it is now. app keeps running
 ```
 
 ## 3. Architecture
@@ -368,6 +368,11 @@ accessed through the VM's managed identity.
   auto-resume off (`autoResume: {enabled: false}`), so traffic to a paused machine doesn't wake
   it. `hibd` resumes machines itself: only its users can wake one, and only once it has checked
   there's room (Room on the host).
+- `hibd` sets each new machine up by running commands in it through E2B's envd: `machine-init`
+  (the host key and your public key), then the env block, git's identity and Codex's login file.
+  E2B's proxy sometimes ends a command's stream early, though the command may still run. So
+  every setup step is safe to run twice, even at once, and `hibd` runs setup again, up to 3 tries
+  within 2 minutes.
 
 ### Idle and wake
 
@@ -432,6 +437,9 @@ Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2
   - free huge pages (`HugePages_Free` − `HugePages_Rsvd`) cover the machine's RAM.
   - free disk covers pausing every running machine and this one (their RAM, plus a margin for
     what they wrote to disk).
+- **Saves and forks need more at their peak.** A save holds the machine's memory twice for a
+  moment, and each fork copy needs its own (Images and fork). `hibd` checks room for the whole
+  operation first, and again before each copy.
 - **No room:** a clear error that names the running machines and says what to do:
   `hib pause NAME` frees memory, `hib rm` frees disk. Two starts can race the check, so when E2B
   refuses anyway, `hibd` checks again and gives the same message.
@@ -506,21 +514,49 @@ ssh app.hib ─▶ ProxyCommand: hib bridge app ─▶ ssh host "hibd bridge app
 - The machine user is `user`, with passwordless sudo. Your public key is written into the machine
   at create time (single user).
 - **Host keys:** each machine makes its own SSH host key at create time; `hibd` pins it and `hib`
-  verifies against that pin in its own `known_hosts` (`StrictHostKeyChecking yes`). Later, SSH host
+  verifies against that pin in its own `known_hosts` (`StrictHostKeyChecking yes`). A machine
+  made from a saved image or a fork gets a new one (Images and fork). Later, SSH host
   certificates.
 
 ### Images and fork
 
-All three are native E2B operations. Hibernaut only wraps them.
+Built in M6 on E2B's named snapshot, which saves a running machine, memory included, as a
+template. E2B's native fork copies every label, `hib.name` included, can't change them afterwards,
+and refuses a paused machine, so Hibernaut doesn't use it
+([e2b-images-and-fork](research/e2b-images-and-fork.md)).
 
-| Command | E2B call | Result |
+| Command | E2B calls | Result |
 | --- | --- | --- |
 | `hib image build dev` | template build from the `images/dev/` files (`images/images.go`) | The base image all machines start from |
-| `hib image save app rocket` | `POST /sandboxes/{id}/snapshots` `{name: "rocket"}` | An image with memory, so processes keep running; it outlives `app` |
-| `hib fork app --count 3` | `POST /sandboxes/{id}/fork` | `app` pauses for a moment and keeps running; 3 new machines in the same state |
+| `hib image save app rocket` | `POST /sandboxes/{id}/snapshots` `{name: "hibimg-rocket"}` | An image with memory, so processes keep running. It outlives `app`. |
+| `hib new task-1 --image rocket` | create from `hibimg-rocket` | A machine with everything `app` had, in about a second |
+| `hib fork app --count 2` | a hidden snapshot `hibfork-<id>-<ms>`, then a create per copy | `app-1` and `app-2` in `app`'s state. `app` pauses for a few seconds and keeps running. |
+| `hib image ls`, `hib image rm rocket` | `GET /snapshots`, `DELETE /templates/{id}` | E2B refuses to delete an image a machine still uses |
 
-Copies carry everything in the machine. That's fine, because a machine holds only placeholders and
-your public key. A fork carries the origin's SSH host key until it's re-keyed (see SSH path).
+- **Names:** built-in images are `hib-<name>`, saved images `hibimg-<name>` and fork templates
+  `hibfork-<origin ID>-<ms>`, so a saved image can't replace a built-in one. If a later catalog
+  adds a name someone saved, the built-in image wins, and `hib image ls` shows the saved one as
+  shadowed. `hib image rm` only removes saved images.
+- **Copies carry everything in the machine:** files, packages, running processes and env vars.
+  That's fine, because a machine set up through `hib` holds only placeholders and your public
+  key. A secret you typed into the machine yourself goes into the copy too.
+- **Each copy gets its own identity:** its name and labels, a new SSH host key that `hibd` pins,
+  the host's current env block, and the idle policy. The host's git identity and Codex login file
+  replace the origin's when the host has them. Otherwise the origin's stay. Copies share
+  `boot_id` and `/etc/machine-id`. The kernel reseeds its RNG when a copy starts (vmgenid), so
+  they don't share randomness.
+- **E2B's checkpoint can fail** (1 in about 21 saves on our host). It returns 500 and leaves the
+  machine paused at its last good snapshot, losing what it did since. So `hibd` first pauses the
+  machine, waits until that snapshot is on disk, and resumes it. A failed save then costs at most
+  what the machine did since the save began. `hibd` resumes it, says nothing was saved, and never
+  retries on its own. E2B can hide the failed save's template for a few minutes, so `hibd` looks
+  for it for up to 90 s and deletes it. If it can't confirm it's gone, it says so instead, and how
+  to remove an image. The pause may drop SSH sessions into the machine.
+- **Fork** names copies `app-1`, `app-2` and so on with the lowest free numbers, 1 to 10 at a
+  time. It keeps the copies it made and stops at the first failure. `hibd` deletes the hidden
+  template once its last copy is gone.
+- A save or fork takes turns with `hib pause` and `hib rm` of any machine. Waking by SSH doesn't
+  wait.
 
 ## 6. Decisions
 
@@ -549,7 +585,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | M3 | **Vault, egress proxy, leak scan** | A secret works on its bound site and arrives as a placeholder anywhere else. Machines can't reach host services (S8). The leak scan finds nothing. |
 | M4 | **GitHub** via `--from-gh` | Fresh machine: clone a private repo → commit → push a branch → open a PR → close it and delete the branch |
 | M5 | **AI tools:** Codex on the ChatGPT plan, GitHub Copilot CLI | `codex` and `copilot` answer a one-line prompt with no login. The leak scan finds nothing. |
-| M6 | **Golden images and fork** | A machine started from a saved image has its repo, dependencies and running app in place; fork ×3 |
+| M6 | **Golden images and fork** | A machine started from a saved image has its repo, dependencies and running app in place. So do two forks of it, and the origin keeps running. |
 | M7 | **GitHub device flow** (own OAuth App) | Approve once in the browser, then the M4 test passes on the new token |
 | M8 | **Machine sizes** (`hib new --size small`) | A small machine has 1 vCPU and 1 GiB. One made without `--size` still has 2 vCPUs and 2 GiB |
 | M9 | **Snapshot compaction** | An idle machine paused 20 times needs no more disk than a bound, and resumes as fast as after one pause |
@@ -641,7 +677,7 @@ repo (see the README).
 | --- | --- | --- |
 | S1 | Can `hibd` intercept machine HTTPS without breaking E2B, and tell which machine sent it? | **Answered live and in code.** One iptables-nft rule inserted above E2B's appended redirects stays first while machines are created, removed, paused and resumed. A redirected connection exposes the slot source IP and local veth IP, and `internal/slots` maps that slot to the sandbox cgroup for audit. |
 | S2 | Can E2B's proxy carry a long-lived SSH websocket, and wake a paused machine? | **Yes.** It's E2B's documented SSH pattern, and traffic on any port resumes a paused machine. Needs keepalives (~10-min idle cutoff). |
-| S3 | Can E2B fork a machine or turn it into a template? | **Yes, natively** (§5 Images and fork). |
+| S3 | Can E2B fork a machine or turn it into a template? | **Yes, with care, checked live and in E2B's source** ([e2b-images-and-fork](research/e2b-images-and-fork.md)). A named snapshot saves a running machine as a template, and new machines start from it with only their own labels. Native fork copies every label, so M6 forks by a named snapshot and creates. E2B's checkpoint failed 1 in about 21 times, leaving the machine paused at its last good snapshot, so `hibd` makes a fresh one first (§5 Images and fork). |
 | S4 | Do paused machines survive a host reboot? | **Yes, tested live in M0** (`TestSurvivesHostRestart`, and `TestWakeOnSSH` for the nightly deallocate). A running machine is paused on the way down, by the guard on a reboot or by `quiesce` before the nightly deallocate, and resumes afterwards with its files and processes. E2B's pause returns before the snapshot is written, so E2B must stop cleanly before power-off (§5 Idle and wake). |
 | S5 | Does Claude Code work with a placeholder `CLAUDE_CODE_OAUTH_TOKEN` through the proxy? | **Deferred.** Claude Code comes after v1 ([milestones → Later](milestones/README.md#later-not-v1)). |
 | S6 | Can Codex on a ChatGPT plan work with no real token in the machine? | **Yes, checked live** with codex-cli 0.160.0 ([codex-chatgpt-auth](research/codex-chatgpt-auth.md) §11). A placeholder login file made by `vault.Placeholder` works with only the `Authorization` bearer swapped on `chatgpt.com`. Codex never refreshed on its own, and sent no token outside `Authorization`, including in WebSocket frames. Its refresh calls and error handling were traced too (§4.4). `CODEX_ACCESS_TOKEN` is simpler, but only Business/Enterprise workspaces can create one. |
@@ -651,4 +687,4 @@ repo (see the README).
 
 Research: [e2b-capabilities](research/e2b-capabilities.md) (§10 covers egress, `caBundle` and SSH) ·
 [agent-auth](research/agent-auth.md) · [codex-chatgpt-auth](research/codex-chatgpt-auth.md) ·
-[copilot-auth](research/copilot-auth.md).
+[copilot-auth](research/copilot-auth.md) · [e2b-images-and-fork](research/e2b-images-and-fork.md).

@@ -6,6 +6,7 @@ package fake
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -29,6 +30,9 @@ const DefaultTimeout = 300 * time.Second
 
 // DefaultMemoryMB is the RAM of the machines Create makes: E2B's default.
 const DefaultMemoryMB = 512
+
+// DefaultCPUs is how many CPUs every machine has: E2B's default.
+const DefaultCPUs = 2
 
 // ExecFunc runs a command for Exec. It's called only for running machines. home is the
 // machine's home directory, or "" without WithLocalExec.
@@ -69,13 +73,15 @@ func WithPauseHook(h PauseHook) Option {
 	return func(e *Engine) { e.pauseHook = h }
 }
 
-// WithTemplates makes Create accept only these templates, and those BuildTemplate builds.
-// Without it, Create accepts any.
+// WithTemplates makes Create accept only these templates, and those BuildTemplate builds or
+// SaveTemplate saves. Without it, Create accepts any. A later WithTemplates replaces an earlier
+// one. Template finds each, as a template of DefaultCPUs and DefaultMemoryMB whose ID is its name.
 func WithTemplates(names ...string) Option {
 	return func(e *Engine) {
-		e.templates = map[string]bool{}
+		e.refuseUnknownTemplates = true
+		e.aliases = map[string]*template{}
 		for _, n := range names {
-			e.templates[n] = true
+			e.aliases[n] = &template{info: engine.TemplateInfo{ID: n, Alias: n, CPUs: DefaultCPUs, MemoryMB: DefaultMemoryMB}}
 		}
 	}
 }
@@ -87,17 +93,31 @@ func WithDialer(f DialFunc) Option {
 
 // Engine is the fake. The zero value isn't usable; call New.
 type Engine struct {
-	now       func() time.Time
-	exec      ExecFunc
-	pauseHook PauseHook
-	dial      DialFunc
-	homeRoot  string
+	now                    func() time.Time
+	exec                   ExecFunc
+	pauseHook              PauseHook
+	dial                   DialFunc
+	homeRoot               string
+	refuseUnknownTemplates bool
+	aliasCache             bool
 
-	mu        sync.Mutex
-	templates map[string]bool
-	machines  map[string]*engine.Machine
-	homes     map[string]string
-	built     []engine.TemplateSpec
+	mu                  sync.Mutex
+	aliases             map[string]*template
+	machines            map[string]*machine
+	built               []engine.TemplateSpec
+	buildDirs           int
+	failSave            error
+	rejectSave          error
+	saveDelay           time.Duration
+	missedAt            map[string]time.Time
+	failCreatesMatching []map[string]string
+}
+
+type machine struct {
+	engine.Machine
+	cpus        int
+	home        string
+	hasSnapshot bool
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -106,8 +126,9 @@ var _ engine.Engine = (*Engine)(nil)
 func New(opts ...Option) *Engine {
 	e := &Engine{
 		now:      time.Now,
-		machines: map[string]*engine.Machine{},
-		homes:    map[string]string{},
+		aliases:  map[string]*template{},
+		machines: map[string]*machine{},
+		missedAt: map[string]time.Time{},
 	}
 	for _, o := range opts {
 		o(e)
@@ -115,12 +136,12 @@ func New(opts ...Option) *Engine {
 	return e
 }
 
-// Add inserts a machine as is, for tests that need a given starting state.
+// Add inserts a machine as is, with DefaultCPUs, for tests that need a given starting state.
 func (e *Engine) Add(m engine.Machine) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m.Metadata = maps.Clone(m.Metadata)
-	e.machines[m.ID] = &m
+	e.machines[m.ID] = &machine{Machine: m, cpus: DefaultCPUs, hasSnapshot: m.State == engine.Paused}
 }
 
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
@@ -131,10 +152,11 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		return engine.Machine{}, errors.New("fake: template is required")
 	}
 	e.mu.Lock()
-	known := e.templates == nil || e.templates[opts.Template]
+	src, err := e.resolveTemplateLocked(opts.Template)
+	failAfterStart := err == nil && e.takeCreateFailure(opts.Metadata)
 	e.mu.Unlock()
-	if !known {
-		return engine.Machine{}, fmt.Errorf("fake: create from %s: %w", opts.Template, engine.ErrNoTemplate)
+	if err != nil {
+		return engine.Machine{}, err
 	}
 	id := NewID()
 	var home string
@@ -143,7 +165,12 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return engine.Machine{}, err
 		}
-		// Resolve symlinks (macOS /var → /private/var) so the path matches what `pwd` prints.
+		if src.homeCopy != "" {
+			if err := os.CopyFS(dir, os.DirFS(src.homeCopy)); err != nil {
+				return engine.Machine{}, fmt.Errorf("fake: create from %s: %w", opts.Template, err)
+			}
+		}
+		// On macOS, /var is a symlink to /private/var, and `pwd` prints the resolved path.
 		resolved, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			return engine.Machine{}, err
@@ -152,20 +179,24 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 	}
 
 	now := e.now()
-	m := &engine.Machine{
-		ID:        id,
-		Template:  opts.Template,
-		State:     engine.Running,
-		StartedAt: now,
-		EndAt:     now.Add(orDefault(opts.Timeout)),
-		MemoryMB:  DefaultMemoryMB,
-		Metadata:  maps.Clone(opts.Metadata),
+	m := &machine{
+		Machine: engine.Machine{
+			ID:        id,
+			Template:  src.id,
+			State:     engine.Running,
+			StartedAt: now,
+			EndAt:     now.Add(orDefault(opts.Timeout)),
+			MemoryMB:  src.memoryMB,
+			Metadata:  maps.Clone(opts.Metadata),
+		},
+		cpus: src.cpus,
+		home: home,
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.machines[id] = m
-	if home != "" {
-		e.homes[id] = home
+	if failAfterStart {
+		return engine.Machine{}, fmt.Errorf("fake: create from %s: the machine started, then reading it failed", opts.Template)
 	}
 	return clone(m), nil
 }
@@ -213,7 +244,7 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, _, err := e.running(id); err != nil {
+	if _, err := e.runningCopy(id); err != nil {
 		return err
 	}
 	if e.pauseHook != nil {
@@ -231,6 +262,7 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 		return fmt.Errorf("pause %s: %w", id, engine.ErrNotRunning)
 	}
 	m.State = engine.Paused
+	m.hasSnapshot = true
 	return nil
 }
 
@@ -248,7 +280,7 @@ func (e *Engine) Resume(ctx context.Context, id string, timeout time.Duration) (
 	return clone(m), nil
 }
 
-func (e *Engine) resume(m *engine.Machine, timeout time.Duration) {
+func (e *Engine) resume(m *machine, timeout time.Duration) {
 	now := e.now()
 	endAt := now.Add(orDefault(timeout))
 	if m.State == engine.Paused {
@@ -266,15 +298,11 @@ func (e *Engine) Kill(ctx context.Context, id string) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if _, err := e.lookup(id); err != nil {
+	m, err := e.lookup(id)
+	if err != nil {
 		return err
 	}
-	delete(e.machines, id)
-	if home, ok := e.homes[id]; ok {
-		delete(e.homes, id)
-		return os.RemoveAll(home)
-	}
-	return nil
+	return e.drop(m)
 }
 
 func (e *Engine) SetTimeout(ctx context.Context, id string, timeout time.Duration) error {
@@ -298,13 +326,14 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 	if err := ctx.Err(); err != nil {
 		return engine.Metrics{}, err
 	}
-	if _, _, err := e.running(id); err != nil {
+	m, err := e.runningCopy(id)
+	if err != nil {
 		return engine.Metrics{}, err
 	}
 	return engine.Metrics{
 		At:        e.now(),
-		CPUCount:  2,
-		MemTotal:  512 << 20,
+		CPUCount:  m.cpus,
+		MemTotal:  int64(m.MemoryMB) << 20,
 		MemUsed:   128 << 20,
 		DiskTotal: 1 << 30,
 		DiskUsed:  256 << 20,
@@ -315,14 +344,14 @@ func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (e
 	if err := ctx.Err(); err != nil {
 		return engine.ExecResult{}, err
 	}
-	m, home, err := e.running(id)
+	m, err := e.runningCopy(id)
 	if err != nil {
 		return engine.ExecResult{}, err
 	}
 	if e.exec == nil {
 		return engine.ExecResult{}, errors.New("fake: exec not configured (use WithExec or WithLocalExec)")
 	}
-	return e.exec(ctx, m, home, req)
+	return e.exec(ctx, m.Machine, m.home, req)
 }
 
 func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
@@ -344,7 +373,8 @@ func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout
 	return e.dial(ctx, c, port)
 }
 
-// BuildTemplate records spec and returns "tmpl-" and its name.
+// BuildTemplate records spec and returns "tmpl-" and its name. Machines created from the
+// template have the spec's CPUs and MemoryMB, or DefaultCPUs and DefaultMemoryMB if it has none.
 func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs io.Writer) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -355,10 +385,14 @@ func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, lo
 	id := "tmpl-" + spec.Name
 	e.mu.Lock()
 	e.built = append(e.built, spec)
-	if e.templates != nil {
-		e.templates[spec.Name] = true
-		e.templates[id] = true
-	}
+	e.aliases[spec.Name] = &template{info: engine.TemplateInfo{
+		ID:       id,
+		Alias:    spec.Name,
+		CPUs:     cmp.Or(spec.CPUs, DefaultCPUs),
+		MemoryMB: cmp.Or(spec.MemoryMB, DefaultMemoryMB),
+		Created:  e.now(),
+	}}
+	delete(e.missedAt, spec.Name)
 	e.mu.Unlock()
 	if logs != nil {
 		fmt.Fprintf(logs, "fake: built %s from %s in %d steps\n", spec.Name, spec.FromImage, len(spec.Steps))
@@ -413,25 +447,35 @@ func (c *capped) Write(p []byte) (int, error) {
 	return c.buf.Write(p)
 }
 
-func (e *Engine) running(id string) (engine.Machine, string, error) {
+func (e *Engine) runningCopy(id string) (machine, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m, err := e.lookup(id)
 	if err != nil {
-		return engine.Machine{}, "", err
+		return machine{}, err
 	}
 	if m.State != engine.Running {
-		return engine.Machine{}, "", fmt.Errorf("%s: %w", id, engine.ErrNotRunning)
+		return machine{}, fmt.Errorf("%s: %w", id, engine.ErrNotRunning)
 	}
-	return clone(m), e.homes[id], nil
+	c := *m
+	c.Machine = clone(m)
+	return c, nil
 }
 
-func (e *Engine) lookup(id string) (*engine.Machine, error) {
+func (e *Engine) lookup(id string) (*machine, error) {
 	m, ok := e.machines[id]
 	if !ok {
 		return nil, fmt.Errorf("%s: %w", id, engine.ErrNotFound)
 	}
 	return m, nil
+}
+
+func (e *Engine) drop(m *machine) error {
+	delete(e.machines, m.ID)
+	if m.home == "" {
+		return nil
+	}
+	return os.RemoveAll(m.home)
 }
 
 // NewID returns a random ID in E2B's format: 20 characters of [a-z0-9].
@@ -445,8 +489,8 @@ func NewID() string {
 	return string(b)
 }
 
-func clone(m *engine.Machine) engine.Machine {
-	c := *m
+func clone(m *machine) engine.Machine {
+	c := m.Machine
 	c.Metadata = maps.Clone(m.Metadata)
 	return c
 }

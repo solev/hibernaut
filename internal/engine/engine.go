@@ -110,6 +110,18 @@ type BuildStep struct {
 	User string
 }
 
+// TemplateInfo is a template machines can be created from, built or saved.
+type TemplateInfo struct {
+	ID string
+	// Alias is the template's name, without a namespace or tag.
+	Alias string
+	// CPUs and MemoryMB are what each machine created from the template gets.
+	CPUs     int
+	MemoryMB int
+	// Created is when the template's newest build finished.
+	Created time.Time
+}
+
 // MaxExecOutput bounds what Exec keeps of each of a command's stdout and stderr. A command that
 // writes more fails Exec with an error, and may be left running.
 const MaxExecOutput = 8 << 20
@@ -147,7 +159,8 @@ type Engine interface {
 	// engine has none yet.
 	Metrics(ctx context.Context, id string) (Metrics, error)
 	// Exec runs a command in a running machine and waits for it to exit. It returns
-	// ErrNotRunning for a paused machine, and never wakes it.
+	// ErrNotRunning for a paused machine, and never wakes it. It returns an error wrapping
+	// ErrConnectionLost if the connection broke before the command's exit was reported.
 	Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error)
 	// DialWebSocket connects to the WebSocket server listening on port inside the machine and
 	// returns the connection as a byte stream carried in binary messages. It resumes a paused
@@ -157,11 +170,42 @@ type Engine interface {
 	// BuildTemplate builds spec, or rebuilds the template of that name, copying build logs to
 	// logs as they arrive. It returns the template's ID once machines can be created from it.
 	BuildTemplate(ctx context.Context, spec TemplateSpec, logs io.Writer) (string, error)
+	// SaveTemplate saves running machine id, memory included, as template alias, which machines
+	// can then be created from with only the metadata their own CreateOptions give them. The
+	// machine keeps running. Saving to an alias that exists adds a build to that template. It
+	// returns an error wrapping ErrNotRunning when the machine is paused, or busy pausing, being
+	// killed or being saved, and one wrapping ErrNotFound when it's missing. It fails with either
+	// only when it created nothing. An error wrapping ErrCheckpoint means the engine stopped the
+	// machine while saving: it's paused then, at its last snapshot, or lost if it had none. Any
+	// other failure may leave alias behind with no build, unusable, and hidden from Template the
+	// way a missed lookup hides it. Saving into a hidden alias fails with a plain error, and the
+	// machine keeps running.
+	SaveTemplate(ctx context.Context, id, alias string) (TemplateInfo, error)
+	// Template returns the template called alias, built or saved, or an error wrapping
+	// ErrNoTemplate. It also finds an alias a failed save left behind. The engine remembers a
+	// lookup that found nothing, Create's and SaveTemplate's included. So Template can report
+	// ErrNoTemplate for an alias that exists, for about a minute after a lookup of it missed, and
+	// up to 5 minutes. A successful save or build of the alias, or deleting its template, ends
+	// that.
+	Template(ctx context.Context, alias string) (TemplateInfo, error)
+	// SavedTemplates returns the templates SaveTemplate made, sorted by alias. Aliases a failed
+	// save left behind may be missing.
+	SavedTemplates(ctx context.Context) ([]TemplateInfo, error)
+	// DeleteTemplate deletes template id. It returns an error wrapping ErrTemplateInUse while a
+	// machine, running or paused, was created from it, and one wrapping ErrNoTemplate if there's
+	// no such template.
+	DeleteTemplate(ctx context.Context, id string) error
 }
 
 var (
-	ErrNotFound   = errors.New("machine not found")
-	ErrNotRunning = errors.New("machine not running")
-	ErrNoMetrics  = errors.New("no metrics yet")
-	ErrNoTemplate = errors.New("template not found")
+	ErrNotFound      = errors.New("machine not found")
+	ErrNotRunning    = errors.New("machine not running")
+	ErrNoMetrics     = errors.New("no metrics yet")
+	ErrNoTemplate    = errors.New("template not found")
+	ErrCheckpoint    = errors.New("checkpoint failed")
+	ErrTemplateInUse = errors.New("template in use")
+	// ErrConnectionLost means Exec's connection broke before the command's exit was reported.
+	// The command may not have run, may have run in whole or in part, and may still be running.
+	// Retry only commands that are safe to run twice, even at the same time.
+	ErrConnectionLost = errors.New("connection lost before the command finished")
 )

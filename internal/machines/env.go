@@ -93,6 +93,7 @@ func compareAndSwapEnvironment(ctx context.Context, e engine.Engine, id string, 
 var errCASMismatch = errors.New("current /etc/environment changed")
 
 const casScript = `set -eu
+` + setupLockScript + `
 file=/etc/environment
 want=$1
 data=$2
