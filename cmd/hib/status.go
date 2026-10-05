@@ -30,7 +30,7 @@ func (a *app) status(ctx context.Context, cfg *config, _ []string) int {
 	}
 	r, err := a.call(ctx, cfg, shortTimeout, sshArgs, callOptions{sudo: true})
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	if r.Status == nil {
 		return a.fail(errors.New("hibd didn't report a status"))

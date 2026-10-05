@@ -217,14 +217,14 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 	}
 	if state != "VM starting" && state != "VM running" {
 		if _, err := a.az(ctx, "vm", "start", "-g", cfg.Azure.Group, "-n", cfg.Azure.VM, "-o", "none"); err != nil {
-			return wakeError(ctx, fmt.Errorf("starting the host: %w", err))
+			return stillStarting(ctx, fmt.Errorf("starting the host: %w", err))
 		}
 	}
 	for {
 		code, err := a.ssh(ctx, cfg.sshArgs("ready", "--timeout", "5m"), nil, io.Discard, io.Discard)
 		switch {
 		case err != nil:
-			return wakeError(ctx, err)
+			return stillStarting(ctx, err)
 		case code == 0:
 			fmt.Fprintf(a.stderr, "hib: the host is up after %v\n", time.Since(start).Round(time.Second))
 			return nil
@@ -232,9 +232,16 @@ func (a *app) wake(ctx context.Context, cfg *config) error {
 			return fmt.Errorf("the host is up, but hibd ready exited %d", code)
 		}
 		if err := a.sleep(ctx); err != nil {
-			return err
+			return stillStarting(ctx, err)
 		}
 	}
+}
+
+func stillStarting(ctx context.Context, err error) error {
+	if err = wakeError(ctx, err); errors.Is(err, context.Canceled) {
+		return errStillStarting
+	}
+	return err
 }
 
 func (a *app) powerState(ctx context.Context, vm *azureVM) (string, error) {

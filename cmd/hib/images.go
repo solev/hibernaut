@@ -18,7 +18,7 @@ func (a *app) imageSave(ctx context.Context, cfg *config, args []string) int {
 	}
 	r, err := a.remoteSudo(ctx, cfg, 0, callOptions{}, "image", "save", args[0], args[1], "-json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be saving %s as %s: check hib image ls in a few minutes", args[0], args[1]))
 	}
 	if r.Image == nil {
 		return a.fail(errors.New("hibd didn't say which image it saved"))
@@ -30,7 +30,7 @@ func (a *app) imageSave(ctx context.Context, cfg *config, args []string) int {
 func (a *app) imageList(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "image", "ls", "-json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	hibapi.PrintImages(a.stdout, r.Images)
 	return 0
@@ -41,7 +41,7 @@ func (a *app) imageRemove(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 	if _, err := a.remote(ctx, cfg, 0, "image", "rm", args[0], "-json"); err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be removing %s: check hib image ls", args[0]))
 	}
 	fmt.Fprintf(a.stdout, "removed image %s\n", args[0])
 	return 0

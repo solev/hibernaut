@@ -29,7 +29,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, name, env, bind string
 	}
 	r, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{stdin: []byte(value)}, "secret", "add", name, "--env", env, "--bind", strings.Join(sites, ","), "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be storing %s: check hib secret ls", name))
 	}
 	if r.Secret == nil {
 		return a.fail(errors.New("hibd didn't say which secret it stored"))
@@ -41,7 +41,7 @@ func (a *app) secretAdd(ctx context.Context, cfg *config, name, env, bind string
 func (a *app) secretLS(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "secret", "ls", "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	hibapi.PrintSecrets(a.stdout, r.Secrets)
 	return 0
@@ -52,7 +52,7 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 		return a.fail(err)
 	}
 	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "secret", "rm", args[0], "--json"); err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be removing %s: check hib secret ls", args[0]))
 	}
 	fmt.Fprintf(a.stdout, "removed %s\n", args[0])
 	return 0
@@ -64,7 +64,7 @@ func (a *app) log(ctx context.Context, cfg *config, n int) int {
 	}
 	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	if r.Corrupt > 0 {
 		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt audit log line(s)\n", r.Corrupt)

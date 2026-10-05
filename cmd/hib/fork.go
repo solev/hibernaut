@@ -20,7 +20,7 @@ func (a *app) fork(ctx context.Context, cfg *config, name string, count int) int
 	r, err := a.remoteSudo(ctx, cfg, 0, callOptions{}, "fork", name, "-count", strconv.Itoa(count), "-json")
 	var remote *hibapi.RemoteError
 	if err != nil && !errors.As(err, &remote) {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making copies of %s: check hib ls", name))
 	}
 	hibapi.PrintFork(a.stdout, name, r.Machines)
 	if err != nil {

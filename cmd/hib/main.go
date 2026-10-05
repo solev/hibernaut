@@ -224,7 +224,7 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 	}
 	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be making %s: check hib ls", name))
 	}
 	if r.Machine == nil {
 		return a.fail(errors.New("hibd didn't say which machine it made"))
@@ -236,7 +236,7 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	r, err := a.remote(ctx, cfg, shortTimeout, "ls", "--json")
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, "")
 	}
 	slices.SortFunc(r.Machines, func(x, y hibapi.Machine) int {
 		return strings.Compare(x.Name+"\x00"+x.ID, y.Name+"\x00"+y.ID)
@@ -319,7 +319,7 @@ func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
 			return 1
 		}
 	}
-	return a.byName(ctx, cfg, "rm", "removed", name)
+	return a.byName(ctx, cfg, "rm", "deleting", "removed", name)
 }
 
 const maxAnswer = 1024
@@ -344,15 +344,15 @@ func (a *app) confirm(ctx context.Context, question string) bool {
 }
 
 func (a *app) pause(ctx context.Context, cfg *config, args []string) int {
-	return a.byName(ctx, cfg, "pause", "paused", args[0])
+	return a.byName(ctx, cfg, "pause", "pausing", "paused", args[0])
 }
 
-func (a *app) byName(ctx context.Context, cfg *config, cmd, done, name string) int {
+func (a *app) byName(ctx context.Context, cfg *config, cmd, doing, done, name string) int {
 	if !a.checkNames(name) {
 		return 2
 	}
 	if _, err := a.remote(ctx, cfg, shortTimeout, cmd, name, "--json"); err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be %s %s: check hib ls", doing, name))
 	}
 	if cmd == "rm" {
 		if err := cfg.unpin(name); err != nil {
@@ -399,7 +399,7 @@ func (a *app) imageBuild(ctx context.Context, cfg *config, name string, force bo
 	}
 	r, err := a.remote(ctx, cfg, buildTimeout, remote...)
 	if err != nil {
-		return a.fail(err)
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still finish building %s: check hib image ls in a few minutes", name))
 	}
 	if len(r.Sizes) == 0 {
 		fmt.Fprintf(a.stdout, "built image %s (template %s)\n", name, safe(r.Template))
