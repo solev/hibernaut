@@ -9,6 +9,9 @@ everything intact.
 It runs [E2B's open-source infrastructure](https://github.com/e2b-dev/infra) (Firecracker microVMs)
 on a single Azure VM, plus scripts that switch that VM off whenever nobody is using it.
 
+[The overview](docs/overview.md) explains Hibernaut on one page, without the development details
+below. Share it with a person or an AI agent who is new to it.
+
 ---
 
 ## TL;DR
@@ -154,6 +157,7 @@ examples/
   try.py                   Create → run → pause → resume → kill, with timings
 
 docs/
+  overview.md              One page to share: what Hibernaut does, how it works, its limits
   spec.md                  v1 plan: machines, SSH, credential swap, testing, open spikes
   milestones/              M0–M10: tasks, tests and status for each milestone
   research/                Cited research behind the spec (E2B internals, agent/GitHub auth)
