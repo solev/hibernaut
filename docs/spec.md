@@ -620,6 +620,7 @@ status per milestone are tracked in [`docs/milestones/`](milestones/README.md).
 | M8 | **Machine sizes** (`hib new --size small`) | A small machine has 1 vCPU and 1 GiB. One made without `--size` still has 2 vCPUs and 2 GiB |
 | M9 | **Snapshot compaction:** cleanup trims old snapshots | After 10 pauses and a trim, a machine's snapshots take under half the disk they did, and no more than its latest snapshot maps. Its memory and disk read the same after a cold resume, and in an image, a fork and a machine from the image. |
 | M10 | **CLI friendliness:** help for every command, suggestions for typos, `hib rm` asks first, completions, `--json` | No new one: help and mistakes are unit-tested, and the existing tests pass with `hib rm --yes` |
+| M11 | **Bot faces:** the Hibernaut bot's face on the lines about a machine, awake or asleep, and moving on the live line | No new one: faces are only for terminals, and are unit-tested |
 
 Repo layout:
 

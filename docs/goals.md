@@ -40,6 +40,8 @@ Short videos of Hibernaut doing real work, filmed on today's host and posted onl
 [scenarios](ideas.md#videos) and [the pitch](ideas.md#the-pitch) are in ideas. The repository
 stays private until G4, so the videos build an audience for the launch.
 
+[M11 Bot faces](milestones/m11-bot-faces.md) puts the bot in `hib`, so the clips show it.
+
 Done when three videos are posted. After that, each new feature gets one.
 
 ## G2. Ready for strangers
