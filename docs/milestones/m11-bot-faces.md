@@ -186,20 +186,20 @@ doesn't link `internal/bot` either.
 
 **Picking faces**
 
-- [ ] The face kind, from the environment in `main`, with the checks at use time. `HIB_FACES`
+- [x] The face kind, from the environment in `main`, with the checks at use time. `HIB_FACES`
       turns faces off or picks text faces.
-- [ ] Fixed colours that read on dark and light backgrounds, and the cell size from the window
+- [x] Fixed colours that read on dark and light backgrounds, and the cell size from the window
       size.
 
 **Faces**
 
-- [ ] `hib ls` rows, and the results of `hib new`, `hib fork` and `hib pause`.
-- [ ] Live lines for `hib fork` and `hib pause`.
-- [ ] The live line's face, its scripts and its animation, for text and image faces.
+- [x] `hib ls` rows, and the results of `hib new`, `hib fork` and `hib pause`.
+- [x] Live lines for `hib fork` and `hib pause`.
+- [x] The live line's face, its scripts and its animation, for text and image faces.
 
 **Docs**
 
-- [ ] The README: faces, `HIB_FACES` and what `NO_COLOR` and `TERM=dumb` do to them.
+- [x] The README: faces, `HIB_FACES` and what `NO_COLOR` and `TERM=dumb` do to them.
 
 ## Tests
 
@@ -208,18 +208,18 @@ Unit (in `internal/bot` and `cmd/hib`, no host):
 - [x] The bot: frames are the same for the same seed and time, and change as it moves. Settled
       awake and asleep bots read as open and shut, and a blink shuts the eyes. The eyes can be
       filled and the body edged. Advancing by no time or less does nothing.
-- [ ] Picking faces: a table over the environment. No faces on stdout in a pipe, with `--json` or
+- [x] Picking faces: a table over the environment. No faces on stdout in a pipe, with `--json` or
       with `TERM=dumb`.
-- [ ] `hib ls` with text faces: without its first four columns, the output is the table without
+- [x] `hib ls` with text faces: without its first four columns, the output is the table without
       faces, and the room line has none. The results of `hib new`, `hib fork` and `hib pause`
       get faces. `hib rm` doesn't, and nor does a fork that made nothing.
-- [ ] Image faces: the commands have the right keys and chunks, and the PNG decodes at the cell
+- [x] Image faces: the commands have the right keys and chunks, and the PNG decodes at the cell
       size. The cell size comes from the window size, with a default and a cap.
-- [ ] The live line, through a real Bubble Tea program: the first frame comes before the line
+- [x] The live line, through a real Bubble Tea program: the first frame comes before the line
       and later frames only after it. The placeholders keep their colour and diacritics. The
       image is deleted when the line stops, Ctrl-C included. A line that never shows sends no
       image.
-- [ ] The live line's script: the text face wakes when its script says. A wait plays its own
+- [x] The live line's script: the text face wakes when its script says. A wait plays its own
       script and then the line's again. New text keeps the script running and the newest script
       starts when the line shows. The face leaves room for the text, and only new frames are sent.
 
@@ -230,9 +230,9 @@ End-to-end:
 
 ## Done when
 
-- [ ] `make lint test` is green. CI is parked, so it stands in for CI.
+- [x] `make lint test` is green. CI is parked, so it stands in for CI.
 - [ ] `make e2e` is green on the host.
-- [ ] The README matches what was built.
+- [x] The README matches what was built.
 
 ## Changes
 

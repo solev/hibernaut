@@ -2,33 +2,53 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
+
+// cell is one column of the screen: a character, the combining marks on it, and how it's drawn.
+type cell struct {
+	r     rune
+	marks string
+	fg    string
+	dim   bool
+}
 
 type screen struct {
 	t             *testing.T
 	width, height int
 	history       []string
-	rows          [][]rune
+	rows          [][]cell
 	x, y          int
 	cursorHidden  bool
 	pending       []byte
+	fg            string
+	dim           bool
+	// graphics is every kitty graphics command, without its ESC _ G and ST.
+	graphics []string
 }
 
 func newScreen(t *testing.T, width, height int) *screen {
-	s := &screen{t: t, width: width, height: height, rows: make([][]rune, height)}
+	s := &screen{t: t, width: width, height: height, rows: make([][]cell, height)}
 	for i := range s.rows {
 		s.rows[i] = s.blank()
 	}
 	return s
 }
 
-func (s *screen) blank() []rune { return []rune(strings.Repeat(" ", s.width)) }
+func (s *screen) blank() []cell {
+	row := make([]cell, s.width)
+	for i := range row {
+		row[i] = cell{r: ' '}
+	}
+	return row
+}
 
 func (s *screen) Write(p []byte) (int, error) {
 	s.pending = append(s.pending, p...)
@@ -63,11 +83,19 @@ func (s *screen) step(p []byte) int {
 		return 0
 	}
 	r, n := utf8.DecodeRune(p)
+	if unicode.Is(unicode.Mn, r) {
+		if s.x == 0 {
+			s.t.Errorf("screen got combining mark %U at the start of a line", r)
+			return n
+		}
+		s.rows[s.y][s.x-1].marks += string(r)
+		return n
+	}
 	if s.x >= s.width {
 		s.x = 0
 		s.lineFeed()
 	}
-	s.rows[s.y][s.x] = r
+	s.rows[s.y][s.x] = cell{r: r, fg: s.fg, dim: s.dim}
 	s.x++
 	return n
 }
@@ -85,6 +113,17 @@ func (s *screen) escape(p []byte) int {
 	if len(p) < 2 {
 		return 0
 	}
+	if p[1] == '_' {
+		end := bytes.Index(p, []byte("\x1b\\"))
+		if end < 0 {
+			return 0
+		}
+		if !bytes.HasPrefix(p, []byte("\x1b_G")) {
+			s.t.Errorf("screen got APC %q", p[:end+2])
+		}
+		s.graphics = append(s.graphics, string(p[3:end]))
+		return end + 2
+	}
 	if p[1] != '[' {
 		s.t.Errorf("screen got escape %q", p[:2])
 		return 2
@@ -99,6 +138,10 @@ func (s *screen) escape(p []byte) int {
 	params, final := string(p[2:end]), p[end]
 	if strings.HasPrefix(params, "?") {
 		s.mode(params, final)
+		return end + 1
+	}
+	if final == 'm' {
+		s.sgr(params)
 		return end + 1
 	}
 	n := 1
@@ -141,12 +184,12 @@ func (s *screen) escape(p []byte) int {
 		s.eraseRight()
 	case 'X':
 		for x := s.x; x < min(s.width, s.x+n); x++ {
-			s.rows[s.y][x] = ' '
+			s.rows[s.y][x] = cell{r: ' '}
 		}
 	case 'L':
 		s.x = 0
 		for range n {
-			s.rows = append(s.rows[:s.y], append([][]rune{s.blank()}, s.rows[s.y:s.height-1]...)...)
+			s.rows = append(s.rows[:s.y], append([][]cell{s.blank()}, s.rows[s.y:s.height-1]...)...)
 		}
 	case 'M':
 		s.x = 0
@@ -161,7 +204,29 @@ func (s *screen) escape(p []byte) int {
 
 func (s *screen) eraseRight() {
 	for x := s.x; x < s.width; x++ {
-		s.rows[s.y][x] = ' '
+		s.rows[s.y][x] = cell{r: ' '}
+	}
+}
+
+// sgr follows the attributes the live line may use: dim, and foreground colours.
+func (s *screen) sgr(params string) {
+	fields := strings.Split(params, ";")
+	for i := 0; i < len(fields); i++ {
+		switch f := fields[i]; {
+		case f == "" || f == "0":
+			s.fg, s.dim = "", false
+		case f == "2":
+			s.dim = true
+		case f == "22":
+			s.dim = false
+		case f == "39":
+			s.fg = ""
+		case f == "38" && i+4 < len(fields) && fields[i+1] == "2":
+			s.fg = strings.Join(fields[i:i+5], ";")
+			i += 4
+		default:
+			s.t.Errorf("screen got attribute %q in %q", f, params)
+		}
 	}
 }
 
@@ -176,7 +241,14 @@ func (s *screen) mode(params string, final byte) {
 	}
 }
 
-func (s *screen) row(y int) string { return strings.TrimRight(string(s.rows[y]), " ") }
+func (s *screen) row(y int) string {
+	var b strings.Builder
+	for _, c := range s.rows[y] {
+		b.WriteRune(c.r)
+		b.WriteString(c.marks)
+	}
+	return strings.TrimRight(b.String(), " ")
+}
 
 func (s *screen) lines() []string {
 	lines := append([]string(nil), s.history...)
@@ -234,6 +306,33 @@ func (term *terminal) waitFor(want string) bool {
 	}
 }
 
+// state returns the cells of the row the cursor is on, and every kitty graphics command so far.
+func (term *terminal) state() (row []cell, graphics []string) {
+	term.mu.Lock()
+	defer term.mu.Unlock()
+	return slices.Clone(term.screen.rows[term.screen.y]), slices.Clone(term.screen.graphics)
+}
+
+// until waits for the screen to be as ok says.
+func (term *terminal) until(what string, ok func(*screen) bool) bool {
+	term.t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		term.mu.Lock()
+		done, changed := ok(term.screen), term.changed
+		term.mu.Unlock()
+		if done {
+			return true
+		}
+		select {
+		case <-changed:
+		case <-deadline:
+			term.t.Errorf("the terminal never showed %s", what)
+			return false
+		}
+	}
+}
+
 func (term *terminal) lines() []string {
 	term.mu.Lock()
 	defer term.mu.Unlock()
@@ -260,5 +359,21 @@ func TestScreen(t *testing.T) {
 	want := []string{"one", "two", "three", "ins", "lix"}
 	if got := s.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("lines %q, want %q", got, want)
+	}
+}
+
+func TestScreenKeepsMarksColoursAndImages(t *testing.T) {
+	s := newScreen(t, 20, 2)
+	s.Write([]byte("\x1b_Ga=T,i=5;AA"))
+	s.Write([]byte("AA\x1b\\\x1b[38;2;0;0;5m\U0010EEEE\u0305\u0305\U0010EEEE\u0305\u030D\x1b[39m \x1b[2mzz\x1b[m!"))
+	if got, want := s.row(0), "\U0010EEEE\u0305\u0305\U0010EEEE\u0305\u030D zz!"; got != want {
+		t.Errorf("row %q, want %q", got, want)
+	}
+	row := s.rows[0]
+	if row[0].fg != "38;2;0;0;5" || row[1].fg != "38;2;0;0;5" || row[2].fg != "" || !row[3].dim || row[5].dim {
+		t.Errorf("cells %+v, want the colour on the first two and dim on zz", row[:6])
+	}
+	if len(s.graphics) != 1 || s.graphics[0] != "a=T,i=5;AAAA" {
+		t.Errorf("graphics %q, want the one command", s.graphics)
 	}
 }

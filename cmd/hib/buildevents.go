@@ -38,7 +38,7 @@ func (a *app) buildImage(ctx context.Context, cfg *config, name string, remote [
 		return a.remote(ctx, cfg, buildTimeout, append(remote, "--verbose")...)
 	}
 	building := "building " + name
-	defer a.showLive(ctx, building)()
+	defer a.showLive(ctx, building, buildingFace)()
 	return a.call(ctx, cfg, buildTimeout, cfg.sshArgs(append(remote, "--events")...), callOptions{
 		mayWake: true,
 		events: func(e hibapi.Event) {

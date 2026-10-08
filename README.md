@@ -205,11 +205,13 @@ Ctrl-C stops `hib` waiting, not the host. Work the host has started, such as mak
 pausing or deleting a machine, carries on. `hib` says what may be left behind and how to check
 it, for example "stopped waiting. The host may still be making app: check hib ls", and exits 130.
 
-**`hib new` shows what it waits for.** After 2 seconds, a live line at the bottom of the terminal
-says what for and for how long: `waking the host (40s)`, then `making app (12s)`. Messages from
-`hib` and the host print above it, and it's cleared before `hib` prints its result. There's no
-live line when stderr isn't a terminal, such as a pipe or a file, when `TERM` is `dumb`, or with
-`--json`. So `TERM=dumb hib new app` turns it off.
+**`hib new`, `hib fork` and `hib pause` show what they wait for.** After 2 seconds, a live line at
+the bottom of the terminal says what for and for how long: `waking the host (40s)`, then
+`making app (12s)`. Messages from `hib` and the host print above it, and it's cleared before `hib`
+prints its result. There's no live line when stderr isn't a terminal, when `TERM` is `dumb` or
+with `--json`. So `TERM=dumb hib new app` turns it off, and so does sending stderr to a pipe or a
+file. The line starts with the bot's face, which acts out the wait
+([faces](#scripts-completion-colour-and-faces)).
 
 `hib image build dev` bakes the Hibernaut CA into the image, so machines can trust the host proxy.
 Machines made before that rebuild need to be recreated to trust it.
@@ -503,7 +505,7 @@ export E2B_SANDBOX_URL=http://localhost:3002
 The API key is the fixed development key from E2B's `DEV-LOCAL.md`. It is not a secret. Only
 SSH (port 22) is reachable from the internet.
 
-### Scripts, completion and colour
+### Scripts, completion, colour and faces
 
 `--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one JSON
 object on stdout instead of text, and nothing else there. It changes only the output: `hib status
@@ -563,6 +565,19 @@ hib completion fish > ~/.config/fish/completions/hib.fish   # fish, once
 **Colour.** On a terminal, `hib ls` shows running machines in green and paused ones in yellow, and
 `hib status` shows ok in green and failing states in red. Set `NO_COLOR=1` to turn colour off.
 It's also off with `TERM=dumb`, when the output isn't a terminal, and with `--json`.
+
+**Faces.** On a terminal, the bot's face shows what a machine is doing:
+
+- `hib new` and `hib fork` start their result with an awake face, and `hib pause` with an asleep
+  one. `hib ls` starts each row with one, awake for a running machine and asleep for a paused one.
+- On a live line, the face sleeps while `hib` wakes the host and wakes up as `hib new` makes a
+  machine. It glances aside as `hib fork` copies one and dozes off as `hib pause` pauses one.
+  While `hib image build` builds, it reads along.
+- Ghostty and kitty 0.28 or later draw the face as a small image. Other terminals, and tmux,
+  screen and Zellij, show its eyes as text: `▪▪` awake and `▬▬` asleep, dimmed while asleep.
+- `HIB_FACES=text` shows the eyes in any terminal, and `HIB_FACES=off` turns faces off.
+  `NO_COLOR=1` shows the eyes without dimming, even in Ghostty and kitty. Like colour, faces need
+  a terminal. There are none in a pipe or a file, or with `TERM=dumb` or `--json`.
 
 ### Command reference
 

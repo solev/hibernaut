@@ -22,6 +22,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/solev/hibernaut/images"
+	"github.com/solev/hibernaut/internal/bot"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -37,6 +38,7 @@ func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go stopOnSignal(signals, cancel)
+	stdoutTerminal := term.IsTerminal(int(os.Stdout.Fd()))
 	stderrTerminal := term.IsTerminal(int(os.Stderr.Fd()))
 	a := &app{
 		stdin:          os.Stdin,
@@ -52,9 +54,13 @@ func main() {
 		azLimit:        shortTimeout,
 		liveAfter:      liveAfter,
 		now:            time.Now,
-		colour:         colourOn(term.IsTerminal(int(os.Stdout.Fd())), os.Getenv),
+		colour:         colourOn(stdoutTerminal, os.Getenv),
 		interactive:    term.IsTerminal(int(os.Stdin.Fd())) && stderrTerminal,
+		stdoutTerminal: stdoutTerminal,
 		stderrTerminal: stderrTerminal,
+		faces: newFaces(os.Getenv, func() cellSize {
+			return cellSizeOf(int(os.Stdout.Fd()), int(os.Stderr.Fd()))
+		}),
 	}
 	if stderrTerminal {
 		a.browser = browserOpener(runtime.GOOS, a.getenv, runCommand)
@@ -99,16 +105,19 @@ type app struct {
 	wakePoll       time.Duration
 	azLimit        time.Duration
 	liveAfter      time.Duration
+	stdoutTerminal bool
 	stderrTerminal bool
 	stderrSize     func() (width, height int, err error)
 	resizes        func() (<-chan os.Signal, func())
 	live           *live
-	now            func() time.Time
-	colour         bool
-	interactive    bool
-	command        *command
-	configFlag     string
-	json           bool
+	// faces is nil without faces. printedFaces and showLive check that their stream can show them.
+	faces       *faces
+	now         func() time.Time
+	colour      bool
+	interactive bool
+	command     *command
+	configFlag  string
+	json        bool
 }
 
 func (a *app) run(ctx context.Context, args []string) int {
@@ -236,7 +245,7 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 	if badSize != nil {
 		return a.mistake(badSize.Error())
 	}
-	stopLive := a.showLive(ctx, "making "+name)
+	stopLive := a.showLive(ctx, "making "+name, makingFace)
 	r, err := a.remote(ctx, cfg, newTimeout, append(words, "--json")...)
 	stopLive()
 	if err != nil {
@@ -248,7 +257,7 @@ func (a *app) newMachine(ctx context.Context, cfg *config, fl *flag.FlagSet, nam
 	if a.json {
 		return a.reply(hibapi.Response{Machine: r.Machine}, nil)
 	}
-	fmt.Fprintf(a.stdout, "made %s; connect with: ssh %s.hib\n", name, name)
+	fmt.Fprintf(a.stdout, "%smade %s; connect with: ssh %s.hib\n", a.face(bot.Idle), name, name)
 	return 0
 }
 
@@ -265,13 +274,17 @@ func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 		return a.reply(hibapi.Response{Machines: r.Machines, Room: r.Room}, nil)
 	}
 	now := a.now()
-	tw := hibapi.NewTable(a.stdout, a.style())
+	var table strings.Builder
+	tw := hibapi.NewTable(&table, a.style())
 	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
-	for _, m := range r.Machines {
+	states := make([]string, len(r.Machines))
+	for i, m := range r.Machines {
+		states[i] = m.State
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),
 			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID), safe(m.ForkOf))
 	}
 	tw.Flush()
+	io.WriteString(a.stdout, a.printedFaces().table(table.String(), states))
 	if r.Room != nil {
 		fmt.Fprintf(a.stdout, "\n%s\n", roomLine(*r.Room))
 	}
@@ -342,7 +355,14 @@ func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
 			return 1
 		}
 	}
-	return a.byName(ctx, cfg, "rm", "deleting", "removed", name)
+	if _, err := a.remote(ctx, cfg, shortTimeout, "rm", name, "--json"); err != nil {
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be deleting %s: check hib ls", name))
+	}
+	if err := cfg.unpin(name); err != nil {
+		return a.fail(fmt.Errorf("deleted %s, but couldn't forget its host key: %w. Remove that file yourself", name, err))
+	}
+	fmt.Fprintf(a.stdout, "removed %s\n", name)
+	return 0
 }
 
 const maxAnswer = 1024
@@ -367,22 +387,17 @@ func (a *app) confirm(ctx context.Context, question string) bool {
 }
 
 func (a *app) pause(ctx context.Context, cfg *config, args []string) int {
-	return a.byName(ctx, cfg, "pause", "pausing", "paused", args[0])
-}
-
-func (a *app) byName(ctx context.Context, cfg *config, cmd, doing, done, name string) int {
+	name := args[0]
 	if !a.checkNames(name) {
 		return 2
 	}
-	if _, err := a.remote(ctx, cfg, shortTimeout, cmd, name, "--json"); err != nil {
-		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be %s %s: check hib ls", doing, name))
+	stopLive := a.showLive(ctx, "pausing "+name, pausingFace)
+	_, err := a.remote(ctx, cfg, shortTimeout, "pause", name, "--json")
+	stopLive()
+	if err != nil {
+		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be pausing %s: check hib ls", name))
 	}
-	if cmd == "rm" {
-		if err := cfg.unpin(name); err != nil {
-			return a.fail(fmt.Errorf("deleted %s, but couldn't forget its host key: %w. Remove that file yourself", name, err))
-		}
-	}
-	fmt.Fprintf(a.stdout, "%s %s\n", done, name)
+	fmt.Fprintf(a.stdout, "%spaused %s\n", a.face(bot.Asleep), name)
 	return 0
 }
 
