@@ -38,7 +38,7 @@ below. Share it with a person or an AI agent who is new to it.
   are done: M0 (foundations), M1 (machines), M2 (idle and wake), M3 (vault and egress proxy),
   M4 (GitHub), M5 (AI tools), M6 (golden images and fork), M7 (GitHub device flow), M8 (machine
   sizes), M9 (snapshot compaction) and M10 (CLI friendliness). Progress and what's left:
-  [docs/milestones](docs/milestones/README.md).
+  [docs/milestones](docs/milestones/README.md). After v1: [the goals](docs/goals.md).
 
 ## Measured on this setup
 
@@ -160,6 +160,8 @@ docs/
   overview.md              One page to share: what Hibernaut does, how it works, its limits
   spec.md                  v1 plan: machines, SSH, credential swap, testing, open spikes
   milestones/              M0–M10: tasks, tests and status for each milestone
+  goals.md                 After v1: traction in the AI community, then a launch, in order
+  ideas.md                 The detail behind the goals, and ideas no goal has taken yet
   research/                Cited research behind the spec (E2B internals, agent/GitHub auth)
 ```
 
@@ -712,9 +714,7 @@ included, also stops the `hibd-pause-all` guard, which pauses sandboxes before E
 - Uses E2B's local-dev configuration: a fixed API key, local storage, no TLS.
 - No public sandbox URLs yet. You reach sandboxes through the SSH tunnel.
 
-## Ideas for next missions
+## What's next
 
-- **Custom templates** with our own toolchains (Node, Python, Rocket's stack) baked in.
-- **Coding-agent workspaces**: give an agent a sandbox, pause it overnight, resume it tomorrow.
-- **Public URLs** per sandbox through the client-proxy + a domain (hibernaut.sh / hibernaut.dev
-  looked available).
+[The goals](docs/goals.md) say where Hibernaut goes after v1, and [ideas](docs/ideas.md) holds the
+rest.

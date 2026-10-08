@@ -9,7 +9,8 @@ All milestones are done: [M0 Foundations](m0-foundations.md), [M1 Machines](m1-m
 [M6 Golden images and fork](m6-images-and-fork.md),
 [M7 GitHub device flow](m7-github-device-flow.md), [M8 Machine sizes](m8-machine-sizes.md),
 [M9 Snapshot compaction](m9-snapshot-compaction.md) and
-[M10 CLI friendliness](m10-cli-friendliness.md). What's left is under **Later**.
+[M10 CLI friendliness](m10-cli-friendliness.md). What's left is under **Later**. What comes after
+v1 is in [the goals](../goals.md).
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -38,17 +39,11 @@ M8, M9 and M10 came last. M8 and M9 needed only M2, and M10 nothing.
   - the README and spec match what was built.
 - Learned something that changes the design? Update the spec in the same commit, and add a line
   under **Changes** in the milestone file.
-- Anything that doesn't belong to a milestone goes under **Later** below.
+- Fixes and leftovers that don't belong to a milestone go under **Later** below. New features go
+  in [ideas](../ideas.md).
 
 ## Later (not v1)
 
-- Claude Code (API key, or `claude setup-token`) and OpenCode.
-- Codex access tokens (`hib connect codex --access-token`), for ChatGPT Business/Enterprise.
-- GitHub App: access to selected repos only, short-lived tokens.
-- Vault key in Azure Key Vault, through the VM's managed identity.
-- Multi-user: per-machine identity, SSH keys written at create time, SSH host certificates.
-- A domain (hibernaut.dev), public HTTPS URLs per machine, a web console.
-- Per-machine egress allowlists.
 - The nightly shutdown pauses busy machines too, so a long agent run stops at 20:00 UTC and its
   connections drop. Put the shutdown off while a machine is busy, up to a limit.
 - Images and fork (M6): `hib image save --replace`, and a new `/etc/machine-id` for each copy.
