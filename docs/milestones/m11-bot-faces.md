@@ -182,7 +182,7 @@ doesn't link `internal/bot` either.
 
 **The bot**
 
-- [ ] `internal/bot`: the engine and its drawing, ported from the prototype's tight bot.
+- [x] `internal/bot`: the engine and its drawing, ported from the prototype's tight bot.
 
 **Picking faces**
 
@@ -205,7 +205,7 @@ doesn't link `internal/bot` either.
 
 Unit (in `internal/bot` and `cmd/hib`, no host):
 
-- [ ] The bot: frames are the same for the same seed and time, and change as it moves. Settled
+- [x] The bot: frames are the same for the same seed and time, and change as it moves. Settled
       awake and asleep bots read as open and shut, and a blink shuts the eyes. The eyes can be
       filled and the body edged. Advancing by no time or less does nothing.
 - [ ] Picking faces: a table over the environment. No faces on stdout in a pipe, with `--json` or
