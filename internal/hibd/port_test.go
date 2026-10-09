@@ -3,6 +3,7 @@ package hibd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -28,9 +29,10 @@ type portGuest struct {
 	mu      sync.Mutex
 	tcp     string
 	checks  int
+	hosts   map[string]string
 }
 
-func (g *portGuest) exec(_ context.Context, _ engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
+func (g *portGuest) exec(_ context.Context, m engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	switch {
@@ -41,8 +43,25 @@ func (g *portGuest) exec(_ context.Context, _ engine.Machine, _ string, req engi
 		return engine.ExecResult{Stdout: []byte(g.tcp)}, nil
 	case req.Cmd == "cat":
 		return engine.ExecResult{}, nil
+	case req.Cmd == "sh" && len(req.Args) == 5 && req.Args[2] == "hibd-hosts":
+		next, err := base64.StdEncoding.DecodeString(req.Args[4])
+		if err != nil {
+			return engine.ExecResult{ExitCode: 1}, nil
+		}
+		if g.hosts == nil {
+			g.hosts = map[string]string{}
+		}
+		g.hosts[m.ID] = string(next)
+		return engine.ExecResult{}, nil
 	}
 	return engine.ExecResult{ExitCode: 127}, nil
+}
+
+// hostsOf is the /etc/hosts hibd last wrote into machine id.
+func (g *portGuest) hostsOf(id string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hosts[id]
 }
 
 func (g *portGuest) listening(tcp string) {
@@ -118,12 +137,17 @@ func linkDoc(t *testing.T, a *App) links.Doc {
 }
 
 func TestPortAdd(t *testing.T) {
-	e, a, _, _, out, errOut := portApp(t)
+	e, a, g, _, out, errOut := portApp(t)
 	if code := run(t, a, out, errOut, "port", "add", "api", "8080"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 	if got, want := out.String(), "api:8080 is published to your machines as api.hib:8080\n"; got != want {
 		t.Errorf("stdout %q, want %q", got, want)
+	}
+	for _, name := range []string{"api", "web"} {
+		if got := g.hostsOf(mustID(t, e, name)); !strings.Contains(got, links.First.String()+" api.hib\n") {
+			t.Errorf("after api published 8080, %s's /etc/hosts = %q, want it to name api.hib", name, got)
+		}
 	}
 	if code := run(t, a, out, errOut, "port", "add", "api", "5432", "6379", "5432"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)

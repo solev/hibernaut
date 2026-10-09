@@ -47,6 +47,9 @@ func portHost(t *testing.T) (*host, *client, *listening) {
 				return engine.ExecResult{Stdout: []byte(l.tcp)}, nil
 			case req.Cmd == "cat":
 				return engine.ExecResult{}, nil
+			case req.Cmd == "sh" && len(req.Args) == 5 && req.Args[2] == "hibd-hosts":
+				// Publishing changes the names every machine's /etc/hosts holds.
+				return engine.ExecResult{}, nil
 			}
 			return engine.ExecResult{ExitCode: 127}, nil
 		}),
