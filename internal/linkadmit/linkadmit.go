@@ -104,39 +104,3 @@ func (a *Admitter) Renew(ad links.Admission, payload int64) {}
 // Release gives back the room and the caps. It keeps the rate history of a successful wake, so
 // a link opened and closed in a loop cannot wake a machine every second.
 func (a *Admitter) Release(ad links.Admission) {}
-
-// RunWatcher answers which run owns a machine, from E2B's cgroups. It implements links.Runs.
-type RunWatcher struct {
-	cgroups string
-}
-
-var _ links.Runs = (*RunWatcher)(nil)
-
-// NewRuns watches runs under the E2B cgroup root, /sys/fs/cgroup/e2b when cgroups is "".
-func NewRuns(cgroups string) (*RunWatcher, error) {
-	return &RunWatcher{cgroups: cgroups}, nil
-}
-
-// Current returns the run that owns id now.
-func (w *RunWatcher) Current(id string) (links.Run, error) {
-	return "", links.ErrNotRunning
-}
-
-// Watch closes the returned channel when run of machine id ends. A run that has already ended
-// gives an already-closed channel, so admission cannot race the first read.
-func (w *RunWatcher) Watch(id string, run links.Run) (<-chan struct{}, error) {
-	return nil, links.ErrNotRunning
-}
-
-// Live returns every machine that has a run now. It reads the cgroups at the time of the call.
-func (w *RunWatcher) Live() (map[string]links.Run, error) {
-	return map[string]links.Run{}, nil
-}
-
-// Root is where the watcher is looking, for tests and for hibd's diagnostics.
-func (w *RunWatcher) Root() string {
-	if w.cgroups == "" {
-		return "/sys/fs/cgroup/e2b"
-	}
-	return w.cgroups
-}
