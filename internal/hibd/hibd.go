@@ -1648,6 +1648,7 @@ func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) 
 		Durable: func(ctx context.Context, id string) error {
 			return a.durableSnapshot(ctx, cfg, id)
 		},
+		Fenced: a.snapshotFence(cfg),
 	}), nil
 }
 
