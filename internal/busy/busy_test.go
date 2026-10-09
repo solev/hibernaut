@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -241,10 +242,9 @@ func TestBadConfig(t *testing.T) {
 
 func TestLeavesOtherMachinesAlone(t *testing.T) {
 	v := newWorld(t)
-	never := v.machine("forever", "0s", time.Minute)
 	v.e.Add(engine.Machine{ID: "e2etest", State: engine.Running, StartedAt: t0, EndAt: t0.Add(time.Minute), Metadata: map[string]string{"hib-test": "e2e"}})
 	v.e.Add(engine.Machine{ID: "badname", State: engine.Running, StartedAt: t0, EndAt: t0.Add(time.Minute), Metadata: map[string]string{"hib.name": "Bad Name"}})
-	others := []string{never, "e2etest", "badname"}
+	others := []string{"e2etest", "badname"}
 	for _, id := range others {
 		v.procs[id] = codex
 	}
@@ -262,6 +262,61 @@ func TestLeavesOtherMachinesAlone(t *testing.T) {
 		if got := v.endAt(id); !got.Equal(t0.Add(time.Minute)) {
 			t.Errorf("%s: EndAt = %v, want it left alone", id, got)
 		}
+	}
+}
+
+type activity struct {
+	mu sync.Mutex
+	at map[string][]time.Time
+}
+
+func (a *activity) touch(id string, at time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.at[id] = append(a.at[id], at)
+}
+
+func (a *activity) seen(id string) []time.Time {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.at[id]
+}
+
+// A machine that never pauses has nothing to renew, but whether it is working decides whether
+// its links count, so it is observed like any other.
+func TestBusyObservationsRecordActivity(t *testing.T) {
+	v := newWorld(t)
+	act := &activity{at: map[string][]time.Time{}}
+	w, err := busy.New(busy.Config{Engine: v.e, CPU: v.readCPU, Now: v.Now, Logf: v.logf, Activity: act.touch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	never := v.machine("forever", "0s", time.Minute)
+	app := v.machine("app", "10m0s", time.Minute)
+	quiet := v.machine("quiet", "10m0s", time.Minute)
+	v.procs[never] = codex
+	v.procs[app] = codex
+	if err := w.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	v.later(15 * time.Second)
+	if err := w.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Time{t0, t0.Add(15 * time.Second)}
+	for _, id := range []string{never, app} {
+		if got := act.seen(id); !slices.Equal(got, want) {
+			t.Errorf("%s: activity at %v, want %v", id, got, want)
+		}
+	}
+	if got := act.seen(quiet); len(got) != 0 {
+		t.Errorf("an idle machine's activity recorded at %v", got)
+	}
+	if got := v.endAt(never); !got.Equal(t0.Add(time.Minute)) {
+		t.Errorf("EndAt of a machine that never pauses = %v, want it not renewed", got)
+	}
+	if got, want := v.endAt(app), v.Now().Add(10*time.Minute); !got.Equal(want) {
+		t.Errorf("EndAt of a busy machine = %v, want %v", got, want)
 	}
 }
 
