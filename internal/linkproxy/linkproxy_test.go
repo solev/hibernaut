@@ -3,6 +3,7 @@ package linkproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -317,7 +318,7 @@ func TestRenewOnlyOnPayload(t *testing.T) {
 	}
 }
 
-func TestRenewalIsPerTarget(t *testing.T) {
+func TestRenewalIsPerSourceAndTarget(t *testing.T) {
 	h := start(t)
 	a := h.link(h.peer())
 	eventually(t, "the first renewal", func() bool { return len(h.admitter.renewed()) == 1 })
@@ -326,7 +327,44 @@ func TestRenewalIsPerTarget(t *testing.T) {
 	roundTrip(t, b, "more")
 	time.Sleep(20 * time.Millisecond)
 	if got := h.admitter.renewed(); len(got) != 1 {
-		t.Errorf("renewals = %v, want one for the target however many links carry payload", got)
+		t.Errorf("renewals = %v, want one for the pair however many links carry payload", got)
+	}
+}
+
+// The admitter refuses a stale source's renewal without spending the target's window, so a
+// stale source that chats constantly must not hold back a fresh source's renewal.
+func TestStaleSourceCannotStarveAFreshOnesRenewal(t *testing.T) {
+	fresh := links.Gate{Addr: netip.MustParseAddr("10.11.0.3"), Token: 4}
+	h := newHarness(t)
+	h.world.start("fresh", "f1", fresh)
+	h.doc.update(func(d *links.Doc) {
+		d.Machines["fresh"] = &links.Machine{Addr: netip.MustParseAddr("198.18.0.3")}
+	})
+	h.admitter.set(func(a *fakeAdmitter) { a.stale = map[string]bool{"src": true} })
+	h.serve()
+
+	stale := h.link(h.peer())
+	peer := h.peer()
+	peer.Source, peer.SourceAddr, peer.Token = "fresh", fresh.Addr, fresh.Token
+	c := h.link(peer)
+	want := []int64{4}
+	// Each renewal carries the echo of the payload before it and its own.
+	for window, payload := range []int64{4 + 3, 3 + 3, 3 + 3} {
+		h.clock.advance(links.LinkRenew)
+		roundTrip(t, stale, "chat")
+		h.clock.advance(links.LinkRenew / 3)
+		roundTrip(t, stale, "chat")
+		roundTrip(t, c, "use")
+		want = append(want, payload)
+		if got := h.admitter.renewed(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("window %d: the fresh source's renewals = %v, want %v", window, got, want)
+		}
+	}
+	h.admitter.mu.Lock()
+	refused := h.admitter.staleRenewals
+	h.admitter.mu.Unlock()
+	if refused != 4 {
+		t.Errorf("the stale source tried %d renewals, want one on opening and one per window", refused)
 	}
 }
 
@@ -710,6 +748,107 @@ func TestIdenticalRefusalsShareAFoldKey(t *testing.T) {
 	key := func(e audit.LinkEntry) foldKey { return foldKey{e.FromID, e.ToID, e.Reason, e.Port} }
 	if key(got[0]) != key(got[1]) || got[0].Count != 1 || got[1].Count != 1 {
 		t.Errorf("refusals %+v and %+v do not fold together", got[0], got[1])
+	}
+}
+
+func TestLogfNamesTheErrorBehindARefusal(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(*harness)
+		peer     func(*Peer)
+		identify error
+		want     string
+	}{
+		{
+			name:     "identify",
+			identify: errors.New("hook: local address 10.0.0.4 belongs to interface eth0, not veth-*"),
+			want: "links: refused a connection from ? (127.0.0.1) to ? at identify: " +
+				"hook: local address 10.0.0.4 belongs to interface eth0, not veth-*",
+		},
+		{
+			name: "run binding",
+			peer: func(p *Peer) { p.Token = 7 },
+			want: "links: refused a connection from src (10.11.0.1) to tgt:8080 at run binding: " +
+				"the socket carries token 7 from 10.11.0.1, and run r1's gate is token 1 at 10.11.0.1",
+		},
+		{
+			name:  "admit",
+			setup: admitErr(errors.New("wake failed: e2b said 500")),
+			want:  "links: refused a connection from src (10.11.0.1) to tgt:8080 at admit: wake failed: e2b said 500",
+		},
+		{
+			name:  "dial",
+			setup: func(h *harness) { h.dialer.set(func(d *fakeDialer) { d.err = syscall.EHOSTUNREACH }) },
+			want:  "links: refused a connection from src (10.11.0.1) to tgt:8080 at dial: " + syscall.EHOSTUNREACH.Error(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			h.serve()
+			peer := h.peer()
+			if tt.identify != nil {
+				peer = Peer{}
+			}
+			if tt.peer != nil {
+				tt.peer(&peer)
+			}
+			refuse := func() { expectNothing(t, h.connectAs(peer, tt.identify)) }
+
+			refuse()
+			refuse()
+			if got := h.lines.all(); !reflect.DeepEqual(got, []string{tt.want}) {
+				t.Fatalf("Logf lines = %q, want one: %q", got, tt.want)
+			}
+			h.clock.advance(links.FoldWindow)
+			refuse()
+			if got := h.lines.all(); len(got) != 2 || got[1] != tt.want {
+				t.Errorf("Logf lines once FoldWindow passed = %q, want the line again", got)
+			}
+		})
+	}
+}
+
+func TestLogfIsQuietWhenTheLinkLogNamesTheError(t *testing.T) {
+	h := newHarness(t)
+	h.admitter.set(func(a *fakeAdmitter) { a.err = fmt.Errorf("linkadmit: %w", links.ErrPausedByHand) })
+	h.serve()
+	expectNothing(t, h.connectAs(h.peer(), links.ErrUnmarked))
+	expectNothing(t, h.connect(h.peer()))
+	h.log.waitN(t, "refused", 2)
+	if got := h.lines.all(); len(got) != 0 {
+		t.Errorf("Logf lines = %q, want none", got)
+	}
+}
+
+func TestNilLogfIsSilent(t *testing.T) {
+	h := newHarness(t)
+	h.p.cfg.Logf = nil
+	h.dialer.set(func(d *fakeDialer) { d.err = syscall.EHOSTUNREACH })
+	h.serve()
+	expectNothing(t, h.connectAs(Peer{}, errors.New("not on a veth")))
+	expectNothing(t, h.connect(h.peer()))
+	if e := h.log.wait(t, "refused"); e.Reason != links.ErrDialFailed.Error() {
+		t.Errorf("refused with %q, want %q", e.Reason, links.ErrDialFailed)
+	}
+}
+
+func TestLogfIsBoundedPerFoldWindow(t *testing.T) {
+	var d diagnostics
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i := range maxDiagnostics {
+		if !d.allow(diagKey{"identify", "", fmt.Sprint("scan ", i)}, at) {
+			t.Fatalf("line %d dropped below the cap", i)
+		}
+	}
+	if d.allow(diagKey{"identify", "", "one more"}, at.Add(links.FoldWindow-time.Second)) {
+		t.Error("a new line was written past the cap within the window")
+	}
+	if !d.allow(diagKey{"identify", "", "one more"}, at.Add(links.FoldWindow)) {
+		t.Error("a new line was dropped once the window had passed")
 	}
 }
 

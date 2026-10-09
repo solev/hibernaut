@@ -3,6 +3,7 @@ package linkproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -19,6 +20,9 @@ var cidr = netip.MustParsePrefix(links.CIDR)
 // errEnded is the cause of a link's context once the link has ended. Nothing reports it: a
 // blocked call that sees it returns the link's own reason instead.
 var errEnded = errors.New("linkproxy: link ended")
+
+// errNoDoc is what Logf is told when Config.Doc returns neither a document nor an error.
+var errNoDoc = errors.New("linkproxy: no link state document")
 
 // link is one accepted connection, from the accept to the last line in the log.
 type link struct {
@@ -69,10 +73,16 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 		err = links.ErrUnmarked
 	}
 	if err != nil {
-		_ = conn.Close()
 		if reason := known(err); reason != nil {
+			_ = conn.Close()
 			p.refused(peer, "", reason)
+			return
 		}
+		if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok && !peer.SourceAddr.IsValid() {
+			peer.SourceAddr = a.AddrPort().Addr().Unmap()
+		}
+		p.diagnose("identify", peer, "", false, err)
+		_ = conn.Close()
 		return
 	}
 	if !p.rate.allow(peer.Source, p.cfg.Now()) {
@@ -110,9 +120,9 @@ func (l *link) connect() error {
 	if !cidr.Contains(dst.Addr()) {
 		return links.ErrUnknownAddress
 	}
-	doc, err := p.cfg.Doc()
-	if err != nil || doc == nil {
-		return links.ErrStateUnreadable
+	doc, err := l.state()
+	if err != nil {
+		return err
 	}
 	target, m, ok := doc.Lookup(dst.Addr())
 	if !ok {
@@ -135,14 +145,16 @@ func (l *link) connect() error {
 
 	run, err := p.cfg.Runs.Current(l.peer.Source)
 	if err != nil {
-		return links.ErrWrongRun
+		return l.diag("source run", err, links.ErrWrongRun)
 	}
 	gate, err := l.sourceGate(run)
 	if err != nil {
 		return err
 	}
 	if gate.Addr != l.peer.SourceAddr || gate.Token != l.peer.Token {
-		return links.ErrWrongRun
+		err := fmt.Errorf("the socket carries token %d from %v, and run %s's gate is token %d at %v",
+			l.peer.Token, l.peer.SourceAddr, run, gate.Token, gate.Addr)
+		return l.diag("run binding", err, links.ErrWrongRun)
 	}
 
 	adm, err := p.cfg.Admitter.Admit(l.ctx, links.AdmitRequest{
@@ -159,7 +171,7 @@ func (l *link) connect() error {
 		if reason := known(err); reason != nil {
 			return reason
 		}
-		return links.ErrNotRunning
+		return l.diag("admit", err, links.ErrNotRunning)
 	}
 	if adm.Ctx == nil {
 		adm.Ctx = context.Background()
@@ -189,18 +201,16 @@ func (l *link) sourceGate(run links.Run) (links.Gate, error) {
 	ctx, cancel := context.WithTimeout(l.ctx, l.p.admitTimeout)
 	defer cancel()
 	gate, err := l.p.cfg.Keeper.Gate(ctx, l.peer.Source, run)
-	switch {
-	case err == nil:
+	if err == nil {
 		return gate, nil
-	case l.ctx.Err() != nil:
-		return links.Gate{}, l.cause()
-	case errors.Is(err, links.ErrRunEnded), errors.Is(err, links.ErrNotRunning):
-		return links.Gate{}, links.ErrWrongRun
 	}
-	if reason := known(err); reason != nil {
+	if l.ctx.Err() != nil {
+		return links.Gate{}, l.cause()
+	}
+	if reason := known(err); reason != nil && reason != links.ErrRunEnded && reason != links.ErrNotRunning {
 		return links.Gate{}, reason
 	}
-	return links.Gate{}, links.ErrWrongRun
+	return links.Gate{}, l.diag("source gate", err, links.ErrWrongRun)
 }
 
 // dial opens the target leg, within DialTimeout.
@@ -233,7 +243,7 @@ func (l *link) dial() error {
 		if l.ctx.Err() != nil {
 			return l.cause()
 		}
-		return links.ErrDialFailed
+		return l.diag("dial", err, links.ErrDialFailed)
 	}
 	l.dst = conn
 	l.mu.Unlock()
@@ -247,18 +257,12 @@ func (l *link) dial() error {
 // neither gate retired, all read after the dial and before the first byte.
 func (l *link) recheck(gen uint64) error {
 	adm := l.admission()
-	for _, end := range []struct {
-		id  string
-		run links.Run
-	}{{adm.Source, adm.SourceRun}, {adm.Target, adm.TargetRun}} {
-		run, err := l.p.cfg.Runs.Current(end.id)
-		if err != nil || run != end.run {
-			return links.ErrRunEnded
-		}
+	if !l.stillRunning(adm.Source, adm.SourceRun) || !l.stillRunning(adm.Target, adm.TargetRun) {
+		return links.ErrRunEnded
 	}
-	doc, err := l.p.cfg.Doc()
-	if err != nil || doc == nil {
-		return links.ErrStateUnreadable
+	doc, err := l.state()
+	if err != nil {
+		return err
 	}
 	now, ok := doc.Machines[adm.Target].Gen(adm.Port)
 	if !ok || now != gen || now != adm.PortGen {
@@ -285,11 +289,11 @@ func (l *link) arm() error {
 	adm := l.admission()
 	srcRun, err := l.p.cfg.Runs.Watch(adm.Source, adm.SourceRun)
 	if err != nil {
-		return links.ErrRunEnded
+		return l.diag("watch", err, links.ErrRunEnded)
 	}
 	dstRun, err := l.p.cfg.Runs.Watch(adm.Target, adm.TargetRun)
 	if err != nil {
-		return links.ErrRunEnded
+		return l.diag("watch", err, links.ErrRunEnded)
 	}
 	srcGate := l.p.cfg.Keeper.Retired(adm.SourceGate)
 	dstGate := l.p.cfg.Keeper.Retired(adm.TargetGate)
@@ -331,9 +335,9 @@ func (l *link) arm() error {
 // live, when its machine is fenced and, since it cannot tell which machines are fenced
 // without it, when links.json cannot be read.
 func (l *link) retiredReason() error {
-	doc, err := l.p.cfg.Doc()
-	if err != nil || doc == nil {
-		return links.ErrStateUnreadable
+	doc, err := l.state()
+	if err != nil {
+		return err
 	}
 	adm := l.admission()
 	if doc.Machines[adm.Source] != nil && doc.Machines[adm.Source].Fence != nil ||
@@ -350,9 +354,9 @@ func (l *link) ctxReason() error {
 	if reason := known(context.Cause(adm.Ctx)); reason != nil {
 		return reason
 	}
-	doc, err := l.p.cfg.Doc()
-	if err != nil || doc == nil {
-		return links.ErrStateUnreadable
+	doc, err := l.state()
+	if err != nil {
+		return err
 	}
 	if gen, ok := doc.Machines[adm.Target].Gen(adm.Port); !ok || gen != adm.PortGen {
 		return links.ErrRevoked
@@ -362,13 +366,8 @@ func (l *link) ctxReason() error {
 			return links.ErrFenced
 		}
 	}
-	for _, end := range []struct {
-		id  string
-		run links.Run
-	}{{adm.Source, adm.SourceRun}, {adm.Target, adm.TargetRun}} {
-		if run, err := l.p.cfg.Runs.Current(end.id); err != nil || run != end.run {
-			return links.ErrRunEnded
-		}
+	if !l.stillRunning(adm.Source, adm.SourceRun) || !l.stillRunning(adm.Target, adm.TargetRun) {
+		return links.ErrRunEnded
 	}
 	return links.ErrRevoked
 }
@@ -518,6 +517,40 @@ func (l *link) finish() {
 		reason = links.ErrLinksOff
 	}
 	l.p.write(l.entry("refused", reason, false))
+}
+
+// stillRunning reports whether run is still id's current run. A failure to tell counts as no,
+// and Logf is told why unless it is only that id is not running.
+func (l *link) stillRunning(id string, run links.Run) bool {
+	now, err := l.p.cfg.Runs.Current(id)
+	if err != nil && !errors.Is(err, links.ErrNotRunning) {
+		l.diag("run", err, links.ErrRunEnded)
+	}
+	return err == nil && now == run
+}
+
+// state reads links.json. When it cannot, the link's reason is ErrStateUnreadable and Logf is
+// told why.
+func (l *link) state() (*links.Doc, error) {
+	doc, err := l.p.cfg.Doc()
+	if err == nil && doc == nil {
+		err = errNoDoc
+	}
+	if err != nil {
+		return nil, l.diag("state", err, links.ErrStateUnreadable)
+	}
+	return doc, nil
+}
+
+// diag tells Logf about err when the link log will name it only as reason, and returns reason.
+func (l *link) diag(step string, err, reason error) error {
+	if known(err) != reason {
+		l.mu.Lock()
+		target, open := l.target, l.open
+		l.mu.Unlock()
+		l.p.diagnose(step, l.peer, target, open, err)
+	}
+	return reason
 }
 
 // resolved records the destination, unless the link has already been aborted.

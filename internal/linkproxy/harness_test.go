@@ -36,6 +36,7 @@ type harness struct {
 	doc       *fakeDoc
 	clock     *fakeClock
 	log       *recorder
+	lines     *lines
 	quiescing atomic.Bool
 	backends  map[netip.AddrPort]*backend
 
@@ -53,6 +54,7 @@ func newHarness(t *testing.T) *harness {
 		ingress:  &fakeIngress{peers: map[int]identity{}},
 		clock:    &fakeClock{now: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)},
 		log:      &recorder{},
+		lines:    &lines{},
 		backends: map[netip.AddrPort]*backend{},
 	}
 	h.world.start("src", "r1", srcGate)
@@ -76,6 +78,7 @@ func newHarness(t *testing.T) *harness {
 		Doc:       h.doc.Doc,
 		Quiescing: h.quiescing.Load,
 		Now:       h.clock.Now,
+		Logf:      h.lines.logf,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -387,11 +390,15 @@ type fakeAdmitter struct {
 	after     func(links.Admission)
 	perSource int
 	woke      bool
-	held      map[string]int
-	live      map[context.Context]context.CancelCauseFunc
-	granted   int
-	released  int
-	renewals  []int64
+	// stale are the sources whose renewals are refused, as a source with no recent activity
+	// of its own is.
+	stale         map[string]bool
+	staleRenewals int
+	held          map[string]int
+	live          map[context.Context]context.CancelCauseFunc
+	granted       int
+	released      int
+	renewals      []int64
 }
 
 func newFakeAdmitter(w *world, doc *fakeDoc) *fakeAdmitter {
@@ -450,6 +457,10 @@ func (a *fakeAdmitter) Admit(ctx context.Context, req links.AdmitRequest) (links
 func (a *fakeAdmitter) Renew(adm links.Admission, payload int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.stale[adm.Source] {
+		a.staleRenewals++
+		return
+	}
 	a.renewals = append(a.renewals, payload)
 }
 
@@ -675,6 +686,24 @@ func (r *recorder) waitN(t *testing.T, event string, n int) []audit.LinkEntry {
 		return len(found) >= n
 	})
 	return found[:n]
+}
+
+// lines is Logf.
+type lines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *lines) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *lines) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.lines)
 }
 
 // backend is a target machine's server.

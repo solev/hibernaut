@@ -90,6 +90,10 @@ type Config struct {
 	Quiescing func() bool
 	// Now is the clock, so tests do not wait.
 	Now func() time.Time
+	// Logf is told the error behind a refusal or an abort whose link log line can only name
+	// a links error, at most once per step, source and error per links.FoldWindow. Nil is
+	// silent.
+	Logf func(format string, args ...any)
 }
 
 // Proxy is the listener. It implements links.Closer.
@@ -109,6 +113,7 @@ type Proxy struct {
 	active   atomic.Int64
 	rate     limiter
 	renewals renewals
+	diags    diagnostics
 
 	mu    sync.Mutex
 	links map[*link]struct{}
