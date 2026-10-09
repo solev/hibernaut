@@ -495,11 +495,20 @@ func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int 
 	return 0
 }
 
-// linksConfiguredOn reports whether HIBD_LINK_PORT turns links on. Only a port of 0 is off. A
-// value that isn't a number counts as on, so a typo errs toward fencing every pause.
+// linksConfiguredOn reports whether HIBD_LINK_PORT turns links on. Only a port of 0 is off.
+// Every hibd command asks this one question, so none of them can disagree about it.
 func (c config) linksConfiguredOn() bool {
-	port, err := strconv.Atoi(strings.TrimSpace(c.linkPort))
-	return err != nil || port != 0
+	return c.linkPort != 0
+}
+
+// parseLinkPort reads HIBD_LINK_PORT. A value that isn't a port number is an error rather than
+// a guess: a pause that read links as off would raise no fence while the listener served.
+func parseLinkPort(v string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || port < 0 || port > 65535 {
+		return 0, fmt.Errorf("HIBD_LINK_PORT is %q, but it must be a port number, or 0 to leave links off", v)
+	}
+	return port, nil
 }
 
 func (a *App) linkPartsFor(cfg config) linkParts {
@@ -1670,9 +1679,9 @@ type config struct {
 	caCert         string
 	caKey          string
 	proxyPort      string
-	// linkPort is HIBD_LINK_PORT. It defaults to "0", which means links between machines are
+	// linkPort is HIBD_LINK_PORT. It defaults to 0, which means links between machines are
 	// off. It stays 0 until the slice that wires the two listeners together turns it on.
-	linkPort string
+	linkPort int
 	// linkLog is HIBD_LINK_LOG, the link log's path.
 	linkLog string
 }
@@ -1721,6 +1730,10 @@ func loadSettings(getenv func(string) string) (config, error) {
 	if home := getenv("HOME"); home != "" {
 		keys = filepath.Join(home, ".ssh", "authorized_keys")
 	}
+	linkPort, err := parseLinkPort(get("HIBD_LINK_PORT", "0"))
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		e2b: e2b.Config{
 			APIURL:     get("E2B_API_URL", "http://127.0.0.1:3000"),
@@ -1741,7 +1754,7 @@ func loadSettings(getenv func(string) string) (config, error) {
 		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
 		caKey:          get("HIBD_CA_KEY", "/etc/hibernaut/ca.key"),
 		proxyPort:      get("HIBD_PROXY_PORT", "5443"),
-		linkPort:       get("HIBD_LINK_PORT", "0"),
+		linkPort:       linkPort,
 		linkLog:        get("HIBD_LINK_LOG", links.LogPath),
 	}
 	if cfg.vaultPath == "" {

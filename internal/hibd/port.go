@@ -213,7 +213,7 @@ func linksConfig(getenv func(string) string) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	if cfg.linkPort == "0" {
+	if !cfg.linksConfiguredOn() {
 		return config{}, fmt.Errorf("%w on this host", links.ErrLinksOff)
 	}
 	return cfg, nil

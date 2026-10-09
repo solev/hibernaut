@@ -249,6 +249,33 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsTheLinkPortOneWay(t *testing.T) {
+	for _, tc := range []struct {
+		value  string
+		wantOn bool
+		bad    bool
+	}{
+		{"", false, false},
+		{"0", false, false},
+		{"5444", true, false},
+		{" 5444 ", true, false},
+		{"54x4", false, true},
+		{"-1", false, true},
+		{"65536", false, true},
+	} {
+		env := map[string]string{"HIBD_CONFIG": filepath.Join(t.TempDir(), "missing.env"), "E2B_API_KEY": "k", "HIBD_LINK_PORT": tc.value}
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		switch {
+		case tc.bad && (err == nil || !strings.Contains(err.Error(), "HIBD_LINK_PORT")):
+			t.Errorf("HIBD_LINK_PORT=%q: err = %v, want one naming HIBD_LINK_PORT", tc.value, err)
+		case !tc.bad && err != nil:
+			t.Errorf("HIBD_LINK_PORT=%q: %v", tc.value, err)
+		case !tc.bad && cfg.linksConfiguredOn() != tc.wantOn:
+			t.Errorf("HIBD_LINK_PORT=%q: links on = %t, want %t", tc.value, cfg.linksConfiguredOn(), tc.wantOn)
+		}
+	}
+}
+
 func TestMachineCommands(t *testing.T) {
 	e := newEngine(newKey(t))
 	a, out, errOut := newApp(t, e)

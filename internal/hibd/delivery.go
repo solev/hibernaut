@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,8 +74,7 @@ func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	port, _ := strconv.Atoi(cfg.linkPort)
-	naming := port > 0
+	naming := cfg.linksConfiguredOn()
 	list := engine.ListOptions{States: []engine.State{engine.Running}}
 	if naming {
 		// A paused machine keeps its name in the block, so the list takes every state.
