@@ -40,6 +40,7 @@ import (
 	proxypkg "github.com/solev/hibernaut/internal/proxy"
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/slots"
+	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/version"
 )
@@ -960,7 +961,7 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 	}
 	// What might be left over is read before E2B is listed, so nothing made after the listing
 	// can look forgotten.
-	left := a.readLinkLeftovers(cfg)
+	left := a.readLinkLeftovers(cfg, now)
 	var listed map[string]bool
 	err = a.cleanLocked(ctx, listingCtx, cfg, e, now, dryRun, sweep, logf, func(l cleanup.Listing) {
 		listed = make(map[string]bool, len(l.Machines))
@@ -1014,14 +1015,21 @@ func (a *App) cleanLocked(ctx, listingCtx context.Context, cfg config, e engine.
 }
 
 // linkLeftovers is what cleanup may prune once E2B has been listed: the names in the activity
-// clock's directory and, with links on, the machines links.json has entries for.
+// clock's directory and, with links on, the machines links.json has entries for, and the
+// fences there that have been up for links.FenceStale or longer.
 type linkLeftovers struct {
 	activity []string
 	entries  []string
+	stale    []staleFence
 	err      error
 }
 
-func (a *App) readLinkLeftovers(cfg config) linkLeftovers {
+type staleFence struct {
+	id string
+	m  links.Machine
+}
+
+func (a *App) readLinkLeftovers(cfg config, now time.Time) linkLeftovers {
 	var left linkLeftovers
 	var errs []error
 	if names, err := readActivityNames(cfg.stateDir); err != nil {
@@ -1034,10 +1042,14 @@ func (a *App) readLinkLeftovers(cfg config) linkLeftovers {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("reading the link state: %w", err))
 		}
-		for id := range doc.Machines {
+		for id, m := range doc.Machines {
 			left.entries = append(left.entries, id)
+			if m.Stale(now) {
+				left.stale = append(left.stale, staleFence{id: id, m: *m})
+			}
 		}
 		slices.Sort(left.entries)
+		slices.SortFunc(left.stale, func(x, y staleFence) int { return strings.Compare(x.id, y.id) })
 	}
 	left.err = errors.Join(errs...)
 	return left
@@ -1073,10 +1085,27 @@ func readActivityNames(stateDir string) ([]string, error) {
 
 // pruneLinkLeftovers removes the activity files and, with links on, the link entries of machines
 // E2B has forgotten, and the temporary files a crashed activity update left. Removing one an
-// update is still using only loses that update, which errs toward less activity.
+// update is still using only loses that update, which errs toward less activity. With links on
+// it also settles the stale fences. It asks E2B about each machine once.
 func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engine, left linkLeftovers, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
-	forgotten, err := confirmForgotten(ctx, e, left, listed)
+	type got struct {
+		m   engine.Machine
+		err error
+	}
+	asked := map[string]got{}
+	get := func(id string) (engine.Machine, error) {
+		g, ok := asked[id]
+		if !ok {
+			g.m, g.err = e.Get(ctx, id)
+			asked[id] = g
+		}
+		return g.m, g.err
+	}
+	forgotten, err := confirmForgotten(get, left, listed)
 	errs := []error{left.err, err}
+	for _, f := range left.stale {
+		errs = append(errs, a.reconcileFence(ctx, cfg, f, get, dryRun, logf))
+	}
 	if len(left.activity) > 0 {
 		errs = append(errs, pruneActivity(cfg.stateDir, left.activity, forgotten, dryRun, logf))
 	}
@@ -1092,12 +1121,12 @@ func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engin
 	return errors.Join(errs...)
 }
 
-// confirmForgotten asks E2B for each machine in left that the listing missed, and reports the
-// ones it has forgotten. Missing from one listing isn't enough: the listing reads running and
-// paused machines page by page, and a machine E2B pauses meanwhile can fall between them. A
-// machine E2B still has, in any state, is kept, and so is one it can't be asked about, with an
-// error.
-func confirmForgotten(ctx context.Context, e engine.Engine, left linkLeftovers, listed map[string]bool) (map[string]bool, error) {
+// confirmForgotten asks E2B, through get, for each machine in left that the listing missed, and
+// reports the ones it has forgotten. Missing from one listing isn't enough: the listing reads
+// running and paused machines page by page, and a machine E2B pauses meanwhile can fall between
+// them. A machine E2B still has, in any state, is kept, and so is one it can't be asked about,
+// with an error.
+func confirmForgotten(get func(id string) (engine.Machine, error), left linkLeftovers, listed map[string]bool) (map[string]bool, error) {
 	entries, clocks := map[string]bool{}, map[string]bool{}
 	var candidates []string
 	for _, id := range left.entries {
@@ -1117,7 +1146,7 @@ func confirmForgotten(ctx context.Context, e engine.Engine, left linkLeftovers, 
 	forgotten := map[string]bool{}
 	var errs []error
 	for _, id := range candidates {
-		_, err := e.Get(ctx, id)
+		_, err := get(id)
 		switch {
 		case err == nil:
 		case errors.Is(err, engine.ErrNotFound):
@@ -1134,6 +1163,66 @@ func confirmForgotten(ctx context.Context, e engine.Engine, left linkLeftovers, 
 		}
 	}
 	return forgotten, errors.Join(errs...)
+}
+
+// reconcileFence settles a fence that has been up for links.FenceStale or longer. Age alone
+// never clears one: a save may run for ten minutes. A fence whose owner is still running is only
+// logged. One whose owner is gone is cleared once E2B reports the machine's state, whatever it
+// is, by taking the fence over and releasing it, so the store clears it as it clears its own. A
+// machine E2B has forgotten is left to the prune, which drops its whole entry.
+func (a *App) reconcileFence(ctx context.Context, cfg config, f staleFence, get func(id string) (engine.Machine, error), dryRun bool, logf func(format string, args ...any)) error {
+	fence := *f.m.Fence
+	since, why := fence.Since.UTC().Format(time.RFC3339), termsafe.Line(fence.Why)
+	state, err := f.m.Fenced(func(owner string) (bool, error) { return statefile.Held(cfg.stateDir, owner) })
+	switch {
+	case err != nil:
+		return fmt.Errorf("kept the fence on %s: couldn't check whether its owner is still running: %w", f.id, err)
+	case state == links.FencedLive:
+		logf("the fence on %s has been up since %s (%s), and the operation that raised it is still running", f.id, since, why)
+		return nil
+	case state != links.FencedOrphaned:
+		return nil
+	}
+	m, err := get(f.id)
+	switch {
+	case errors.Is(err, engine.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("kept the fence on %s: couldn't read its state from E2B: %w", f.id, err)
+	}
+	detail := fmt.Sprintf("left since %s by %s, whose operation is gone: E2B reports it %s", since, why, m.State)
+	if dryRun {
+		logf("would clear the fence on %s, %s", f.id, detail)
+		return nil
+	}
+	store := a.linkPartsFor(cfg).store
+	fctx, cancel := context.WithTimeout(ctx, fenceClearTimeout)
+	release, err := store.Fence(fctx, f.id, "clearing a fence its owner left")
+	timedOut := errors.Is(fctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancel()
+	if err != nil {
+		if release != nil {
+			release()
+		}
+		if timedOut {
+			logf("left the fence on %s: an operation is fencing it now", f.id)
+			return nil
+		}
+		return fmt.Errorf("kept the fence on %s: couldn't take it over to clear it: %w", f.id, err)
+	}
+	release()
+	doc, err := store.Read()
+	if err != nil {
+		return fmt.Errorf("cleared the fence on %s, but couldn't read the link state back: %w", f.id, err)
+	}
+	if after := doc.Machines[f.id]; after != nil && after.Fence != nil {
+		if after.Fence.Since.Equal(fence.Since) {
+			return fmt.Errorf("the fence on %s is still up after clearing it", f.id)
+		}
+		return nil
+	}
+	logf("cleared the fence on %s, %s", f.id, detail)
+	return nil
 }
 
 // dropLinkEntries drops the link entries of the machines in gone that still have one. Their
@@ -1217,6 +1306,9 @@ func pruneActivity(stateDir string, names []string, forgotten map[string]bool, d
 const (
 	sweepTimeout = 30 * time.Second
 	trimTimeout  = 2 * time.Minute
+	// fenceClearTimeout bounds cleanup's wait for a machine's fence lock, so a live operation
+	// that took it meanwhile, such as a ten-minute save, makes cleanup give up, not wait.
+	fenceClearTimeout = 5 * time.Second
 )
 
 var errCleanupLocked = errors.New("another cleanup is running")

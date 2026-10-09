@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -39,7 +40,8 @@ type fakeLinks struct {
 	addr      netip.Addr
 	addrErr   error
 	dropErr   error
-	onUpdate  func()
+	// onLock runs as Update or Fence starts, where the real store takes a lock.
+	onLock func()
 }
 
 func (f *fakeLinks) parts() linkParts {
@@ -94,8 +96,8 @@ func (f *fakeLinks) Read() (links.Doc, error) {
 }
 
 func (f *fakeLinks) Update(_ context.Context, update func(*links.Doc) error) error {
-	if f.onUpdate != nil {
-		f.onUpdate()
+	if f.onLock != nil {
+		f.onLock()
 	}
 	f.mu.Lock()
 	if f.updateErr != nil {
@@ -116,6 +118,9 @@ func (f *fakeLinks) Update(_ context.Context, update func(*links.Doc) error) err
 }
 
 func (f *fakeLinks) Fence(_ context.Context, id, why string) (func(), error) {
+	if f.onLock != nil {
+		f.onLock()
+	}
 	f.event("fence %s %s", id, why)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -581,6 +586,30 @@ func TestLinksOffKeepsM11Pauses(t *testing.T) {
 	}
 }
 
+// cleanupApp is an App whose cleanup runs for real over fe, with f as its links pieces and links
+// on when on is set. f fails the test if it is locked while the cleanup lock is held.
+func cleanupApp(t *testing.T, fe *fake.Engine, f *fakeLinks, on bool) (*App, config) {
+	t.Helper()
+	a, _, _ := newApp(t, fe)
+	a.Clean = nil
+	a.Query = func(context.Context, string) ([][]string, error) { return nil, nil }
+	withLinks(a, f, on)
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.e2bStorage, cfg.trimScope = t.TempDir(), "off"
+	f.onLock = func() {
+		unlock, ok, err := tryLock(cfg.stateDir, "cleanup.lock", "cleanup")
+		if err != nil || !ok {
+			t.Errorf("link state locked under the cleanup lock: %v", err)
+			return
+		}
+		unlock()
+	}
+	return a, cfg
+}
+
 // getEngine is a fake engine whose Get finds machines its listing misses, as a machine E2B pauses
 // while cleanup lists can be, and fails for others.
 type getEngine struct {
@@ -639,9 +668,6 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 				unlisted: map[string]engine.Machine{"moving1": {ID: "moving1", State: engine.Paused}},
 				getErr:   map[string]error{"flaky1": unavailable},
 			}
-			a, _, _ := newApp(t, fe)
-			a.Clean = nil
-			a.Query = func(context.Context, string) ([][]string, error) { return nil, nil }
 			f := &fakeLinks{doc: links.Doc{
 				Machines: map[string]*links.Machine{
 					"live1":   {Addr: netip.MustParseAddr("10.11.0.2"), Ports: []int{80}},
@@ -653,20 +679,7 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 				},
 				Next: netip.MustParseAddr("10.11.0.7"),
 			}}
-			withLinks(a, f, tc.on)
-			cfg, err := loadConfig(a.Getenv)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.e2bStorage, cfg.trimScope = t.TempDir(), "off"
-			f.onUpdate = func() {
-				unlock, ok, err := tryLock(cfg.stateDir, "cleanup.lock", "cleanup")
-				if err != nil || !ok {
-					t.Errorf("link state updated under the cleanup lock: %v", err)
-					return
-				}
-				unlock()
-			}
+			a, cfg := cleanupApp(t, fe, f, tc.on)
 			activity := filepath.Join(cfg.stateDir, filepath.FromSlash(links.ActivityDir))
 			if err := os.MkdirAll(activity, 0o700); err != nil {
 				t.Fatal(err)
@@ -682,7 +695,7 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 				t.Fatal(err)
 			}
 			var logs []string
-			err = a.clean(t.Context(), t.Context(), cfg, e, time.Now(), tc.dryRun, false, func(format string, args ...any) {
+			err := a.clean(t.Context(), t.Context(), cfg, e, time.Now(), tc.dryRun, false, func(format string, args ...any) {
 				logs = append(logs, fmt.Sprintf(format, args...))
 			})
 			if err == nil || !errors.Is(err, unavailable) || !strings.Contains(err.Error(), tc.wantErr) {
@@ -742,6 +755,144 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 				if strings.Contains(text, kept) {
 					t.Errorf("logs mention %s, which cleanup keeps:\n%s", kept, text)
 				}
+			}
+		})
+	}
+}
+
+func TestCleanupSettlesStaleFences(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	stale, young := now.Add(-links.FenceStale-time.Minute), now.Add(-links.FenceStale/2)
+	unavailable := errors.New("e2b: 503 service unavailable")
+	for _, tc := range []struct {
+		name         string
+		id           string
+		since        time.Time
+		ownerLive    bool
+		ownerBroken  bool
+		getErr       error
+		off, dryRun  bool
+		wantFence    bool
+		wantEntry    bool
+		wantGets     []string
+		wantEvents   []string
+		wantLog      string
+		wantErr      string
+		wantQuietLog bool
+	}{
+		{
+			name: "live owner", id: "paused1", since: stale, ownerLive: true,
+			wantFence: true, wantEntry: true,
+			wantLog: "the fence on paused1 has been up since 2026-10-09T11:57:00Z (save), and the operation that raised it is still running",
+		},
+		{
+			name: "orphaned, E2B has it paused", id: "paused1", since: stale,
+			wantEntry: true, wantGets: []string{"paused1"},
+			wantEvents: []string{"fence paused1 clearing a fence its owner left", "release paused1"},
+			wantLog:    "cleared the fence on paused1, left since 2026-10-09T11:57:00Z by save, whose operation is gone: E2B reports it paused",
+		},
+		{
+			name: "orphaned, E2B can't say", id: "paused1", since: stale, getErr: unavailable,
+			wantFence: true, wantEntry: true, wantGets: []string{"paused1"},
+			wantErr: "kept the fence on paused1: couldn't read its state from E2B: " + unavailable.Error(),
+		},
+		{
+			name: "owner can't be checked", id: "paused1", since: stale, ownerBroken: true,
+			wantFence: true, wantEntry: true,
+			wantErr: "kept the fence on paused1: couldn't check whether its owner is still running",
+		},
+		{
+			name: "orphaned but young", id: "paused1", since: young,
+			wantFence: true, wantEntry: true, wantQuietLog: true,
+		},
+		{
+			name: "dry run", id: "paused1", since: stale, dryRun: true,
+			wantFence: true, wantEntry: true, wantGets: []string{"paused1"},
+			wantLog: "would clear the fence on paused1, left since 2026-10-09T11:57:00Z by save, whose operation is gone: E2B reports it paused",
+		},
+		{
+			name: "orphaned on a forgotten machine", id: "gone1", since: stale,
+			wantGets: []string{"gone1"},
+			wantLog:  "dropped the link entry of gone1, which E2B has forgotten",
+		},
+		{
+			name: "links off", id: "paused1", since: stale, off: true,
+			wantFence: true, wantEntry: true, wantQuietLog: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := fake.New()
+			fe.Add(engine.Machine{ID: "paused1", State: engine.Paused})
+			e := &getEngine{Engine: fe, getErr: map[string]error{}}
+			if tc.getErr != nil {
+				e.getErr[tc.id] = tc.getErr
+			}
+			owner := fmt.Sprintf(links.FenceName, tc.id)
+			f := &fakeLinks{doc: links.Doc{Machines: map[string]*links.Machine{
+				tc.id: {
+					Addr:  netip.MustParseAddr("10.11.0.2"),
+					Ports: []int{80},
+					Fence: &links.Fence{Since: tc.since, Why: "save", Owner: owner},
+				},
+			}}}
+			a, cfg := cleanupApp(t, fe, f, !tc.off)
+			if tc.ownerLive {
+				unlock, ok, err := tryLock(cfg.stateDir, owner, "fence")
+				if err != nil || !ok {
+					t.Fatalf("holding the fence's owner lock = %t, %v", ok, err)
+				}
+				t.Cleanup(unlock)
+			}
+			if tc.ownerBroken {
+				if err := os.Mkdir(filepath.Join(cfg.stateDir, owner), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := cloneDoc(f.doc)
+			var logs []string
+			err := a.clean(t.Context(), t.Context(), cfg, e, now, tc.dryRun, false, func(format string, args ...any) {
+				logs = append(logs, fmt.Sprintf(format, args...))
+			})
+			text := strings.Join(logs, "\n")
+
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("cleanup = %v; logs:\n%s", err, text)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("cleanup = %v, want it to say %q", err, tc.wantErr)
+			case tc.getErr != nil && !errors.Is(err, tc.getErr):
+				t.Errorf("cleanup = %v, want it to wrap %v", err, tc.getErr)
+			}
+			if !slices.Equal(e.gets, tc.wantGets) {
+				t.Errorf("Get asked about %q, want %q", e.gets, tc.wantGets)
+			}
+			var fenceEvents []string
+			for _, ev := range f.log() {
+				if strings.HasPrefix(ev, "fence ") || strings.HasPrefix(ev, "release ") {
+					fenceEvents = append(fenceEvents, ev)
+				}
+			}
+			if !slices.Equal(fenceEvents, tc.wantEvents) {
+				t.Errorf("fence events = %q, want %q", fenceEvents, tc.wantEvents)
+			}
+			m, ok := f.entry(tc.id)
+			if ok != tc.wantEntry || (m.Fence != nil) != tc.wantFence {
+				t.Errorf("entry = %+v (there: %t), want there %t, fenced %t", m, ok, tc.wantEntry, tc.wantFence)
+			}
+			if ok && (!slices.Equal(m.Ports, []int{80}) || m.Addr != netip.MustParseAddr("10.11.0.2")) {
+				t.Errorf("cleanup changed more than the fence: %+v", m)
+			}
+			if tc.wantFence && !reflect.DeepEqual(f.doc, before) {
+				t.Errorf("link state = %+v, want it as it was: %+v", f.doc, before)
+			}
+			if tc.off && len(f.log()) != 0 {
+				t.Errorf("links off reached the link state: %q", f.log())
+			}
+			if tc.wantLog != "" && !strings.Contains(text, tc.wantLog) {
+				t.Errorf("logs lack %q:\n%s", tc.wantLog, text)
+			}
+			if tc.wantQuietLog && strings.Contains(text, tc.id) {
+				t.Errorf("logs mention %s:\n%s", tc.id, text)
 			}
 		})
 	}
