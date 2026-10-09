@@ -7,6 +7,12 @@ package linkctl
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/solev/hibernaut/internal/links"
@@ -67,17 +73,101 @@ func (c *Client) Path() string { return c.path }
 // has returned without an error: it is the one caller that never downgrades a failure to a
 // warning, because an unpublished port that is still carrying bytes is the whole of the risk.
 func (c *Client) Revoke(ctx context.Context, id string, ports []int) (int, error) {
-	return 0, links.ErrLinksOff
+	if id == "" {
+		return 0, errors.New("linkctl: revoke needs a machine ID")
+	}
+	if len(ports) == 0 {
+		return 0, errors.New("linkctl: revoke needs at least one port")
+	}
+	resp, err := c.call(ctx, Request{Op: "revoke", ID: id, Ports: ports})
+	return resp.Closed, err
 }
 
 // Close aborts every link with id at either end. Callers pause or remove the machine only after
 // it returns, or after the Guard fallback has confirmed the kernel will pass nothing more.
 func (c *Client) Close(ctx context.Context, id string) (int, error) {
-	return 0, links.ErrLinksOff
+	if id == "" {
+		return 0, errors.New("linkctl: close needs a machine ID")
+	}
+	resp, err := c.call(ctx, Request{Op: "close", ID: id})
+	return resp.Closed, err
 }
 
 // Stat reports the open links, per published port and per machine. hib port ls uses the first
 // to show why a machine is awake while it is still happening.
 func (c *Client) Stat(ctx context.Context) (links.Stats, error) {
-	return links.Stats{}, links.ErrLinksOff
+	resp, err := c.call(ctx, Request{Op: "stat"})
+	if err != nil {
+		return links.Stats{}, err
+	}
+	stats := links.Stats{Ports: map[links.Open]int{}, Machines: map[string]int{}}
+	for _, p := range resp.Ports {
+		stats.Ports[links.Open{Target: p.Target, Port: p.Port}] += p.Open
+	}
+	for id, n := range resp.Machines {
+		stats.Machines[id] = n
+	}
+	return stats, nil
+}
+
+// call sends one request on a connection of its own and reads the one reply, all within the
+// client's timeout. A reply that carries err comes back as an error, alongside whatever else it
+// carried.
+func (c *Client) call(ctx context.Context, req Request) (Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", c.path)
+	if err != nil {
+		return Response{}, fmt.Errorf("linkctl: %s: %w", req.Op, err)
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return Response{}, c.failed(ctx, req, err)
+	}
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return Response{}, c.failed(ctx, req, err)
+	}
+	if resp.Err != "" {
+		return resp, remote(resp.Err)
+	}
+	return resp, nil
+}
+
+func (c *Client) failed(ctx context.Context, req Request, err error) error {
+	switch {
+	case ctx.Err() != nil:
+		err = ctx.Err()
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		err = context.DeadlineExceeded
+	}
+	return fmt.Errorf("linkctl: %s on %s: %w", req.Op, c.path, err)
+}
+
+// shared are the errors a reply's err can name, so a caller can still tell them apart with
+// errors.Is once they have crossed the socket.
+var shared = []error{
+	links.ErrLinksOff, links.ErrNoCloser, links.ErrNotPublished, links.ErrReservedPort,
+	links.ErrUnknownAddress, links.ErrFenced, links.ErrQuiescing, links.ErrRevoked,
+	links.ErrRunEnded, links.ErrNotRunning, links.ErrGuardDown, links.ErrNotFound,
+	links.ErrStateUnreadable, links.ErrTokensSpent,
+}
+
+func remote(text string) error {
+	for _, err := range shared {
+		if text == err.Error() {
+			return fmt.Errorf("linkctl: %w", err)
+		}
+		if prefix, ok := strings.CutSuffix(text, ": "+err.Error()); ok {
+			return fmt.Errorf("linkctl: %s: %w", prefix, err)
+		}
+	}
+	return fmt.Errorf("linkctl: %s", text)
 }
