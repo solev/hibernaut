@@ -16,7 +16,8 @@ func TestHibdLinksNoTerminalUI(t *testing.T) {
 		t.Fatal("go list found no packages")
 	}
 	for _, dep := range deps {
-		if strings.HasPrefix(dep, "charm.land/") || strings.HasPrefix(dep, "github.com/charmbracelet/") {
+		if strings.HasPrefix(dep, "charm.land/") || strings.HasPrefix(dep, "github.com/charmbracelet/") ||
+			dep == "github.com/solev/hibernaut/internal/bot" {
 			t.Errorf("hibd links %s", dep)
 		}
 	}

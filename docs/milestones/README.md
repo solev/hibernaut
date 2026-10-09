@@ -3,14 +3,15 @@
 How we build Hibernaut v1, one milestone at a time. The design and the reasons behind it are in
 the [spec](../spec.md): §7 is the plan, §8 is how we test.
 
-All milestones are done: [M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md),
+v1's milestones are done: [M0 Foundations](m0-foundations.md), [M1 Machines](m1-machines.md),
 [M2 Idle and wake](m2-idle-and-wake.md), [M3 Vault, egress proxy, leak scan](m3-vault-and-proxy.md),
 [M4 GitHub](m4-github.md), [M5 AI tools](m5-ai-tools.md),
 [M6 Golden images and fork](m6-images-and-fork.md),
 [M7 GitHub device flow](m7-github-device-flow.md), [M8 Machine sizes](m8-machine-sizes.md),
 [M9 Snapshot compaction](m9-snapshot-compaction.md) and
 [M10 CLI friendliness](m10-cli-friendliness.md). What's left is under **Later**. What comes after
-v1 is in [the goals](../goals.md).
+v1 is in [the goals](../goals.md), and its milestones start at
+[M11 Bot faces](m11-bot-faces.md), which is done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -25,6 +26,7 @@ v1 is in [the goals](../goals.md).
 | M8 | [Machine sizes](m8-machine-sizes.md) | done | `TestSizes` |
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | done | `TestTrim`, `TestPauseCycles` (sentinels) |
 | M10 | [CLI friendliness](m10-cli-friendliness.md) | done | none new (unit tests in `cmd/hib`) |
+| M11 | [Bot faces](m11-bot-faces.md) | done | none new (unit tests in `internal/bot` and `cmd/hib`) |
 
 M8, M9 and M10 came last. M8 and M9 needed only M2, and M10 nothing.
 
