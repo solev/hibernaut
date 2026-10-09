@@ -150,6 +150,12 @@ The proxy reads `HIBD_LINK_PORT` from `/etc/hibernaut/hibd.env` when it starts, 
 the proxy's next restart, which `vm/setup-host.sh` does. A pause in between is still bounded by the
 kernel guard, as E2B's own pauses are.
 
+**`HIBD_LINK_PORT` is a port number or nothing.** Unset, empty and `0` all mean off, and a number
+from 1 to 65535 means on. Anything else fails every `hibd` command with an error that names
+`HIBD_LINK_PORT` and the value, rather than being read as off by one command and as on by another.
+The readings can't be allowed to differ: a pause that read links as off would raise no fence while
+the listener served.
+
 ### Names and virtual addresses
 
 - A machine gets a **virtual address** from `198.18.0.0/15` the first time one of its ports is
@@ -200,8 +206,8 @@ The document is [`links.Doc`](../../internal/links/state.go), and these are the 
   endpoints, not only the target. It is persisted rather than kept in memory because the pausing
   process is not the one serving links. The owner is a lock file the kernel releases when the
   pausing process dies, so a hibd killed mid-pause is told apart from a `save` that is legitimately
-  ten minutes long. An orphaned fence is still refused until the machine's state has been
-  reconciled.
+  ten minutes long. An orphaned fence is still refused until `hibd cleanup` has reconciled it with
+  the machine's real state (*Waking, keeping awake and pausing*, item 3).
 - **`omitzero`, not `omitempty`.** An allocated empty `Ports` means "this machine publishes
   nothing", and `omitempty` cannot tell that from a field that was never written.
 
@@ -297,22 +303,23 @@ ls` and the audit all order the same way, so output is byte-stable between runs.
 
 **The activity clock is not in `links.json`.** It is written far too often to wait on `links.lock`.
 Each machine that has non-link activity gets an empty file
-`$HIBD_STATE_DIR/links/activity/<sandbox-id>` whose **mtime is the whole value**: no shared lock
-and no parsing, only an `flock` on the file itself and one `futimens`.
+`$HIBD_STATE_DIR/links/activity/<sandbox-id>` whose **mtime is the whole value**: no shared lock and
+no parsing, only an `flock` on the file itself and one `futimes`.
 
 **The mtime only moves forward.** Callers pass their own times, and not always the newest:
 `busy.Config.Activity(id, at)` reports when it observed and the SSH heartbeat when it ticked, from
 different processes, so two touches can arrive out of order. `Touch` opens the file through the
 state root with `O_NOFOLLOW`, takes `LOCK_EX` on it, reads the mtime with `fstat` and calls
-`futimens` only when `t` is later. The lock is per machine and held for those two calls, and
-`Active` only stats. Setting an explicit time needs the file's owner or root, which holds because
-the file is the state directory owner's. **A first touch records `t`, not the time the file was
-made.** Creating the file would set its mtime to now and turn a late observation into fresh
-activity. So when there is no file, `Touch` creates a temporary one in the same directory, sets its
-mtime to `t`, gives it to the state directory's owner when it runs as root and publishes it with
-`link`, which never replaces a name that exists. If another touch published first, the link fails
-with `EEXIST` and `Touch` takes the locked path above. Either way it removes the temporary file,
-whose name starts with a dot so that no machine's ID can match it.
+`futimes` only when `t` is later. `futimes` keeps microseconds and rounds up, so the file never
+records a time earlier than `t`. The lock is per machine and held for those two calls, and `Active`
+only stats. Setting an explicit time needs the file's owner or root, which holds because the file is
+the state directory owner's. **A first touch records `t`, not the time the file was made.** Creating
+the file would set its mtime to now and turn a late observation into fresh activity. So when there
+is no file, `Touch` creates a temporary one in the same directory, sets its mtime to `t`, gives it
+to the state directory's owner when it runs as root and publishes it with `link`, which never
+replaces a name that exists. If another touch published first, the link fails with `EEXIST` and
+`Touch` takes the locked path above. Either way it removes the temporary file, whose name starts
+with a dot so that no machine's ID can match it.
 
 The clock is [`links.Clock`](../../internal/links/links.go) and the production one is
 `links.NewClock(stateDir)`: `Active(id)` returns a machine's last non-link activity, the zero time
@@ -417,14 +424,17 @@ links. It does nothing to a connection that is already open or to one sitting in
   *What was rejected*).
 
 **Delivery is not promised** (D10). `pushSetup` returns without having reached every machine:
-`internal/hibd/delivery.go:50-82` skips the whole push while the host is quiescing, gives the batch
+`internal/hibd/delivery.go:52-75` skips the whole push while the host is quiescing, gives the batch
 30 s and only warns on failure. `port add` therefore **commits the file, pushes and warns if the
 push failed**, and the daemon's next pass retries. The message never claims the name resolves yet:
 
 ```
 api:8080 is published to your machines as api.hib:8080
-warning: couldn't tell every machine about the change: <reason>. hibd will retry
+warning: published ports saved, but updating web failed: <reason>
 ```
+
+The warning is `pushSetup`'s, shared with `secret add` and `connect github`: it names what was
+saved, the step that failed and why.
 
 A machine that hasn't got the block yet can still reach the port by address. Only the name is late.
 
@@ -454,16 +464,17 @@ api:6379 is no longer reachable from your machines
 $ hib port ls
 NAME  HOST     IP          PORTS       OPEN
 api   api.hib  198.18.0.1  5432,8080   2
-web   web.hib  198.18.0.2  3000        -
+web   web.hib  198.18.0.2  3000        0
 ```
 
 - `hib port ls` with nothing published prints **the header row and nothing else**, the way
   `hib secret ls` does: `cmd/hib/secret.go:54` calls `hibapi.PrintSecrets` unconditionally and
   `internal/hibapi/table.go:134` prints the header before the loop. It then adds
   `no published ports. hib port add NAME PORT publishes one` on stderr and exits 0.
-- **`OPEN` is how many links are open right now**, from the proxy's `stat` call, and `-` when the
-  proxy didn't answer. It is what answers "why is this machine awake?" while it is happening,
-  which an audit line written at close cannot (D8).
+- **`OPEN` is how many links are open right now**, from the proxy's `stat` call, and `-` on every
+  row when the proxy didn't answer. `--json` then has `open` null on every port, as it always does
+  in the replies to `port add` and `port rm`, which don't ask. It is what answers "why is this
+  machine awake?" while it is happening, which an audit line written at close cannot (D8).
 - Lists join with `,` and no space, like `hib secret ls`'s sites. Several names in a sentence use
   `cmd/hib/main.go`'s `and` joiner.
 - Every value printed goes through `safe()` (`termsafe.Line`), like every other table.
@@ -476,7 +487,7 @@ web   web.hib  198.18.0.2  3000        -
   `--links` is gated on `FeaturePorts`, with the same too-old message.
 - **Warnings and the fork hint reach the CLI as text, not as structure.** `hibd` writes them to
   **stderr**, `hib` passes stderr through and `--json` leaves them out of the document entirely.
-  This is what `hibd`'s `warn` already does (`internal/hibd/delivery.go:54-58`). No new field
+  This is what `hibd`'s `warn` already does (`internal/hibd/delivery.go:56-60`). No new field
   carries advice.
 
 **Two places meet [M11](m11-bot-faces.md)**, which landed first (`fc1f7b5`):
@@ -501,17 +512,18 @@ takes no argument and needs nothing.
 ### Delivering /etc/hosts
 
 The hosts block rides `setupDelivery`, the same path that already writes the env block, git's
-identity and Codex's login file: on create, after a resume and whenever the content changes.
-**It is best-effort, and the design doesn't pretend otherwise.** `pushSetup` skips every machine
-while the host is quiescing, gives the batch 30 s and only warns when a machine doesn't take it
-(`internal/hibd/delivery.go:50-82`). The daemon's next pass, every 15 s by default, retries. So: a
-port is published the moment `links.json` is written, and the **name** follows when delivery
-succeeds. Nothing in the design waits on a name resolving.
+identity and Codex's login file: on create, after a resume and whenever the content changes. **It is
+best-effort, and the design doesn't pretend otherwise.** `pushSetup` skips every machine while the
+host is quiescing, gives the batch 30 s and only warns when a machine doesn't take it
+(`internal/hibd/delivery.go:52-75`). The daemon's next pass, every 15 s by default, retries.
+`hib port add` and `hib port rm` push at once rather than waiting for it. So: a port is published
+the moment `links.json` is written, and the **name** follows when delivery succeeds. Nothing in the
+design waits on a name resolving.
 
 **The messages say only what is true.** `hib port add` reports that the port is *published*, not
-that the machine is *reachable*, and a delivery failure says `hibd will retry` rather than naming a
-time. `delivery.go:50-82` guarantees neither reachability nor a deadline (it skips quiescing
-machines entirely and only warns on failure), so neither is promised.
+that the machine is *reachable*, and a delivery failure names the machine that missed it and the
+reason without naming a time. `delivery.go:52-75` guarantees neither reachability nor a deadline (it
+skips quiescing machines entirely and only warns on failure), so neither is promised.
 
 ```
 # BEGIN hibernaut machines: hibd manages this block and replaces edits
@@ -1166,6 +1178,20 @@ for any of these. So:
     a live owner, `FencedOrphaned` when the owner is gone or cannot be checked, and admission
     refuses in **both** cases: an orphaned fence is cleared only after the machine's real state
     has been reconciled, never by simply being ignored.
+  - **`hibd cleanup` does the reconciling.** It looks only at fences that have been up for
+    `links.FenceStale` (2 min) or longer. A live owner gets a log line and keeps its fence, and an
+    owner that can't be checked keeps it too, with an error. For an orphaned fence cleanup asks E2B
+    about the machine. One E2B has forgotten is left to the prune, which drops its whole entry, and
+    one E2B can't be asked about keeps its fence, with an error. Otherwise cleanup takes the fence
+    over through `Store.Fence`, waiting at most 5 s, releases it, which clears it the way a pause
+    clears its own, and reads `links.json` back to confirm. A take-over that times out means an
+    operation is fencing the machine right now, so the fence is left to it. `cleanup -n` only says
+    what it would clear.
+  - **A machine still pausing reads as running.** E2B reports only `running` and `paused`
+    (`internal/engine/e2b/e2bapi/e2bapi.gen.go:165-166`), so cleanup can't tell a machine whose
+    pause is still in flight from one that never paused, and it clears the fence either way. That is
+    safe because a fence only holds off new links: when the run ends, the run watcher ends any link
+    admitted meanwhile and the Keeper retires the run's gate.
   - `PausedByHand` is a different thing and stays: the fence is "a pause is happening now", and
     `PausedByHand` is "a person wants this machine to stay down". `save` and `fork` keep
     `PausedByHand` across their internal resume. The fence goes up and comes down within it.
@@ -1177,13 +1203,15 @@ for any of these. So:
   fails, the pause fails, says so and lifts the fence.
 - `hib port rm` keeps its own stricter rule: ack or error, never "warn and continue". Unpublishing
   that silently left links open would be a security failure, not an inconvenience.
-- **Close deadlines, and what "closed" means.** On `close` the proxy shuts down the write half of
-  each leg, waits `LinkCloseGrace` (5 s) for the other end to notice, then closes both. A leg
-  that doesn't drain is aborted. The handshake is frozen in
-  [`links.Closer`](../../internal/links/links.go): the proxy answers a `close` or `revoke`
-  **only after every socket in its scope has been closed or aborted**, and the reply carries how
-  many that was. "Acknowledged" means "there is no socket left", not "I have begun". Anything
-  weaker and the caller above would be pausing past live sockets while believing it wasn't.
+- **Close deadlines, and what "closed" means.** On `close` the proxy aborts every link in its scope.
+  Every link socket was made with `SO_LINGER 0`, so closing it discards what is queued and sends a
+  reset. The handshake is frozen in [`links.Closer`](../../internal/links/links.go): the proxy
+  answers a `close` or `revoke` **only after every socket in its scope has been closed**, and the
+  reply carries how many links that was. "Acknowledged" means "there is no socket left", not "I have
+  begun". Anything weaker and the caller above would be pausing past live sockets while believing it
+  wasn't. The admitter waits `LinkCloseGrace` (5 s) for the listener's answer and then drops the
+  machine's gates itself, and answers with the links it had admitted. Half-close and the bounded
+  drain (`links.DrainTimeout`, 2 s) belong only to a link that ends on its own.
 
 **4. Link traffic alone cannot keep anything awake.** This is the one that costs money:
 `vm/idle-deallocate/idle-deallocate:34-41` treats **any** running machine as activity and touches
@@ -1236,10 +1264,13 @@ waking, a retrying client in that cycle cannot wake them again. The bound is `Li
 longest idle timeout in the ring, after which the ring is wholly paused and stays paused. A machine
 that is awake only because of links is therefore bounded, and the host deallocates.
 
-**Renewal is counted from the last payload byte, not from the last close.** The proxy renews at most
-once per `LinkRenew` (30 s) and only when payload has moved since the last renewal. A link that is
-open but silent renews nothing, so a parked connection holds nothing. Closing the last link changes
-nothing by itself: the clock has been running since the last byte.
+**Renewal is counted from the last payload byte, not from the last close.** The proxy asks for a
+renewal at most once per `LinkRenew` (30 s) for each source and target pair, and only when payload
+has moved since that pair's last one. The admitter renews a target at most once per `LinkRenew`,
+whichever source asks, and refuses a stale source without spending that window, so a stale source
+moving bytes can't starve a fresh one's renewal of the same target. A link that is open but silent
+renews nothing, so a parked connection holds nothing. Closing the last link changes nothing by
+itself: the clock has been running since the last byte.
 
 **A machine paused by hand stays paused.** `hib pause` sets `PausedByHand` for that sandbox ID in
 `links.json`, and `Admit` refuses while it is set. It is cleared only when a **person** starts the
@@ -1280,9 +1311,10 @@ quiescing works today, both of which M12 has to fix for this to hold:
 | Admission timeout | 2 s | `links.AdmitTimeout` |
 | Dial timeout | 10 s | `links.DialTimeout` |
 | Wake timeout | 60 s | `links.WakeTimeout` |
-| Renewal, while payload moves | at most 1 per 30 s | `links.LinkRenew` |
+| Renewal, while payload moves | at most 1 per 30 s per target, asked at most once per 30 s per source and target pair | `links.LinkRenew` |
 | Source activity grace | 5 min | `links.LinkGrace` |
-| Close grace on pause | 5 s | `links.LinkCloseGrace` |
+| Admitter's wait for a close before it drops the gates | 5 s | `links.LinkCloseGrace` |
+| Drain when a link ends on its own | 2 s | `links.DrainTimeout` |
 | Guard element timeout | 1 s | `links.GuardTTL` |
 | Keeper cycle (gate extend) | 250 ms | `links.GuardKeep` |
 | Guard chain priority | -150 | `links.GuardPriority` |
@@ -1345,13 +1377,22 @@ listener whose log could not be opened still carries traffic: losing a log line 
 a link. The file is written here rather than restated: an earlier draft of this document had the
 struct inline and it had already drifted from the code.
 
-Two fields are worth saying twice, because they are decisions and not shapes:
+Some fields are worth saying twice, because they are decisions and not shapes:
 
 - `Reason` is always the `Error()` of one of the errors in
   [`internal/links/errors.go`](../../internal/links/errors.go), never a string written at the
   call site. That is why those strings read as log values rather than as sentences.
 - `Event` is `"open"`, `"close"` or `"refused"`, and the first two are both written for every
   link.
+- `From` and `To` hold sandbox IDs when the listener writes them, because it knows machines only by
+  ID. `hibd log --links` puts the names in as it reads the log, and keeps the ID for a machine that
+  has none.
+
+**The error behind a refusal goes to the proxy's journal.** A link log line can only carry one of
+`internal/links`'s errors, so the listener hands the real one, a failed dial or a run it couldn't
+read, to `linkproxy.Config.Logf`. It writes at most one line per step, source and error in a
+`links.FoldWindow`, and at most 64 different lines in a window, so a retry loop or a scan of the
+port can't flood the journal. `hibd proxy` wires it the way it wires the egress proxy's `Logf`.
 
 Why it is shaped that way:
 
@@ -1384,13 +1425,14 @@ Why it is shaped that way:
 | `hib port rm`, close unconfirmed | `api:8080 is unpublished, but hibd proxy didn't confirm it closed open links: check hib port ls` |
 | `hib port rm` an unpublished port | `api:8080 wasn't published` |
 | `hib port add` past the cap | `api already publishes 16 ports, the most there is room for` |
+| `hib port add` past the cap in one batch | `that would make 18 ports on api, and 16 is the most there is room for` |
 | `hib port add` past the machine cap | `256 machines already publish ports, the most there is room for` |
 | `hib port add` out of addresses | `no virtual addresses left. addresses are never reused, so this needs a new host` |
 | a bad port number | `8080000 isn't a port. Ports are 1 to 65535` |
 | `hib port ls`, nothing published | `no published ports. hib port add NAME PORT publishes one` |
 | state is corrupt | `hibd can't read its published ports: %v. No machine can reach another until it's fixed` |
 | state is a newer version | `hibd can't read its published ports: they were written by a newer hibd. Upgrade it` |
-| delivery failed | `warning: couldn't tell every machine about the change: %v. hibd will retry` |
+| delivery failed | `warning: published ports saved, but updating web failed: %v` |
 | `hib fork`, parent has ports | `copies don't inherit published ports. hib port add task-2 8080 publishes one` |
 | hibd too old | `this host's hibd is too old for hib port. Upgrade it` |
 
@@ -1488,7 +1530,7 @@ doesn't leave a machine permanently unreachable. Admission refuses while either 
 *Test:* a unit test that `pause` sets the mark, that `save` and `fork` leave it set across their
 internal resume, that a running-but-marked target is refused, that a fenced **source** is refused as
 well as a fenced target, that a failed pause clears the fence, that an old fence with a live owner
-still refuses, that an orphaned fence is reconciled rather than ignored and
+still refuses, that `hibd cleanup` reconciles an orphaned fence rather than ignoring it and
 `TestMachineToMachine/a_machine_paused_by_hand_is_not_woken_by_a_link`.
 
 **5b. Quiescing.** `pause-all` loops until nothing is running. A link that woke machines would stop
@@ -1647,8 +1689,9 @@ is what holds when neither of them runs.
   revocation that lands during a wake is caught by the generation re-check before the first byte.
   *Test:* `port rm` cuts an open connection, and `port rm` during a wake cuts the connection that
   was waiting on it.
-- `hib pause`, `pause-all`, nightly quiesce and the leak scan: links to and from that machine
-  close, with `LinkCloseGrace` for each leg to drain, behind the fence.
+- `hib pause`, `pause-all`, nightly quiesce and the leak scan: links to and from that machine are
+  aborted behind the fence, and the pause goes ahead only once the proxy says no socket is left or
+  the machine's guard elements are gone.
 - `hib save` and `hib fork`: the machine is paused first, so its links close with it. And because
   `prepareSnapshot` resumes it again a moment later, `PausedByHand` has to survive the round trip
   (item 5). Saved images carry no ports.
@@ -1863,11 +1906,12 @@ because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-32`)
 - [ ] Per connection: quiescing, `Ingress.Identify` (veth, original destination, source lookup and
       the token in the accepted socket's `SO_MARK`), the address check, the self-link check, the
       published-port check, **the run binding** (the socket's token against `Keeper.Gate` for the
-      source's current run, at the connection's source address, refused with
-      `links.ErrUnmarked` or `links.ErrWrongRun`), `Admit`, which returns the target's gate already
-      open, the dial to `TargetGate.Addr`, the re-check of both runs, `PortGen` and both gates
-      before the first byte, copy with half-close and keepalive, byte counts, renew on payload,
-      `open` and `close` audit lines, in the order of the listener's twelve numbered steps.
+      source's current run, at the connection's source address, refused with `links.ErrUnmarked` or
+      `links.ErrWrongRun`), `Admit`, which returns the target's gate already open, the dial to
+      `TargetGate.Addr`, the re-check of both runs, `PortGen` and both gates before the first byte,
+      copy with half-close and keepalive, byte counts, renew on payload at most once per `LinkRenew`
+      for each source and target pair, `open` and `close` audit lines, in the order of the
+      listener's twelve numbered steps.
 - [ ] **Every link socket is created with `SO_LINGER 0`**, before connect on the target leg and
       on accept for the source leg, so an abort discards queued bytes instead of letting the
       kernel deliver them to whatever inherits the slot. The real `Dialer` sets `SO_MARK` to
@@ -1876,6 +1920,9 @@ because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-32`)
       either gate's `Keeper.Retired` channel closed. All of them abort. The ordinary EOF path stays
       graceful (`shutdown(SHUT_WR)`, bounded drain, close). There is no `EndAt` deadline.
 - [ ] Every refusal closes without writing a byte.
+- [ ] `Config.Logf` gets the real error behind a refusal or an abort whose link log line can only
+      name a `links` error, at most once per step, source and error in a `links.FoldWindow` and at
+      most 64 different lines in a window.
 - [ ] `AbortMachine`, `AbortPorts` and `Stat` work whether or not `Serve` is running. A listener
       that is not serving, before `Serve` or after it has returned, holds no sockets, so the aborts
       answer 0 with no error and `Stat` answers empty counts. The control socket relies on this
@@ -1883,13 +1930,13 @@ because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-32`)
 - [ ] Unit tests over a loopback pair with a fake `Ingress`, a fake `Dialer`, a fake admitter, a
       fake clock, fake run events and a fake Keeper: every refusal reason and zero bytes written on
       each, the caps, half-close in both directions, abort on the **target's** run ending and on the
-      **source's**, the gate-retired and generation-changed races, renew only on payload, folding of
-      refusals and the socket-mark binding. A fake `Ingress` returns a token: a mismatch with the
-      Keeper's gate is `links.ErrWrongRun` and no token is `links.ErrUnmarked`. A gate the fake
-      Keeper retires the moment a run ends aborts the link. An unreadable `links.json` refuses every
-      new link with `links.ErrStateUnreadable`, and the links already open are aborted once the fake
-      Keeper retires every gate. The aborts and `Stat` answer 0 and empty counts before `Serve` and
-      after it returns. These run on macOS.
+      **source's**, the gate-retired and generation-changed races, renew only on payload and per
+      source and target pair, folding of refusals and the socket-mark binding. A fake `Ingress`
+      returns a token: a mismatch with the Keeper's gate is `links.ErrWrongRun` and no token is
+      `links.ErrUnmarked`. A gate the fake Keeper retires the moment a run ends aborts the link. An
+      unreadable `links.json` refuses every new link with `links.ErrStateUnreadable`, and the links
+      already open are aborted once the fake Keeper retires every gate. The aborts and `Stat` answer
+      0 and empty counts before `Serve` and after it returns. These run on macOS.
 - [ ] `internal/slots`: `Finder.Slot(id)` (the walk `sandboxForNetns` does, in the other
       direction), `Addr(slot)` (the inverse of `slotFromSource`) and `Resolver.Addr` and
       `Resolver.At`, which read the run on both sides of the slot lookup and fail with
@@ -1991,7 +2038,7 @@ already carries the `internal/statefile` extraction and the empty `hibd/port.go`
       `links.json`* and *The mtime only moves forward* describe. `Touch` creates the directory
       (`0700`) as needed and opens everything through the state root with `O_NOFOLLOW`. On a file
       that exists it takes `LOCK_EX` on the file itself and never `links.lock`, reads the mtime with
-      `fstat` and calls `futimens` only when `t` is later. With no file it creates a temporary one
+      `fstat` and calls `futimes` only when `t` is later. With no file it creates a temporary one
       (`0600`, `O_EXCL`, a name starting with a dot), sets its mtime to `t` and publishes it with
       `link`, takes the locked path on `EEXIST` and removes the temporary file either way. As root
       it chowns the directory and the file to the state directory's owner, the file before it is
@@ -2064,11 +2111,16 @@ contract's `hibd port` handler signature, so it doesn't wait for slice 4's body.
 - [ ] `pause` sets `PausedByHand`. It is cleared only by a person-initiated start.
 - [ ] `rm` removes the entry and burns the address.
 - [ ] `cleanup` drops entries and `activity/<id>` files for sandboxes E2B has forgotten, and the
-      temporary files whose names start with a dot that a crashed `Touch` left behind. Removing one
-      that a `Touch` is still using only loses that touch, which errs toward less activity. It
-      **prunes after releasing the cleanup lock**: `clean` already holds `lockCleanup` across the
-      whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:635-652`), and taking
-      `links.lock` underneath that would add a third level to the order in Design.
+      temporary files whose names start with a dot that a crashed `Touch` left behind. A sandbox
+      missing from E2B's listing counts as forgotten only once a `Get` for it says not found,
+      because the listing reads running and paused machines page by page and a machine paused
+      meanwhile can fall between them. One that `Get` can't answer for is kept, with an error.
+      Removing one that a `Touch` is still using only loses that touch, which errs toward less
+      activity. It **prunes after releasing the cleanup lock**: `clean` already holds `lockCleanup`
+      across the whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:635-652`),
+      and taking `links.lock` underneath that would add a third level to the order in Design.
+- [ ] `cleanup` reconciles every fence up for `links.FenceStale` or longer, as item 3 of *Waking,
+      keeping awake and pausing* describes, sharing one `Get` per machine with the prune.
 - [ ] `pauseAll` **creates** the quiescing marker itself, so the `ExecStop` path
       (`vm/systemd/hibd-pause-all.service:12`) is fenced too, and the doc comment stops claiming it
       pauses only idle machines: `internal/pauseall/pauseall.go:49-65` pauses every running machine.
@@ -2079,25 +2131,27 @@ contract's `hibd port` handler signature, so it doesn't wait for slice 4's body.
       `StateDir`, so slice 3's clock is fed. The hook and the field are frozen in the contract,
       so the two slices don't collide.
 - [ ] Unit tests: dispatch and usage, `version`, the `ls` field, `pauseAll` creating the marker,
-      `pause` setting the mark, a pause that can't get an ack deleting the guard elements, a
-      failed pause clearing the fence, the fallback failing closed with a fake `Dropper` that
-      returns `EPERM`, the leak scan's fenced pause, cleanup pruning outside the lock. With links
-      off: `pause`, `rm`, `pauseAll` and the leak scan touch no fence, send no `close`, never reach
-      the `Dropper`, set no mark and create no marker, and `cleanup` leaves `links.json` as it was
-      and still prunes activity files.
+      `pause` setting the mark, a pause that can't get an ack deleting the guard elements, a failed
+      pause clearing the fence, the fallback failing closed with a fake `Dropper` that returns
+      `EPERM`, the leak scan's fenced pause, cleanup pruning outside the lock and only what a `Get`
+      confirms is gone, the fence reconcile in each of its cases with a real `flock` for the live
+      owner. With links off: `pause`, `rm`, `pauseAll` and the leak scan touch no fence, send no
+      `close`, never reach the `Dropper`, set no mark and create no marker, and `cleanup` leaves
+      `links.json` as it was and still prunes activity files.
 
 ### Slice 7: integration, and turning links on
 
 Owns `internal/hibd/proxy.go`, `internal/hibd/fork.go`, `internal/hibd/log.go`,
 `internal/machines/snapshot.go`, `cmd/hib/main.go`, `cmd/hib/secret.go`, `vm/setup-host.sh`,
 `vm/systemd/hibd-proxy.service`, `vm/systemd/hibernaut-tmpfiles.conf` (new),
-`vm/systemd/e2b-orchestrator.service` and `vm/e2b/sandbox-firewall.nft`, and two test files that
-are not named after a file it owns, `cmd/hib/hib_test.go` and `cmd/hib/rm_test.go`. Starts when
-slices 1-6 have landed.
+`vm/systemd/e2b-orchestrator.service` and `vm/e2b/sandbox-firewall.nft`, and three test files that
+are not named after a file it owns, `cmd/hib/hib_test.go`, `cmd/hib/rm_test.go` and
+`internal/machines/scriptlock_test.go`. Starts when slices 1-6 have landed.
 
-It is also the **one** slice allowed to touch `internal/hibd/hibd.go` after slice 6 has landed,
-and only for one line: changing the `HIBD_LINK_PORT` default from 0 to 5444. That is the commit
-that turns links on, and it cannot be anywhere else.
+It is also the **one** slice allowed to touch `internal/hibd/hibd.go` after slice 6 has landed, and
+only for two things: giving `new` the hosts block, and changing the `HIBD_LINK_PORT` default from 0
+to 5444, which is the value `loadSettings` falls back to, the usage text and the `linkPort` comment.
+The default is the commit that turns links on, and it cannot be anywhere else.
 
 - [ ] `hibd proxy` serves **both** listeners: the egress proxy on 5443 and the link listener on
       5444, sharing one `hook.Rule`, one `slots.Finder` and one shutdown. This is the commit that
@@ -2140,6 +2194,14 @@ that turns links on, and it cannot be anywhere else.
       relays hibd's stderr (`cmd/hib/remote.go:185-197`) and M11's live line prints it
       (`cmd/hib/liveline.go:42`, `live.Write` at 207-220), so `cmd/hib/fork.go` does not change and
       **M11's live line and face stay as they are**.
+- [ ] `hibd new` and `hibd fork` deliver the hosts block with the rest of the setup, so a new
+      machine has its names from the start rather than from the daemon's next pass. `loadSetup` has
+      no engine to map IDs to names, so the block is built from `links.json` and the machine list
+      the way `updateSetup` builds it (`hostsBlock`, `internal/hibd/delivery.go:116`), and only with
+      links on. `internal/machines/scriptlock_test.go` lists the hosts script next to the env
+      script.
+- [ ] `hibd log --links` puts machine names in `From` and `To`, which the listener writes as sandbox
+      IDs, and keeps the ID for a machine that has none.
 - [ ] `hib pause` and `hib rm` call `hibd` through `remoteSudo` (`cmd/hib/main.go:358,395`), like
       `fork` and `status`, so the pause fallback's `Drop` has `CAP_NET_ADMIN`.
 - [ ] `cmd/hib`'s fake host keeps up. It runs `sudo -n hibd` with EUID 0 whether or not `sudoApp`
@@ -2197,8 +2259,8 @@ Unit (no host):
       A failed **first** publish leaving no entry at all. Publishing a port that is already
       published, and unpublishing one that is not, both no-ops. A batch that is entirely no-ops
       refused.
-- [ ] `internal/links` fences: an **old fence with a live owner still refuses**. An orphaned fence
-      is reconciled rather than ignored. `Stale` only produces a log line.
+- [ ] `internal/links` fences: an **old fence with a live owner still refuses**, and so does an
+      orphaned one. `Stale` only picks a fence for the reconcile and never lets one through.
 - [ ] `internal/links` arithmetic: `Mark` and `Token` round-trip for 1, 4242 and `GuardMaxToken`,
       and `Mark(GuardMaxToken)` keeps `0x4c` in its top byte. `Token` refuses `Mark(0)`, a mark with
       another top byte and 0 itself. `2*GuardTTL + GuardMargin <= SlotReturnDelay`.
@@ -2255,15 +2317,16 @@ Unit (no host):
       `keepalive` does not.
 - [ ] `internal/audit`: link entries, `open` and `close` pairs, folding identical refusals,
       flushing a fold on shutdown, rotation.
-- [ ] `internal/hibd`: `port add|rm|ls` including every error and exit code, `pushSetup` called
-      and its failure warned rather than fatal, `cleanup` dropping forgotten entries, `pause`
-      setting the mark and sending `close`, the pause fallback failing closed with a fake `Dropper`
-      that returns `EPERM`, `fork` writing its hint to stderr, `pauseAll` creating the quiescing
-      marker. With links off, `pause`, `rm`, `pauseAll` and the leak scan touch no fence, send no
-      `close`, never reach the `Dropper`, set no mark and create no marker, and `cleanup` leaves
-      `links.json` alone and still prunes activity files. `hibd proxy` serves the control socket
-      while the listener is off, so a pause goes through with a Keeper whose first `Install`
-      failed, and it starts the listener once a check that failed passes.
+- [ ] `internal/hibd`: `port add|rm|ls` including every error and exit code, `pushSetup` called and
+      its failure warned rather than fatal, `cleanup` dropping only the entries a `Get` confirms E2B
+      has forgotten and reconciling a stale fence in each of its cases, `pause` setting the mark and
+      sending `close`, the pause fallback failing closed with a fake `Dropper` that returns `EPERM`,
+      `fork` writing its hint to stderr, `pauseAll` creating the quiescing marker. With links off,
+      `pause`, `rm`, `pauseAll` and the leak scan touch no fence, send no `close`, never reach the
+      `Dropper`, set no mark and create no marker, and `cleanup` leaves `links.json` alone and still
+      prunes activity files. `hibd proxy` serves the control socket while the listener is off, so a
+      pause goes through with a Keeper whose first `Install` failed, and it starts the listener once
+      a check that failed passes.
 - [ ] `cmd/hib`: the command table, help, **completion for `port add` and `port rm`**, every message
       in Design, `--json` shapes including the empty one, the old-hibd path, `hib pause` and
       `hib rm` sending SSH commands that start with `sudo -n hibd`, the `PORTS` column in the `ls`
@@ -2595,3 +2658,20 @@ Superseded statements are marked inline.
   which never replaces a file, and takes the locked update when another touch got there first. The
   `Clock.Touch` comment says so, and `cleanup` removes the temporary files a crashed `Touch` left
   behind.
+- 2026-10-09: Slices 2 to 6 landed, and this records what they settled. **A close aborts.** The
+  listener answers `close` and `revoke` by resetting every link in scope, and half-close and the
+  drain belong only to a link that ends on its own. `LinkCloseGrace` is how long the admitter waits
+  for that answer before it drops the gates itself. **Renewal is asked per pair.** A window per
+  target let a stale source spend it, because the admitter refuses a stale source without renewing,
+  and a fresh source's renewal of the same target then waited out the window. The proxy now asks at
+  most once per `LinkRenew` for each source and target pair. **Cleanup reconciles orphaned fences**
+  after asking E2B about the machine, and prunes a machine only once a `Get` confirms E2B has
+  forgotten it, because the listing can miss a machine paused between its pages. **`HIBD_LINK_PORT`
+  is read one way.** The slices parsed it three ways, so a pause could have read links as off while
+  the listener served. A malformed value now fails every `hibd` command. **Create and fork get the
+  hosts block in slice 7**, which may now touch `new` in `hibd.go` for it. **Smaller corrections.**
+  The activity clock calls `futimes`, which keeps microseconds and rounds up, not `futimens`. A
+  failed push prints `pushSetup`'s shared warning, which names the step that failed and why, and a
+  batch past the port cap has its own message. `OPEN` is null on every port or on none, so the
+  example no longer mixes a count with `-`. The listener's `Logf` and the sandbox IDs in the link
+  log are written down, and `hibd log --links` maps the IDs to names in slice 7.
