@@ -51,6 +51,9 @@ type Machine struct {
 	// IdleSeconds is how long the machine runs once it's idle before it pauses; 0 means never.
 	// It's nil for machines hibd didn't make.
 	IdleSeconds *int64 `json:"idleSeconds,omitempty"`
+	// Ports are the TCP ports this machine publishes to your other machines, ascending. It is
+	// omitzero so that an allocated empty slice can mean "publishes nothing".
+	Ports []int `json:"ports,omitzero"`
 }
 
 // FormatIdle formats an idle time in seconds, as in Machine.IdleSeconds, for people: "15m",
@@ -131,6 +134,48 @@ type Response struct {
 	// Host is the host VM's power state, which hib status --json adds from Azure's answer. hibd
 	// never sends it.
 	Host *Host `json:"host,omitempty"`
+	// Ports are the machines port ls listed, or the one machine port add or port rm changed.
+	// It uses omitzero rather than omitempty: an allocated empty slice means "nothing is
+	// published anywhere", and omitempty cannot tell that from a reply that carries no ports
+	// at all. So port ls with nothing published is {"v":1,"ports":[]}.
+	Ports []Ports `json:"ports,omitzero"`
+	// Links are link log entries, from log --links.
+	Links []LinkEntry `json:"links,omitzero"`
+}
+
+// Ports is what one machine publishes.
+type Ports struct {
+	// Machine is the machine's name.
+	Machine string `json:"machine"`
+	// Addr is the virtual address its name resolves to in other machines, empty before its
+	// first publish.
+	Addr string `json:"addr,omitempty"`
+	// Published is the ports, sorted. It is an allocated empty slice, not null, when the
+	// machine publishes nothing.
+	Published []PublishedPort `json:"published,omitzero"`
+}
+
+// PublishedPort is one published port.
+type PublishedPort struct {
+	Port int `json:"port"`
+	// Open is how many links are using it right now, so a machine kept awake by a link can be
+	// explained while it is happening rather than afterwards from a log.
+	Open int `json:"open"`
+}
+
+// LinkEntry is one line of the link log, from log --links.
+type LinkEntry struct {
+	Time        string `json:"time"`
+	Event       string `json:"event"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Port        int    `json:"port"`
+	Reason      string `json:"reason,omitempty"`
+	Woke        bool   `json:"woke,omitempty"`
+	Count       int    `json:"count,omitempty"`
+	BytesIn     int64  `json:"bytesIn,omitempty"`
+	BytesOut    int64  `json:"bytesOut,omitempty"`
+	SecondsOpen int64  `json:"secondsOpen,omitempty"`
 }
 
 const (
@@ -138,6 +183,8 @@ const (
 	FeatureBuildEvents = "build-events"
 	// FeatureDisconnect means hibd has the disconnect command.
 	FeatureDisconnect = "disconnect"
+	// FeaturePorts means hibd has the port command, so machines can reach each other.
+	FeaturePorts = "ports"
 )
 
 // Event is a build step starting or ending.

@@ -51,7 +51,7 @@ exit 0
 	var logs []string
 	errc := make(chan error, 1)
 	go func() {
-		errc <- (Rule{Port: 5443, Iptables: iptables}).Keep(ctx, 10*time.Millisecond, func(format string, args ...any) {
+		errc <- (Rule{ProxyPort: 5443, Iptables: iptables}).Keep(ctx, 10*time.Millisecond, func(format string, args ...any) {
 			logsMu.Lock()
 			defer logsMu.Unlock()
 			logs = append(logs, fmt.Sprintf(format, args...))

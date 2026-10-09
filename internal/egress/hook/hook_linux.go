@@ -19,18 +19,18 @@ import (
 
 // Ensure makes our rule the first rule of nat PREROUTING.
 func (r Rule) Ensure(ctx context.Context) (bool, error) {
-	if r.Port <= 0 || r.Port > 65535 {
-		return false, fmt.Errorf("hook: invalid proxy port %d", r.Port)
+	if r.ProxyPort <= 0 || r.ProxyPort > 65535 {
+		return false, fmt.Errorf("hook: invalid proxy port %d", r.ProxyPort)
 	}
 	iptables := r.iptables()
 	parsed, err := listRules(ctx, iptables)
 	if err != nil {
 		return false, err
 	}
-	if parsed.firstIndex == 0 && len(parsed.rules) > 0 && parsed.rules[0].hasPort(r.Port) {
+	if parsed.firstIndex == 0 && len(parsed.rules) > 0 && parsed.rules[0].hasPort(r.ProxyPort) {
 		return false, nil
 	}
-	insertArgs := []string{"-w", "5", "-t", "nat", "-I", "PREROUTING", "1", "-i", "veth-+", "-p", "tcp", "--dport", "443", "-m", "comment", "--comment", "hibernaut", "-j", "REDIRECT", "--to-ports", fmt.Sprint(r.Port)}
+	insertArgs := []string{"-w", "5", "-t", "nat", "-I", "PREROUTING", "1", "-i", "veth-+", "-p", "tcp", "--dport", "443", "-m", "comment", "--comment", "hibernaut", "-j", "REDIRECT", "--to-ports", fmt.Sprint(r.ProxyPort)}
 	if err := run(ctx, iptables, insertArgs...); err != nil {
 		return false, err
 	}
@@ -44,7 +44,7 @@ func (r Rule) Ensure(ctx context.Context) (bool, error) {
 	keep := parsed.rules[0]
 	for i := len(parsed.rules) - 1; i >= 0; i-- {
 		rule := parsed.rules[i]
-		if i == 0 && rule.hasPort(r.Port) {
+		if i == 0 && rule.hasPort(r.ProxyPort) {
 			continue
 		}
 		deleteArgs := rule.deleteArgs

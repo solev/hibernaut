@@ -450,7 +450,7 @@ func secretAddFlags(fl *flag.FlagSet) runner {
 func logFlags(fl *flag.FlagSet) runner {
 	n := fl.Int("n", 50, "show the `N` newest entries")
 	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, _ []string) int {
-		return a.log(ctx, cfg, *n)
+		return a.log(ctx, cfg, *n, false)
 	}))
 }
 

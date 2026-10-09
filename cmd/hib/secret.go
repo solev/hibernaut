@@ -66,7 +66,11 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-func (a *app) log(ctx context.Context, cfg *config, n int) int {
+// log prints the audit log. The links argument selects M12's link log instead of the secret
+// log; the body ignores it until the slice that reads that log lands, so the flag and the
+// command table can be written against this signature first.
+func (a *app) log(ctx context.Context, cfg *config, n int, links bool) int {
+	_ = links
 	if n < 0 {
 		return a.mistake("--n must be non-negative")
 	}

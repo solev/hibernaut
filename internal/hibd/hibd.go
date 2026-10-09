@@ -29,6 +29,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/e2b"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/pauseall"
 	proxypkg "github.com/solev/hibernaut/internal/proxy"
@@ -109,6 +110,8 @@ Environment variables of the same names override the file:
   HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
                         default codex copilot claude
   HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
+  HIBD_LINK_PORT        port for links between machines, default 0, which is off
+  HIBD_LINK_LOG         link log, default /var/log/hibernaut/links.jsonl
 `
 
 const (
@@ -203,6 +206,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.runCodex(ctx, args)
 	case "status":
 		return a.status(ctx, args)
+	case "port":
+		return a.port(ctx, args)
 	case "log":
 		return a.log(args)
 	case "ca":
@@ -1020,6 +1025,11 @@ type config struct {
 	caCert         string
 	caKey          string
 	proxyPort      string
+	// linkPort is HIBD_LINK_PORT. It defaults to "0", which means links between machines are
+	// off. It stays 0 until the slice that wires the two listeners together turns it on.
+	linkPort string
+	// linkLog is HIBD_LINK_LOG, the link log's path.
+	linkLog string
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -1086,6 +1096,8 @@ func loadSettings(getenv func(string) string) (config, error) {
 		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
 		caKey:          get("HIBD_CA_KEY", "/etc/hibernaut/ca.key"),
 		proxyPort:      get("HIBD_PROXY_PORT", "5443"),
+		linkPort:       get("HIBD_LINK_PORT", "0"),
+		linkLog:        get("HIBD_LINK_LOG", links.LogPath),
 	}
 	if cfg.vaultPath == "" {
 		cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")

@@ -1,0 +1,83 @@
+// Package linkctl is the client for the link control socket.
+//
+// hibd's port, pause, rm, save, fork and cleanup paths all run as separate invocations from the
+// one serving links, so every cancellation crosses a process boundary. This is that boundary:
+// one unix socket, one request per connection, a reply that means the sockets are gone.
+package linkctl
+
+import (
+	"context"
+	"time"
+
+	"github.com/solev/hibernaut/internal/links"
+)
+
+// Request is one control-socket call. Exactly one of the three ops is set.
+type Request struct {
+	// Op is "revoke", "close" or "stat".
+	Op string `json:"op"`
+	// ID is the machine the call is about, for revoke and close.
+	ID string `json:"id,omitempty"`
+	// Ports are the published ports to revoke, for revoke.
+	Ports []int `json:"ports,omitempty"`
+}
+
+// Response is one reply. A reply arrives only after the work is done: for revoke and close that
+// means every socket in scope is closed, not marked or scheduled.
+type Response struct {
+	// Closed is how many links were aborted.
+	Closed int `json:"closed"`
+	// Ports is open links per published port, which is what hibapi.PublishedPort.Open shows.
+	// A map cannot be keyed on a pair in JSON, so it travels as a list.
+	Ports []OpenPort `json:"ports,omitzero"`
+	// Machines is open links by sandbox ID, counting a machine at either end.
+	Machines map[string]int `json:"machines,omitzero"`
+	// Err is the failure, empty when there was none.
+	Err string `json:"err,omitempty"`
+}
+
+// OpenPort is how many links one published port is carrying.
+type OpenPort struct {
+	Target string `json:"target"`
+	Port   int    `json:"port"`
+	Open   int    `json:"open"`
+}
+
+// Client is a connection to the control socket. It implements links.Controller.
+type Client struct {
+	path    string
+	timeout time.Duration
+}
+
+var _ links.Controller = (*Client)(nil)
+
+// Dial returns a client for the socket at path, or links.CtlSocket when path is "". It does not
+// connect: each call opens its own connection, so a client is safe to keep and cheap to make.
+func Dial(path string) (*Client, error) {
+	if path == "" {
+		path = links.CtlSocket
+	}
+	return &Client{path: path, timeout: links.CtlTimeout}, nil
+}
+
+// Path is the socket this client talks to.
+func (c *Client) Path() string { return c.path }
+
+// Revoke aborts the links using id's listed ports. hib port rm reports success only once this
+// has returned without an error: it is the one caller that never downgrades a failure to a
+// warning, because an unpublished port that is still carrying bytes is the whole of the risk.
+func (c *Client) Revoke(ctx context.Context, id string, ports []int) (int, error) {
+	return 0, links.ErrLinksOff
+}
+
+// Close aborts every link with id at either end. Callers pause or remove the machine only after
+// it returns, or after the Guard fallback has confirmed the kernel will pass nothing more.
+func (c *Client) Close(ctx context.Context, id string) (int, error) {
+	return 0, links.ErrLinksOff
+}
+
+// Stat reports the open links, per published port and per machine. hib port ls uses the first
+// to show why a machine is awake while it is still happening.
+func (c *Client) Stat(ctx context.Context) (links.Stats, error) {
+	return links.Stats{}, links.ErrLinksOff
+}

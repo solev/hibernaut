@@ -149,7 +149,7 @@ func (a *App) proxyHook(port int) proxypkg.Rule {
 	if a.ProxyHook != nil {
 		return a.ProxyHook
 	}
-	return proxyRule{hook.Rule{Port: port}}
+	return proxyRule{hook.Rule{ProxyPort: port}}
 }
 
 func (a *App) egressServer(ctx context.Context, setup proxySetup, writer *audit.Log, logf func(format string, args ...any)) *egress.Server {

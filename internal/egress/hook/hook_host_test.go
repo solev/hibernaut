@@ -22,7 +22,7 @@ func TestHostRedirectOriginalDstAndOnVeth(t *testing.T) {
 	proxy := host.startListener(t, "proxy", "0.0.0.0:5443")
 	plain := host.startListener(t, "plain", "203.0.113.10:80")
 
-	rule := Rule{Port: 5443, Iptables: host.iptables}
+	rule := Rule{ProxyPort: 5443, Iptables: host.iptables}
 	changed, err := rule.Ensure(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestHostRedirectOriginalDstAndOnVeth(t *testing.T) {
 
 func TestHostKeepReaddsRule(t *testing.T) {
 	host := newNetnsHost(t)
-	rule := Rule{Port: 5443, Iptables: host.iptables}
+	rule := Rule{ProxyPort: 5443, Iptables: host.iptables}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -84,7 +84,7 @@ func TestHostOnVethRejectsNonMachineInterfaces(t *testing.T) {
 
 func TestHostRemoveAndEnsureIdempotent(t *testing.T) {
 	host := newNetnsHost(t)
-	rule := Rule{Port: 5443, Iptables: host.iptables}
+	rule := Rule{ProxyPort: 5443, Iptables: host.iptables}
 
 	changed, err := rule.Ensure(context.Background())
 	if err != nil {
