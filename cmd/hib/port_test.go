@@ -93,7 +93,7 @@ func TestPortAddAndLs(t *testing.T) {
 	if code := c.hib("port", "add", "api", "5432", "6379", "5432", "--json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, c.errOut)
 	}
-	want := `{"v":1,"ports":[{"machine":"api","addr":"198.18.0.1","published":[{"port":5432,"open":0},{"port":6379,"open":0},{"port":8080,"open":0}]}]}` + "\n"
+	want := `{"v":1,"ports":[{"machine":"api","addr":"198.18.0.1","published":[{"port":5432,"open":null},{"port":6379,"open":null},{"port":8080,"open":null}]}]}` + "\n"
 	if c.out.String() != want {
 		t.Errorf("stdout %s, want %s", c.out, want)
 	}
@@ -107,10 +107,11 @@ func TestPortAddAndLs(t *testing.T) {
 	if code := c.hib("port", "ls"); code != 0 {
 		t.Fatalf("exit %d: %s", code, c.errOut)
 	}
+	// This build's control socket is a stub that never answers, so nothing is counted.
 	want = "" +
 		"NAME  HOST     IP          PORTS           OPEN\n" +
-		"api   api.hib  198.18.0.1  5432,6379,8080  0\n" +
-		"web   web.hib  198.18.0.2  3000,3001,3002  0\n"
+		"api   api.hib  198.18.0.1  5432,6379,8080  -\n" +
+		"web   web.hib  198.18.0.2  3000,3001,3002  -\n"
 	if c.out.String() != want {
 		t.Errorf("stdout\n%s\nwant\n%s", c.out, want)
 	}
@@ -123,6 +124,45 @@ func TestPortAddAndLs(t *testing.T) {
 	r, err := hibapi.DecodeResponse(c.out.Bytes())
 	if err != nil || len(r.Ports) != 2 || r.Ports[1].Machine != "web" || len(r.Ports[1].Published) != 3 {
 		t.Errorf("reply %+v, %v, want api and web", r, err)
+	}
+	if !strings.Contains(c.out.String(), `{"port":3000,"open":null}`) {
+		t.Errorf("stdout %s, want null counts", c.out)
+	}
+}
+
+func TestPortLsCountsOpenLinks(t *testing.T) {
+	h, c, _ := portHost(t)
+	reply := `{"v":1,"ports":[` +
+		`{"machine":"api","addr":"198.18.0.1","published":[{"port":5432,"open":1},{"port":8080,"open":2}]},` +
+		`{"machine":"db","addr":"198.18.0.3","published":[{"port":6379,"open":0}]},` +
+		`{"machine":"web","addr":"198.18.0.2","published":[{"port":3000,"open":4},{"port":3001,"open":null}]}]}`
+	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+		switch {
+		case slices.Equal(words, []string{"version", "--json"}):
+			io.WriteString(stdout, `{"v":1,"version":"test","features":["ports"]}`+"\n")
+		case slices.Equal(words, []string{"port", "ls", "--json"}):
+			io.WriteString(stdout, reply+"\n")
+		default:
+			return 0, false
+		}
+		return 0, true
+	}
+	if code := c.hib("port", "ls"); code != 0 {
+		t.Fatalf("exit %d: %s", code, c.errOut)
+	}
+	want := "" +
+		"NAME  HOST     IP          PORTS      OPEN\n" +
+		"api   api.hib  198.18.0.1  5432,8080  3\n" +
+		"db    db.hib   198.18.0.3  6379       0\n" +
+		"web   web.hib  198.18.0.2  3000,3001  -\n"
+	if c.out.String() != want {
+		t.Errorf("stdout\n%s\nwant\n%s", c.out, want)
+	}
+	if code := c.hib("port", "ls", "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, c.errOut)
+	}
+	if got := c.out.String(); got != reply+"\n" {
+		t.Errorf("stdout %s, want %s", got, reply)
 	}
 }
 

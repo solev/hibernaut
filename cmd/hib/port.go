@@ -118,18 +118,26 @@ func (a *app) needPorts(ctx context.Context, cfg *config) error {
 }
 
 // printPorts writes the published ports as a table. OPEN is how many links use a machine's
-// ports now.
+// ports now, or "-" when hibd proxy didn't count one of them.
 func printPorts(w io.Writer, all []hibapi.Ports) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
 	for _, p := range all {
 		nums := make([]string, len(p.Published))
-		open := 0
+		total, counted := 0, true
 		for i, pp := range p.Published {
 			nums[i] = strconv.Itoa(pp.Port)
-			open += pp.Open
+			if pp.Open == nil {
+				counted = false
+			} else {
+				total += *pp.Open
+			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", safe(p.Machine), safe(p.Machine+".hib"), safe(p.Addr), strings.Join(nums, ","), open)
+		open := "-"
+		if counted {
+			open = strconv.Itoa(total)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", safe(p.Machine), safe(p.Machine+".hib"), safe(p.Addr), strings.Join(nums, ","), open)
 	}
 	tw.Flush()
 }

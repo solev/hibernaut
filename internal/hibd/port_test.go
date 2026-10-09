@@ -142,7 +142,7 @@ func TestPortAdd(t *testing.T) {
 	if code := run(t, a, out, errOut, "port", "add", "web", "3000", "-json"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	want := `{"v":1,"ports":[{"machine":"web","addr":"198.18.0.2","published":[{"port":3000,"open":0}]}]}` + "\n"
+	want := `{"v":1,"ports":[{"machine":"web","addr":"198.18.0.2","published":[{"port":3000,"open":null}]}]}` + "\n"
 	if out.String() != want {
 		t.Errorf("stdout %s, want %s", out, want)
 	}
@@ -335,7 +335,7 @@ func TestPortRm(t *testing.T) {
 	if got, want := errOut.String(), "api:9090 wasn't published\n"; got != want {
 		t.Errorf("stderr %q, want %q", got, want)
 	}
-	want := `{"v":1,"ports":[{"machine":"api","addr":"198.18.0.1","published":[{"port":8080,"open":0}]}]}` + "\n"
+	want := `{"v":1,"ports":[{"machine":"api","addr":"198.18.0.1","published":[{"port":8080,"open":null}]}]}` + "\n"
 	if out.String() != want {
 		t.Errorf("stdout %s, want %s", out, want)
 	}
@@ -442,6 +442,15 @@ func TestPortLs(t *testing.T) {
 	}
 	if got, want := errOut.String(), "warning: hibd proxy didn't say how many links are open: connection refused\n"; got != want {
 		t.Errorf("stderr %q, want %q", got, want)
+	}
+	if code := run(t, a, out, errOut, "port", "ls", "-json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	wantJSON = `{"v":1,"ports":[` +
+		`{"machine":"api","addr":"198.18.0.2","published":[{"port":5432,"open":null},{"port":8080,"open":null}]},` +
+		`{"machine":"web","addr":"198.18.0.1","published":[{"port":3000,"open":null}]}]}` + "\n"
+	if out.String() != wantJSON {
+		t.Errorf("stdout %s, want %s", out, wantJSON)
 	}
 
 	if err := e.Kill(t.Context(), mustID(t, e, "web")); err != nil {

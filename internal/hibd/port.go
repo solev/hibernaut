@@ -184,22 +184,23 @@ func (a *App) portLS(ctx context.Context, args []string) int {
 		found = append(found, published{id: id, name: names[id], m: *m})
 	}
 	slices.SortFunc(found, func(x, y published) int { return strings.Compare(x.name, y.name) })
-	var stats links.Stats
-	var statErr error
+	var stats *links.Stats
 	if len(found) > 0 {
-		stats, statErr = openLinks(ctx)
-		if statErr != nil {
-			a.warnf("hibd proxy didn't say how many links are open: %v", statErr)
+		s, err := openLinks(ctx)
+		if err != nil {
+			a.warnf("hibd proxy didn't say how many links are open: %v", err)
+		} else {
+			stats = &s
 		}
 	}
 	all := make([]hibapi.Ports, 0, len(found))
 	for _, f := range found {
-		all = append(all, apiPorts(f.name, f.m, stats.Ports, f.id))
+		all = append(all, apiPorts(f.name, f.m, stats, f.id))
 	}
 	if *asJSON {
 		return a.reply(hibapi.Response{Ports: all})
 	}
-	printPorts(a.Stdout, all, statErr == nil)
+	printPorts(a.Stdout, all)
 	if len(all) == 0 {
 		fmt.Fprintln(a.Stderr, "no published ports. hib port add NAME PORT publishes one")
 	}
@@ -383,30 +384,39 @@ func procAddr(s string) (netip.Addr, bool) {
 	return addr.Unmap(), true
 }
 
-// apiPorts is one machine's published ports. open counts the links using each, by sandbox ID,
-// and may be nil.
-func apiPorts(name string, m links.Machine, open map[links.Open]int, id string) hibapi.Ports {
+// apiPorts is one machine's published ports. stats counts the links using each, by sandbox ID,
+// and is nil when hibd proxy wasn't asked or didn't answer, which leaves every Open null.
+func apiPorts(name string, m links.Machine, stats *links.Stats, id string) hibapi.Ports {
 	p := hibapi.Ports{Machine: name, Published: make([]hibapi.PublishedPort, 0, len(m.Ports))}
 	if m.Addr.IsValid() {
 		p.Addr = m.Addr.String()
 	}
 	for _, port := range m.Ports {
-		p.Published = append(p.Published, hibapi.PublishedPort{Port: port, Open: open[links.Open{Target: id, Port: port}]})
+		pp := hibapi.PublishedPort{Port: port}
+		if stats != nil {
+			n := stats.Ports[links.Open{Target: id, Port: port}]
+			pp.Open = &n
+		}
+		p.Published = append(p.Published, pp)
 	}
 	return p
 }
 
-// printPorts writes hib port ls's table. counted is false when hibd proxy didn't answer, and
-// OPEN then shows "-".
-func printPorts(w io.Writer, all []hibapi.Ports, counted bool) {
+// printPorts writes hib port ls's table. OPEN is "-" for a machine when any of its counts is
+// unknown.
+func printPorts(w io.Writer, all []hibapi.Ports) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
 	for _, p := range all {
 		nums := make([]string, len(p.Published))
-		total := 0
+		total, counted := 0, true
 		for i, pp := range p.Published {
 			nums[i] = strconv.Itoa(pp.Port)
-			total += pp.Open
+			if pp.Open == nil {
+				counted = false
+			} else {
+				total += *pp.Open
+			}
 		}
 		open := "-"
 		if counted {
