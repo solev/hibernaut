@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,7 @@ func TestHostChainRepairsForeignRuleAboveJump(t *testing.T) {
 	if !strings.Contains(host.natSave(t), "-A PREROUTING -p tcp -m tcp --dport 443 -j RETURN") {
 		t.Fatal("Keep deleted the foreign rule instead of moving the jump above it")
 	}
+	host.assertLinksOnDials(t)
 }
 
 func TestHostChainMigratesFromBareRule(t *testing.T) {
@@ -176,6 +178,7 @@ func TestHostChainMigratesFromBareRule(t *testing.T) {
 		t.Fatalf("migrating Ensure = %v, %v", changed, err)
 	}
 	host.assertLayout(t, rule)
+	host.assertLinksOnDials(t)
 
 	// Turning links off again takes the chain out in one step.
 	off := Rule{ProxyPort: 5443, Iptables: host.iptables}
@@ -186,6 +189,9 @@ func TestHostChainMigratesFromBareRule(t *testing.T) {
 	if strings.Contains(host.natSave(t), chainName) {
 		t.Fatalf("links-off Ensure left the chain:\n%s", host.natSave(t))
 	}
+	// With links off every 443 goes to the proxy, a link-range one included.
+	host.dialLands(t, "198.18.0.9:443", host.startListener(t, "proxy", "0.0.0.0:5443"))
+	host.dialLands(t, "203.0.113.10:443", host.startListener(t, "proxy", "0.0.0.0:5443"))
 }
 
 func TestHostChainRepairsInterruptedMigration(t *testing.T) {
@@ -203,6 +209,7 @@ func TestHostChainRepairsInterruptedMigration(t *testing.T) {
 		t.Fatalf("repairing Ensure = %v, %v", changed, err)
 	}
 	host.assertLayout(t, rule)
+	host.assertLinksOnDials(t)
 }
 
 func TestHostKeepSilentWhenSaveRendersMatchTCP(t *testing.T) {
@@ -349,12 +356,30 @@ func (h *netnsHost) startListener(t *testing.T, name, addr string) *listenerProc
 	case <-time.After(5 * time.Second):
 		t.Fatal("listener helper did not become ready")
 	}
-	return &listenerProcess{cmd: cmd, resultPath: result}
+	return &listenerProcess{name: name, cmd: cmd, resultPath: result}
 }
 
 func (h *netnsHost) machineDial(t *testing.T, addr string) {
 	t.Helper()
 	h.helperDial(t, h.machineNS, addr)
+}
+
+// dialLands dials addr from the machine and checks that l took the connection and saw addr as
+// its original destination.
+func (h *netnsHost) dialLands(t *testing.T, addr string, l *listenerProcess) {
+	t.Helper()
+	h.machineDial(t, addr)
+	if got := l.result(t); got.original != addr {
+		t.Fatalf("%s listener OriginalDst = %s, want %s", l.name, got.original, addr)
+	}
+}
+
+// assertLinksOnDials checks the links-on layout routes for real: a link-range address reaches the
+// link listener and any other 443 the proxy.
+func (h *netnsHost) assertLinksOnDials(t *testing.T) {
+	t.Helper()
+	h.dialLands(t, "198.18.0.9:443", h.startListener(t, "link", "0.0.0.0:5444"))
+	h.dialLands(t, "203.0.113.10:443", h.startListener(t, "proxy", "0.0.0.0:5443"))
 }
 
 func (h *netnsHost) hostDial(t *testing.T, addr string) {
@@ -418,8 +443,22 @@ func (h *netnsHost) natSave(t *testing.T) string {
 	return string(out)
 }
 
+// savedLayouts are the two layouts the host tests install, written out as iptables -t nat -S
+// prints them, less any -m tcp: the first PREROUTING rule, then HIBERNAUT's rules.
+var savedLayouts = map[Rule][]string{
+	{ProxyPort: 5443}: {
+		"-A PREROUTING -i veth-+ -p tcp --dport 443 -m comment --comment hibernaut -j REDIRECT --to-ports 5443",
+	},
+	{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15"}: {
+		"-A PREROUTING -i veth-+ -m comment --comment hibernaut -j HIBERNAUT",
+		"-A HIBERNAUT -d 198.18.0.0/15 -p tcp -j REDIRECT --to-ports 5444",
+		"-A HIBERNAUT -p tcp --dport 443 -j REDIRECT --to-ports 5443",
+	},
+}
+
 // assertLayout checks the table is exactly rule's layout: the hibernaut rule first in
-// PREROUTING, nothing else of ours, and the chain's rules in order or no chain at all.
+// PREROUTING, nothing else of ours, and the chain's rules in order or no chain at all. It
+// checks the printed rules against savedLayouts as well as through plan.
 func (h *netnsHost) assertLayout(t *testing.T, rule Rule) {
 	t.Helper()
 	want, err := rule.layout()
@@ -427,6 +466,24 @@ func (h *netnsHost) assertLayout(t *testing.T, rule Rule) {
 		t.Fatal(err)
 	}
 	save := h.natSave(t)
+	literal, ok := savedLayouts[Rule{ProxyPort: rule.ProxyPort, LinkPort: rule.LinkPort, LinkCIDR: rule.LinkCIDR}]
+	if !ok {
+		t.Fatalf("no saved layout written out for %+v", rule)
+	}
+	var printed []string
+	ours := 0
+	for line := range strings.Lines(save) {
+		line = strings.ReplaceAll(strings.TrimSpace(line), " -m tcp ", " ")
+		if strings.HasPrefix(line, "-A PREROUTING ") && strings.Contains(line, "--comment hibernaut") {
+			ours++
+		}
+		if strings.HasPrefix(line, "-A PREROUTING ") && len(printed) == 0 || strings.HasPrefix(line, "-A "+chainName+" ") {
+			printed = append(printed, line)
+		}
+	}
+	if !slices.Equal(printed, literal) || ours != 1 {
+		t.Fatalf("printed layout is not %+v, want:\n%s\n%d hibernaut rules in:\n%s", rule, strings.Join(literal, "\n"), ours, save)
+	}
 	table := parseNat(save)
 	if rest := plan(table, want, false); rest != nil {
 		t.Fatalf("layout is not %+v, still to do %q:\n%s", rule, rest, save)
@@ -449,6 +506,7 @@ func (h *netnsHost) must(t *testing.T, name string, args ...string) {
 }
 
 type listenerProcess struct {
+	name       string
 	cmd        *exec.Cmd
 	resultPath string
 }
