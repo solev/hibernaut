@@ -306,7 +306,13 @@ different processes, so two touches can arrive out of order. `Touch` opens the f
 state root with `O_NOFOLLOW`, takes `LOCK_EX` on it, reads the mtime with `fstat` and calls
 `futimens` only when `t` is later. The lock is per machine and held for those two calls, and
 `Active` only stats. Setting an explicit time needs the file's owner or root, which holds because
-the file is the state directory owner's.
+the file is the state directory owner's. **A first touch records `t`, not the time the file was
+made.** Creating the file would set its mtime to now and turn a late observation into fresh
+activity. So when there is no file, `Touch` creates a temporary one in the same directory, sets its
+mtime to `t`, gives it to the state directory's owner when it runs as root and publishes it with
+`link`, which never replaces a name that exists. If another touch published first, the link fails
+with `EEXIST` and `Touch` takes the locked path above. Either way it removes the temporary file,
+whose name starts with a dot so that no machine's ID can match it.
 
 The clock is [`links.Clock`](../../internal/links/links.go) and the production one is
 `links.NewClock(stateDir)`: `Active(id)` returns a machine's last non-link activity, the zero time
@@ -1983,13 +1989,18 @@ already carries the `internal/statefile` extraction and the empty `hibd/port.go`
       this, so the lock order and the version check have one home.
 - [ ] The activity clock's bodies in `links.NewClock`, as *The activity clock is not in
       `links.json`* and *The mtime only moves forward* describe. `Touch` creates the directory
-      (`0700`) and the file (`0600`) as needed, opening them through the state root with
-      `O_NOFOLLOW`. It takes `LOCK_EX` on the file itself and never `links.lock`, reads the mtime
-      with `fstat` and calls `futimens` only when `t` is later. As root it chowns both to the state
-      directory's owner, so the login user's `hibd` can set explicit times on them afterwards. It
-      ignores an ID that is not a single path element, and it is best effort. `Active` only stats
-      the file, and a missing file is the zero time. Unit tests for each, and a race: concurrent
-      `Touch` calls on separate descriptors with out-of-order times leave the latest.
+      (`0700`) as needed and opens everything through the state root with `O_NOFOLLOW`. On a file
+      that exists it takes `LOCK_EX` on the file itself and never `links.lock`, reads the mtime with
+      `fstat` and calls `futimens` only when `t` is later. With no file it creates a temporary one
+      (`0600`, `O_EXCL`, a name starting with a dot), sets its mtime to `t` and publishes it with
+      `link`, takes the locked path on `EEXIST` and removes the temporary file either way. As root
+      it chowns the directory and the file to the state directory's owner, the file before it is
+      published, so the login user's `hibd` can set explicit times on it afterwards. It ignores an
+      ID that is not a single path element or that starts with a dot, and it is best effort.
+      `Active` only stats the file, and a missing file is the zero time. Unit tests for each, a
+      first touch with a past `t` recording that `t`, and two races that both leave the latest time
+      and no temporary file: concurrent `Touch` calls on separate descriptors with out-of-order
+      times, and concurrent first touches.
 - [ ] `hibd port add|rm|ls`: resolve the name to an ID, validate the batch, update the store,
       `revoke` through the control socket for `rm`, `pushSetup`, warn on a failed push.
 - [ ] `hib port add|rm|ls` in the command table with help, examples and `--json`, modelled on
@@ -2052,10 +2063,12 @@ contract's `hibd port` handler signature, so it doesn't wait for slice 4's body.
       still runs on a host whose proxy is not.
 - [ ] `pause` sets `PausedByHand`. It is cleared only by a person-initiated start.
 - [ ] `rm` removes the entry and burns the address.
-- [ ] `cleanup` drops entries and `activity/<id>` files for sandboxes E2B has forgotten. It
+- [ ] `cleanup` drops entries and `activity/<id>` files for sandboxes E2B has forgotten, and the
+      temporary files whose names start with a dot that a crashed `Touch` left behind. Removing one
+      that a `Touch` is still using only loses that touch, which errs toward less activity. It
       **prunes after releasing the cleanup lock**: `clean` already holds `lockCleanup` across the
-      whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:635-652`), and
-      taking `links.lock` underneath that would add a third level to the order in Design.
+      whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:635-652`), and taking
+      `links.lock` underneath that would add a third level to the order in Design.
 - [ ] `pauseAll` **creates** the quiescing marker itself, so the `ExecStop` path
       (`vm/systemd/hibd-pause-all.service:12`) is fenced too, and the doc comment stops claiming it
       pauses only idle machines: `internal/pauseall/pauseall.go:49-65` pauses every running machine.
@@ -2191,9 +2204,10 @@ Unit (no host):
       another top byte and 0 itself. `2*GuardTTL + GuardMargin <= SlotReturnDelay`.
 - [ ] `internal/links` state: a publish refused over the cap leaves no entry for the machine, and
       unpublishing a reserved port is `ErrReservedPort`.
-- [ ] `internal/links` activity clock: `Touch` moves the mtime forward only, concurrent touches on
-      separate descriptors with out-of-order times leave the latest, a missing file is the zero time
-      and an ID that is not one path element is ignored.
+- [ ] `internal/links` activity clock: `Touch` moves the mtime forward only, a first touch with a
+      past time records that time, concurrent touches with out-of-order times leave the latest
+      whether or not the file existed and leave no temporary file, a missing file is the zero time
+      and an ID that is not one path element or that starts with a dot is ignored.
 - [ ] `internal/linkadmit`: `Serve` refuses with `ErrNoCloser` until `SetCloser` has been called,
       and accepts a closer passed in the config.
 - [ ] `internal/statefile`: the lock tests from the contract commit, plus new tests for what slice 4
@@ -2574,3 +2588,10 @@ Superseded statements are marked inline.
   4's lift keeps thin wrappers in `internal/machines`, so slice 3's `machines.go` and the unowned
   `saves.go` and `lock.go` stay untouched. `Guard` gains an unexported `tokenFile` so a test can
   point `Drop` at its own, and the control socket replaces one a killed proxy left behind.
+- 2026-10-09: Astra's round-8 check. Security found nothing, and design confirmed the round-7 fixes.
+  **A first touch records its own time (MF3 again).** Creating the activity file set its mtime to
+  now, so a late first observation became fresh activity, which the in-memory clock never did.
+  `Touch` now creates a temporary file with its mtime already at `t` and publishes it with `link`,
+  which never replaces a file, and takes the locked update when another touch got there first. The
+  `Clock.Touch` comment says so, and `cleanup` removes the temporary files a crashed `Touch` left
+  behind.

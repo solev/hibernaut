@@ -349,6 +349,7 @@ type Clock interface {
 	// bridge while a session is open, and once by a successful create or fork. It only moves
 	// the clock forward: a t at or before what is recorded changes nothing, even when another
 	// process recorded it, because callers pass their own times and can arrive out of order.
+	// The first touch records t itself, never the time the record was made.
 	Touch(id string, t time.Time)
 }
 
