@@ -196,6 +196,8 @@ func (t natTable) chain(name string) []natRule {
 // plan returns the iptables-restore commands that move t to want, in the order the transaction
 // must run them, or nil when t is already there. When skipUnknown is set it leaves owned rules
 // of an unknown shape alone, which is the retry after a transaction that could not delete one.
+// An unwanted chain one of them jumps to cannot be deleted, so it is only emptied, and an
+// empty one counts as done.
 //
 // The chain is filled before the jump is inserted, and the old rules are deleted last, so even
 // read as a sequence the steps never show a jump to an empty chain or no hook at all. The whole
@@ -221,8 +223,13 @@ func plan(t natTable, want layout, skipUnknown bool) []string {
 			}
 		}
 	}
+	keepChain := false
 	if skipUnknown {
-		stale = slices.DeleteFunc(stale, func(r natRule) bool { return r.owned() && !r.known() })
+		stale = slices.DeleteFunc(stale, func(r natRule) bool {
+			skip := r.owned() && !r.known()
+			keepChain = keepChain || skip && r.refersToChain()
+			return skip
+		})
 	}
 	// A delete by specification removes the first match, so a second copy of the wanted rule
 	// cannot be deleted while the first is kept. Delete every copy and insert it again.
@@ -231,7 +238,7 @@ func plan(t natTable, want layout, skipUnknown bool) []string {
 		stale = append([]natRule{pre[0]}, stale...)
 	}
 
-	chainOK := !t.chains[chainName]
+	chainOK := !t.chains[chainName] || keepChain && len(t.chain(chainName)) == 0
 	if want.chain != nil {
 		chainOK = t.chains[chainName] && slices.EqualFunc(t.chain(chainName), want.chain, func(r natRule, w []string) bool {
 			return canonical(r.fields) == canonical(w)
@@ -263,8 +270,11 @@ func plan(t natTable, want layout, skipUnknown bool) []string {
 			lines = append(lines, "-D "+r.chain+" "+r.spec)
 		}
 	}
-	if want.chain == nil && t.chains[chainName] {
-		lines = append(lines, "-F "+chainName, "-X "+chainName)
+	if want.chain == nil && !chainOK {
+		lines = append(lines, "-F "+chainName)
+		if !keepChain {
+			lines = append(lines, "-X "+chainName)
+		}
 	}
 	return lines
 }
