@@ -110,6 +110,7 @@ func (m *Manager) makeCopy(ctx context.Context, origin engine.Machine, template,
 	if err := m.setupCopy(ctx, em.ID, keys); err != nil {
 		return hibapi.Machine{}, m.killFailedSetup(ctx, name, em.ID, err)
 	}
+	m.touch(em.ID)
 	return toAPI(em), nil
 }
 

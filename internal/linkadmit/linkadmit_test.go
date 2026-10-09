@@ -13,7 +13,7 @@ import (
 // links, so one of the two has to be bound late. Forgetting must be a startup failure, not a
 // link that nothing can close.
 func TestServeRefusesWithoutACloser(t *testing.T) {
-	a, err := linkadmit.New(linkadmit.Config{})
+	a, err := linkadmit.New(linkadmit.Config{Socket: socketPath(t)})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -21,21 +21,28 @@ func TestServeRefusesWithoutACloser(t *testing.T) {
 		t.Errorf("serving unbound = %v, want %v", err, links.ErrNoCloser)
 	}
 	a.SetCloser(stubCloser{})
-	if err := a.Serve(context.Background()); errors.Is(err, links.ErrNoCloser) {
-		t.Errorf("serving after SetCloser still reports %v", err)
+	if err := a.Serve(stopped()); err != nil {
+		t.Errorf("serving after SetCloser = %v", err)
 	}
 }
 
 // A closer passed in the config is used without a call to SetCloser, so a wiring that does not
 // need late binding does not have to ask for it.
 func TestAConfiguredCloserCounts(t *testing.T) {
-	a, err := linkadmit.New(linkadmit.Config{Closer: stubCloser{}})
+	a, err := linkadmit.New(linkadmit.Config{Closer: stubCloser{}, Socket: socketPath(t)})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	if err := a.Serve(context.Background()); errors.Is(err, links.ErrNoCloser) {
-		t.Errorf("serving with a configured closer reports %v", err)
+	if err := a.Serve(stopped()); err != nil {
+		t.Errorf("serving with a configured closer = %v", err)
 	}
+}
+
+// stopped is a context that is already done, so Serve binds its socket and returns at once.
+func stopped() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
 }
 
 type stubCloser struct{}

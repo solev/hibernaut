@@ -26,6 +26,7 @@ import (
 	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -49,6 +50,9 @@ const (
 	maxKeysFile    = 64 << 10
 	initTimeout    = 2 * time.Minute
 	cleanupTimeout = time.Minute
+	// heartbeatEvery is how often an open session records the machine's activity. It has to
+	// tick well inside links.LinkGrace, and it ticks whatever the machine's idle time.
+	heartbeatEvery = 30 * time.Second
 )
 
 var (
@@ -91,6 +95,13 @@ type Config struct {
 	Awake func() error
 	// BootID reads the host boot ID. An unreadable ID is the empty string.
 	BootID func() string
+	// Activity is the host's activity clock. A successful create, each fork copy and every open
+	// session (Dial) record the machine's activity in it. Default: links.NewClock(StateDir), or
+	// nothing recorded without a StateDir.
+	Activity links.Clock
+	// Fence fences machine id before Wake pauses it again, and the pause happens only while it
+	// holds. Default: no fence, which is right only while links are off.
+	Fence func(ctx context.Context, id, why string) (release func(), err error)
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -108,6 +119,8 @@ type Manager struct {
 	chownFile func(*os.File, int, int) error
 	waitCut   func(context.Context, time.Duration) error
 	bootID    func() string
+	activity  links.Clock
+	fence     func(ctx context.Context, id, why string) (release func(), err error)
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -128,12 +141,25 @@ func New(cfg Config) *Manager {
 	if bootID == nil {
 		bootID = readBootID
 	}
+	activity := cfg.Activity
+	if activity == nil && cfg.StateDir != "" {
+		activity = links.NewClock(cfg.StateDir)
+	}
 	return &Manager{
 		e: cfg.Engine, dir: cfg.StateDir, keysFile: cfg.AuthorizedKeys, now: now, readRoom: readRoom,
 		setup: cfg.Setup, durable: cfg.Durable, awake: awake,
 		euid: os.Geteuid, chownFile: (*os.File).Chown,
-		waitCut: waitCut,
-		bootID:  bootID,
+		waitCut:  waitCut,
+		bootID:   bootID,
+		activity: activity,
+		fence:    cfg.Fence,
+	}
+}
+
+// touch records that machine id did something that was not a link.
+func (m *Manager) touch(id string) {
+	if m.activity != nil {
+		m.activity.Touch(id, m.now())
 	}
 }
 
@@ -232,6 +258,7 @@ func (m *Manager) CreateSize(ctx context.Context, name, image string, size image
 	if err := setup(ctx, em.ID, keys); err != nil {
 		return hibapi.Machine{}, m.killFailedSetup(ctx, name, em.ID, err)
 	}
+	m.touch(em.ID)
 	return toAPI(em), nil
 }
 
@@ -340,8 +367,9 @@ func (c *Conn) Close() error {
 }
 
 // Dial connects to the SSH server of the machine called name, resuming the machine if it's
-// paused. The machine keeps running while the connection is open, unless something pauses it.
-// ctx bounds only the dial.
+// paused. The machine keeps running while the connection is open, unless something pauses it,
+// and its activity is recorded every heartbeatEvery for as long as it is open, whatever its
+// idle time. ctx bounds only the dial.
 func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	if err := m.checkState(); err != nil {
 		return nil, err
@@ -380,15 +408,39 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	if err != nil {
 		return fail(fmt.Errorf("connecting to %q: %w", name, err))
 	}
+	m.touch(em.ID)
 	bg := context.WithoutCancel(ctx)
 	kctx, cancel := context.WithCancel(bg)
 	done := make(chan struct{})
+	beat := make(chan struct{})
 	go m.keepalive(kctx, em.ID, idle, done)
+	go m.heartbeat(kctx, em.ID, beat)
 	return &Conn{Conn: conn, HostKey: key, stop: func() {
 		cancel()
 		<-done
+		<-beat
+		m.touch(em.ID)
 		m.extend(bg, em.ID, idle)
 	}}, nil
+}
+
+// heartbeat records machine id's activity until ctx is done. It is not keepalive, which never
+// ticks for a machine that never pauses.
+func (m *Manager) heartbeat(ctx context.Context, id string, done chan<- struct{}) {
+	defer close(done)
+	if m.activity == nil {
+		return
+	}
+	t := time.NewTicker(heartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		m.touch(id)
+	}
 }
 
 func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int, suggestSizes bool) error {
