@@ -111,6 +111,135 @@ func TestHostRemoveAndEnsureIdempotent(t *testing.T) {
 	}
 }
 
+func TestHostChainInstallsFromNothing(t *testing.T) {
+	host := newNetnsHost(t)
+	proxy := host.startListener(t, "proxy", "0.0.0.0:5443")
+	link := host.startListener(t, "link", "0.0.0.0:5444")
+	rule := Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15", Iptables: host.iptables}
+
+	changed, err := rule.Ensure(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("Ensure reported unchanged for an empty namespace")
+	}
+	host.assertLayout(t, rule)
+	if changed, err := rule.Ensure(context.Background()); err != nil || changed {
+		t.Fatalf("second Ensure = %v, %v, want unchanged", changed, err)
+	}
+
+	// A machine that publishes 443 is reached over the link path, not sent to the egress proxy.
+	host.machineDial(t, "198.18.0.9:443")
+	if got := link.result(t); got.original != "198.18.0.9:443" {
+		t.Fatalf("link listener OriginalDst = %s, want 198.18.0.9:443", got.original)
+	}
+	host.machineDial(t, "203.0.113.10:443")
+	if got := proxy.result(t); got.original != "203.0.113.10:443" {
+		t.Fatalf("proxy OriginalDst = %s, want 203.0.113.10:443", got.original)
+	}
+}
+
+func TestHostChainRepairsForeignRuleAboveJump(t *testing.T) {
+	host := newNetnsHost(t)
+	rule := Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15", Iptables: host.iptables}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() { errc <- rule.Keep(ctx, 100*time.Millisecond, t.Logf) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-errc; err != nil {
+			t.Errorf("Keep returned %v after cancel", err)
+		}
+	})
+
+	host.waitFirstRule(t, "hibernaut")
+	host.must(t, host.iptables, "-w", "5", "-t", "nat", "-I", "PREROUTING", "1", "-p", "tcp", "--dport", "443", "-j", "RETURN")
+	host.waitFirstRule(t, "hibernaut")
+	host.assertLayout(t, rule)
+	if !strings.Contains(host.natSave(t), "-A PREROUTING -p tcp -m tcp --dport 443 -j RETURN") {
+		t.Fatal("Keep deleted the foreign rule instead of moving the jump above it")
+	}
+}
+
+func TestHostChainMigratesFromBareRule(t *testing.T) {
+	host := newNetnsHost(t)
+	if _, err := (Rule{ProxyPort: 5443, Iptables: host.iptables}).Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(host.natSave(t), "--dport 443 -m comment --comment hibernaut -j REDIRECT") {
+		t.Fatalf("links-off Ensure did not install the bare 443 rule:\n%s", host.natSave(t))
+	}
+	rule := Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15", Iptables: host.iptables}
+	if changed, err := rule.Ensure(context.Background()); err != nil || !changed {
+		t.Fatalf("migrating Ensure = %v, %v", changed, err)
+	}
+	host.assertLayout(t, rule)
+
+	// Turning links off again takes the chain out in one step.
+	off := Rule{ProxyPort: 5443, Iptables: host.iptables}
+	if changed, err := off.Ensure(context.Background()); err != nil || !changed {
+		t.Fatalf("links-off Ensure = %v, %v", changed, err)
+	}
+	host.assertLayout(t, off)
+	if strings.Contains(host.natSave(t), chainName) {
+		t.Fatalf("links-off Ensure left the chain:\n%s", host.natSave(t))
+	}
+}
+
+func TestHostChainRepairsInterruptedMigration(t *testing.T) {
+	host := newNetnsHost(t)
+	if _, err := (Rule{ProxyPort: 5443, Iptables: host.iptables}).Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Jump present, chain half-written, legacy rule still there.
+	host.must(t, host.iptables, "-w", "5", "-t", "nat", "-N", chainName)
+	host.must(t, host.iptables, "-w", "5", "-t", "nat", "-A", chainName, "-d", "198.18.0.0/15", "-p", "tcp", "-j", "REDIRECT", "--to-ports", "5444")
+	host.must(t, host.iptables, "-w", "5", "-t", "nat", "-I", "PREROUTING", "1", "-i", "veth-+", "-m", "comment", "--comment", "hibernaut", "-j", chainName)
+
+	rule := Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15", Iptables: host.iptables}
+	if changed, err := rule.Ensure(context.Background()); err != nil || !changed {
+		t.Fatalf("repairing Ensure = %v, %v", changed, err)
+	}
+	host.assertLayout(t, rule)
+}
+
+func TestHostKeepSilentWhenSaveRendersMatchTCP(t *testing.T) {
+	host := newNetnsHost(t)
+	rule := Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15", Iptables: host.iptables}
+	if _, err := rule.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if save := host.natSave(t); !strings.Contains(save, "-m tcp --dport 443") {
+		t.Logf("this iptables does not render -m tcp, so the test proves less:\n%s", save)
+	}
+	logs := startKeep(t, rule)
+	time.Sleep(time.Second)
+	if logs.String() != "" {
+		t.Fatalf("Keep logged on an installed layout: %q", logs)
+	}
+}
+
+func TestHostChainRemoveLeavesNothing(t *testing.T) {
+	host := newNetnsHost(t)
+	rule := Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: "198.18.0.0/15", Iptables: host.iptables}
+	if _, err := rule.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	host.must(t, host.iptables, "-w", "5", "-t", "nat", "-A", "PREROUTING", "-i", "veth-+", "-p", "tcp", "--dport", "443", "-m", "comment", "--comment", "hibernaut", "-j", "REDIRECT", "--to-ports", "5443")
+	if err := Remove(context.Background(), host.iptables); err != nil {
+		t.Fatal(err)
+	}
+	host.assertNoHibernautRules(t)
+	if save := host.natSave(t); strings.Contains(save, chainName) {
+		t.Fatalf("Remove left the chain:\n%s", save)
+	}
+	if err := Remove(context.Background(), host.iptables); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHostHelper(t *testing.T) {
 	if os.Getenv("HIBERNAUT_HOOK_HELPER") == "" {
 		return
@@ -140,6 +269,7 @@ func newNetnsHost(t *testing.T) *netnsHost {
 	}
 	requireCommand(t, "ip")
 	requireCommand(t, "iptables")
+	requireCommand(t, "iptables-restore")
 
 	name := fmt.Sprintf("hib-hook-%d-%d", os.Getpid(), time.Now().UnixNano())
 	host := &netnsHost{
@@ -166,8 +296,11 @@ func newNetnsHost(t *testing.T) *netnsHost {
 	host.must(t, "ip", "netns", "exec", host.machineNS, "ip", "route", "add", "default", "via", "10.250.0.1")
 
 	wrapper := filepath.Join(t.TempDir(), "iptables")
-	if err := os.WriteFile(wrapper, []byte("#!/usr/bin/env bash\nexec ip netns exec "+host.hostNS+" iptables \"$@\"\n"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"iptables", "iptables-restore"} {
+		script := "#!/usr/bin/env bash\nexec ip netns exec " + host.hostNS + " " + name + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(filepath.Dir(wrapper), name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	host.iptables = wrapper
 	return host
@@ -273,6 +406,37 @@ func (h *netnsHost) assertNoHibernautRules(t *testing.T) {
 	}
 	if strings.Contains(string(out), "--comment hibernaut") {
 		t.Fatalf("hibernaut rules remain:\n%s", out)
+	}
+}
+
+func (h *netnsHost) natSave(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command(h.iptables, "-w", "5", "-t", "nat", "-S").Output()
+	if err != nil {
+		t.Fatalf("listing the nat table: %v", err)
+	}
+	return string(out)
+}
+
+// assertLayout checks the table is exactly rule's layout: the hibernaut rule first in
+// PREROUTING, nothing else of ours, and the chain's rules in order or no chain at all.
+func (h *netnsHost) assertLayout(t *testing.T, rule Rule) {
+	t.Helper()
+	want, err := rule.layout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := h.natSave(t)
+	table := parseNat(save)
+	if rest := plan(table, want, false); rest != nil {
+		t.Fatalf("layout is not %+v, still to do %q:\n%s", rule, rest, save)
+	}
+	pre := table.chain(prerouting)
+	if len(pre) == 0 || canonical(pre[0].fields) != canonical(want.top) {
+		t.Fatalf("first PREROUTING rule is not the hook:\n%s", save)
+	}
+	if want.chain != nil && len(table.chain(chainName)) != len(want.chain) {
+		t.Fatalf("chain has %d rules, want %d:\n%s", len(table.chain(chainName)), len(want.chain), save)
 	}
 }
 

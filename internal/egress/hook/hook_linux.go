@@ -3,12 +3,14 @@
 package hook
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -17,48 +19,54 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Ensure makes our rule the first rule of nat PREROUTING.
+// Ensure moves the nat table to the hook's layout (see rules.go) and reports whether it changed
+// anything. Every change is one iptables-restore --noflush transaction that touches only the
+// hibernaut rules in PREROUTING and the HIBERNAUT chain, so there is never a moment with a jump
+// to an empty chain or no hook at all, and every other chain, E2B's included, is left alone.
+//
+// iptables-restore is found beside Iptables: "iptables" gives "iptables-restore",
+// "/usr/sbin/iptables-nft" gives "/usr/sbin/iptables-nft-restore".
 func (r Rule) Ensure(ctx context.Context) (bool, error) {
-	if r.ProxyPort <= 0 || r.ProxyPort > 65535 {
-		return false, fmt.Errorf("hook: invalid proxy port %d", r.ProxyPort)
-	}
-	iptables := r.iptables()
-	parsed, err := listRules(ctx, iptables)
+	want, err := r.layout()
 	if err != nil {
 		return false, err
 	}
-	if parsed.firstIndex == 0 && len(parsed.rules) > 0 && parsed.rules[0].hasPort(r.ProxyPort) {
-		return false, nil
-	}
-	insertArgs := []string{"-w", "5", "-t", "nat", "-I", "PREROUTING", "1", "-i", "veth-+", "-p", "tcp", "--dport", "443", "-m", "comment", "--comment", "hibernaut", "-j", "REDIRECT", "--to-ports", fmt.Sprint(r.ProxyPort)}
-	if err := run(ctx, iptables, insertArgs...); err != nil {
+	iptables := r.iptables()
+	table, err := listNat(ctx, iptables)
+	if err != nil {
 		return false, err
 	}
-	parsed, err = listRules(ctx, iptables)
+	lines := plan(table, want, false)
+	if lines == nil {
+		return false, nil
+	}
+	skipUnknown := false
+	var leftover error
+	if err := restore(ctx, iptables, lines); err != nil {
+		// A hibernaut rule iptables cannot delete must not stop the repair of the rest, so the
+		// same transaction is tried again without the rules of a shape no version writes.
+		retry := plan(table, want, true)
+		if retry == nil || slices.Equal(retry, lines) {
+			return false, err
+		}
+		if err := restore(ctx, iptables, retry); err != nil {
+			return false, err
+		}
+		skipUnknown = true
+		leftover = fmt.Errorf("hook: left an unrecognised hibernaut rule in place: %w", err)
+	}
+	table, err = listNat(ctx, iptables)
 	if err != nil {
 		return true, err
 	}
-	if len(parsed.rules) == 0 {
-		return true, errors.New("hook: inserted hibernaut iptables rule was not listed")
+	if rest := plan(table, want, skipUnknown); rest != nil {
+		return true, fmt.Errorf("hook: iptables did not take the hibernaut layout, still to do: %q", rest)
 	}
-	keep := parsed.rules[0]
-	for i := len(parsed.rules) - 1; i >= 0; i-- {
-		rule := parsed.rules[i]
-		if i == 0 && rule.hasPort(r.ProxyPort) {
-			continue
-		}
-		deleteArgs := rule.deleteArgs
-		if strings.Join(rule.deleteArgs, "\x00") == strings.Join(keep.deleteArgs, "\x00") {
-			deleteArgs = []string{"-D", "PREROUTING", fmt.Sprint(rule.position)}
-		}
-		if err := run(ctx, iptables, append([]string{"-w", "5", "-t", "nat"}, deleteArgs...)...); err != nil {
-			return true, err
-		}
-	}
-	return true, nil
+	return true, leftover
 }
 
-// Keep calls Ensure now, then periodically until ctx ends.
+// Keep calls Ensure now, then periodically until ctx ends. It logs only when Ensure fails or had
+// to change something, so a healthy table is silent.
 func (r Rule) Keep(ctx context.Context, every time.Duration, logf func(string, ...any)) error {
 	if _, err := r.Ensure(ctx); err != nil {
 		return err
@@ -84,24 +92,26 @@ func (r Rule) Keep(ctx context.Context, every time.Duration, logf func(string, .
 				continue
 			}
 			if changed && logf != nil {
-				logf("re-added hibernaut iptables hook")
+				logf("repaired the hibernaut iptables hook")
 			}
 		}
 	}
 }
 
-// Remove deletes every nat PREROUTING rule commented "hibernaut".
+// Remove deletes the jump and every other PREROUTING rule commented "hibernaut", flushes the
+// HIBERNAUT chain and deletes it, in one iptables-restore --noflush transaction. It is a no-op
+// when none of them is there.
 func Remove(ctx context.Context, iptables string) error {
-	parsed, err := listRules(ctx, defaultIptables(iptables))
+	iptables = defaultIptables(iptables)
+	table, err := listNat(ctx, iptables)
 	if err != nil {
 		return err
 	}
-	for _, rule := range parsed.rules {
-		if err := run(ctx, defaultIptables(iptables), append([]string{"-w", "5", "-t", "nat"}, rule.deleteArgs...)...); err != nil {
-			return err
-		}
+	lines := planRemove(table)
+	if lines == nil {
+		return nil
 	}
-	return nil
+	return restore(ctx, iptables, lines)
 }
 
 // OriginalDst returns the destination a redirected connection was sent to.
@@ -164,20 +174,25 @@ func OnVeth(c net.Conn) error {
 	return fmt.Errorf("hook: local address %s belongs to interface %s, not veth-*", local.Addr(), iface.Name)
 }
 
-func listRules(ctx context.Context, iptables string) (parsedRules, error) {
-	cmd := exec.CommandContext(ctx, iptables, "-w", "5", "-t", "nat", "-S", "PREROUTING")
-	out, err := cmd.CombinedOutput()
+func listNat(ctx context.Context, iptables string) (natTable, error) {
+	cmd := exec.CommandContext(ctx, iptables, "-w", "5", "-t", "nat", "-S")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return parsedRules{}, fmt.Errorf("hook: %s -w 5 -t nat -S PREROUTING: %w: %s", iptables, err, out)
+		return natTable{}, fmt.Errorf("hook: %s -w 5 -t nat -S: %w: %s", iptables, err, bytes.TrimSpace(stderr.Bytes()))
 	}
-	return parseRules(string(out))
+	return parseNat(string(out)), nil
 }
 
-func run(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+// restore runs lines as one iptables-restore --noflush commit on the nat table.
+func restore(ctx context.Context, iptables string, lines []string) error {
+	input := "*nat\n" + strings.Join(lines, "\n") + "\nCOMMIT\n"
+	cmd := exec.CommandContext(ctx, iptables+"-restore", "--wait=5", "--noflush")
+	cmd.Stdin = strings.NewReader(input)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("hook: %s %s: %w: %s", name, strings.Join(args, " "), err, out)
+		return fmt.Errorf("hook: %s-restore --noflush: %w: %s\ninput:\n%s", iptables, err, bytes.TrimSpace(out), input)
 	}
 	return nil
 }
