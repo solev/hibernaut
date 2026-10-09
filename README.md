@@ -383,6 +383,40 @@ base64 aren't. A response the proxy can't decompress fails with 502 instead of p
 Bind a secret only to the API hosts that use it. If the proxy stops, machines' HTTPS goes straight
 out with placeholders. Bound calls fail, and nothing leaks.
 
+### Ports between machines (`hib port`)
+
+Machines can't reach each other until you publish a port. `hib port add` makes one port of one
+machine reachable from your other machines at `NAME.hib:PORT`. A link to a machine that paused
+itself while idle wakes it. A machine you paused with `hib pause` stays paused.
+
+```bash
+hib port add api 8080                      # api:8080 is published to your machines as api.hib:8080
+ssh web.hib curl http://api.hib:8080/health
+hib port ls                                # each machine's address, its ports and the open links
+hib port rm api 8080                       # stops new links and closes the open ones
+hib log --links                            # each link: when, which machines, the port and the result
+```
+
+- **Publishing a port trusts every one of your machines with it.** Any of them can connect,
+  including one whose agent a web page or an issue has turned against you. Publish only what
+  you'd let all of them use, and remove it when you're done.
+- **A service that listens only on localhost is published too.** E2B's agent in each machine
+  relays every socket listening on `127.0.0.1` to the machine's own address, so a published port
+  reaches it, and its clients look like `127.0.0.1` to it. Services often trust local clients
+  more: debuggers, admin pages, databases with no password. `hib port add` warns when the port
+  listens only on localhost, and publishes it anyway. It can't check a paused machine.
+- Ports 8081 (Hibernaut's SSH bridge) and 49983 (E2B's agent) can't be published. A machine can
+  publish up to 16 ports, and up to 256 machines can publish.
+- Each machine that publishes gets a virtual address in `198.18.0.0/15`, kept for its life and
+  never reused. The host tells running machines the name in `/etc/hosts`, and paused ones when
+  they wake. A machine that hasn't heard yet still reaches the port by its address.
+- `hib port rm` exits 1 when the host can't confirm it closed the links already open: the port is
+  unpublished anyway, and `hib port ls` shows what's still open.
+- A copy made by `hib fork` doesn't inherit published ports.
+- To reach a machine's port from your laptop, tunnel it over SSH:
+  `ssh -L 8080:localhost:8080 api.hib`, then open `http://localhost:8080`. The port doesn't need
+  to be published for that, and the host opens no port to the outside.
+
 ### GitHub (`hib connect github`, `hib status`)
 
 Connect GitHub once. Every machine can then clone your private repos, push, and use `gh`, with no
@@ -599,6 +633,9 @@ commands:
   fork MACHINE               copy a machine
   ssh NAME [-- CMD]          log in to a machine, or run CMD there
   exec NAME -- CMD [ARG...]  run CMD on a machine
+  port add NAME PORT...      publish a machine's port to your other machines
+  port rm NAME PORT...       stop publishing a port
+  port ls                    list published ports
   connect github             give machines your GitHub login
   connect codex              give machines your Codex login on a ChatGPT plan
   disconnect codex|github    remove a login from the host
@@ -606,7 +643,7 @@ commands:
   secret add NAME            store a bound secret
   secret ls                  list bound secrets
   secret rm NAME             remove a bound secret
-  log                        show secret swap audit entries
+  log                        show secret swap or link audit entries
   image build NAME           build an image on the host, in every size
   image save MACHINE NAME    save a machine as an image, memory included
   image ls                   list built-in and saved images

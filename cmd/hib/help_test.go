@@ -92,7 +92,7 @@ func TestHelpShowsFlagsWithTheirDefaults(t *testing.T) {
 	c := newClient(t, h)
 	for cmd, want := range map[string][]string{
 		"new":         {"usage: hib new NAME [--image IMAGE] [--size SIZE] [--idle 15m]\n", "  --image IMAGE ", "(default dev)", "  --idle DURATION "},
-		"log":         {"usage: hib log [--n N]\n", "  --n N ", "(default 50)", "  --json "},
+		"log":         {"usage: hib log [--n N] [--links]\n", "  --n N ", "(default 50)", "  --links ", "  --json "},
 		"fork":        {"(default 1)", "pauses for a few seconds", "a secret you typed in yourself goes into the image too"},
 		"image build": {"usage: hib image build NAME [--force] [--verbose]\n", "  --force ", "  --verbose "},
 		"rm":          {"usage: hib rm NAME [--yes]\n", "  --yes "},
