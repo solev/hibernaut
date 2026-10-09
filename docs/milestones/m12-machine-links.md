@@ -2672,3 +2672,27 @@ Superseded statements are marked inline.
   batch past the port cap has its own message. `OPEN` is null on every port or on none, so the
   example no longer mixes a count with `-`. The listener's `Logf` and the sandbox IDs in the link
   log are written down, and `hibd log --links` maps the IDs to names in slice 7.
+- 2026-10-09: Slice 1 landed, and this records what it settled. **The guard speaks nfnetlink
+  itself**, over `golang.org/x/sys/unix` with one socket per operation, so `go.mod` gains no module.
+  **With links off the hook is M11's rule.** `Ensure` keeps the bare 443 rule and installs no chain,
+  and turning links off again migrates back in one transaction. `iptables-restore` waits up to 5
+  seconds for the xtables lock. **A rule the hook cannot delete is logged, not fatal.** When a
+  transaction fails, `Ensure` tries again without the owned rules whose shape it does not know, and
+  returns `hook.ErrStrayRule` when one of them stays. The proxy logs it and keeps repairing. It logs
+  it again only when the message changes. With links off an unwanted chain such a rule jumps to is
+  emptied and kept, since the kernel will not delete a chain a rule still jumps to. `Remove` does
+  the same, and a clean stop of `hibd proxy` logs the rule and exits 0. Making `hibd proxy -unhook`
+  warn about it is slice 7's. **The token file holds the next token**, and `Tokens.Next` writes the
+  one after before it returns the one it read. **An unreadable `links.json` fences every machine**
+  with plain `ErrFenced`, and a failed `Runs.Live` retires every gate. A cycle that fails opens no
+  gate, and the gates a cycle opens are checked with one more read of the runs and the fences.
+  `Drop` gives up after 8 read-backs, and `NewKeeper` refuses a `Keep` that is not below `GuardTTL`.
+  **A batch that runs out of memory ends at its one ack.** On ENOMEM the kernel drops the acks it
+  had queued and sends one against the first message, so `batch` stops there rather than waiting out
+  its timeout, and a read that times out after an error has arrived returns that error. A failed
+  commit is reported as the commit's and not as its first message's. The host tests keep their
+  counters in a table of their own, `inet hlgtest`, stand in for E2B's firewall in the test's host
+  namespace and stop a helper process in the proxy's place with `SIGSTOP`. They count `EPERM` or a
+  timeout as refused. They need `ip`, `nft` and `iptables`, and one of them needs `conntrack`. None
+  of them has run yet, so no box in this slice's list is ticked. The `Makefile` targets that run
+  them are slice 8's.
