@@ -137,20 +137,16 @@ func (h *harness) route(gate links.Gate, port int, handler func(*backend, net.Co
 	return b
 }
 
-func (h *harness) backend(gate links.Gate, port int) *backend {
-	return h.backends[netip.AddrPortFrom(gate.Addr, uint16(port))]
-}
-
 // peer is src calling tgt's 8080 from its own slot with its own run's token.
 func (h *harness) peer() Peer {
 	return Peer{Source: "src", SourceAddr: srcGate.Addr, Dst: netip.AddrPortFrom(tgtAddr, 8080), Token: srcGate.Token}
 }
 
-// connect opens a connection to the listener that Identify will say is peer.
 // patience bounds every read and write on a test's connection, so a link that never closes
 // fails its test instead of hanging the package.
 const patience = 20 * time.Second
 
+// connect opens a connection to the listener that Identify will say is peer.
 func (h *harness) connect(peer Peer) net.Conn {
 	h.t.Helper()
 	return h.connectAs(peer, nil)
