@@ -11,7 +11,7 @@ v1's milestones are done: [M0 Foundations](m0-foundations.md), [M1 Machines](m1-
 [M9 Snapshot compaction](m9-snapshot-compaction.md) and
 [M10 CLI friendliness](m10-cli-friendliness.md). What's left is under **Later**. What comes after
 v1 is in [the goals](../goals.md), and its milestones start at
-[M11 Bot faces](m11-bot-faces.md), which is in progress.
+[M11 Bot faces](m11-bot-faces.md), which is done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@ v1 is in [the goals](../goals.md), and its milestones start at
 | M8 | [Machine sizes](m8-machine-sizes.md) | done | `TestSizes` |
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | done | `TestTrim`, `TestPauseCycles` (sentinels) |
 | M10 | [CLI friendliness](m10-cli-friendliness.md) | done | none new (unit tests in `cmd/hib`) |
-| M11 | [Bot faces](m11-bot-faces.md) | in progress | none new (unit tests in `internal/bot` and `cmd/hib`) |
+| M11 | [Bot faces](m11-bot-faces.md) | done | none new (unit tests in `internal/bot` and `cmd/hib`) |
 
 M8, M9 and M10 came last. M8 and M9 needed only M2, and M10 nothing.
 

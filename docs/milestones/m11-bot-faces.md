@@ -1,6 +1,6 @@
 # M11 Bot faces
 
-Status: **in progress** · Spec: §2 (The experience) · Needs: M10
+Status: **done** · Spec: §2 (The experience) · Needs: M10
 
 **Goal:** `hib` shows each machine as the Hibernaut bot, a face two columns wide at the start of
 the lines about it. A running machine's face is awake and a paused one's is asleep. While `hib`
@@ -225,13 +225,13 @@ Unit (in `internal/bot` and `cmd/hib`, no host):
 
 End-to-end:
 
-- [ ] None new. Faces are only for terminals, and the e2e tests have none. The existing tests stay
+- [x] None new. Faces are only for terminals, and the e2e tests have none. The existing tests stay
       green.
 
 ## Done when
 
 - [x] `make lint test` is green. CI is parked, so it stands in for CI.
-- [ ] `make e2e` is green on the host.
+- [x] `make e2e` is green on the host.
 - [x] The README matches what was built.
 
 ## Changes
@@ -247,3 +247,5 @@ End-to-end:
   that write is always the line. Frames go to Bubble Tea in sequence, so an old one can't be
   written after a newer one. Bubble Tea writes the frames it holds as it stops, which is why the
   image is deleted after.
+- 2026-10-09: Done. `make e2e` passed on the host at `0c2319c`. M11 changes no host code, so as
+  with M10, `make e2e-slow` wasn't run.
