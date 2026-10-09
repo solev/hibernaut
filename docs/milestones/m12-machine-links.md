@@ -1532,6 +1532,16 @@ well as a fenced target, that a failed pause clears the fence, that an old fence
 still refuses, that `hibd cleanup` reconciles an orphaned fence rather than ignoring it and
 `TestMachineToMachine/a_machine_paused_by_hand_is_not_woken_by_a_link`.
 
+*Residual:* a pause can lose to a link wake that is already resuming the machine. The `close`
+cancels the wake, but E2B may finish a resume it has started, and a `Pause` sent mid-resume is
+answered as not running, which `Manager.Pause` counts as done (`internal/machines/machines.go:346`).
+The machine then runs to the end of its lease, at most `LinkGrace`, or longer while the busy watcher
+renews it (`internal/busy/busy.go:189`), which doesn't read `PausedByHand`. Nothing can link to it
+meanwhile, since the mark is set, and running `hib pause` again pauses it. Closing the gap would
+take two changes: the wake path pausing again a machine that comes up fenced or marked, and busy
+skipping marked machines. The component security review found it and rated it low, and M12 leaves it
+open.
+
 **5b. Quiescing.** `pause-all` loops until nothing is running. A link that woke machines would stop
 it converging and keep the host from deallocating. *Decision:* the quiescing check is the **first**
 thing the connection path does, before any state is read, and renewals stop while the marker exists
@@ -2696,3 +2706,9 @@ Superseded statements are marked inline.
   timeout as refused. They need `ip`, `nft` and `iptables`, and one of them needs `conntrack`. None
   of them has run yet, so no box in this slice's list is ticked. The `Makefile` targets that run
   them are slice 8's.
+- 2026-10-09: The component security review of `528850b..d405126` found nothing at confidence 7 or
+  above. It confirmed both design-review fixes in the code. Tokens exist only as socket marks, so
+  losing a conntrack entry refuses the link rather than opening it, and `Guard.Open` refuses a token
+  at or below the highest it has seen, so a gate opened again always gets a new one. Its one low
+  finding, a pause losing to a wake that is already resuming the machine, is recorded as a residual
+  under Security item 5.
