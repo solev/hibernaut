@@ -28,8 +28,9 @@ var First = netip.MustParseAddr("198.18.0.1")
 // itself, which would hand over filesystem and exec access.
 var Reserved = []int{8081, 49983}
 
-// Where state lives. The two files sit in HIBD_STATE_DIR beside vault.json, are written through
-// internal/atomicfile and are read under the lock at LockName.
+// Where state lives. The two files sit in HIBD_STATE_DIR beside vault.json. links.json is
+// written atomically and given the state directory's owner, every read-modify-write of it holds
+// the lock at LockName and a plain read takes no lock.
 const (
 	// StateName is the published-port state. hibd writes it as root, but the state directory
 	// belongs to the login user (internal/machines/ownership.go:16-31) and every file hibd
@@ -49,9 +50,9 @@ const (
 	// ten minutes (internal/machines/snapshot.go:16-17), so age alone cannot tell a long
 	// save from a crash.
 	FenceName = "links-fence-%s.lock"
-	// StateMode and LockMode are the modes both files are created with: the login owner only.
-	// hib ls, hib pause and hib rm never open either file. They ask hibd, so the owner is the
-	// login user for consistency with the rest of the directory, not so that hib can read it.
+	// StateMode and LockMode are the modes both files are created with: readable and writable
+	// by the state directory's owner only. That owner is the login user, who runs hibd port,
+	// so a file root creates is chowned to that user rather than left as root's.
 	StateMode = 0o600
 	LockMode  = 0o600
 	// CtlSocket is the control socket the listener serves and hibd's other invocations dial.

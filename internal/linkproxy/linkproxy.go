@@ -74,8 +74,10 @@ type Config struct {
 	// Ingress and Dialer are the two legs.
 	Ingress Ingress
 	Dialer  Dialer
-	// Doc reads the current links.json. It is read per connection rather than cached, so a
-	// port published or unpublished a moment ago is already true.
+	// Doc returns the current links.json and is called for every connection. It keeps the
+	// parsed file and reloads it when the file's modification time, size or inode changes, so
+	// a port published or unpublished a moment ago is already true. A failed read refuses the
+	// connection with links.ErrStateUnreadable.
 	Doc func() (*links.Doc, error)
 	// Log is the link log. A nil Log drops entries rather than failing.
 	Log *audit.LinkLog

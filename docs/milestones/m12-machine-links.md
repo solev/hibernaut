@@ -209,6 +209,11 @@ running as root and renames into place. `openLock` (`internal/machines/statedir.
   is the login user. Root reads and writes them through the same ownership-aware path, so a file
   root writes is still the login user's. Root can read a `0600` file it doesn't own, so the
   proxy reading as root is fine.
+- **Root creates M12's locks the way `openLock` creates `hibd.lock`**: through `publishOwned`, then
+  checked to be a regular private file the owner holds. That covers `links.lock` and every
+  `links.FenceName`. `statefile.OpenLock` does not chown, so a `links.lock` that the daemon's first
+  idle pause created would be root's and the login user's `hibd port` could never take it.
+  `statefile.Held` never creates a file, because a fence lock that is not there has no holder.
 - These helpers are unexported in `internal/machines`, and the cancellable `waitLock` is unexported
   in `internal/hibd` (`internal/hibd/lock.go:15`). `internal/links` cannot import either without a
   cycle, because `hibd` imports both. **The contract commit extracts the locks** into a new package
@@ -362,7 +367,8 @@ links. It does nothing to a connection that is already open or to one sitting in
   access to stop. This is the one caller that never downgrades to a warning.
 - `hibd pause` and `hibd rm` send `close`, which is the same mechanism D3 needs for pausing, but
   they raise the fence first and, if the ack doesn't come, delete the machine's elements from the
-  kernel guard rather than pause past sockets the proxy may still hold (Security 10).
+  kernel guard rather than pause past sockets the proxy may still hold (*The kernel's own
+  fence*, 10).
 - The unit gains `ReadWritePaths=/run/hibernaut`. Not `RuntimeDirectory=hibernaut`: systemd
   deletes a `RuntimeDirectory` when the unit stops, and `/run/hibernaut` also holds the quiescing
   marker (`vm/lib/quiesce:11`), which must outlive a proxy restart.
@@ -374,7 +380,9 @@ links. It does nothing to a connection that is already open or to one sitting in
   `/usr/lib/tmpfiles.d/`, which `systemd-tmpfiles-setup.service` runs before any of our units.
   The proxy still unlinks its own socket on the way out.
 - The unit also gains `WatchdogSec=30` and `Restart=always`, pinged from the same loop as the
-  sweep, so a wedged proxy is killed rather than left holding link sockets (Security 10).
+  sweep, so a wedged proxy is eventually replaced. That is recovery, not protection: the kernel
+  guard has shut a wedged proxy's gates long before the watchdog fires (*The kernel's own fence*,
+  *What was rejected*).
 
 **Delivery is not promised** (D10). `pushSetup` returns without having reached every machine:
 `internal/hibd/delivery.go:50-82` skips the whole push while the host is quiescing, gives the batch
@@ -722,8 +730,8 @@ for admissions and `linkadmit` grants them and neither should import the other.
   An ID can't. `machines.Manager` gains
   `Wake(ctx context.Context, id string, leaseUntil time.Time) (engine.Machine, error)`, which
   resumes by ID with an absolute lease, like `Admission.LeaseUntil`, and returns the machine as
-  the engine now reports it. `Dial` can't be reused: it
-  opens a WebSocket to sshd on 8081 and pins a host key, neither of which a link needs.
+  the engine now reports it. `Dial` can't be reused: it opens a WebSocket to sshd on 8081 and pins
+  a host key, neither of which a link needs.
 - **A link wakes only for a source that is itself doing something.** `Admit` requires the source's
   activity to be inside `LinkGrace`, exactly as renewal does, and refuses with `ErrSourceIdle`
   otherwise. Without this a ring re-wakes itself for ever: the renewal rule stops *extending* a
@@ -1713,10 +1721,10 @@ Frozen by the commit:
 ### Slice 1: the firewall, the iptables chain and the kernel guard
 
 Owns `internal/egress/hook/` and `internal/linkguard/` (new). Depends on the contract.
-**It owns the whole of the S1 guard** (the nftables table, the set, the chains and the helpers that
-hibd's pause fallback calls) because it already owns the firewall layer and because a guard with two
-owners is a guard nobody owns. The listener and the admitter reach it through `links.Keeper`, and
-hibd's pause fallback through `links.Dropper`.
+**It owns the whole kernel guard** (the nftables table, its set and map, the chains, the Keeper and
+the `Drop` that hibd's pause fallback calls) because it already owns the firewall layer and because
+a guard with two owners is a guard nobody owns. The listener and the admitter reach it through
+`links.Keeper`, and hibd's pause fallback through `links.Dropper`.
 
 - [ ] `Ensure` installs the jump and the `HIBERNAUT` chain in **one** `iptables-restore
       --noflush` transaction: chain filled, then jump, then the legacy bare 443 rule deleted.
@@ -1881,13 +1889,18 @@ Owns `internal/hibd/port.go`, `internal/links/store.go`, `internal/statefile/`,
 `cmd/hib/commands.go`, `cmd/hib/complete.go` and `README.md`. Depends on the contract, which
 already carries the `internal/statefile` extraction and the empty `hibd/port.go` handler.
 
-- [ ] Lift `stateRoot`, `publishOwned` and `ensureDirectory` out of `internal/machines` into
-      `internal/statefile` with their host tests, unchanged, so `links` can write an owned file.
-- [ ] The bodies of `links.NewStore` and `links.NewClock`: read with the owned-file rules, update
-      under `links.lock` through `statefile.WaitLock`, write with `atomicfile` and set and clear a
-      fence with an owner that `statefile.Held` can check. Failing and corrupt reads and an unknown
-      `v` all fail closed. Every other slice goes through this, so the lock order and the version
-      check have one home.
+- [ ] Lift `stateRoot`, `publishOwned`, `ensureDirectory` and `openLock` out of
+      `internal/machines` into `internal/statefile` with their host tests, unchanged except that
+      `openLock` takes the lock's name, so `links` can write an owned file and take an owned lock.
+      A new root host test: a lock root creates is the state directory owner's, and the login user
+      can take it afterwards.
+- [ ] `Held` opens the lock without creating it, and a lock that is not there has no holder.
+- [ ] The bodies of `links.NewStore` and `links.NewClock`: read with the owned-file rules, take
+      `links.lock` and every fence lock through the owned open rather than `statefile.OpenLock`,
+      update under `links.lock` with `WaitLock`'s cancellable wait, write `links.json` with
+      `publishOwned` and set and clear a fence with an owner that `statefile.Held` can check.
+      Failing and corrupt reads and an unknown `v` all fail closed. Every other slice goes through
+      this, so the lock order and the version check have one home.
 - [ ] The activity clock's bodies in `links.NewClock`, as *The activity clock is not in
       `links.json`* describes. `Touch` creates the directory (`0700`) and the file (`0600`) as
       needed and moves the mtime forward only, never back. As root it chowns both to the state
@@ -2003,11 +2016,12 @@ that turns links on, and it cannot be anywhere else.
 - [ ] `snapshot.go`'s internal pause and resume fence, close and wait like any other pause, and
       keep `PausedByHand` across the round trip. If the pause fails, the fence is lifted.
 - [ ] **The proxy checks its protections at startup and refuses to serve links without them**:
-      `linkguard.Installed`, the `sandbox-firewall.nft` drops and the orchestrator's
-      `IPAddressDeny`. `azure/up.sh` deploys before `install-e2b.sh`, so ordering the files is not
-      enough on a fresh host: a boot can reach `hibd proxy` before the E2B pieces exist. If any
-      check fails the listener stays off, `hib port` says why and the proxy logs it once a minute
-      rather than once a connection. `azure/` itself is not edited.
+      the Keeper's `Ready` (the guard installed and its first cycle run), the
+      `sandbox-firewall.nft` drops and the orchestrator's `IPAddressDeny`. `azure/up.sh` deploys
+      before `install-e2b.sh`, so ordering the files is not enough on a fresh host: a boot can
+      reach `hibd proxy` before the E2B pieces exist. If any check fails the listener stays off,
+      `hib port` says why and the proxy logs it once a minute rather than once a connection.
+      `azure/` itself is not edited.
 - [ ] `vm/setup-host.sh` installs the tmpfiles entry and runs `systemd-tmpfiles --create`
       **before** `systemctl restart hibd-proxy.service` (`vm/setup-host.sh:36-43`), so the first
       start after an upgrade already has `/run/hibernaut`.
@@ -2065,7 +2079,8 @@ Unit (no host):
 - [ ] `internal/linkadmit`: `Serve` refuses with `ErrNoCloser` until `SetCloser` has been called,
       and accepts a closer passed in the config.
 - [ ] `internal/statefile`: the lock tests from the contract commit, plus the ownership tests
-      moved from `internal/machines` unchanged once slice 4 lifts them.
+      moved from `internal/machines` unchanged once slice 4 lifts them. `Held` on a missing lock
+      reports no holder and creates nothing.
 - [ ] `internal/egress/hook`: the jump at position 1, the chain's rules in order, a foreign
       rule inserted above the jump repaired by `Keep`, a stale bare 443 rule deleted last, `Keep`
       silent when `iptables-save` renders `-m tcp`, an interrupted install repaired, `Remove`
@@ -2384,4 +2399,8 @@ Superseded statements are marked inline.
   under `links/activity`, the audit signatures as built, `links.ErrStateUnreadable`, `Store.Update`,
   the default `idle=15m` and that the e2e asserts no link byte after a run ends rather than an abort
   before an autonomous pause. The files the contract finished and no slice owns are named, and so
-  are slice 8's milestones README and restart test.
+  are slice 8's milestones README and restart test. With `pause` and `rm` now root, the doc also
+  closes a gap the ownership rules already implied: `statefile.OpenLock` and `atomicfile` do not
+  chown, so slice 4 creates `links.lock` and the fence locks the way `openLock` creates
+  `hibd.lock`, writes `links.json` with `publishOwned` and makes `Held` stop creating files.
+  Otherwise a lock the daemon created first would be root's and `hibd port` could never take it.
