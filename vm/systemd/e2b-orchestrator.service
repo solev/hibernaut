@@ -11,8 +11,10 @@ EnvironmentFile=/etc/hibernaut/e2b-orchestrator.env
 Environment=NODE_ID=%H
 # Machines' TCP leaves through this process (E2B's egress proxy). It runs as root, which waagent's
 # WireServer rule lets through, so deny Azure's platform endpoints here. The nft table drops the
-# machines' other traffic to them; sandbox-firewall.nft explains why.
-IPAddressDeny=168.63.129.16 169.254.169.254
+# machines' other traffic to them; sandbox-firewall.nft explains why. 198.18.0.0/15 holds machine
+# links' addresses: hibd proxy's rule takes machines' TCP to them before E2B's proxy sees it, and
+# if that rule were missing, this deny makes a link fail rather than be dialled from the host.
+IPAddressDeny=168.63.129.16 169.254.169.254 198.18.0.0/15
 ExecStartPre=/usr/sbin/nft -f /etc/hibernaut/sandbox-firewall.nft
 ExecStart=@E2B_DIR@/packages/orchestrator/bin/orchestrator
 # On SIGTERM the orchestrator shuts its microVMs down itself: it waits for running ones to exit
