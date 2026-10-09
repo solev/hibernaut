@@ -32,6 +32,7 @@ func (a *App) fork(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "fork", err)
 	}
+	a.addHosts(ctx, cfg, &setup, "the copies of "+names[0])
 	m, err := a.managerWithSetup(setup)
 	if err != nil {
 		return a.fail(*asJSON, "fork", err)
