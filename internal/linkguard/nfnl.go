@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"syscall"
 	"time"
 
 	"github.com/solev/hibernaut/internal/links"
@@ -247,6 +248,94 @@ func encodeBatch(msgs []message, seq uint32) []byte {
 		b = m.appendTo(b, seq+1+uint32(i))
 	}
 	return batchEnd.appendTo(b, seq+1+uint32(len(msgs)))
+}
+
+// enomem is ENOMEM in asm-generic/errno-base.h.
+const enomem = 12
+
+// batchAcks follows the acknowledgements of a batch framed by encodeBatch(msgs, begin), as
+// nfnetlink_rcv_batch sends them. The kernel processes the whole batch first, then sends one
+// ack per message, zero or an errno, in order. A failed commit puts one more error, against the
+// first message, ahead of them. Two cases send nothing more: an error against a delimiter, which
+// refuses the whole batch, and ENOMEM, on which the kernel drops the acks it had queued and
+// reports ENOMEM against the first message alone.
+type batchAcks struct {
+	begin  uint32
+	seen   []bool
+	left   int
+	errno  syscall.Errno
+	at     int
+	commit bool
+	final  error
+}
+
+func newBatchAcks(begin uint32, n int) *batchAcks {
+	return &batchAcks{begin: begin, seen: make([]bool, n), left: n}
+}
+
+// add takes one message read back after the batch was sent.
+func (a *batchAcks) add(m nlmsg) {
+	if a.done() || m.typ != nlmsgError {
+		return
+	}
+	e := syscall.Errno(m.errno())
+	if m.seq == a.begin || m.seq == a.begin+1+uint32(len(a.seen)) {
+		if e != 0 {
+			a.final = fmt.Errorf("nftables transaction: %w", e)
+		}
+		return
+	}
+	n := m.seq - a.begin - 1
+	if n >= uint32(len(a.seen)) {
+		return
+	}
+	i := int(n)
+	if e == enomem {
+		if a.final = a.err(); a.final == nil {
+			a.final = fmt.Errorf("nftables transaction: %w", e)
+		}
+		return
+	}
+	if !a.seen[i] {
+		a.seen[i] = true
+		a.left--
+	}
+	switch {
+	case e != 0 && a.errno == 0:
+		a.errno, a.at = e, i
+	case e == 0 && a.errno != 0 && i == a.at:
+		// The message that failed is acked as well, so the error was the commit's.
+		a.commit = true
+	}
+}
+
+// done reports whether the kernel will send nothing more about the batch.
+func (a *batchAcks) done() bool {
+	return a.final != nil || a.left == 0
+}
+
+// err returns the batch's first error, wrapping the kernel's errno.
+func (a *batchAcks) err() error {
+	switch {
+	case a.final != nil:
+		return a.final
+	case a.errno == 0:
+		return nil
+	case a.commit:
+		return fmt.Errorf("nftables transaction commit: %w", a.errno)
+	default:
+		return fmt.Errorf("nftables transaction, message %d of %d: %w", a.at+1, len(a.seen), a.errno)
+	}
+}
+
+// recvFailed returns what to report when reading the acks fails with err: the batch's own
+// error, if one has arrived, since a read that times out after it is the kernel having nothing
+// more to say.
+func (a *batchAcks) recvFailed(err error) error {
+	if failed := a.err(); failed != nil {
+		return failed
+	}
+	return err
 }
 
 // nlmsg is one message read back from the kernel. payload is everything after the netlink

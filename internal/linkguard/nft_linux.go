@@ -282,45 +282,28 @@ func (c *conn) recv() ([]nlmsg, error) {
 	}
 }
 
-// batch sends msgs as one transaction and waits for every acknowledgement. The kernel
-// processes the whole batch before it reports anything, commits it only if every message
-// succeeded, and reports a failed commit against the batch's first message. It returns the
-// first error, wrapping the kernel's errno.
+// batch sends msgs as one transaction and reads its acknowledgements as batchAcks describes.
+// The kernel commits the batch only if every message succeeded. It returns the first error,
+// wrapping the kernel's errno.
 func (c *conn) batch(msgs []message) error {
 	begin := c.seq + 1
-	first, end := begin+1, begin+1+uint32(len(msgs))
-	c.seq = end
+	c.seq = begin + 1 + uint32(len(msgs))
 	b := encodeBatch(msgs, begin)
 	c.fit(len(b), len(msgs))
 	if err := c.send(b); err != nil {
 		return err
 	}
-	var failed error
-	for acked := 0; acked < len(msgs); {
+	acks := newBatchAcks(begin, len(msgs))
+	for !acks.done() {
 		rs, err := c.recv()
 		if err != nil {
-			return err
+			return acks.recvFailed(err)
 		}
 		for _, r := range rs {
-			if r.typ != nlmsgError {
-				continue
-			}
-			if r.seq == begin || r.seq == end {
-				if e := r.errno(); e != 0 {
-					return fmt.Errorf("nftables transaction: %w", syscall.Errno(e))
-				}
-				continue
-			}
-			if r.seq < first || r.seq >= end {
-				continue
-			}
-			acked++
-			if e := r.errno(); e != 0 && failed == nil {
-				failed = fmt.Errorf("nftables transaction, message %d of %d: %w", r.seq-first+1, len(msgs), syscall.Errno(e))
-			}
+			acks.add(r)
 		}
 	}
-	return failed
+	return acks.err()
 }
 
 // dump reads every object req asks for. It reads again when the kernel says the dump crossed

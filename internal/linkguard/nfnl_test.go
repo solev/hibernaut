@@ -3,6 +3,10 @@ package linkguard
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -294,5 +298,57 @@ func TestErrno(t *testing.T) {
 	}
 	if e := (nlmsg{typ: nlmsgError, payload: enoent}).errno(); e != 2 {
 		t.Errorf("ENOENT errno %d", e)
+	}
+}
+
+func TestBatchAcks(t *testing.T) {
+	// begin 10, three messages 11 to 13, end 14.
+	ack := func(seq uint32, e syscall.Errno) nlmsg {
+		return nlmsg{typ: nlmsgError, seq: seq, payload: binary.NativeEndian.AppendUint32(nil, uint32(-int32(e)))}
+	}
+	timeout := fmt.Errorf("read from nfnetlink: %w", syscall.EAGAIN)
+	for _, tc := range []struct {
+		name string
+		acks []nlmsg
+		// timeout is a read that times out after the acks.
+		timeout bool
+		want    error
+		say     string
+	}{
+		{name: "every message succeeds", acks: []nlmsg{ack(11, 0), ack(12, 0), ack(13, 0)}},
+		{name: "first error wins", acks: []nlmsg{ack(11, 0), ack(12, syscall.EEXIST), ack(13, syscall.ENOENT)}, want: syscall.EEXIST, say: "message 2 of 3"},
+		{name: "others ignored", acks: []nlmsg{{typ: 0x10, seq: 11}, ack(9, syscall.EPERM), ack(20, syscall.EPERM), ack(11, 0), ack(14, 0), ack(12, 0), ack(13, 0)}},
+		{name: "error against begin", acks: []nlmsg{ack(10, syscall.EPERM)}, want: syscall.EPERM},
+		{name: "error against end", acks: []nlmsg{ack(14, syscall.EINVAL)}, want: syscall.EINVAL},
+		{name: "failed commit", acks: []nlmsg{ack(11, syscall.EBUSY), ack(11, 0), ack(12, 0), ack(13, 0)}, want: syscall.EBUSY, say: "commit"},
+		{name: "enomem", acks: []nlmsg{ack(11, syscall.ENOMEM)}, want: syscall.ENOMEM},
+		{name: "enomem after an error", acks: []nlmsg{ack(11, syscall.ENOENT), ack(11, syscall.ENOMEM)}, want: syscall.ENOENT},
+		{name: "timeout after a failure", acks: []nlmsg{ack(11, 0), ack(12, syscall.ENOENT)}, timeout: true, want: syscall.ENOENT, say: "message 2 of 3"},
+		{name: "timeout before any failure", acks: []nlmsg{ack(11, 0)}, timeout: true, want: syscall.EAGAIN},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newBatchAcks(10, 3)
+			for i, m := range tc.acks {
+				if a.done() {
+					t.Fatalf("done before ack %d", i)
+				}
+				a.add(m)
+			}
+			err := a.err()
+			if tc.timeout {
+				if a.done() {
+					t.Fatal("done before the read that times out")
+				}
+				err = a.recvFailed(timeout)
+			} else if !a.done() {
+				t.Fatal("still waiting after the last ack")
+			}
+			if tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if !strings.Contains(fmt.Sprint(err), tc.say) {
+				t.Fatalf("err = %v, want it to say %q", err, tc.say)
+			}
+		})
 	}
 }
