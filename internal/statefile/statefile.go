@@ -1,7 +1,8 @@
 // Package statefile holds the file locking that hibd's state directory is built on. It sits
 // below hibd so that packages hibd imports, such as links, can take the same locks without an
-// import cycle. The bodies came from internal/hibd/lock.go unchanged; hibd still calls them
-// under its old names.
+// import cycle. The lock bodies came from internal/hibd/lock.go unchanged; hibd still calls them
+// under its old names. Dir, in owned.go, is the ownership-aware form that internal/machines
+// keeps hibd.lock and its pins with and that internal/links keeps links.json and its locks with.
 package statefile
 
 import (
@@ -19,13 +20,17 @@ import (
 // WaitLock takes the lock, waiting until it is free or ctx is done. It is the cancellable form
 // of TryLock, for the callers that have to queue rather than fail.
 func WaitLock(ctx context.Context, stateDir, name, what string) (func(), error) {
+	return waitLock(ctx, func() (func(), bool, error) { return TryLock(stateDir, name, what) })
+}
+
+func waitLock(ctx context.Context, try func() (func(), bool, error)) (func(), error) {
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		unlock, ok, err := TryLock(stateDir, name, what)
+		unlock, ok, err := try()
 		if err != nil || ok {
 			return unlock, err
 		}
@@ -40,7 +45,11 @@ func WaitLock(ctx context.Context, stateDir, name, what string) (func(), error) 
 // TryLock takes the lock if it is free. It reports ok false, with no error, when someone else
 // holds it, so a caller can decide between waiting and giving up.
 func TryLock(stateDir, name, what string) (unlock func(), ok bool, err error) {
-	f, err := OpenLock(stateDir, name)
+	return tryLock(func() (*os.File, error) { return OpenLock(stateDir, name) }, what)
+}
+
+func tryLock(open func() (*os.File, error), what string) (unlock func(), ok bool, err error) {
+	f, err := open()
 	if err != nil {
 		return nil, false, fmt.Errorf("opening the %s lock: %w", what, err)
 	}
@@ -61,8 +70,10 @@ func TryLock(stateDir, name, what string) (unlock func(), ok bool, err error) {
 // the exclusive lock TryLock takes and with nothing else, so failing to get it means a holder
 // is alive. This is how a fence tells a running operation from one whose process has died: the
 // lock goes away with the process, whatever killed it, so no staleness rule has to guess.
+//
+// Held never creates the lock. A lock that isn't there has no holder.
 func Held(stateDir, name string) (bool, error) {
-	f, err := OpenLock(stateDir, name)
+	f, err := openExisting(stateDir, name, os.O_RDONLY)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
@@ -97,6 +108,20 @@ func OpenLock(stateDir, name string) (*os.File, error) {
 	if !errors.Is(err, fs.ErrExist) {
 		return f, err
 	}
+	return openRegular(root, stateDir, name, os.O_RDWR)
+}
+
+func openExisting(stateDir, name string, flag int) (*os.File, error) {
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return openRegular(root, stateDir, name, flag)
+}
+
+// openRegular opens the regular file at name, refusing a symlink there.
+func openRegular(root *os.Root, stateDir, name string, flag int) (*os.File, error) {
 	notAFile := fmt.Errorf("%s isn't a regular file", filepath.Join(stateDir, name))
 	named, err := root.Lstat(name)
 	if err != nil {
@@ -105,7 +130,7 @@ func OpenLock(stateDir, name string) (*os.File, error) {
 	if !named.Mode().IsRegular() {
 		return nil, notAFile
 	}
-	f, err = root.OpenFile(name, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	f, err := root.OpenFile(name, flag|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -1,106 +1,41 @@
 package machines
 
 import (
-	"crypto/rand"
-	"errors"
-	"fmt"
 	"io/fs"
 	"os"
-	"syscall"
+
+	"github.com/solev/hibernaut/internal/statefile"
 )
 
 type stateOwner struct {
 	uid, gid int
 }
 
+func ownerOf(o statefile.Owner) stateOwner { return stateOwner{uid: o.UID, gid: o.GID} }
+
+func (o stateOwner) statefile() statefile.Owner { return statefile.Owner{UID: o.uid, GID: o.gid} }
+
 func directoryOwner(fi fs.FileInfo, name string, uid int) (stateOwner, error) {
-	if !fi.IsDir() {
-		return stateOwner{}, fmt.Errorf("state directory %s: not a directory", name)
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return stateOwner{}, fmt.Errorf("state directory %s: can't tell its owner", name)
-	}
-	if uid != 0 && int(st.Uid) != uid {
-		return stateOwner{}, fmt.Errorf("state directory %s: belongs to uid %d, not %d", name, st.Uid, uid)
-	}
-	if fi.Mode().Perm()&0o022 != 0 {
-		return stateOwner{}, fmt.Errorf("state directory %s: others can write to it (%v)", name, fi.Mode().Perm())
-	}
-	return stateOwner{uid: int(st.Uid), gid: int(st.Gid)}, nil
+	o, err := statefile.DirectoryOwner(fi, name, uid)
+	return ownerOf(o), err
+}
+
+// stateDir is the manager's state directory as statefile sees it. It's built on every call so
+// that tests which swap m.euid or m.chownFile reach the helpers.
+func (m *Manager) stateDir() statefile.Dir {
+	return statefile.Dir{Path: m.dir, EUID: m.euid, Chown: m.chownFile}
 }
 
 func (m *Manager) stateRoot() (*os.Root, stateOwner, error) {
 	if err := checkDir(m.dir, m.euid()); err != nil {
 		return nil, stateOwner{}, err
 	}
-	root, err := os.OpenRoot(m.dir)
-	if err != nil {
-		return nil, stateOwner{}, err
-	}
-	fi, err := root.Stat(".")
-	if err != nil {
-		root.Close()
-		return nil, stateOwner{}, err
-	}
-	owner, err := directoryOwner(fi, m.dir, m.euid())
-	if err != nil {
-		root.Close()
-		return nil, stateOwner{}, err
-	}
-	return root, owner, nil
+	root, owner, err := m.stateDir().Root()
+	return root, ownerOf(owner), err
 }
 
-func (m *Manager) publishOwned(root *os.Root, name string, data []byte, owner stateOwner, replace bool) (published *os.File, err error) {
-	token := make([]byte, 16)
-	if _, err := rand.Read(token); err != nil {
-		return nil, err
-	}
-	tmp := fmt.Sprintf(".%s.tmp-%x", name, token)
-	f, err := root.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if published == nil {
-			f.Close()
-		}
-		root.Remove(tmp)
-	}()
-	if err := f.Chmod(0o600); err != nil {
-		return nil, err
-	}
-	if err := m.chownFile(f, owner.uid, owner.gid); err != nil {
-		return nil, err
-	}
-	if _, err := f.Write(data); err != nil {
-		return nil, err
-	}
-	if err := f.Sync(); err != nil {
-		return nil, err
-	}
-	if replace {
-		err = root.Rename(tmp, name)
-	} else {
-		err = root.Link(tmp, name)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !replace {
-		if err := root.Remove(tmp); err != nil {
-			return nil, err
-		}
-	}
-	d, err := root.Open(".")
-	if err != nil {
-		return nil, err
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, errors.ErrUnsupported) {
-		return nil, err
-	}
-	return f, nil
+func (m *Manager) publishOwned(root *os.Root, name string, data []byte, owner stateOwner, replace bool) (*os.File, error) {
+	return m.stateDir().PublishOwned(root, name, data, owner.statefile(), replace)
 }
 
 func (m *Manager) writeOwnedPin(id string, data []byte) error {

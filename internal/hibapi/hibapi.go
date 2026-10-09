@@ -159,8 +159,9 @@ type Ports struct {
 type PublishedPort struct {
 	Port int `json:"port"`
 	// Open is how many links are using it right now, so a machine kept awake by a link can be
-	// explained while it is happening rather than afterwards from a log.
-	Open int `json:"open"`
+	// explained while it is happening rather than afterwards from a log. It is null when hibd
+	// proxy didn't answer, and in the replies to port add and port rm, which don't ask it.
+	Open *int `json:"open"`
 }
 
 // LinkEntry is one line of the link log, from log --links.

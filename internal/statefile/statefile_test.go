@@ -146,3 +146,29 @@ func TestOpenLockCreatesItPrivate(t *testing.T) {
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
+
+// A fence lock that isn't there has no holder, and checking it mustn't leave one behind.
+func TestHeldCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	if held, err := Held(dir, "fence.lock"); err != nil || held {
+		t.Fatalf("Held with no file: %v, %v", held, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "fence.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Held left %s behind: %v", "fence.lock", err)
+	}
+}
+
+func TestHeldRefusesASymlink(t *testing.T) {
+	dir := t.TempDir()
+	unlock, ok, err := TryLock(dir, "real.lock", "test")
+	if err != nil || !ok {
+		t.Fatalf("TryLock: ok %v, err %v", ok, err)
+	}
+	defer unlock()
+	if err := os.Symlink("real.lock", filepath.Join(dir, "fence.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := Held(dir, "fence.lock"); err == nil {
+		t.Fatalf("Held followed a symlink and reported %v", held)
+	}
+}

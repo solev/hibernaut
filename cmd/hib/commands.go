@@ -103,6 +103,36 @@ func commandTable() *command {
 				nargs:    1, takesCommand: true, flags: noFlags(configured((*app).exec)),
 			},
 			{
+				name: "port",
+				about: "Publishes a machine's ports to your other machines, which reach them at NAME.hib:PORT. Every\n" +
+					"one of your machines can reach a published port, so publishing one trusts them all with it.",
+				examples: []string{"hib port add api 8080", "hib port ls"},
+				subs: []*command{
+					{
+						name: "add", args: "NAME PORT...", summary: "publish a machine's port to your other machines",
+						about: "Lets your other machines reach PORT on NAME at NAME.hib:PORT. A link wakes NAME if it's\n" +
+							"paused. Any of your machines can use the port, so only publish what you'd trust all of them\n" +
+							"with. It warns when NAME listens on PORT only at 127.0.0.1, because its clients will then\n" +
+							"look local to it.",
+						examples: []string{"hib port add api 8080", "hib port add db 5432 6379"},
+						nargs:    anyArgs, flags: jsonOnly(configured((*app).portAdd)),
+					},
+					{
+						name: "rm", args: "NAME PORT...", summary: "stop publishing a port",
+						about:    "Stops publishing the ports and closes the links that are using them.",
+						examples: []string{"hib port rm api 8080"},
+						nargs:    anyArgs, flags: jsonOnly(configured((*app).portRM)),
+					},
+					{
+						name: "ls", summary: "list published ports",
+						about: "Lists the published ports, the address each machine has in the others and how many links\n" +
+							"are open now.",
+						examples: []string{"hib port ls"},
+						flags:    jsonOnly(configured((*app).portLS)),
+					},
+				},
+			},
+			{
 				name:     "connect",
 				about:    "Gives every machine a login, which the host keeps. Machines get placeholders, never the tokens.",
 				examples: []string{"hib connect github", "hib connect codex"},
@@ -186,9 +216,10 @@ func commandTable() *command {
 				},
 			},
 			{
-				name: "log", opts: "[--n N]", summary: "show secret swap audit entries",
-				about:    "Shows the newest swaps of placeholders for secrets: when, which machine, the site, the method,\nthe path and the secrets.",
-				examples: []string{"hib log", "hib log --n 200"},
+				name: "log", opts: "[--n N] [--links]", summary: "show secret swap or link audit entries",
+				about: "Shows the newest swaps of placeholders for secrets: when, which machine, the site, the method,\n" +
+					"the path and the secrets. --links shows the newest links between machines instead.",
+				examples: []string{"hib log", "hib log --n 200", "hib log --links"},
 				flags:    logFlags,
 			},
 			{
@@ -449,8 +480,9 @@ func secretAddFlags(fl *flag.FlagSet) runner {
 
 func logFlags(fl *flag.FlagSet) runner {
 	n := fl.Int("n", 50, "show the `N` newest entries")
+	links := fl.Bool("links", false, "show links between machines instead of secret swaps")
 	return withJSON(fl, configured(func(a *app, ctx context.Context, cfg *config, _ []string) int {
-		return a.log(ctx, cfg, *n, false)
+		return a.log(ctx, cfg, *n, *links)
 	}))
 }
 
