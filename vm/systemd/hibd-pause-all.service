@@ -1,9 +1,11 @@
 # It's ordered after E2B, so it stops first: on any clean shutdown, and, through Requires=,
-# whenever someone stops or restarts the orchestrator.
+# whenever someone stops or restarts the orchestrator. It's ordered after hibd-proxy too, so at
+# shutdown it pauses while the proxy still answers close, but it doesn't require the proxy: it
+# still runs on a host whose proxy isn't running.
 [Unit]
 Description=Pause every Hibernaut machine before E2B stops
 Requires=e2b-orchestrator.service
-After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service
+After=e2b-infra.service e2b-api.service e2b-orchestrator.service e2b-client-proxy.service hibd-proxy.service
 
 [Service]
 Type=oneshot
