@@ -120,6 +120,10 @@ type Admitter interface {
 // scheduled, closed. Hibernaut never pauses a machine past a listener that may still hold a
 // socket to it, because E2B hands a paused machine's slot to another machine about ReturnDelay
 // later, and a socket that outlived its run would then be pointed at a stranger.
+//
+// All three work whether or not the listener is serving. One that is not, before Serve or after
+// it has returned, holds no sockets, so the aborts return 0 and nil and Stat returns empty counts.
+// That is how the control socket answers while links are off.
 type Closer interface {
 	// AbortMachine aborts every link with id at either end and returns the number it aborted.
 	AbortMachine(ctx context.Context, id string, reason string) (int, error)
@@ -247,6 +251,11 @@ type Dropper interface {
 	// none of them, and returns only once that read is empty. hibd's pause fallback pauses a
 	// machine on the strength of this, so a lie here is a leaked link. It needs CAP_NET_ADMIN:
 	// a caller without it gets an error and must not go on as if it had dropped.
+	//
+	// A missing table is an error, because a wedged proxy whose table was flushed may still hold
+	// sockets. The one exception is a TokenFile that does not exist: no token has been handed
+	// out since boot, so no gate and no link socket can have existed, and Drop returns nil.
+	// Without it, a host whose proxy never installed the guard could pause nothing.
 	Drop(addr netip.Addr) error
 }
 
@@ -256,7 +265,8 @@ type Tokens interface {
 	// Next returns a token no run has held before, starting at 1, or ErrTokensSpent once the
 	// counter has passed GuardMaxToken. The counter is persisted under RunDir so it stays
 	// monotonic across a proxy restart, and a reboot restarts it because no run survives one.
-	// Running out is final until that reboot.
+	// Running out is final until that reboot. It writes the counter before it returns a
+	// token, so TokenFile exists whenever any token is in use, which Dropper relies on.
 	Next() (uint32, error)
 }
 
@@ -336,7 +346,9 @@ type Clock interface {
 	// Active reports when id last showed non-link activity. The zero time means never.
 	Active(id string) time.Time
 	// Touch records non-link activity at t. It is called by the busy watcher, by the SSH
-	// bridge while a session is open, and once by a successful create or fork.
+	// bridge while a session is open, and once by a successful create or fork. It only moves
+	// the clock forward: a t at or before what is recorded changes nothing, even when another
+	// process recorded it, because callers pass their own times and can arrive out of order.
 	Touch(id string, t time.Time)
 }
 

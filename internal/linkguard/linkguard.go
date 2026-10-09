@@ -25,11 +25,14 @@ type Guard struct {
 	// table, set and gmap are links.GuardTable, links.GuardSet and links.GuardMap in
 	// production, and names a test owns in tests, so a test never touches the live table.
 	table, set, gmap string
+	// tokenFile is links.TokenFile in production. Drop checks it when the table is missing, and
+	// a test points it at a file of its own.
+	tokenFile string
 }
 
 // New returns a guard over the production table.
 func New() *Guard {
-	return &Guard{table: links.GuardTable, set: links.GuardSet, gmap: links.GuardMap}
+	return &Guard{table: links.GuardTable, set: links.GuardSet, gmap: links.GuardMap, tokenFile: links.TokenFile}
 }
 
 // Install replaces the table with this version's sets, chains and rules in one atomic
@@ -59,7 +62,8 @@ func (g *Guard) Open(gate links.Gate) error { return links.ErrGuardDown }
 func (g *Guard) Extend(gates []links.Gate) error { return links.ErrGuardDown }
 
 // Drop removes every gate for addr whatever its token, and addr's map entry, and reads them
-// back until the kernel has none of them. It needs CAP_NET_ADMIN.
+// back until the kernel has none of them. It needs CAP_NET_ADMIN. A missing table is an error
+// unless links.TokenFile does not exist, as links.Dropper explains.
 func (g *Guard) Drop(addr netip.Addr) error { return links.ErrGuardDown }
 
 // Has reports whether gate is still open. A false stays false.

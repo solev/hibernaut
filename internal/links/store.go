@@ -60,7 +60,9 @@ func (c *clock) Active(id string) time.Time {
 func (c *clock) Touch(id string, t time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.at[id] = t
+	if t.After(c.at[id]) {
+		c.at[id] = t
+	}
 }
 
 var (
