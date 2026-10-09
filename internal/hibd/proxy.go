@@ -112,12 +112,13 @@ func (a *App) runProxy(ctx context.Context) error {
 		Server: a.egressServer(ctx, setup, writer, logf), Rule: a.proxyHook(setup.port, setup.cfg.linkPort),
 		Audit: writer, Logf: logf,
 	}
-	return serveProxy(ctx, service, listener, side)
+	return a.serveProxy(ctx, service, listener, side)
 }
 
 // serveProxy serves egress and, with links on, the links side, until ctx is done or one of them
-// stops, and then stops them all: the two listeners go up and down together.
-func serveProxy(ctx context.Context, service *proxypkg.Service, l net.Listener, side *linkSide) error {
+// stops, and then stops them all: the two listeners go up and down together. Meanwhile it pings
+// systemd's watchdog.
+func (a *App) serveProxy(ctx context.Context, service *proxypkg.Service, l net.Listener, side *linkSide) error {
 	ended := make(chan struct{})
 	var once sync.Once
 	end := func() { once.Do(func() { close(ended) }) }
@@ -131,13 +132,24 @@ func serveProxy(ctx context.Context, service *proxypkg.Service, l net.Listener, 
 		end()
 		egressDone <- err
 	}()
+	var healthy func(context.Context) error
 	if side != nil {
 		side.start(detached, end)
+		healthy = side.healthy
 	}
+	watchdogCtx, stopWatchdog := context.WithCancel(detached)
+	defer stopWatchdog()
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		a.watchdog(watchdogCtx, ended, healthy, service.Logf)
+	}()
 	select {
 	case <-ctx.Done():
 	case <-ended:
 	}
+	stopWatchdog()
+	<-watchdogDone
 	stopEgress()
 	var linksErr error
 	if side != nil {

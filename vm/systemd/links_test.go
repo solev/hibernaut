@@ -41,6 +41,12 @@ func TestProxyUnitServesLinks(t *testing.T) {
 	if weight, err := strconv.Atoi(strings.Join(unit["CPUWeight"], "")); err != nil || weight <= 100 {
 		t.Errorf("CPUWeight=%v, want more than the default 100, so a busy host doesn't starve the Keeper", unit["CPUWeight"])
 	}
+	if !slices.Equal(unit["WatchdogSec"], []string{"30"}) || !slices.Equal(unit["Restart"], []string{"always"}) {
+		t.Errorf("WatchdogSec=%v and Restart=%v, want 30 and always, so a wedged proxy is replaced", unit["WatchdogSec"], unit["Restart"])
+	}
+	if slices.Contains(unit["NotifyAccess"], "none") {
+		t.Error("NotifyAccess=none would drop the proxy's watchdog pings")
+	}
 }
 
 func TestTmpfilesCreatesRunDir(t *testing.T) {

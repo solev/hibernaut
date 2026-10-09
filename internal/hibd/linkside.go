@@ -282,7 +282,7 @@ func (s *linkSide) check(ctx context.Context) error {
 		failed = append(failed, "the link guard: "+why)
 	}
 	if err := s.healthy(ctx); err != nil {
-		failed = append(failed, fmt.Sprintf("the link control socket: %v", err))
+		failed = append(failed, err.Error())
 	}
 	for _, c := range s.host.checks {
 		if err := c.run(ctx); err != nil {
@@ -297,6 +297,8 @@ func (s *linkSide) check(ctx context.Context) error {
 
 // healthy reports whether the control socket answers.
 func (s *linkSide) healthy(ctx context.Context) error {
-	_, err := s.ctl.Stat(ctx)
-	return err
+	if _, err := s.ctl.Stat(ctx); err != nil {
+		return fmt.Errorf("the link control socket: %w", err)
+	}
+	return nil
 }
