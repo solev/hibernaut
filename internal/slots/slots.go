@@ -1,4 +1,5 @@
-// Package slots maps an intercepted E2B slot connection back to its sandbox.
+// Package slots maps an intercepted E2B slot connection back to its sandbox, and a sandbox to
+// its slot.
 package slots
 
 import (
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/solev/hibernaut/internal/links"
 )
 
 // Finder reads host state. Empty roots use the real host paths: /proc, /run/netns and
@@ -47,6 +50,14 @@ func (f Finder) Sandbox(src, local netip.Addr) (string, error) {
 	}
 	return id, nil
 }
+
+// Slot returns the E2B slot that runs sandbox id. It globs sbx-<id>-* under Cgroups, reads
+// cgroup.procs, reads each PID's /proc/<pid>/ns/net inode and finds the /run/netns/ns-N with
+// that inode: the walk sandboxForNetns does, in the other direction.
+func (f Finder) Slot(id string) (int, error) { return 0, links.ErrLinksOff }
+
+// Addr returns the host address of a slot, the inverse of slotFromSource.
+func Addr(slot int) (netip.Addr, error) { return netip.Addr{}, links.ErrLinksOff }
 
 func (f Finder) procRoot() string {
 	if f.Proc == "" {

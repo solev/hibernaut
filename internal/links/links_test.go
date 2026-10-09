@@ -88,7 +88,11 @@ func TestPublishIsAllOrNothing(t *testing.T) {
 // A refused batch must leave no trace, and a machine that had no entry must still have none:
 // an entry is what an address is later allocated against, and addresses are finite.
 func TestAFailedFirstPublishLeavesNoEntry(t *testing.T) {
-	for _, ports := range [][]int{{8081}, {70000}, nil} {
+	tooMany := make([]int, links.MaxPorts+1)
+	for i := range tooMany {
+		tooMany[i] = 9000 + i
+	}
+	for _, ports := range [][]int{{8081}, {70000}, nil, tooMany} {
 		d := &links.Doc{V: links.Version}
 		if _, err := d.Publish("sbx-a", ports); err == nil {
 			t.Fatalf("publishing %v succeeded, want a failure", ports)
@@ -215,18 +219,32 @@ func TestGenerationsArePerPort(t *testing.T) {
 	}
 }
 
-// A batch that cannot be understood at all changes nothing, the same as a publish.
+// A batch that cannot be understood at all changes nothing, the same as a publish. A reserved
+// port is refused here too, because it can never have been published.
 func TestUnpublishIsAllOrNothing(t *testing.T) {
 	d := &links.Doc{V: links.Version}
 	if _, err := d.Publish("sbx-a", []int{8080}); err != nil {
 		t.Fatalf("publishing: %v", err)
 	}
-	for _, ports := range [][]int{{8080, 70000}, {8080, 0}, nil} {
-		if _, err := d.Unpublish("sbx-a", ports); err == nil {
-			t.Errorf("unpublishing %v succeeded, want a failure", ports)
+	for _, tc := range []struct {
+		ports []int
+		want  error
+	}{
+		{[]int{8080, 8081}, links.ErrReservedPort},
+		{[]int{49983}, links.ErrReservedPort},
+		{[]int{8080, 70000}, nil},
+		{[]int{8080, 0}, nil},
+		{nil, nil},
+	} {
+		_, err := d.Unpublish("sbx-a", tc.ports)
+		if err == nil {
+			t.Errorf("unpublishing %v succeeded, want a failure", tc.ports)
+		}
+		if tc.want != nil && !errors.Is(err, tc.want) {
+			t.Errorf("unpublishing %v = %v, want %v", tc.ports, err, tc.want)
 		}
 		if len(d.Machines["sbx-a"].Ports) != 1 {
-			t.Fatalf("unpublishing %v changed the ports", ports)
+			t.Fatalf("unpublishing %v changed the ports", tc.ports)
 		}
 	}
 }
@@ -351,21 +369,25 @@ func TestGuardClosesBeforeTheSlotIsReused(t *testing.T) {
 	}
 }
 
-// A mark carries the guard's half and the run's token, and nothing else is mistaken for ours.
+// A mark carries the guard's byte and the run's 24-bit token, and nothing else is mistaken for
+// ours, not even our own byte with token 0, which no run holds.
 func TestMarksCarryTheirToken(t *testing.T) {
-	for _, token := range []uint16{0, 1, 4242, links.GuardMaxToken} {
+	for _, token := range []uint32{1, 4242, links.GuardMaxToken} {
 		got, ok := links.Token(links.Mark(token))
 		if !ok || got != token {
 			t.Errorf("round trip of token %d = %d, %v", token, got, ok)
 		}
 	}
+	if _, ok := links.Token(links.Mark(0)); ok {
+		t.Error("token 0 looks like a run's token")
+	}
+	if _, ok := links.Token(0x4d00_0001); ok {
+		t.Error("a mark with another top byte looks like a link")
+	}
 	if _, ok := links.Token(0); ok {
 		t.Error("an unmarked packet looks like a link")
 	}
-	if _, ok := links.Token(0x1234_5678); ok {
-		t.Error("somebody else's mark looks like a link")
-	}
-	if links.Mark(links.GuardListenerToken) == 0 {
-		t.Error("the listener's own mark is zero, so it cannot be told from no mark at all")
+	if got := links.Mark(links.GuardMaxToken) >> 24; got != 0x4c {
+		t.Errorf("the top byte of the largest mark = %#x, want 0x4c", got)
 	}
 }

@@ -38,9 +38,11 @@ const (
 	StateName = "links.json"
 	// LockName is flocked for the whole of a read-modify-write of StateName.
 	LockName = "links.lock"
-	// ActivityName is the activity clock, so a restart of hibd does not reset every
-	// machine's authority over the others. busy, the SSH bridge, create and fork feed it.
-	ActivityName = "links-activity.json"
+	// ActivityDir is the activity clock: one empty file per machine, named by its sandbox ID,
+	// whose modification time is the machine's last activity that was not a link. It is under
+	// the state directory so a restart of hibd does not reset every machine's authority over
+	// the others. busy, the SSH bridge, create and fork feed it.
+	ActivityDir = "links/activity"
 	// FenceName is the lock file whose holder owns a machine's pause fence, formatted with
 	// the sandbox ID. A checker takes LOCK_SH|LOCK_NB on it: failing means the pause that
 	// raised the fence is still running, whatever the fence's age says. A save may run for
@@ -104,12 +106,13 @@ const (
 	// It is long enough that a pause for thought does not drop a benchmark's links, and short
 	// enough that an abandoned ring of machines costs at most LinkGrace plus one idle timeout.
 	LinkGrace = 5 * time.Minute
-	// LinkCloseGrace is how long a close handshake waits for the listener before hibd falls
-	// back to dropping the machine's Guard elements itself.
+	// LinkCloseGrace is how long the admitter waits for the listener to acknowledge a close
+	// before it drops the machine's gates itself.
 	LinkCloseGrace = 5 * time.Second
 	// CtlTimeout bounds one control-socket call. It is longer than LinkCloseGrace, because a
 	// close call has to wait out that grace and then answer over the socket: a shorter timeout
-	// would make the caller give up on a handshake that was about to succeed.
+	// would make the caller give up on a handshake that was about to succeed. A hibd that gets
+	// no answer within it falls back to Drop itself.
 	CtlTimeout = 7 * time.Second
 	// Keepalive is the TCP keepalive set on both legs. Links have no idle timeout of their
 	// own: a database connection pool is allowed to sit idle, and the lease is what bounds it.
@@ -136,34 +139,36 @@ const (
 	// well as the address is what stops a new occupant of a slot inheriting the old run's
 	// gate, which an address-only key could not tell apart.
 	GuardSet = "link_live"
-	// GuardMap maps a slot's host address to the mark of the run at that slot now. A new
-	// connection has no mark yet, so prerouting looks the source up here to find one. A miss
-	// leaves the mark at zero, which matches no element and so is dropped.
+	// GuardMap maps a slot's host address to the mark of the run at that slot now. A packet
+	// from a machine arrives with no mark, so prerouting looks its source up here to give it
+	// one. A miss stops the rule that sets the mark, so the mark stays zero, which matches no
+	// element and so is dropped.
 	GuardMap = "link_src"
-	// GuardMark is the high half of every link mark. The low half is the run's token, so a
-	// mark is GuardMark<<GuardTokenBits | token.
-	GuardMark = 0x4c4b
-	// GuardTokenBits is the width of the token half.
-	GuardTokenBits = 16
-	// GuardMaxToken is the largest token. Tokens are never reused, so running out means
-	// aborting every link, reinstalling the table and starting the counter again.
+	// GuardMark is the top byte of every link mark. The low GuardTokenBits are the run's
+	// token, so a mark is GuardMark<<GuardTokenBits | token.
+	GuardMark = 0x4c
+	// GuardTokenBits is the width of the token.
+	GuardTokenBits = 24
+	// GuardMaxToken is the largest token. Tokens are never reused within a boot, so a host
+	// that has used them all opens no new gate until it reboots: gates already open go on
+	// being extended, and a run that needs a new one gets ErrTokensSpent. At one new gate a
+	// second that is more than six months.
 	GuardMaxToken = 1<<GuardTokenBits - 1
-	// GuardListenerToken is reserved for the listener's own socket. It is never a run's
-	// token, so the listener's mark can tag a packet as link traffic without opening a gate.
-	GuardListenerToken = 0
 	// GuardTTL is the timeout each element carries. An element is checked for expiry when it
 	// is looked up, before any garbage collection, so it stops matching the moment it is due.
 	GuardTTL = 1 * time.Second
-	// GuardKeep is how often a live gate is refreshed, and a refresh happens only after
-	// re-reading the run cgroup. A listener that stalls for longer than GuardTTL - GuardKeep
-	// loses its gates, which is the point: it fails closed.
+	// GuardKeep is how often the Keeper extends the live gates, after re-reading which runs
+	// are live and which machines are fenced. A Keeper that stalls for longer than
+	// GuardTTL - GuardKeep loses its gates, which is the point: it fails closed.
 	GuardKeep = 250 * time.Millisecond
-	// GuardPriority is the hook priority of the guard's chains. It is after conntrack
-	// (prerouting -200, output -225), so ct mark works, and before NAT (dstnat -100), so the
-	// original 198.18.0.0/15 destination and the pre-NAT slot address are both visible.
+	// GuardPriority is the hook priority of the guard's chains. It is before NAT
+	// (dstnat -100), so prerouting still sees the original 198.18.0.0/15 destination. The
+	// guard reads packet and socket marks and never conntrack, so where it sits relative to
+	// conntrack does not matter.
 	GuardPriority = -150
-	// GuardSelfCheck is how often the listener confirms the table, sets and chains are still
-	// as it installed them. E2B reloads its own nftables rules, and an operator can flush.
+	// GuardSelfCheck is how often the Keeper confirms the table, sets, chains and
+	// net.ipv4.tcp_fwmark_accept are still as Install left them. E2B reloads its own
+	// nftables rules, and an operator can flush.
 	GuardSelfCheck = 5 * time.Second
 	// SlotReturnDelay is how long E2B waits before handing a freed slot to another machine
 	// (packages/orchestrator/internal/sandbox/pool.go:25-32 at the pinned ref). Teardown
@@ -175,18 +180,20 @@ const (
 	GuardMargin = 1 * time.Second
 )
 
-// Mark builds the packet mark for a run's token.
-func Mark(token uint16) uint32 {
-	return GuardMark<<GuardTokenBits | uint32(token)
+// Mark builds the packet mark for a run's token, which is at most GuardMaxToken.
+func Mark(token uint32) uint32 {
+	return GuardMark<<GuardTokenBits | token
 }
 
 // Token takes the token back out of a mark. It reports false for a mark that is not one of
-// ours, so traffic that happens to carry some other mark is never mistaken for a link.
-func Token(mark uint32) (uint16, bool) {
+// ours and for token 0, which no run holds, so traffic that happens to carry some other mark
+// is never mistaken for a link.
+func Token(mark uint32) (uint32, bool) {
 	if mark>>GuardTokenBits != GuardMark {
 		return 0, false
 	}
-	return uint16(mark & GuardMaxToken), true
+	t := mark & GuardMaxToken
+	return t, t != 0
 }
 
 // The link log. It is separate from audit.jsonl because audit.Entry's fields are request-shaped

@@ -26,6 +26,10 @@ type Peer struct {
 	SourceAddr netip.Addr
 	// Dst is the address and port the caller dialled, before nat rewrote it.
 	Dst netip.AddrPort
+	// Token is the run token in the accepted socket's mark, which the kernel copied from the
+	// SYN that opened it. It names the run that was at SourceAddr when the connection started.
+	// Ingress returns ErrUnmarked rather than a Peer when the socket has no link mark.
+	Token uint32
 }
 
 // Ingress recovers a Peer from an accepted connection.
@@ -33,6 +37,8 @@ type Peer struct {
 // It is an interface because everything it does is Linux-only and host-only: the real one uses
 // hook.OnVeth to refuse anything that did not arrive on a sandbox veth, hook.OriginalDst to
 // recover the pre-redirect destination, and slots.Finder to map the source address to a sandbox.
+// It also reads the accepted socket's SO_MARK for the token, and refuses a socket that carries
+// no link mark with links.ErrUnmarked.
 // On macOS the whole hook package is a stub whose functions all fail, and slots.Finder is a
 // concrete struct that cannot be faked, so without this seam none of the listener's tests could
 // run where its slice is written.
@@ -42,11 +48,12 @@ type Ingress interface {
 
 // Dialer opens the target leg of a link.
 //
-// The real one dials the target's current slot address with SO_LINGER 0 and the link packet mark
-// set before connect; the test one dials a loopback listener. SO_LINGER is set at creation
-// rather than at abort because an abort that has to set an option first is an abort that can
-// fail halfway, and a lingering socket keeps delivering queued bytes to whatever inherits the
-// address.
+// The real one dials a.TargetGate.Addr at a.Port with SO_MARK set to
+// links.Mark(a.TargetGate.Token) and SO_LINGER 0, both set before connect. The test one dials a
+// loopback listener. The mark is what the kernel guard checks the leg against. SO_LINGER is set
+// at creation rather than at abort because an abort that has to set an option first is an abort
+// that can fail halfway, and a lingering socket keeps delivering queued bytes to whatever
+// inherits the address.
 type Dialer interface {
 	Dial(ctx context.Context, a links.Admission) (net.Conn, error)
 }
@@ -60,10 +67,10 @@ type Config struct {
 	Admitter links.Admitter
 	// Runs says which run owns a machine and closes a channel when that run ends.
 	Runs links.Runs
-	// Guard is the kernel fence. The listener refreshes an element for each endpoint of each
-	// live link, every GuardKeep, and only after rechecking with Runs that the run behind it
-	// is still live.
-	Guard links.Guard
+	// Keeper owns the gates. The listener waits for Ready before it accepts, checks each
+	// connection's token against the gate of the source's current run, aborts a link when
+	// either of its gates is retired and never opens, extends or drops a gate itself.
+	Keeper links.Keeper
 	// Ingress and Dialer are the two legs.
 	Ingress Ingress
 	Dialer  Dialer
@@ -91,12 +98,13 @@ func New(cfg Config) (*Proxy, error) {
 	return &Proxy{cfg: cfg}, nil
 }
 
-// Serve accepts on l until ctx is done.
+// Serve accepts on l until ctx is done. It waits for Keeper.Ready, or for ctx, before it accepts
+// anything.
 //
-// When it returns, closing is done: every link socket has been closed, every Guard element the
-// listener held has been dropped, and every pending audit line has been flushed. Callers rely on
-// that, because a pause that proceeded while a socket was still open could reach a machine that
-// had already been given the slot.
+// When it returns, closing is done: every link socket has been closed and every pending audit
+// line has been flushed. The gates are the Keeper's, and they expire within GuardTTL of it
+// stopping. Callers rely on that, because a pause that proceeded while a socket was still open
+// could reach a machine that had already been given the slot.
 func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	if p.cfg.Addr == "" {
 		return links.ErrLinksOff

@@ -23,16 +23,17 @@ type Config struct {
 	Engine engine.Engine
 	// Runs is the run watcher, usually the one NewRuns returns.
 	Runs links.Runs
-	// Guard is the kernel fence. The admitter drops a machine's elements itself when the
-	// listener fails to acknowledge a close in time.
-	Guard links.Guard
+	// Keeper owns the gates. Admit asks it for the target run's gate after any wake, so the gate
+	// is open before the listener dials.
+	Keeper links.Keeper
+	// Dropper drops a machine's gates when the listener does not acknowledge a close within
+	// LinkCloseGrace.
+	Dropper links.Dropper
 	// Closer is the listener, for cancelling links. Leave it nil and call SetCloser: the
 	// listener needs an admitter to be built and the admitter needs the listener to cancel,
 	// so one of the two has to be bound late.
 	Closer links.Closer
-	// Resolver turns a machine into its slot address and a slot address back into the run
-	// and token at it. Admission checks a connection against it twice: once before the dial
-	// and once after, before the first byte moves.
+	// Resolver finds a machine's slot address for the close fallback's Drop.
 	Resolver links.Resolver
 	// Store is the one reader and writer of links.json, including the fence.
 	Store links.Store
@@ -97,7 +98,8 @@ func (a *Admitter) Admit(ctx context.Context, req links.AdmitRequest) (links.Adm
 // never past the admission's lease.
 func (a *Admitter) Renew(ad links.Admission, payload int64) {}
 
-// Release gives back the room, the caps and the rate accounting.
+// Release gives back the room and the caps. It keeps the rate history of a successful wake, so
+// a link opened and closed in a loop cannot wake a machine every second.
 func (a *Admitter) Release(ad links.Admission) {}
 
 // RunWatcher answers which run owns a machine, from E2B's cgroups. It implements links.Runs.
@@ -121,6 +123,11 @@ func (w *RunWatcher) Current(id string) (links.Run, error) {
 // gives an already-closed channel, so admission cannot race the first read.
 func (w *RunWatcher) Watch(id string, run links.Run) (<-chan struct{}, error) {
 	return nil, links.ErrNotRunning
+}
+
+// Live returns every machine that has a run now. It reads the cgroups at the time of the call.
+func (w *RunWatcher) Live() (map[string]links.Run, error) {
+	return map[string]links.Run{}, nil
 }
 
 // Root is where the watcher is looking, for tests and for hibd's diagnostics.

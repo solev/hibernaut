@@ -9,7 +9,7 @@ var (
 	ErrLinksOff = errors.New("links are off")
 	// ErrNotPublished is a connection to a port the target has not published.
 	ErrNotPublished = errors.New("not published")
-	// ErrReservedPort is an attempt to publish 8081 or 49983.
+	// ErrReservedPort is an attempt to publish or unpublish 8081 or 49983.
 	ErrReservedPort = errors.New("reserved port")
 	// ErrUnknownAddress is a destination inside CIDR that no machine holds.
 	ErrUnknownAddress = errors.New("unknown address")
@@ -61,15 +61,21 @@ var (
 	// half-applied.
 	ErrAlreadyPublished = errors.New("already published")
 	ErrNotFound         = errors.New("no such published port")
-	// ErrTokensSpent is the guard's token counter reaching GuardMaxToken. Tokens are never
-	// reused, so the only way on is to abort every link, reinstall the table and start again.
+	// ErrTokensSpent is the host having opened GuardMaxToken gates since it booted. No new
+	// gate opens until it reboots. Gates already open are unaffected.
 	ErrTokensSpent = errors.New("out of link tokens")
-	// ErrNoConntrack is a connection with no conntrack entry, so nothing says which run its
-	// first packet came from. It is refused exactly like a token mismatch.
-	ErrNoConntrack = errors.New("no connection record")
-	// ErrWrongRun is a connection whose conntrack mark carries a token that is not the one of
-	// the run at that slot now. It is the stale accept queue: the listener stalled, the slot
-	// was recycled, and the bytes waiting to be read belong to the machine that has gone.
+	// ErrGateSpent is Guard.Open being asked for a token it has already been asked to open. It
+	// refuses, so a gate that has gone stays gone.
+	ErrGateSpent = errors.New("link gate token already used")
+	// ErrUnmarked is an accepted link connection whose socket has no link mark. The kernel
+	// copies the SYN's mark onto the accepted socket only while net.ipv4.tcp_fwmark_accept is
+	// 1, and the guard checks only marked sockets, so an unmarked one is refused before it
+	// carries a byte.
+	ErrUnmarked = errors.New("connection carries no link mark")
+	// ErrWrongRun is a connection whose accepted socket carries a token that is not the token
+	// of the Keeper's gate for the source's current run, so its SYN came from a run that has
+	// gone. It is the stale accept queue: the listener stalled, the slot was recycled and the
+	// bytes waiting to be read belong to the machine that has gone.
 	ErrWrongRun = errors.New("connection belongs to an earlier run")
 	// ErrStateUnreadable is links.json being missing a version, carrying one this build does
 	// not know, or failing to parse. Links are refused rather than guessed at, the same way

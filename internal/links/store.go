@@ -48,8 +48,8 @@ func NewClock(stateDir string) Clock {
 	return &clock{dir: stateDir, at: map[string]time.Time{}}
 }
 
-// Path is the file the clock survives a restart in.
-func (c *clock) Path() string { return filepath.Join(c.dir, ActivityName) }
+// Path is the directory the clock keeps its files in.
+func (c *clock) Path() string { return filepath.Join(c.dir, ActivityDir) }
 
 func (c *clock) Active(id string) time.Time {
 	c.mu.Lock()

@@ -206,10 +206,14 @@ func (d *Doc) Publish(id string, ports []int) (noop []int, err error) {
 	if len(want) == 0 {
 		return noop, fmt.Errorf("%s: %w", portList(noop), ErrAlreadyPublished)
 	}
-	m := d.Entry(id)
-	if len(m.Ports)+len(want) > MaxPorts {
+	have := 0
+	if m := d.Machines[id]; m != nil {
+		have = len(m.Ports)
+	}
+	if have+len(want) > MaxPorts {
 		return nil, fmt.Errorf("%w: the limit is %d per machine", ErrTooManyPorts, MaxPorts)
 	}
+	m := d.Entry(id)
 	if m.PortGen == nil {
 		m.PortGen = map[int]uint64{}
 	}
@@ -256,7 +260,7 @@ func (d *Doc) plan(id string, ports []int, publishing bool) (want, noop []int, e
 		if p < 1 || p > 65535 {
 			return nil, nil, fmt.Errorf("port %d is not between 1 and 65535", p)
 		}
-		if publishing && IsReserved(p) {
+		if IsReserved(p) {
 			return nil, nil, fmt.Errorf("%d: %w", p, ErrReservedPort)
 		}
 		if seen[p] {

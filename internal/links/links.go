@@ -28,8 +28,8 @@ type Run string
 // is open.
 //
 // Everything in it is fixed at admission except the lease, which Renew re-derives. The listener
-// re-checks SourceRun, TargetRun and PortGen against the world before it moves the first byte,
-// and abandons the link if any of them changed while it was waking or dialling.
+// re-checks SourceRun, TargetRun, PortGen and both gates against the world before it moves the
+// first byte, and abandons the link if any of them changed while it was waking or dialling.
 type Admission struct {
 	// Source and Target are sandbox IDs, never names: names are reused, IDs are not.
 	Source string
@@ -38,12 +38,14 @@ type Admission struct {
 	// carry bytes while both are still the current run of their machine.
 	SourceRun Run
 	TargetRun Run
-	// SourceAddr and TargetAddr are the two slot addresses in E2B's host range, 10.11.0.0/16.
-	// Guest egress is source-NATed to this address inside the sandbox's namespace, and it is
-	// also the address the host dials, so one address identifies a slot on both legs. The
-	// Guard is keyed on them.
-	SourceAddr netip.Addr
-	TargetAddr netip.Addr
+	// SourceGate and TargetGate are the two runs' gates in the kernel guard. Each is a slot's
+	// address in E2B's host range, 10.11.0.0/16, with the token of the run at it. Guest egress
+	// is source-NATed to that address inside the sandbox's namespace, and it is also the address
+	// the host dials, so one address identifies a slot on both legs. The listener checked
+	// SourceGate against the accepted socket's mark, dials TargetGate.Addr with
+	// Mark(TargetGate.Token) and aborts the link when the Keeper retires either.
+	SourceGate Gate
+	TargetGate Gate
 	// Port is the published port on the target.
 	Port int
 	// PortGen is the generation of that one port when the admission was granted. Publishing or
@@ -63,8 +65,9 @@ type Admission struct {
 	LeaseUntil time.Time
 	// Woke is true when this admission is the one that resumed the target.
 	Woke bool
-	// Ctx is cancelled when the link must stop: the port was unpublished, either machine is
-	// being paused, either run ended, or the lease ran out. The listener aborts on it.
+	// Ctx is cancelled when the link must stop: the port was unpublished, either run ended or
+	// either machine is being paused or removed. The lease never cancels it (see Renew). The
+	// listener aborts on it, and separately on either gate being retired.
 	Ctx context.Context
 }
 
@@ -72,6 +75,11 @@ type Admission struct {
 type AdmitRequest struct {
 	// Source is the calling machine's sandbox ID, from the veth the connection arrived on.
 	Source string
+	// SourceRun and SourceGate are the run the connection came from and that run's gate. The
+	// listener has already checked that the gate's token is the one on the accepted socket and
+	// its address the connection's source, so the connection belongs to this run and no other.
+	SourceRun  Run
+	SourceGate Gate
 	// Target and Port are what the caller asked for, resolved from the virtual address.
 	Target string
 	Port   int
@@ -100,8 +108,8 @@ type Admitter interface {
 	// target then pauses on its own idle timeout. Renew never cuts a link, and link bytes
 	// never feed the clock.
 	Renew(a Admission, payload int64)
-	// Release gives back the room, the caps and the rate accounting. It is idempotent, and the
-	// listener calls it in a defer so a panic in the copy loop cannot leak a reservation.
+	// Release gives back the room and the caps. It is idempotent, and the listener calls it in
+	// a defer so a panic in the copy loop cannot leak a reservation.
 	Release(a Admission)
 }
 
@@ -168,46 +176,56 @@ type Runs interface {
 	// has already ended returns an already-closed channel, so there is no race between
 	// admission and the first read.
 	Watch(id string, run Run) (<-chan struct{}, error)
+	// Live returns every machine that has a run now, with that run. It reads the cgroups at
+	// the time of the call rather than a cache, because the Keeper extends gates on the
+	// strength of it.
+	Live() (map[string]Run, error)
 }
 
-// Gate is one open gate in the kernel guard: a slot's host address together with the token of
-// the run that is at that slot. Both halves are needed. A gate keyed on the address alone would
-// still be open for whoever E2B put in the slot next, which is the hole tokens close.
+// Gate is one gate in the kernel guard: a slot's host address together with the token of the
+// run at that slot. Both halves are needed. A gate keyed on the address alone would still be
+// open for whoever E2B put in the slot next, which is the hole tokens close.
 type Gate struct {
 	Addr  netip.Addr
-	Token uint16
+	Token uint32
 }
 
 // Guard is the kernel's own fence around link traffic, and the only part of M12 that still
-// holds when the listener stops running. internal/linkguard implements it.
+// holds when the proxy stops running. internal/linkguard implements it.
 //
 // It is a pair of nftables objects in a table of their own: a set of the gates that are open,
-// and a map from a slot address to the mark of the run there now, which is how a connection
-// that has no mark yet gets one. Link traffic whose (address, mark) pair is not in the set is
-// dropped, in all four directions, so a listener that is wedged, killed or paging cannot leak
-// bytes to a slot whose run has ended. Elements carry GuardTTL, and an element that has timed
-// out stops matching at lookup, before any garbage collection runs, so the fence closes itself.
+// and a map from a slot address to the mark of the run there now, which is how a connection's
+// first packet gets a mark. Link traffic whose (address, mark) pair is not in the set is
+// dropped in all four directions, checked against the packet's mark on the way out and the
+// receiving socket's mark on the way in, so a proxy that is wedged, killed or paging cannot
+// leak bytes to a slot whose run has ended. Elements carry GuardTTL, and an element that has
+// timed out stops matching at lookup, before any garbage collection runs, so the fence closes
+// itself.
 //
-// Extend is therefore a liveness claim, not bookkeeping: the caller must re-check that the run
-// behind each gate is live immediately before the call.
+// Only the Keeper opens and extends gates. Extend is a liveness claim, not bookkeeping: the
+// Keeper re-checks that the run behind each gate is live and unfenced immediately before it.
 type Guard interface {
 	// Install replaces the whole table with this version's sets, chains and rules, in one
-	// atomic operation, with both sets empty. It is how the listener starts, so a crash
-	// cannot leave a gate open across a restart.
+	// atomic operation, with both sets empty, and sets net.ipv4.tcp_fwmark_accept to 1 so an
+	// accepted socket takes its SYN's mark. It is how the proxy starts, so a crash cannot leave
+	// a gate open across a restart.
 	Install() error
 	// Installed reports whether the table, both sets and every chain are exactly as Install
-	// leaves them. The listener checks this every GuardSelfCheck, because E2B reloads its own
-	// nftables rules and an operator can flush.
+	// leaves them and net.ipv4.tcp_fwmark_accept is still 1. The Keeper checks this every
+	// GuardSelfCheck, because E2B reloads its own nftables rules and an operator can flush.
 	Installed() (bool, error)
 	// Remove deletes the table. Nothing else of ours is left anywhere, so this is a complete
-	// uninstall.
+	// uninstall. It leaves net.ipv4.tcp_fwmark_accept at 1, which changes nothing once no
+	// packet carries a mark.
 	Remove() error
-	// Open adds g to the set and points g.Addr at g.Token in the map. It fails if a gate for
-	// g.Addr with a different token is still there: the caller has to abort that run's
-	// sockets first.
+	// Open creates g's element in the set and points g.Addr at g.Token in the map, both
+	// create-only (NLM_F_EXCL) in one batch, so it fails rather than touch anything already
+	// there: the caller drops the address first. It refuses a token at or below the highest it
+	// has been asked to open, with ErrGateSpent, and records the token before it sends, so a
+	// gate that has gone can never be opened again, not even by a retry.
 	Open(g Gate) error
 	// Extend refreshes the given gates with GuardTTL, in one atomic batch, each element
-	// deleted and then added again.
+	// deleted and then added again. It never creates an element.
 	//
 	// Deleting and adding is not an optimisation to be skipped. Adding an element that is
 	// already in the set does not reset its timeout, so an add-only refresh would silently
@@ -215,57 +233,73 @@ type Guard interface {
 	// takes the batch with it, which is also deliberate: it means a refresh that was delayed
 	// past a gate's expiry can never bring the gate back.
 	Extend(gates []Gate) error
-	// Drop removes every gate for addr whatever its token, and addr's map entry, in one
-	// batch, and returns only once the kernel no longer has any of them. hibd's pause
-	// fallback pauses a machine on the strength of this, so a lie here is a leaked link.
-	Drop(addr netip.Addr) error
+	Dropper
 	// Has reports whether g is still open. Because nothing can recreate a gate that has gone,
-	// a false here stays true.
+	// a false here stays false.
 	Has(g Gate) (bool, error)
 }
 
-// Tokens hands out the run tokens that gates are keyed on. A token is never reused, so a stale
-// socket's mark can never match a later run.
+// Dropper is the part of the Guard that the close fallbacks use: the admitter's when the
+// listener does not acknowledge a close in time, and hibd's when the proxy does not answer.
+type Dropper interface {
+	// Drop removes every gate for addr whatever its token, and addr's map entry. An element can
+	// expire between being read and being deleted, so Drop reads again until the kernel has
+	// none of them, and returns only once that read is empty. hibd's pause fallback pauses a
+	// machine on the strength of this, so a lie here is a leaked link. It needs CAP_NET_ADMIN:
+	// a caller without it gets an error and must not go on as if it had dropped.
+	Drop(addr netip.Addr) error
+}
+
+// Tokens hands out the run tokens that gates are keyed on. A token is never reused within a
+// boot, so a stale socket's mark can never match a later run.
 type Tokens interface {
-	// Next returns a token no run has held before, or ErrTokensSpent when the counter is at
-	// GuardMaxToken. The counter is persisted under RunDir so it stays monotonic across a
-	// listener restart, and a reboot is allowed to restart it because no run survives one.
-	Next() (uint16, error)
+	// Next returns a token no run has held before, starting at 1, or ErrTokensSpent once the
+	// counter has passed GuardMaxToken. The counter is persisted under RunDir so it stays
+	// monotonic across a proxy restart, and a reboot restarts it because no run survives one.
+	// Running out is final until that reboot.
+	Next() (uint32, error)
 }
 
-// Marks reads the conntrack mark the kernel has recorded for an established connection, over
-// ctnetlink. internal/linkguard implements it with golang.org/x/sys/unix, which is already a
-// dependency, so M12 adds no netlink library.
+// Keeper owns every gate in the kernel guard. internal/linkguard implements it, and nothing
+// else in the proxy opens or extends a gate.
 //
-// It is what binds an accepted connection to a run. A listener that stalled can accept, after
-// the slot was recycled, a connection whose bytes belong to the run that used to be there. The
-// mark on the connection was set when its first packet arrived, so it names the run that was at
-// the slot then, and admission refuses anything that does not carry the token of the run that
-// is at the slot now.
-type Marks interface {
-	// Mark returns the conntrack mark of the connection with this original tuple, from the
-	// peer address to the address SO_ORIGINAL_DST reports. It returns ErrNoConntrack when
-	// there is no entry, which is refused like a mismatch.
-	Mark(from, to netip.AddrPort) (uint32, error)
+// Every GuardKeep it reads which runs are live and which machines are fenced, extends the gates
+// of the runs that still are live and unfenced in one batch, retires the rest and opens a gate
+// for each live, unfenced run that has none. Every live run has a gate, not only those with
+// links, because a source's first SYN gets through only on its own gate. The listener and the
+// admitter read gates from it and never write them.
+type Keeper interface {
+	// Ready is closed once the table is installed and the first cycle has run. The listener
+	// accepts nothing before it.
+	Ready() <-chan struct{}
+	// Gate returns the open gate of run of machine id. A run that has no gate yet, such as one
+	// a wake has just resumed, gets one in a cycle that starts after the call, and Gate nudges
+	// that cycle and waits for it. It returns ErrRunEnded when run is not id's live run,
+	// ErrFenced when id is fenced, ErrTokensSpent, ErrGuardDown while the guard is down or being
+	// reinstalled, the error resolving the run's slot or ctx's error.
+	Gate(ctx context.Context, id string, run Run) (Gate, error)
+	// Retired returns a channel that is closed once g is no longer extended. It is already
+	// closed for a gate the Keeper does not hold. The listener aborts a link when either of its
+	// gates is retired. That is cleanup, not safety: the kernel drops the link's packets once
+	// the gate expires, within GuardTTL, whether or not the listener acts.
+	Retired(g Gate) <-chan struct{}
 }
 
-// Resolver turns machines into slots and back. internal/linkadmit is given one rather than
-// reaching for internal/slots itself, because slots.Finder is concrete and only works on Linux,
-// and the slice workers run the tests on macOS.
+// Resolver turns machines into slot addresses and back. The Keeper and the close fallbacks are
+// given one rather than reaching for internal/slots themselves, because slots.Finder only works
+// on Linux and the slice workers run the tests on macOS. slots.Resolver is the production one.
 type Resolver interface {
 	// Addr returns the host address of the slot machine id is running at, and the run that is
 	// there now. It returns ErrNotRunning when the machine is not running.
 	Addr(id string) (netip.Addr, Run, error)
-	// At returns the machine, run and token at a slot address now. The token is the one the
-	// guard's map points at, so a connection's mark can be compared with it.
+	// At returns the machine and run at a slot address now.
 	At(addr netip.Addr) (Slot, error)
 }
 
 // Slot is who is at a slot address now.
 type Slot struct {
-	ID    string
-	Run   Run
-	Token uint16
+	ID  string
+	Run Run
 }
 
 // Store is the one way into links.json. Every slice uses it rather than reading or writing the
