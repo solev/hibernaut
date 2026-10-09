@@ -442,3 +442,54 @@ func TestKeepKeepsTheHookAroundAStuckStrayRule(t *testing.T) {
 		t.Fatalf("hook not installed, still to do %q", rest)
 	}
 }
+
+func TestEnsureLinksOffEmptiesTheChainAStuckStrayRuleJumpsTo(t *testing.T) {
+	strayJump := `-A PREROUTING -i eth9 -m comment --comment hibernaut -j HIBERNAUT`
+	fake := newFakeNat([]string{strayJump}, saveJump, strayJump, "-N HIBERNAUT", saveLink, save443)
+	want := mustLayout(t, Rule{ProxyPort: 5443})
+	installed := strings.Join([]string{
+		"-P PREROUTING ACCEPT",
+		"-N HIBERNAUT",
+		"-A PREROUTING -i veth-+ -p tcp --dport 443 -m comment --comment hibernaut -j REDIRECT --to-ports 5443",
+		strayJump,
+	}, "\n") + "\n"
+
+	changed, err := ensure(t.Context(), fake.io(), want)
+	if !changed || !onlyStray(err) {
+		t.Fatalf("first ensure = %v, %v, want changed and only ErrStrayRule", changed, err)
+	}
+	if got := fake.save(); got != installed {
+		t.Fatalf("table after ensure:\n%s\nwant\n%s", got, installed)
+	}
+	changed, err = ensure(t.Context(), fake.io(), want)
+	if changed || !onlyStray(err) {
+		t.Fatalf("next ensure = %v, %v, want unchanged and only ErrStrayRule", changed, err)
+	}
+	if got := fake.save(); got != installed {
+		t.Fatalf("table after the next ensure:\n%s\nwant\n%s", got, installed)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls := 0
+	apply := func(ctx context.Context) (bool, error) {
+		if calls++; calls == 5 {
+			cancel()
+		}
+		return ensure(ctx, fake.io(), want)
+	}
+	if err := keep(ctx, time.Millisecond, nil, apply); err != nil || calls != 5 {
+		t.Fatalf("keep = %v after %d calls, want nil after 5", err, calls)
+	}
+
+	// A restart after Remove, which leaves the chain empty, installs the hook again.
+	if err := remove(t.Context(), fake.io()); !onlyStray(err) {
+		t.Fatalf("remove = %v, want only ErrStrayRule", err)
+	}
+	if changed, err := ensure(t.Context(), fake.io(), want); !changed || !onlyStray(err) {
+		t.Fatalf("ensure after remove = %v, %v, want changed and only ErrStrayRule", changed, err)
+	}
+	if got := fake.save(); got != installed {
+		t.Fatalf("table after remove and ensure:\n%s\nwant\n%s", got, installed)
+	}
+}

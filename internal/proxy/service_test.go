@@ -16,9 +16,10 @@ import (
 )
 
 type testRule struct {
-	started chan struct{}
-	removed chan struct{}
-	fail    error
+	started    chan struct{}
+	removed    chan struct{}
+	fail       error
+	removeFail error
 }
 
 func (r *testRule) Ensure(context.Context) (bool, error) { return true, r.fail }
@@ -32,7 +33,7 @@ func (r *testRule) Remove(ctx context.Context) error {
 		return errors.New("unhook used a cancelled context")
 	}
 	close(r.removed)
-	return nil
+	return r.removeFail
 }
 
 type orderedListener struct {
@@ -145,5 +146,54 @@ func TestServiceLogsAStrayRuleAndKeepsServing(t *testing.T) {
 	defer mu.Unlock()
 	if len(logs) != 1 || !strings.Contains(logs[0], rule.fail.Error()) {
 		t.Fatalf("logs = %q, want the stray rule warning", logs)
+	}
+}
+
+func TestServiceLogsAStrayRuleLeftByRemove(t *testing.T) {
+	stray := fmt.Errorf("%w: left a rule in place", hook.ErrStrayRule)
+	other := errors.New("xtables lock timed out")
+	for _, tc := range []struct {
+		name       string
+		removeFail error
+		want       error
+		logged     int
+	}{
+		{"stray rule", stray, nil, 1},
+		{"other failure", other, other, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := &testRule{started: make(chan struct{}), removed: make(chan struct{}), removeFail: tc.removeFail}
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			listener := &orderedListener{Listener: l, removed: rule.removed, t: t}
+			var mu sync.Mutex
+			var logs []string
+			service := &proxy.Service{Server: &egress.Server{}, Rule: rule, Audit: &closeAudit{listener: listener, t: t}, Logf: func(format string, args ...any) {
+				mu.Lock()
+				defer mu.Unlock()
+				logs = append(logs, fmt.Sprintf(format, args...))
+			}}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- service.Serve(ctx, listener) }()
+			select {
+			case <-rule.started:
+			case <-time.After(time.Second):
+				t.Fatal("keeper did not start")
+			}
+			cancel()
+			if err := <-done; tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("Serve returned %v, want %v", err, tc.want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(logs) != tc.logged || tc.logged > 0 && !strings.Contains(logs[0], stray.Error()) {
+				t.Fatalf("logs = %q, want %d stray rule warnings", logs, tc.logged)
+			}
+		})
 	}
 }
