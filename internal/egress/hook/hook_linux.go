@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +23,9 @@ import (
 // hibernaut rules in PREROUTING and the HIBERNAUT chain, so there is never a moment with a jump
 // to an empty chain or no hook at all, and every other chain, E2B's included, is left alone.
 //
+// A hibernaut rule of a shape no version writes is deleted too. When iptables will not delete
+// one, the rest is done without it and the error wraps ErrStrayRule, which is only a warning.
+//
 // iptables-restore is found beside Iptables: "iptables" gives "iptables-restore",
 // "/usr/sbin/iptables-nft" gives "/usr/sbin/iptables-nft-restore".
 func (r Rule) Ensure(ctx context.Context) (bool, error) {
@@ -31,87 +33,30 @@ func (r Rule) Ensure(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	iptables := r.iptables()
-	table, err := listNat(ctx, iptables)
-	if err != nil {
-		return false, err
-	}
-	lines := plan(table, want, false)
-	if lines == nil {
-		return false, nil
-	}
-	skipUnknown := false
-	var leftover error
-	if err := restore(ctx, iptables, lines); err != nil {
-		// A hibernaut rule iptables cannot delete must not stop the repair of the rest, so the
-		// same transaction is tried again without the rules of a shape no version writes.
-		retry := plan(table, want, true)
-		if retry == nil || slices.Equal(retry, lines) {
-			return false, err
-		}
-		if err := restore(ctx, iptables, retry); err != nil {
-			return false, err
-		}
-		skipUnknown = true
-		leftover = fmt.Errorf("hook: left an unrecognised hibernaut rule in place: %w", err)
-	}
-	table, err = listNat(ctx, iptables)
-	if err != nil {
-		return true, err
-	}
-	if rest := plan(table, want, skipUnknown); rest != nil {
-		return true, fmt.Errorf("hook: iptables did not take the hibernaut layout, still to do: %q", rest)
-	}
-	return true, leftover
+	return ensure(ctx, natCommands(r.iptables()), want)
 }
 
 // Keep calls Ensure now, then periodically until ctx ends. It logs only when Ensure fails or had
-// to change something, so a healthy table is silent.
+// to change something, so a healthy table is silent. An error wrapping ErrStrayRule is logged
+// once, and again only when it changes, and never ends Keep; any other error from the first
+// call is returned.
 func (r Rule) Keep(ctx context.Context, every time.Duration, logf func(string, ...any)) error {
-	if _, err := r.Ensure(ctx); err != nil {
-		return err
-	}
-	if every <= 0 {
-		every = time.Second
-	}
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			changed, err := r.Ensure(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				if logf != nil {
-					logf("Ensure failed: %v", err)
-				}
-				continue
-			}
-			if changed && logf != nil {
-				logf("repaired the hibernaut iptables hook")
-			}
-		}
-	}
+	return keep(ctx, every, logf, r.Ensure)
 }
 
 // Remove deletes the jump and every other PREROUTING rule commented "hibernaut", flushes the
 // HIBERNAUT chain and deletes it, in one iptables-restore --noflush transaction. It is a no-op
-// when none of them is there.
+// when none of them is there. When iptables will not delete a hibernaut rule of a shape no
+// version writes, the rest still goes and the error wraps ErrStrayRule.
 func Remove(ctx context.Context, iptables string) error {
-	iptables = defaultIptables(iptables)
-	table, err := listNat(ctx, iptables)
-	if err != nil {
-		return err
+	return remove(ctx, natCommands(defaultIptables(iptables)))
+}
+
+func natCommands(iptables string) natIO {
+	return natIO{
+		list:    func(ctx context.Context) (natTable, error) { return listNat(ctx, iptables) },
+		restore: func(ctx context.Context, lines []string) error { return restore(ctx, iptables, lines) },
 	}
-	lines := planRemove(table)
-	if lines == nil {
-		return nil
-	}
-	return restore(ctx, iptables, lines)
 }
 
 // OriginalDst returns the destination a redirected connection was sent to.

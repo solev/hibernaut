@@ -20,8 +20,9 @@ import (
 //	-A PREROUTING -i veth-+ -p tcp --dport 443 -m comment --comment hibernaut -j REDIRECT --to-ports <ProxyPort>
 //
 // Rules are matched on the hibernaut comment and the chain, never by a strict parse, and compared
-// in a canonical form. A hibernaut rule that is not the one we want is deleted, never an error,
-// so one stray rule cannot stop the hook from being repaired.
+// in a canonical form. A hibernaut rule that is not the one we want is deleted. If iptables will
+// not delete one, the rest is done without it and the error wraps ErrStrayRule, a warning, so one
+// stray rule cannot stop the hook from being repaired or the proxy from serving.
 
 const (
 	chainName    = "HIBERNAUT"
@@ -221,7 +222,7 @@ func plan(t natTable, want layout, skipUnknown bool) []string {
 		}
 	}
 	if skipUnknown {
-		stale = slices.DeleteFunc(stale, func(r natRule) bool { return !r.owned() || !r.known() })
+		stale = slices.DeleteFunc(stale, func(r natRule) bool { return r.owned() && !r.known() })
 	}
 	// A delete by specification removes the first match, so a second copy of the wanted rule
 	// cannot be deleted while the first is kept. Delete every copy and insert it again.
@@ -269,11 +270,18 @@ func plan(t natTable, want layout, skipUnknown bool) []string {
 }
 
 // planRemove returns the commands that delete every owned rule, every rule that refers to the
-// chain and the chain itself, or nil when there is nothing of ours left.
-func planRemove(t natTable) []string {
+// chain and the chain itself, or nil when there is nothing of ours left. When skipUnknown is set
+// it leaves owned rules of an unknown shape alone, and the chain too, emptied, if one of them
+// refers to it.
+func planRemove(t natTable, skipUnknown bool) []string {
 	var lines []string
+	keepChain := false
 	for _, r := range t.rules {
 		if r.chain == chainName {
+			continue
+		}
+		if skipUnknown && r.owned() && !r.known() {
+			keepChain = keepChain || r.refersToChain()
 			continue
 		}
 		if r.owned() || (t.chains[chainName] && r.refersToChain()) {
@@ -281,7 +289,10 @@ func planRemove(t natTable) []string {
 		}
 	}
 	if t.chains[chainName] {
-		lines = append(lines, "-F "+chainName, "-X "+chainName)
+		lines = append(lines, "-F "+chainName)
+		if !keepChain {
+			lines = append(lines, "-X "+chainName)
+		}
 	}
 	return lines
 }
