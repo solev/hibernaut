@@ -3,6 +3,7 @@ package machines_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/envblock"
+	"github.com/solev/hibernaut/internal/hostsblock"
 	"github.com/solev/hibernaut/internal/machines"
 )
 
@@ -202,6 +204,12 @@ func TestSetupHash(t *testing.T) {
 		"codex and git":       {CodexAuth: []byte("ab"), Git: &machines.GitIdentity{}},
 		"block and codex":     {EnvBlock: block, CodexAuth: []byte("ab")},
 		"codex in the email":  {Git: &machines.GitIdentity{Email: "ab"}},
+		"hosts":               {Hosts: []byte("ab")},
+		"other hosts":         {Hosts: []byte("ab ")},
+		"removed hosts":       {Hosts: []byte{}},
+		"block and hosts":     {EnvBlock: block, Hosts: []byte("ab")},
+		"hosts and git":       {Hosts: []byte("ab"), Git: &machines.GitIdentity{}},
+		"hosts and codex":     {Hosts: []byte("ab"), CodexAuth: []byte("ab")},
 	}
 	seen := map[[32]byte]string{}
 	for name, s := range setups {
@@ -220,6 +228,80 @@ func TestSetupHash(t *testing.T) {
 	}
 	if (machines.Setup{CodexAuth: []byte{}}).Hash() != (machines.Setup{}).Hash() {
 		t.Error("an empty login file and none hash differently, but both leave the file alone")
+	}
+	// The hash of an empty Setup under "hibernaut machine setup v1", before Hosts.
+	const v1 = "964dbd753984603b8248ccf564908fb5b4b60ba480618bd67247cc3f7bdbd5cb"
+	if h := (machines.Setup{}).Hash(); hex.EncodeToString(h[:]) == v1 {
+		t.Error("an empty Setup hashes as it did before Hosts, so the upgrade would not rewrite every machine")
+	}
+}
+
+// setupGuest is a machine with /etc/environment and /etc/hosts. order records which file each
+// exec touched.
+type setupGuest struct {
+	env   envFileGuest
+	hosts hostsGuest
+	order []string
+}
+
+func (g *setupGuest) exec(ctx context.Context, m engine.Machine, home string, req engine.ExecRequest) (engine.ExecResult, error) {
+	if slices.Contains(req.Args, "/etc/hosts") || slices.Contains(req.Args, "hibd-hosts") {
+		g.order = append(g.order, req.Cmd+" hosts")
+		return g.hosts.exec(ctx, m, home, req)
+	}
+	g.order = append(g.order, req.Cmd+" env")
+	return g.env.exec(ctx, m, home, req)
+}
+
+func TestSetupWriteWritesTheHostsBlockAfterTheEnvBlock(t *testing.T) {
+	stale := renderHosts(t, hostsblock.Host{IP: "198.18.0.9", Name: "old.hib"})
+	block := renderHosts(t, hostsblock.Host{IP: "198.18.0.1", Name: "api.hib"})
+	for name, tc := range map[string]struct {
+		hosts     []byte
+		wantHosts string
+		wantOrder []string
+	}{
+		"block":   {hosts: block, wantHosts: userHosts + string(block), wantOrder: []string{"cat env", "sh env", "cat hosts", "sh hosts", "sh env"}},
+		"removed": {hosts: []byte{}, wantHosts: userHosts, wantOrder: []string{"cat env", "sh env", "cat hosts", "sh hosts", "sh env"}},
+		"nil":     {hosts: nil, wantHosts: userHosts + string(stale), wantOrder: []string{"cat env", "sh env", "sh env"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sh := newShell(t, true, 0)
+			guest := &setupGuest{
+				env:   envFileGuest{content: []byte("PATH=/usr/bin\n"), git: sh.run},
+				hosts: hostsGuest{content: []byte(userHosts + string(stale))},
+			}
+			e := fake.New(fake.WithExec(guest.exec))
+			e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now()})
+			s := machines.Setup{EnvBlock: testBlock(t), Hosts: tc.hosts, Git: &machines.GitIdentity{Name: testName, Email: testEmail}}
+			if err := s.Write(t.Context(), e, "app1"); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(guest.hosts.content); got != tc.wantHosts {
+				t.Errorf("/etc/hosts = %q, want %q", got, tc.wantHosts)
+			}
+			if !slices.Equal(guest.order, tc.wantOrder) {
+				t.Errorf("execs = %q, want %q: the env block, then the hosts block, then git", guest.order, tc.wantOrder)
+			}
+		})
+	}
+}
+
+func TestSetupWriteStopsWhenTheHostsBlockFails(t *testing.T) {
+	sh := newShell(t, true, 0)
+	block := renderHosts(t, hostsblock.Host{IP: "198.18.0.1", Name: "api.hib"})
+	guest := &setupGuest{
+		env:   envFileGuest{git: sh.run},
+		hosts: hostsGuest{content: []byte(userHosts + "# END hibernaut machines\n")},
+	}
+	e := fake.New(fake.WithExec(guest.exec))
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now()})
+	s := machines.Setup{Hosts: block, Git: &machines.GitIdentity{Name: testName, Email: testEmail}}
+	if err := s.Write(t.Context(), e, "app1"); !errors.Is(err, hostsblock.ErrUnterminated) {
+		t.Fatalf("Write = %v, want %v", err, hostsblock.ErrUnterminated)
+	}
+	if calls := sh.calls(t); len(calls) != 0 {
+		t.Errorf("git ran %q after the hosts block failed", calls)
 	}
 }
 

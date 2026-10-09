@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/github"
+	"github.com/solev/hibernaut/internal/hostsblock"
+	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -56,10 +59,10 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 			fmt.Fprintf(a.Stderr, "warning: %s, but %s failed: %s\n", done, termsafe.String(doing), termsafe.String(err.Error()))
 		}
 	}
-	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), a.engine, nil, warn)
+	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), links.NewStore(cfg.stateDir), a.engine, nil, warn)
 }
 
-func updateSetup(ctx context.Context, cfg config, store *codex.Store, open func() (engine.Engine, error), written map[string]delivered, report func(string, error)) bool {
+func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore links.Store, open func() (engine.Engine, error), written map[string]delivered, report func(string, error)) bool {
 	setup, err := loadSetup(cfg, store)
 	if err != nil {
 		report("loading the machine setup", err)
@@ -72,10 +75,29 @@ func updateSetup(ctx context.Context, cfg config, store *codex.Store, open func(
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	ms, err := e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
+	port, _ := strconv.Atoi(cfg.linkPort)
+	naming := port > 0
+	list := engine.ListOptions{States: []engine.State{engine.Running}}
+	if naming {
+		// A paused machine keeps its name in the block, so the list takes every state.
+		list = engine.ListOptions{}
+	}
+	ms, err := e.List(ctx, list)
 	if err != nil {
 		report("listing machines", err)
 		return false
+	}
+	if naming {
+		hosts, err := hostsBlock(linkStore, ms)
+		report("building the hosts block", err)
+		setup.Hosts = hosts
+		var running []engine.Machine
+		for _, m := range ms {
+			if m.State == engine.Running {
+				running = append(running, m)
+			}
+		}
+		ms = running
 	}
 	hash := setup.Hash()
 	stale, running := setupTargets(ms, hash, written)
@@ -86,6 +108,44 @@ func updateSetup(ctx context.Context, cfg config, store *codex.Store, open func(
 		}
 	}
 	return true
+}
+
+// hostsBlock renders the /etc/hosts block from links.json: NAME.hib for every machine in ms
+// with a virtual address and a published port, the one reading it included. The block is the
+// same for every machine. It returns an empty block when no machine has a published port,
+// which removes the block, and nil when links are off, which leaves /etc/hosts alone. A name
+// two machines share is left out rather than sent anywhere.
+func hostsBlock(linkStore links.Store, ms []engine.Machine) ([]byte, error) {
+	doc, err := linkStore.Read()
+	if errors.Is(err, links.ErrLinksOff) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names, holders := map[string]string{}, map[string]int{}
+	for _, m := range ms {
+		if name := machines.Name(m); name != "" {
+			names[m.ID] = name
+			holders[name]++
+		}
+	}
+	var hosts []hostsblock.Host
+	for id, lm := range doc.Machines {
+		name := names[id]
+		if lm == nil || !lm.Addr.IsValid() || len(lm.Ports) == 0 || name == "" || holders[name] > 1 {
+			continue
+		}
+		hosts = append(hosts, hostsblock.Host{IP: lm.Addr.String(), Name: name + ".hib"})
+	}
+	block, err := hostsblock.Render(hosts)
+	if err != nil {
+		return nil, err
+	}
+	if block == nil {
+		return []byte{}, nil
+	}
+	return block, nil
 }
 
 func setupTargets(ms []engine.Machine, hash [32]byte, written map[string]delivered) ([]engine.Machine, map[string]bool) {
@@ -129,6 +189,7 @@ type setupDelivery struct {
 	engine   engine.Engine
 	cfg      config
 	codex    *codex.Store
+	links    links.Store
 	logf     func(format string, args ...any)
 	looking  chan struct{}
 	written  map[string]delivered
@@ -142,7 +203,7 @@ type delivered struct {
 
 func newSetupDelivery(e engine.Engine, cfg config, store *codex.Store, logf func(format string, args ...any)) *setupDelivery {
 	return &setupDelivery{
-		engine: e, cfg: cfg, codex: store, logf: logf,
+		engine: e, cfg: cfg, codex: store, links: links.NewStore(cfg.stateDir), logf: logf,
 		looking: make(chan struct{}, 1), written: map[string]delivered{}, problems: map[string]string{},
 	}
 }
@@ -156,11 +217,17 @@ func (d *setupDelivery) look(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-	if !updateSetup(ctx, d.cfg, d.codex, func() (engine.Engine, error) { return d.engine, nil }, d.written, d.report) {
+	// A problem this pass reported stays reported, so the next pass doesn't log it again.
+	reported := map[string]bool{}
+	report := func(doing string, err error) {
+		reported[doing] = true
+		d.report(doing, err)
+	}
+	if !updateSetup(ctx, d.cfg, d.codex, d.links, func() (engine.Engine, error) { return d.engine, nil }, d.written, report) {
 		return
 	}
 	for key := range d.problems {
-		if strings.HasPrefix(key, "updating ") {
+		if reported[key] || strings.HasPrefix(key, "updating ") {
 			continue
 		}
 		d.report(key, nil)

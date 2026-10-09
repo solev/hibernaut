@@ -11,11 +11,16 @@ import (
 )
 
 // Setup is what hibd writes into each machine after machine-init, and again whenever it
-// changes: the managed /etc/environment block, git's identity and Codex's login file.
+// changes: the managed /etc/environment block, the managed /etc/hosts block, git's identity and
+// Codex's login file.
 type Setup struct {
 	// EnvBlock is the managed /etc/environment block. It holds placeholders only. Empty removes
 	// the block.
 	EnvBlock []byte
+	// Hosts is the managed /etc/hosts block, one hostsblock.Render returned. Nil leaves
+	// /etc/hosts alone, as when links are off. Empty, but not nil, removes the block, as when
+	// no machine has a published port.
+	Hosts []byte
 	// Git is git's system-wide identity. Nil leaves git's configuration alone.
 	Git *GitIdentity
 	// CodexAuth is Codex's login file, /home/user/.codex/auth.json, with placeholders only. Nil
@@ -29,14 +34,19 @@ type GitIdentity struct {
 }
 
 func (s Setup) empty() bool {
-	return len(s.EnvBlock) == 0 && s.Git == nil && len(s.CodexAuth) == 0
+	return len(s.EnvBlock) == 0 && s.Hosts == nil && s.Git == nil && len(s.CodexAuth) == 0
 }
 
-// Write writes s into machine id through envd as root: first the block, then git's identity,
-// then Codex's login file. A machine without git gets the rest.
+// Write writes s into machine id through envd as root: first the env block, then the hosts
+// block, then git's identity, then Codex's login file. A machine without git gets the rest.
 func (s Setup) Write(ctx context.Context, e engine.Engine, id string) error {
 	if err := WriteBlock(ctx, e, id, s.EnvBlock); err != nil {
 		return err
+	}
+	if s.Hosts != nil {
+		if err := WriteHosts(ctx, e, id, s.Hosts); err != nil {
+			return err
+		}
 	}
 	if s.Git != nil {
 		if err := writeGitIdentity(ctx, e, id, *s.Git); err != nil {
@@ -56,8 +66,14 @@ func (s Setup) Hash() [32]byte {
 		h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(b))))
 		h.Write(b)
 	}
-	field([]byte("hibernaut machine setup v1"))
+	field([]byte("hibernaut machine setup v2"))
 	field(s.EnvBlock)
+	if s.Hosts != nil {
+		h.Write([]byte{1})
+		field(s.Hosts)
+	} else {
+		h.Write([]byte{0})
+	}
 	if s.Git != nil {
 		h.Write([]byte{1})
 		field([]byte(s.Git.Name))

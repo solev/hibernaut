@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
@@ -35,20 +36,37 @@ func BlockFromSecrets(secrets []vault.Secret) ([]byte, error) {
 
 // WriteBlock writes block into id's /etc/environment through envd as root.
 func WriteBlock(ctx context.Context, e engine.Engine, id string, block []byte) error {
+	return environmentFile.write(ctx, e, id, block)
+}
+
+// managedFile is a root-owned file in the machine that hibd keeps one managed block in. write
+// reads it, merges the block, and writes the result back only if nothing changed it meanwhile,
+// trying four times.
+type managedFile struct {
+	path string
+	// tag is the write script's $0, which names it in ps and in tests.
+	tag    string
+	script string
+	merge  func(file, block []byte) ([]byte, error)
+}
+
+var environmentFile = managedFile{path: environmentPath, tag: "hibd-env", script: casScript, merge: envblock.Merge}
+
+func (f managedFile) write(ctx context.Context, e engine.Engine, id string, block []byte) error {
 	var last error
 	for range 4 {
-		file, err := readEnvironment(ctx, e, id)
+		file, err := f.read(ctx, e, id)
 		if err != nil {
 			return err
 		}
-		next, err := envblock.Merge(file, block)
+		next, err := f.merge(file, block)
 		if err != nil {
 			return err
 		}
 		if bytes.Equal(file, next) {
 			return nil
 		}
-		err = compareAndSwapEnvironment(ctx, e, id, file, next)
+		err = f.compareAndSwap(ctx, e, id, file, next)
 		if err == nil {
 			return nil
 		}
@@ -57,25 +75,25 @@ func WriteBlock(ctx context.Context, e engine.Engine, id string, block []byte) e
 		}
 		last = err
 	}
-	return fmt.Errorf("writing %s: %w", environmentPath, last)
+	return fmt.Errorf("writing %s: %w", f.path, last)
 }
 
-func readEnvironment(ctx context.Context, e engine.Engine, id string) ([]byte, error) {
-	res, err := e.Exec(ctx, id, engine.ExecRequest{Cmd: "cat", Args: []string{environmentPath}, User: "root"})
+func (f managedFile) read(ctx context.Context, e engine.Engine, id string) ([]byte, error) {
+	res, err := e.Exec(ctx, id, engine.ExecRequest{Cmd: "cat", Args: []string{f.path}, User: "root"})
 	if err != nil {
 		return nil, err
 	}
 	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("cat %s exited %d: %q", environmentPath, res.ExitCode, tail(res.Stderr, 1024))
+		return nil, fmt.Errorf("cat %s exited %d: %q", f.path, res.ExitCode, tail(res.Stderr, 1024))
 	}
 	return res.Stdout, nil
 }
 
-func compareAndSwapEnvironment(ctx context.Context, e engine.Engine, id string, old, next []byte) error {
+func (f managedFile) compareAndSwap(ctx context.Context, e engine.Engine, id string, old, next []byte) error {
 	sum := sha256.Sum256(old)
 	res, err := e.Exec(ctx, id, engine.ExecRequest{
 		Cmd:  "sh",
-		Args: []string{"-c", casScript, "hibd-env", fmt.Sprintf("%x", sum), base64.StdEncoding.EncodeToString(next)},
+		Args: []string{"-c", f.script, f.tag, fmt.Sprintf("%x", sum), base64.StdEncoding.EncodeToString(next)},
 		User: "root",
 	})
 	if err != nil {
@@ -87,23 +105,31 @@ func compareAndSwapEnvironment(ctx context.Context, e engine.Engine, id string, 
 	if res.ExitCode == 75 {
 		return errCASMismatch
 	}
-	return fmt.Errorf("writing %s exited %d: %q", environmentPath, res.ExitCode, tail(res.Stderr, 1024))
+	return fmt.Errorf("writing %s exited %d: %q", f.path, res.ExitCode, tail(res.Stderr, 1024))
 }
 
-var errCASMismatch = errors.New("current /etc/environment changed")
+var errCASMismatch = errors.New("the file changed as hibd wrote it")
 
-const casScript = `set -eu
+var casScript = casScriptFor(environmentPath)
+
+// casScriptFor returns the script that replaces file with $2, base64-encoded, if file's sha256
+// is still $1, and exits 75 if it isn't. file must be a plain absolute path, since the script
+// doesn't quote it.
+func casScriptFor(file string) string {
+	dir, base := path.Split(file)
+	return `set -eu
 ` + setupLockScript + `
-file=/etc/environment
+file=` + file + `
 want=$1
 data=$2
 current=$(sha256sum "$file" | awk '{print $1}')
 if [ "$current" != "$want" ]; then
 	exit 75
 fi
-tmp=$(mktemp /etc/.environment.hibernaut.XXXXXX)
+tmp=$(mktemp ` + dir + "." + base + `.hibernaut.XXXXXX)
 trap 'rm -f "$tmp"' EXIT
 printf '%s' "$data" | base64 -d > "$tmp"
 chmod 0644 "$tmp"
 mv "$tmp" "$file"
 trap - EXIT`
+}
