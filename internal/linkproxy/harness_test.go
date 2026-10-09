@@ -147,6 +147,10 @@ func (h *harness) peer() Peer {
 }
 
 // connect opens a connection to the listener that Identify will say is peer.
+// patience bounds every read and write on a test's connection, so a link that never closes
+// fails its test instead of hanging the package.
+const patience = 20 * time.Second
+
 func (h *harness) connect(peer Peer) net.Conn {
 	h.t.Helper()
 	return h.connectAs(peer, nil)
@@ -159,6 +163,7 @@ func (h *harness) connectAs(peer Peer, err error) net.Conn {
 		h.t.Fatal(dialErr)
 	}
 	h.t.Cleanup(func() { _ = c.Close() })
+	_ = c.SetDeadline(time.Now().Add(patience))
 	h.ingress.add(c.LocalAddr().(*net.TCPAddr).Port, identity{peer: peer, err: err})
 	return c
 }
@@ -184,7 +189,7 @@ func roundTrip(t *testing.T, c net.Conn, msg string) {
 	if string(got) != msg {
 		t.Fatalf("read back %q, want %q", got, msg)
 	}
-	_ = c.SetReadDeadline(time.Time{})
+	_ = c.SetReadDeadline(time.Now().Add(patience))
 }
 
 // expectNothing reads c until it is closed and fails if any byte arrives first.

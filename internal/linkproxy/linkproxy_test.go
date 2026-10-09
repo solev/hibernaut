@@ -453,7 +453,7 @@ func expectGreeting(t *testing.T, c net.Conn, want string) {
 	if _, err := io.ReadFull(c, got); err != nil || string(got) != want {
 		t.Fatalf("greeting %q, %v; want %q", got, err, want)
 	}
-	_ = c.SetReadDeadline(time.Time{})
+	_ = c.SetReadDeadline(time.Now().Add(patience))
 }
 
 func TestUnreadableStateRefusesNewLinksAndAbortsOpenOnes(t *testing.T) {
