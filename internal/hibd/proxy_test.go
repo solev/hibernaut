@@ -23,6 +23,7 @@ import (
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/codex/codextest"
 	"github.com/solev/hibernaut/internal/egress"
+	"github.com/solev/hibernaut/internal/egress/hook"
 	"github.com/solev/hibernaut/internal/egress/swap"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
@@ -424,6 +425,21 @@ func TestProxyUnhookRemovesTheHookWithoutConfiguration(t *testing.T) {
 	}
 	if len(*listen) > 0 {
 		t.Fatalf("unhook listened on %q", *listen)
+	}
+}
+
+func TestProxyUnhookWarnsAboutAStrayRule(t *testing.T) {
+	rule := newFakeHook()
+	a, _, _, _ := proxyApp(t, rule)
+	rule.removeErr = fmt.Errorf("removing proxy hook: %w", hook.ErrStrayRule)
+	if code := a.Run(t.Context(), []string{"proxy", "-unhook"}); code != 0 {
+		t.Fatalf("unhook exit %d, want 0: %s", code, a.Stderr)
+	}
+	if logs := fmt.Sprint(a.Stderr); !strings.Contains(logs, "hibd proxy: warning: ") || !strings.Contains(logs, hook.ErrStrayRule.Error()) {
+		t.Fatalf("stderr = %q, want a warning about the stray rule", logs)
+	}
+	if calls := rule.Calls(); !slices.Equal(calls, []string{"remove"}) {
+		t.Fatalf("hook calls = %q, want one remove", calls)
 	}
 }
 

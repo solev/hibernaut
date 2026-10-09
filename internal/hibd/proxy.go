@@ -57,6 +57,11 @@ func (a *App) proxy(ctx context.Context, args []string) int {
 	var err error
 	if *unhook {
 		err = a.proxyHook(0).Remove(ctx)
+		if errors.Is(err, hook.ErrStrayRule) {
+			// Every rule of ours is gone. The one iptables kept is of a shape no hibd writes.
+			fmt.Fprintf(a.Stderr, "hibd proxy: warning: %v\n", err)
+			return 0
+		}
 	} else {
 		err = a.runProxy(ctx)
 	}
