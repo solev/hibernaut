@@ -95,7 +95,18 @@ func (d Dir) Root() (*os.Root, Owner, error) {
 // PublishOwned writes data to name in root as a private file that owner owns. It writes a
 // temporary file first and then renames it into place when replace is set, or links it, which
 // never replaces a name that exists, when it isn't. It returns the published file, still open.
-func (d Dir) PublishOwned(root *os.Root, name string, data []byte, owner Owner, replace bool) (published *os.File, err error) {
+func (d Dir) PublishOwned(root *os.Root, name string, data []byte, owner Owner, replace bool) (*os.File, error) {
+	return d.PublishPrepared(root, name, owner, replace, func(f *os.File) error {
+		_, err := f.Write(data)
+		return err
+	})
+}
+
+// PublishPrepared is PublishOwned with prepare in place of the data. prepare gets the temporary
+// file once it is private and owner's, and before it is published, so whatever it sets is
+// already true the moment the name appears. The activity clock sets a first touch's time this
+// way. The temporary file's name starts with a dot.
+func (d Dir) PublishPrepared(root *os.Root, name string, owner Owner, replace bool, prepare func(*os.File) error) (published *os.File, err error) {
 	token := make([]byte, 16)
 	if _, err := rand.Read(token); err != nil {
 		return nil, err
@@ -117,7 +128,7 @@ func (d Dir) PublishOwned(root *os.Root, name string, data []byte, owner Owner, 
 	if err := d.chown(f, owner.UID, owner.GID); err != nil {
 		return nil, err
 	}
-	if _, err := f.Write(data); err != nil {
+	if err := prepare(f); err != nil {
 		return nil, err
 	}
 	if err := f.Sync(); err != nil {
