@@ -290,3 +290,31 @@ func (r *raceEngine) List(ctx context.Context, opts engine.ListOptions) ([]engin
 	}
 	return r.Engine.List(ctx, opts)
 }
+
+func TestPausesThroughOptionsPause(t *testing.T) {
+	e := fake.New()
+	add(e, "run1", engine.Running)
+	add(e, "run2", engine.Running)
+	var mu sync.Mutex
+	var fenced []string
+	opts := fastRetry
+	opts.Pause = func(ctx context.Context, id string) error {
+		mu.Lock()
+		fenced = append(fenced, id)
+		mu.Unlock()
+		err := e.Pause(ctx, id)
+		if id == "run2" && err == nil {
+			return engine.ErrNotRunning
+		}
+		return err
+	}
+
+	paused, err := pauseall.Run(t.Context(), e, opts)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	slices.Sort(fenced)
+	if !slices.Equal(fenced, []string{"run1", "run2"}) || !slices.Equal(paused, []string{"run1"}) {
+		t.Errorf("Pause saw %v and Run paused %v; want both seen and run2's ErrNotRunning skipped", fenced, paused)
+	}
+}

@@ -22,6 +22,9 @@ type Options struct {
 	RetryDelay time.Duration
 	// Logf receives progress lines. Nil discards them.
 	Logf func(format string, args ...any)
+	// Pause pauses machine id. Nil means e.Pause. hibd passes its fenced pause with links on, so
+	// no link outlives the machine it pauses. Its errors are judged as e.Pause's are.
+	Pause func(ctx context.Context, id string) error
 }
 
 // Run pauses every running machine, including machines that start or wake meanwhile.
@@ -62,7 +65,11 @@ func Run(ctx context.Context, e engine.Engine, opts Options) ([]string, error) {
 			ids[i] = m.ID
 		}
 		logf("pausing %d machine(s): %s", len(ids), strings.Join(ids, ", "))
-		done, failed := pauseEach(ctx, e, ids, opts.Concurrency, logf)
+		pause := opts.Pause
+		if pause == nil {
+			pause = e.Pause
+		}
+		done, failed := pauseEach(ctx, pause, ids, opts.Concurrency, logf)
 		paused = append(paused, done...)
 		stuck = failed
 		if len(failed) > 0 {
@@ -72,7 +79,7 @@ func Run(ctx context.Context, e engine.Engine, opts Options) ([]string, error) {
 	}
 }
 
-func pauseEach(ctx context.Context, e engine.Engine, ids []string, concurrency int, logf func(string, ...any)) (done, failed []string) {
+func pauseEach(ctx context.Context, pause func(context.Context, string) error, ids []string, concurrency int, logf func(string, ...any)) (done, failed []string) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
@@ -89,7 +96,7 @@ func pauseEach(ctx context.Context, e engine.Engine, ids []string, concurrency i
 			defer func() { <-sem }()
 
 			start := time.Now()
-			err := e.Pause(ctx, id)
+			err := pause(ctx, id)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
