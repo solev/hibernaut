@@ -979,7 +979,7 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 		pctx, cancel = context.WithTimeout(ctx, sweepTimeout)
 		defer cancel()
 	}
-	if perr := a.pruneLinkLeftovers(pctx, cfg, left, listed, dryRun, logf); perr != nil {
+	if perr := a.pruneLinkLeftovers(pctx, cfg, e, left, listed, dryRun, logf); perr != nil {
 		return errors.Join(err, perr)
 	}
 	return err
@@ -1072,16 +1072,17 @@ func readActivityNames(stateDir string) ([]string, error) {
 }
 
 // pruneLinkLeftovers removes the activity files and, with links on, the link entries of machines
-// E2B no longer lists, and the temporary files a crashed activity update left. Removing one an
+// E2B has forgotten, and the temporary files a crashed activity update left. Removing one an
 // update is still using only loses that update, which errs toward less activity.
-func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, left linkLeftovers, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
-	errs := []error{left.err}
+func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engine, left linkLeftovers, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
+	forgotten, err := confirmForgotten(ctx, e, left, listed)
+	errs := []error{left.err, err}
 	if len(left.activity) > 0 {
-		errs = append(errs, pruneActivity(cfg.stateDir, left.activity, listed, dryRun, logf))
+		errs = append(errs, pruneActivity(cfg.stateDir, left.activity, forgotten, dryRun, logf))
 	}
 	var gone []string
 	for _, id := range left.entries {
-		if !listed[id] {
+		if forgotten[id] {
 			gone = append(gone, id)
 		}
 	}
@@ -1091,12 +1092,56 @@ func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, left linkLefto
 	return errors.Join(errs...)
 }
 
+// confirmForgotten asks E2B for each machine in left that the listing missed, and reports the
+// ones it has forgotten. Missing from one listing isn't enough: the listing reads running and
+// paused machines page by page, and a machine E2B pauses meanwhile can fall between them. A
+// machine E2B still has, in any state, is kept, and so is one it can't be asked about, with an
+// error.
+func confirmForgotten(ctx context.Context, e engine.Engine, left linkLeftovers, listed map[string]bool) (map[string]bool, error) {
+	entries, clocks := map[string]bool{}, map[string]bool{}
+	var candidates []string
+	for _, id := range left.entries {
+		if !listed[id] {
+			entries[id] = true
+			candidates = append(candidates, id)
+		}
+	}
+	for _, name := range left.activity {
+		if !strings.HasPrefix(name, ".") && !listed[name] {
+			clocks[name] = true
+			candidates = append(candidates, name)
+		}
+	}
+	slices.Sort(candidates)
+	candidates = slices.Compact(candidates)
+	forgotten := map[string]bool{}
+	var errs []error
+	for _, id := range candidates {
+		_, err := e.Get(ctx, id)
+		switch {
+		case err == nil:
+		case errors.Is(err, engine.ErrNotFound):
+			forgotten[id] = true
+		default:
+			what := "the activity clock"
+			switch {
+			case entries[id] && clocks[id]:
+				what = "the link entry and activity clock"
+			case entries[id]:
+				what = "the link entry"
+			}
+			errs = append(errs, fmt.Errorf("kept %s of %s: couldn't confirm E2B has forgotten it: %w", what, id, err))
+		}
+	}
+	return forgotten, errors.Join(errs...)
+}
+
 // dropLinkEntries drops the link entries of the machines in gone that still have one. Their
 // addresses stay spent.
 func (a *App) dropLinkEntries(ctx context.Context, cfg config, gone []string, dryRun bool, logf func(format string, args ...any)) error {
 	if dryRun {
 		for _, id := range gone {
-			logf("would drop the link entry of %s, which E2B no longer lists", id)
+			logf("would drop the link entry of %s, which E2B has forgotten", id)
 		}
 		return nil
 	}
@@ -1119,18 +1164,18 @@ func (a *App) dropLinkEntries(ctx context.Context, cfg config, gone []string, dr
 	case errors.Is(err, unchanged):
 		return nil
 	case err != nil:
-		return fmt.Errorf("dropping the link entries of machines E2B no longer lists: %w", err)
+		return fmt.Errorf("dropping the link entries of machines E2B has forgotten: %w", err)
 	}
 	for _, id := range dropped {
-		logf("dropped the link entry of %s, which E2B no longer lists", id)
+		logf("dropped the link entry of %s, which E2B has forgotten", id)
 	}
 	return nil
 }
 
-// pruneActivity removes the activity files in names whose machines E2B no longer lists, and the
+// pruneActivity removes the activity files in names whose machines E2B has forgotten, and the
 // temporary files whose names start with a dot. It goes through the state directory as a root,
 // so a symlink planted in it can't point the removals anywhere else.
-func pruneActivity(stateDir string, names []string, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
+func pruneActivity(stateDir string, names []string, forgotten map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
 	state, err := os.OpenRoot(stateDir)
 	if err != nil {
 		return fmt.Errorf("pruning the activity clock: %w", err)
@@ -1147,10 +1192,10 @@ func pruneActivity(stateDir string, names []string, listed map[string]bool, dryR
 	var errs []error
 	for _, name := range names {
 		temporary := strings.HasPrefix(name, ".")
-		if !temporary && listed[name] {
+		if !temporary && !forgotten[name] {
 			continue
 		}
-		what := fmt.Sprintf("the activity clock of %s, which E2B no longer lists", name)
+		what := fmt.Sprintf("the activity clock of %s, which E2B has forgotten", name)
 		if temporary {
 			what = fmt.Sprintf("%s, left by an activity update that didn't finish", name)
 		}

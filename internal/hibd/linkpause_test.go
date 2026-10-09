@@ -581,30 +581,77 @@ func TestLinksOffKeepsM11Pauses(t *testing.T) {
 	}
 }
 
+// getEngine is a fake engine whose Get finds machines its listing misses, as a machine E2B pauses
+// while cleanup lists can be, and fails for others.
+type getEngine struct {
+	*fake.Engine
+	unlisted map[string]engine.Machine
+	getErr   map[string]error
+
+	mu   sync.Mutex
+	gets []string
+}
+
+func (g *getEngine) Get(ctx context.Context, id string) (engine.Machine, error) {
+	g.mu.Lock()
+	g.gets = append(g.gets, id)
+	g.mu.Unlock()
+	if m, ok := g.unlisted[id]; ok {
+		return m, nil
+	}
+	if err, ok := g.getErr[id]; ok {
+		return engine.Machine{}, err
+	}
+	return g.Engine.Get(ctx, id)
+}
+
 func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
+	unavailable := errors.New("e2b: 503 service unavailable")
 	for _, tc := range []struct {
-		name   string
-		on     bool
-		dryRun bool
+		name     string
+		on       bool
+		dryRun   bool
+		wantGets []string
+		wantErr  string
 	}{
-		{name: "links on", on: true},
-		{name: "links on, dry run", on: true, dryRun: true},
-		{name: "links off", on: false},
+		{
+			name: "links on", on: true,
+			wantGets: []string{"flaky1", "gone1", "gone2", "gone4", "moving1"},
+			wantErr:  "kept the link entry and activity clock of flaky1: couldn't confirm E2B has forgotten it: " + unavailable.Error(),
+		},
+		{
+			name: "links on, dry run", on: true, dryRun: true,
+			wantGets: []string{"flaky1", "gone1", "gone2", "gone4", "moving1"},
+			wantErr:  "kept the link entry and activity clock of flaky1: couldn't confirm E2B has forgotten it: " + unavailable.Error(),
+		},
+		{
+			name:     "links off",
+			wantGets: []string{"flaky1", "gone1", "gone2", "moving1"},
+			wantErr:  "kept the activity clock of flaky1: couldn't confirm E2B has forgotten it: " + unavailable.Error(),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := fake.New()
-			e.Add(engine.Machine{ID: "live1", State: engine.Running})
-			e.Add(engine.Machine{ID: "live2", State: engine.Paused})
-			a, _, _ := newApp(t, e)
+			fe := fake.New()
+			fe.Add(engine.Machine{ID: "live1", State: engine.Running})
+			fe.Add(engine.Machine{ID: "live2", State: engine.Paused})
+			e := &getEngine{
+				Engine:   fe,
+				unlisted: map[string]engine.Machine{"moving1": {ID: "moving1", State: engine.Paused}},
+				getErr:   map[string]error{"flaky1": unavailable},
+			}
+			a, _, _ := newApp(t, fe)
 			a.Clean = nil
 			a.Query = func(context.Context, string) ([][]string, error) { return nil, nil }
 			f := &fakeLinks{doc: links.Doc{
 				Machines: map[string]*links.Machine{
-					"live1": {Addr: netip.MustParseAddr("10.11.0.2"), Ports: []int{80}},
-					"live2": {PausedByHand: true},
-					"gone1": {Addr: netip.MustParseAddr("10.11.0.3"), Ports: []int{5432}},
+					"live1":   {Addr: netip.MustParseAddr("10.11.0.2"), Ports: []int{80}},
+					"live2":   {PausedByHand: true},
+					"gone1":   {Addr: netip.MustParseAddr("10.11.0.3"), Ports: []int{5432}},
+					"moving1": {Addr: netip.MustParseAddr("10.11.0.4"), Ports: []int{8080}},
+					"flaky1":  {Addr: netip.MustParseAddr("10.11.0.5"), Ports: []int{9000}},
+					"gone4":   {Addr: netip.MustParseAddr("10.11.0.6")},
 				},
-				Next: netip.MustParseAddr("10.11.0.4"),
+				Next: netip.MustParseAddr("10.11.0.7"),
 			}}
 			withLinks(a, f, tc.on)
 			cfg, err := loadConfig(a.Getenv)
@@ -624,7 +671,8 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 			if err := os.MkdirAll(activity, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"live1", "gone1", "gone2", ".touch-gone3"} {
+			allFiles := []string{".touch-gone3", "flaky1", "gone1", "gone2", "live1", "moving1"}
+			for _, name := range allFiles {
 				if err := os.WriteFile(filepath.Join(activity, name), nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -637,25 +685,29 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 			err = a.clean(t.Context(), t.Context(), cfg, e, time.Now(), tc.dryRun, false, func(format string, args ...any) {
 				logs = append(logs, fmt.Sprintf(format, args...))
 			})
-			if err != nil {
-				t.Fatalf("cleanup: %v; logs %q", err, logs)
+			if err == nil || !errors.Is(err, unavailable) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("cleanup = %v, want it to say %q", err, tc.wantErr)
 			}
-			wantFiles := []string{".touch-gone3", "gone1", "gone2", "live1"}
+			if got := slices.Sorted(slices.Values(e.gets)); !slices.Equal(got, tc.wantGets) {
+				t.Errorf("Get asked about %q, want each unlisted machine once: %q", got, tc.wantGets)
+			}
+
+			wantFiles := allFiles
 			if !tc.dryRun {
-				wantFiles = []string{"live1"}
+				wantFiles = []string{"flaky1", "live1", "moving1"}
 			}
 			if got := dirEntries(t, activity); !slices.Equal(got, wantFiles) {
 				t.Errorf("activity = %q, want %q", got, wantFiles)
 			}
-			_, gone := f.entry("gone1")
-			if wantGone := !tc.on || tc.dryRun; gone != wantGone {
-				t.Errorf("gone1's entry kept = %t, want %t", gone, wantGone)
+			wantEntries := []string{"flaky1", "gone1", "gone4", "live1", "live2", "moving1"}
+			if tc.on && !tc.dryRun {
+				wantEntries = []string{"flaky1", "live1", "live2", "moving1"}
 			}
-			if _, ok := f.entry("live1"); !ok || f.doc.Next != netip.MustParseAddr("10.11.0.4") {
-				t.Errorf("cleanup dropped more than gone1: %+v", f.doc)
+			if got := slices.Sorted(maps.Keys(f.doc.Machines)); !slices.Equal(got, wantEntries) {
+				t.Errorf("link entries = %q, want %q", got, wantEntries)
 			}
-			if _, ok := f.entry("live2"); !ok {
-				t.Error("cleanup dropped a paused machine's entry")
+			if f.doc.Next != netip.MustParseAddr("10.11.0.7") {
+				t.Errorf("cleanup gave addresses back: %+v", f.doc)
 			}
 			if !tc.on && len(f.log()) != 0 {
 				t.Errorf("links off reached the link state: %q", f.log())
@@ -663,21 +715,33 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 			if data, err := os.ReadFile(stateFile); err != nil || string(data) != `{"v":1}` {
 				t.Errorf("links.json = %q, %v", data, err)
 			}
+
 			text := strings.Join(logs, "\n")
 			verb := "removed"
 			if tc.dryRun {
 				verb = "would remove"
 			}
-			for _, want := range []string{verb + " the activity clock of gone1", verb + " .touch-gone3"} {
-				if !strings.Contains(text, want) {
-					t.Errorf("logs lack %q:\n%s", want, text)
+			want := []string{
+				verb + " the activity clock of gone1, which E2B has forgotten",
+				verb + " the activity clock of gone2, which E2B has forgotten",
+				verb + " .touch-gone3",
+			}
+			if tc.on {
+				drop := "dropped"
+				if tc.dryRun {
+					drop = "would drop"
+				}
+				want = append(want, drop+" the link entry of gone1", drop+" the link entry of gone4")
+			}
+			for _, w := range want {
+				if !strings.Contains(text, w) {
+					t.Errorf("logs lack %q:\n%s", w, text)
 				}
 			}
-			if tc.on && !strings.Contains(text, "drop the link entry of gone1") && !strings.Contains(text, "dropped the link entry of gone1") {
-				t.Errorf("logs don't say gone1's entry went:\n%s", text)
-			}
-			if strings.Contains(text, "live1") {
-				t.Errorf("logs mention a live machine:\n%s", text)
+			for _, kept := range []string{"live1", "live2", "moving1", "flaky1"} {
+				if strings.Contains(text, kept) {
+					t.Errorf("logs mention %s, which cleanup keeps:\n%s", kept, text)
+				}
 			}
 		})
 	}
