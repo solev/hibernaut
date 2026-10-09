@@ -54,6 +54,12 @@ WireServer. Check what E2B's internal service address (`192.0.2.1`) offers them,
 E2B's dev extras it needs at all (Grafana, Loki, Mimir, Tempo, the SOCKS5 proxy). Each one dropped
 also frees memory.
 
+`hibd`'s own two ports that machines reach, the egress interception port and
+[M12](milestones/m12-machine-links.md)'s link port, bind every interface because a redirect
+rewrites the destination per slot. They accept only connections that arrived on a machine's veth,
+so the default-deny input firewall should drop them from anywhere else rather than rely on that
+check alone.
+
 ### Outbound allowlist
 
 Machines reach the whole internet today (spec §1 lists allowlists as not in v1). Add an allowlist
@@ -156,6 +162,11 @@ At Hetzner's prices since 15 June 2026:
 
 ## Other ideas
 
+- Narrower machine links, after [M12](milestones/m12-machine-links.md) ships the first version:
+  `hib port add api 8080 --from worker`, so a published port is reachable from named machines
+  rather than all of them; `hib new --isolated`, a machine that can neither reach a link nor have
+  one published; opt-in named networks, where machines in the same network reach each other on
+  every port, which is boxd's default and ours only if someone asks; and UDP.
 - A domain (hibernaut.dev and hibernaut.sh both looked free once), public HTTPS URLs per machine
   and a web console.
 - Codex access tokens (`hib connect codex --access-token`), for ChatGPT Business and Enterprise.
