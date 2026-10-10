@@ -1,6 +1,7 @@
 package hibd
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -228,13 +229,7 @@ func countNew(m *links.Machine, ports []int) int {
 }
 
 func reservedPort(p int) error {
-	switch p {
-	case 8081:
-		return errors.New("port 8081 is Hibernaut's SSH bridge and can't be published")
-	case 49983:
-		return errors.New("port 49983 is E2B's agent and can't be published")
-	}
-	return fmt.Errorf("port %d is reserved and can't be published", p)
+	return fmt.Errorf("port %d is %s and can't be published", p, cmp.Or(links.Reserved[p], "reserved"))
 }
 
 // portRefusal turns the store's errors into what a person reads.
