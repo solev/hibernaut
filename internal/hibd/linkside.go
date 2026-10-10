@@ -145,18 +145,33 @@ func openLinkLog(path string, logf func(format string, args ...any)) *audit.Link
 	return l
 }
 
-// linkRoom reports how many more machines a link may wake: the room for default machines, less
-// the one the owner is always kept.
-func (a *App) linkRoom(e engine.Engine) func() (int, error) {
+// linkRoom reports the room for a link's wake of target, counted in default machines: how many
+// more may run, less the one the owner is always kept, and how many waking target takes. A target
+// whose size can't be read is refused, since it can't be charged.
+func (a *App) linkRoom(e engine.Engine) func(target string) (int, int, error) {
 	m := machines.New(machines.Config{Engine: e, ReadRoom: a.ReadRoom})
-	return func() (int, error) {
+	return func(target string) (int, int, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), links.AdmitTimeout)
 		defer cancel()
+		em, err := e.Get(ctx, target)
+		if err != nil {
+			return 0, 0, err
+		}
+		if em.MemoryMB <= 0 {
+			return 0, 0, fmt.Errorf("%s has no memory size", target)
+		}
+		def, err := images.MemoryMB(images.Default)
+		if err != nil {
+			return 0, 0, err
+		}
 		r, err := m.Room(ctx, images.Default)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		return max(r.Fits-1, 0), nil
+		// A machine with at most k times a default machine's memory takes no more pages and no
+		// more pause disk than k default machines, so rounding k up charges it enough.
+		need := max((em.MemoryMB+def-1)/def, 1)
+		return max(r.Fits-1, 0), need, nil
 	}
 }
 

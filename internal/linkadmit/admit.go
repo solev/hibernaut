@@ -43,6 +43,8 @@ type wakeup struct {
 	// wake is cancelled.
 	waiters int
 	cancel  context.CancelFunc
+	// need is the room the wake holds, counted in default machines.
+	need int
 	// before is the rate history the wake replaced, put back if it fails.
 	before    time.Time
 	hadBefore bool
@@ -148,8 +150,8 @@ func (a *Admitter) reserve(req links.AdmitRequest, cancel context.CancelCauseFun
 	return p, w, woke, lease, nil
 }
 
-// startWake charges the rate limit and the room, and resumes target in the background. The
-// caller holds mu.
+// startWake charges the rate limit and the room target takes, and resumes target in the
+// background. The caller holds mu.
 func (a *Admitter) startWake(target string, now, lease time.Time) (*wakeup, error) {
 	before, hadBefore := a.lastWake[target]
 	if hadBefore && now.Sub(before) < links.WakeEvery {
@@ -158,17 +160,18 @@ func (a *Admitter) startWake(target string, now, lease time.Time) (*wakeup, erro
 	if a.cfg.Room == nil {
 		return nil, fmt.Errorf("%w: nothing reports the host's room", links.ErrNoRoom)
 	}
-	free, err := a.cfg.Room()
+	free, need, err := a.cfg.Room(target)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", links.ErrNoRoom, err)
 	}
-	if free-a.pendingWakes < 1 {
+	need = max(need, 1)
+	if free-a.pendingWakes < need {
 		return nil, fmt.Errorf("%w: waking %s would leave less than the reserve", links.ErrNoRoom, target)
 	}
 	wctx, cancel := context.WithTimeout(context.Background(), links.WakeTimeout)
-	w := &wakeup{done: make(chan struct{}), cancel: cancel, before: before, hadBefore: hadBefore}
+	w := &wakeup{done: make(chan struct{}), cancel: cancel, need: need, before: before, hadBefore: hadBefore}
 	a.lastWake[target] = now
-	a.pendingWakes++
+	a.pendingWakes += need
 	a.waking[target] = w
 	go a.runWake(wctx, w, target, lease)
 	return w, nil
@@ -179,7 +182,7 @@ func (a *Admitter) runWake(ctx context.Context, w *wakeup, target string, lease 
 	w.cancel()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pendingWakes--
+	a.pendingWakes -= w.need
 	if a.waking[target] == w {
 		delete(a.waking, target)
 	}

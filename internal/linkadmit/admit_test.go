@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -33,6 +34,41 @@ func TestDifferentTargetsNeverSpendTheReserve(t *testing.T) {
 		r := <-first
 		if r.err != nil || !r.ad.Woke {
 			t.Fatalf("the first wake = %+v, %v; want it woken", r.ad, r.err)
+		}
+		v.a.Release(r.ad)
+		if n := v.e.resumed(); n != 1 {
+			t.Errorf("resumes = %d, want 1", n)
+		}
+	})
+}
+
+// A wake is charged the room its target takes, counted in default machines. A target twice the
+// default size needs room for two besides the reserve, and its wake holds both until it ends.
+func TestABigTargetNeverSpendsTheReserve(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		v := newEnv(t)
+		v.free.Store(1)
+		v.source("src")
+		v.target("big", engine.Paused, 8080)
+		v.target("db", engine.Paused, 5432)
+		v.setNeed("big", 2)
+		if ad, err := v.admit("src", "big", 8080); !errors.Is(err, links.ErrNoRoom) {
+			v.a.Release(ad)
+			t.Fatalf("waking a target that needs 2 with room for 1 = %v, want %v", err, links.ErrNoRoom)
+		}
+
+		v.free.Store(2)
+		release := v.e.holdResumes()
+		first := v.admitLater("src", "big", 8080)
+		synctest.Wait()
+		if ad, err := v.admit("src", "db", 5432); !errors.Is(err, links.ErrNoRoom) {
+			v.a.Release(ad)
+			t.Errorf("a default wake while the big one holds the room = %v, want %v", err, links.ErrNoRoom)
+		}
+		close(release)
+		r := <-first
+		if r.err != nil || !r.ad.Woke {
+			t.Fatalf("waking the target that needs 2 with room for 2 = %+v, %v; want it woken", r.ad, r.err)
 		}
 		v.a.Release(r.ad)
 		if n := v.e.resumed(); n != 1 {
@@ -78,33 +114,38 @@ func TestOneTargetCoalescesIntoOneWake(t *testing.T) {
 	})
 }
 
-// A wake that fails gives back the rate limit and the room together, so neither the same target
-// nor another one is held off by a wake that never happened.
+// A wake that fails gives back the rate limit and all the room its target takes together, so
+// neither the same target nor another one is held off by a wake that never happened.
 func TestAFailedWakeRollsBackTheRateAndTheRoom(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		v := newEnv(t)
-		v.free.Store(1)
-		v.source("src")
-		v.target("web", engine.Paused, 8080)
-		v.target("db", engine.Paused, 5432)
-		down := errors.New("orchestrator down")
-		v.e.setHook(func(context.Context, string) error { return down })
-		if _, err := v.admit("src", "web", 8080); !errors.Is(err, down) {
-			t.Fatalf("a failed wake = %v, want %v", err, down)
-		}
+	for _, need := range []int{1, 2} {
+		t.Run(fmt.Sprintf("a target that needs %d", need), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				v := newEnv(t)
+				v.free.Store(int64(need))
+				v.source("src")
+				v.target("web", engine.Paused, 8080)
+				v.target("db", engine.Paused, 5432)
+				v.setNeed("web", need)
+				down := errors.New("orchestrator down")
+				v.e.setHook(func(context.Context, string) error { return down })
+				if _, err := v.admit("src", "web", 8080); !errors.Is(err, down) {
+					t.Fatalf("a failed wake = %v, want %v", err, down)
+				}
 
-		v.e.setHook(nil)
-		web, err := v.admit("src", "web", 8080)
-		if err != nil || !web.Woke {
-			t.Fatalf("waking web again = %+v, %v; want it woken", web, err)
-		}
-		db, err := v.admit("src", "db", 5432)
-		if err != nil || !db.Woke {
-			t.Fatalf("waking db = %+v, %v; want it woken", db, err)
-		}
-		v.a.Release(web)
-		v.a.Release(db)
-	})
+				v.e.setHook(nil)
+				web, err := v.admit("src", "web", 8080)
+				if err != nil || !web.Woke {
+					t.Fatalf("waking web again = %+v, %v; want it woken", web, err)
+				}
+				db, err := v.admit("src", "db", 5432)
+				if err != nil || !db.Woke {
+					t.Fatalf("waking db = %+v, %v; want it woken", db, err)
+				}
+				v.a.Release(web)
+				v.a.Release(db)
+			})
+		})
+	}
 }
 
 // Release gives back the caps but keeps a successful wake's rate history, or a connection that
