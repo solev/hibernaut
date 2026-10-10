@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,6 +92,19 @@ func FormatMB(mb int64) string {
 		}
 	}
 	return fmt.Sprintf("%d GiB", mb/1024)
+}
+
+// FormatPorts formats the ports a machine publishes, as in Machine.Ports, for people: joined
+// with commas, or "-" when it publishes none or hibd has links off.
+func FormatPorts(ports []int) string {
+	if len(ports) == 0 {
+		return "-"
+	}
+	nums := make([]string, len(ports))
+	for i, p := range ports {
+		nums[i] = strconv.Itoa(p)
+	}
+	return strings.Join(nums, ",")
 }
 
 // Response is what a hibd command prints with -json: one object, then the command exits. A

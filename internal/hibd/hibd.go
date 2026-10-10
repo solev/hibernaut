@@ -357,7 +357,7 @@ func (a *App) ls(ctx context.Context, args []string) int {
 	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tSIZE\tIDLE\t"+ports("PORTS")+"STARTED\tENDS")
 	for _, m := range ms {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image), orDash(m.Size),
-			hibapi.FormatIdle(m.IdleSeconds), ports(formatPorts(m.Ports)), m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
+			hibapi.FormatIdle(m.IdleSeconds), ports(hibapi.FormatPorts(m.Ports)), m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
 	}
 	tw.Flush()
 	return 0
@@ -383,17 +383,6 @@ func (a *App) addPorts(ms []hibapi.Machine) bool {
 		}
 	}
 	return true
-}
-
-func formatPorts(ports []int) string {
-	if len(ports) == 0 {
-		return "-"
-	}
-	s := make([]string, len(ports))
-	for i, p := range ports {
-		s[i] = strconv.Itoa(p)
-	}
-	return strings.Join(s, ",")
 }
 
 func shortDuration(d time.Duration) string {
