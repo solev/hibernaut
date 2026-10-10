@@ -29,6 +29,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/links"
 )
 
@@ -1446,7 +1447,7 @@ func (p *proxyProc) setRuns(t *testing.T, live map[string]links.Run) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAtomic(p.runs, string(b)); err != nil {
+	if err := atomicfile.WriteFile(p.runs, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
