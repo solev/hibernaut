@@ -267,7 +267,6 @@ func TestAdmitRefuses(t *testing.T) {
 		{name: "quiescing", want: links.ErrQuiescing, configure: func(c *linkadmit.Config) {
 			c.Quiescing = func() bool { return true }
 		}},
-		{name: "links off", want: links.ErrLinksOff, configure: func(c *linkadmit.Config) { c.Keeper = nil }},
 		{name: "never active", want: links.ErrSourceIdle, setup: func(v *env) {
 			v.clock.mu.Lock()
 			delete(v.clock.at, "src")

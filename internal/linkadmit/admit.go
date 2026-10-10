@@ -50,15 +50,7 @@ type wakeup struct {
 	hadBefore bool
 }
 
-func (a *Admitter) ready() bool {
-	c := a.cfg
-	return c.Engine != nil && c.Runs != nil && c.Keeper != nil && c.Store != nil && c.Clock != nil && a.wake != nil
-}
-
 func (a *Admitter) admit(ctx context.Context, req links.AdmitRequest) (links.Admission, error) {
-	if !a.ready() {
-		return links.Admission{}, links.ErrLinksOff
-	}
 	if !idRE.MatchString(req.Source) || !idRE.MatchString(req.Target) {
 		return links.Admission{}, fmt.Errorf("bad machine ID in %q -> %q", req.Source, req.Target)
 	}

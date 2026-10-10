@@ -3,6 +3,7 @@ package linkadmit_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/solev/hibernaut/internal/linkadmit"
@@ -13,10 +14,7 @@ import (
 // links, so one of the two has to be bound late. Forgetting must be a startup failure, not a
 // link that nothing can close.
 func TestServeRefusesWithoutACloser(t *testing.T) {
-	a, err := linkadmit.New(linkadmit.Config{Socket: socketPath(t)})
-	if err != nil {
-		t.Fatalf("new: %v", err)
-	}
+	a := newEnv(t, func(c *linkadmit.Config) { c.Closer, c.Socket = nil, socketPath(t) }).a
 	if err := a.Serve(context.Background()); !errors.Is(err, links.ErrNoCloser) {
 		t.Errorf("serving unbound = %v, want %v", err, links.ErrNoCloser)
 	}
@@ -29,12 +27,31 @@ func TestServeRefusesWithoutACloser(t *testing.T) {
 // A closer passed in the config is used without a call to SetCloser, so a wiring that does not
 // need late binding does not have to ask for it.
 func TestAConfiguredCloserCounts(t *testing.T) {
-	a, err := linkadmit.New(linkadmit.Config{Closer: stubCloser{}, Socket: socketPath(t)})
-	if err != nil {
-		t.Fatalf("new: %v", err)
-	}
+	a := newEnv(t, func(c *linkadmit.Config) { c.Socket = socketPath(t) }).a
 	if err := a.Serve(stopped()); err != nil {
 		t.Errorf("serving with a configured closer = %v", err)
+	}
+}
+
+// New refuses a configuration missing a part admission needs, and names the part.
+func TestNewNamesTheMissingPart(t *testing.T) {
+	var full linkadmit.Config
+	newEnv(t, func(c *linkadmit.Config) { full = *c })
+	for _, tc := range []struct {
+		part  string
+		clear func(*linkadmit.Config)
+	}{
+		{"engine", func(c *linkadmit.Config) { c.Engine = nil }},
+		{"run watcher", func(c *linkadmit.Config) { c.Runs = nil }},
+		{"gate keeper", func(c *linkadmit.Config) { c.Keeper = nil }},
+		{"link store", func(c *linkadmit.Config) { c.Store = nil }},
+		{"activity clock", func(c *linkadmit.Config) { c.Clock = nil }},
+	} {
+		cfg := full
+		tc.clear(&cfg)
+		if _, err := linkadmit.New(cfg); err == nil || !strings.Contains(err.Error(), tc.part) {
+			t.Errorf("New without the %s = %v, want an error naming it", tc.part, err)
+		}
 	}
 }
 

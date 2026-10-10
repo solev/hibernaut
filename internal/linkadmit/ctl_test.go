@@ -236,10 +236,7 @@ func TestTheControlSocketAcrossProcesses(t *testing.T) {
 		}
 	}
 
-	second, err := linkadmit.New(linkadmit.Config{Closer: stubCloser{}, Socket: path})
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := newEnv(t, func(c *linkadmit.Config) { c.Socket = path }).a
 	if err := second.Serve(ctx); err == nil || !strings.Contains(err.Error(), "another") {
 		t.Errorf("a second proxy on the same socket = %v, want a refusal", err)
 	}

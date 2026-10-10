@@ -4,12 +4,12 @@
 // It owns the room reserve, the caps, the wake rate limit, the activity clock, the run watcher
 // and the control socket hibd's other invocations use to cancel links across processes.
 //
-// An admitter missing any of Engine, Runs, Keeper, Store or Clock admits nothing and reports
-// that links are off.
+// New refuses a configuration missing any of Engine, Runs, Keeper, Store or Clock.
 package linkadmit
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -85,6 +85,18 @@ var _ links.Admitter = (*Admitter)(nil)
 
 // New checks the configuration and returns an admitter. It does not open the control socket.
 func New(cfg Config) (*Admitter, error) {
+	switch {
+	case cfg.Engine == nil:
+		return nil, errors.New("linkadmit: no engine")
+	case cfg.Runs == nil:
+		return nil, errors.New("linkadmit: no run watcher")
+	case cfg.Keeper == nil:
+		return nil, errors.New("linkadmit: no gate keeper")
+	case cfg.Store == nil:
+		return nil, errors.New("linkadmit: no link store")
+	case cfg.Clock == nil:
+		return nil, errors.New("linkadmit: no activity clock")
+	}
 	a := &Admitter{
 		cfg: cfg, closer: cfg.Closer,
 		now: cfg.Now, quiescing: cfg.Quiescing, readRoom: room.Read,
@@ -98,18 +110,13 @@ func New(cfg Config) (*Admitter, error) {
 	if a.quiescing == nil {
 		a.quiescing = func() bool { return false }
 	}
-	if cfg.Engine != nil {
-		mcfg := machines.Config{
-			Engine:   cfg.Engine,
-			Now:      a.now,
-			ReadRoom: func() (room.Host, error) { return a.readRoom() },
-			Activity: cfg.Clock,
-		}
-		if cfg.Store != nil {
-			mcfg.Fence = cfg.Store.Fence
-		}
-		a.wake = machines.New(mcfg).Wake
-	}
+	a.wake = machines.New(machines.Config{
+		Engine:   cfg.Engine,
+		Now:      a.now,
+		ReadRoom: func() (room.Host, error) { return a.readRoom() },
+		Activity: cfg.Clock,
+		Fence:    cfg.Store.Fence,
+	}).Wake
 	return a, nil
 }
 
