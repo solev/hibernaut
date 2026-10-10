@@ -90,6 +90,18 @@ func TestPrintPorts(t *testing.T) {
 	}
 }
 
+// What when returns is escaped like every other field, and an empty field shows as "-".
+func TestPrintLinkEntriesEscapesTheTime(t *testing.T) {
+	var out bytes.Buffer
+	entries := []hibapi.LinkEntry{{Time: "t", Event: "refused", Reason: "not published"}}
+	hibapi.PrintLinkEntries(&out, entries, func(s string) string { return s + "\x1b" })
+	want := "TIME   MACHINE  TO  PORT  RESULT                  WOKE  BYTES\n" +
+		"t\\x1b  -        -   -     refused: not published  -     -\n"
+	if got := out.String(); got != want {
+		t.Errorf("PrintLinkEntries = %q, want %q", got, want)
+	}
+}
+
 var colourRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func red(word string) string { return "\x1b[31m" + word + "\x1b[0m" }
