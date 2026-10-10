@@ -25,14 +25,22 @@ lint:
 test:
 	go test -race ./...
 
-# Tests that need root on a Linux host. Every hook test runs under sudo. Of the machines tests,
-# only those named TestHost do, because the rest expect an ordinary user.
+# Tests that need root on a Linux host. Every hook test runs under sudo. Of the machines, cleanup
+# and statefile tests, only those named TestHost do, because the rest expect an ordinary user. Of
+# the linkguard tests, only the TestGuard ones do, and they need ip, iptables, nft and conntrack.
 test-host:
+	@for need in nft:nftables conntrack:conntrack; do \
+		PATH="$$PATH:/usr/sbin:/sbin" command -v "$${need%%:*}" >/dev/null || \
+			{ echo "test-host needs $${need%%:*}. Install the $${need#*:} package." >&2; exit 1; }; \
+	done
 	go test -tags host -exec sudo ./internal/egress/hook/
 	go test -tags host -exec sudo -run '^TestHost' ./internal/machines/
 	go test -tags host -exec sudo -run '^TestHost' ./internal/cleanup/
+	go test -tags host -exec sudo -run '^TestHost' ./internal/statefile/
+	go test -tags host -exec sudo -run '^TestGuard' ./internal/linkguard/
 
-# Cross-compiles the host tests, runs them on the Azure host and removes the binaries.
+# Cross-compiles the host tests, runs them on the Azure host and removes the binaries. The host
+# gets nftables and conntrack first if it lacks them, for the linkguard tests.
 test-host-remote:
 	@set -e; \
 	dir=$$(mktemp -d -t hibernaut-host-test.XXXXXX); \
@@ -41,12 +49,18 @@ test-host-remote:
 	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/hook.test" ./internal/egress/hook; \
 	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/machines.test" ./internal/machines; \
 	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/cleanup.test" ./internal/cleanup; \
+	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/statefile.test" ./internal/statefile; \
+	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/linkguard.test" ./internal/linkguard; \
 	azure/start.sh || { echo "Azure host is not reachable. Run azure/start.sh and retry." >&2; exit 1; }; \
 	target=$$(bash -c 'source azure/common.sh; printf "%s@%s" "$$VM_USER" "$$(vm_ip)"'); \
 	scp -r "$$dir" "$$target:$$remote"; \
-	azure/ssh.sh "status=0; sudo $$remote/hook.test -test.v || status=1; \
+	azure/ssh.sh "{ command -v nft && command -v conntrack; } >/dev/null || \
+		{ sudo apt-get update -qq && sudo apt-get install -y -qq nftables conntrack; } || { rm -rf $$remote; exit 1; }; \
+		status=0; sudo $$remote/hook.test -test.v || status=1; \
 		sudo $$remote/machines.test -test.v -test.run '^TestHost' || status=1; \
 		sudo $$remote/cleanup.test -test.v -test.run '^TestHost' || status=1; \
+		sudo $$remote/statefile.test -test.v -test.run '^TestHost' || status=1; \
+		sudo $$remote/linkguard.test -test.v -test.run '^TestGuard' || status=1; \
 		rm -rf $$remote; exit \$$status"
 
 generate:
@@ -64,12 +78,14 @@ down:
 	azure/down.sh
 
 # Readies the VM (azure/up.sh), then tests it from here through an SSH tunnel. Creates and
-# deletes machines labeled hib-test=e2e or named e2e-*.
+# deletes machines labeled hib-test=e2e or named e2e-*. TestMachineToMachine adds about 30
+# minutes.
 e2e: up
-	go test -tags e2e -count=1 -v -timeout 40m ./e2e/...
+	go test -tags e2e -count=1 -v -timeout 70m ./e2e/...
 
 # Also reboots the VM, then deallocates and starts it, which adds about 5 minutes, and keeps a
 # busy machine running past an hour, which adds about 65. TestTrim adds its pauses, at most the
-# rest of the hour, two restarts, two saves and a fork.
+# rest of the hour, two restarts, two saves and a fork. TestMachineToMachineSlow waits out idle
+# timeouts and link leases, which adds about 60, and checking links across the reboot a few more.
 e2e-slow: up
-	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 180m ./e2e/...
+	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 270m ./e2e/...

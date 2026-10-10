@@ -81,12 +81,16 @@ hib fork app --count 2           # app-1 and app-2: copies of app as it is now. 
 | Piece | Runs on | Job |
 | --- | --- | --- |
 | `hib` | laptop | The CLI. Talks to the host only over SSH. Starts the Azure VM if it's asleep. |
-| `hibd` | host (systemd) | Machine names and state, vault, egress proxy, SSH bridge, idle policy. |
+| `hibd` | host (systemd) | Machine names and state, vault, egress proxy, SSH bridge, idle policy, and from M12 links between machines. |
 | E2B | host (systemd) | The engine: boots, pauses and resumes Firecracker VMs, and builds images. |
 | `dev` image | E2B template | Linux, sshd + websocat (the SSH endpoint), git + gh (gh is git's credential helper), Node/Python, Codex, the Copilot CLI, and our CA certificate. |
 
 **Control channel = SSH.** Each `hib <cmd>` runs `ssh host hibd <cmd> --json`. SSH is already open
-and key-based, so v1 needs no HTTPS API, domain, TLS certificates or API keys.
+and key-based, so v1 needs no HTTPS API, domain, TLS certificates or API keys. Commands that need
+root on the host run `sudo -n hibd` instead: `connect`, `disconnect`, `secret add`, `secret rm`,
+`status`, `fork`, `image save`, and from M12 `pause` and `rm`. Those two need it because when
+`hibd proxy` doesn't confirm that it closed a machine's links, they cut them in the kernel
+themselves.
 
 ## 4. Credentials (the core idea)
 
@@ -380,6 +384,11 @@ accessed through the VM's managed identity.
 - What `hibd` keeps itself is files in `HIBD_STATE_DIR` (`/var/lib/hibernaut`): the vault, the
   logins, each machine's pinned SSH host key, and from M12 the published ports. They're written
   atomically and guarded by `flock`.
+- What must not outlive a boot is in `/run/hibernaut`, which root owns: the quiescing marker,
+  which `quiesce` makes and from M12 `hibd pause-all` too, and from M12 the control socket
+  (`links.sock`) through which `hibd pause` and `hibd rm` tell `hibd proxy` to close a machine's
+  links, and the next kernel guard token. From M12 systemd-tmpfiles makes the directory at boot,
+  because `hibd-proxy.service` can't start without it.
 - States: running → paused (idle) → deleted. The host itself can also be asleep.
 - Every machine is created with `autoPause: true`, memory snapshots (never filesystem-only) and
   auto-resume off (`autoResume: {enabled: false}`), so traffic to a paused machine doesn't wake
@@ -471,7 +480,8 @@ Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2
 - **A reserve for people.** From M12 a machine can wake another by connecting to a published
   port, so the check keeps one `dev` machine's memory free that only a person's command may use.
   A link that doesn't fit is refused at once and says so, rather than taking the last of the
-  room or holding the host awake.
+  room or holding the host awake. For now a link counts the room in machines of the default size,
+  so one that wakes a `large` machine can use part of the reserve.
 - **Snapshot cleanup:** `hibd` deletes the build directories in
   `/var/lib/e2b/local-template-storage` that nothing can resume or start from any more. It
   reads E2B's database (through `docker exec psql`), the machines and each directory's headers,
@@ -580,10 +590,16 @@ hib port rm api 8080
   ports is published, and keeps it for life; addresses are never reused. `hibd` writes a managed
   `/etc/hosts` block in every machine through the same delivery that writes the env block, so
   `api.hib` resolves with no DNS server and no image rebuild.
-- **The path.** An iptables rule redirects a machine's TCP to `198.18.0.0/15` into a listener in
-  `hibd`, which takes the caller's identity from the veth the connection arrived on, checks the
-  port is published, wakes the target if it's paused, dials the target's current slot and copies
-  bytes. The client never learns the host is in the path.
+- **The path.** An iptables rule redirects a machine's TCP to `198.18.0.0/15` into the link listener
+  `hibd proxy` serves on port 5444, which takes the caller's identity from the veth the connection
+  arrived on, checks the port is published, wakes the target if it's paused, dials the target's
+  current slot and copies bytes. The client never learns the host is in the path.
+- **On by default.** `HIBD_LINK_PORT=0` in `/etc/hibernaut/hibd.env` turns links off for the whole
+  host: nothing is redirected, `hib port` says links are off and `hib ls` shows no ports. With
+  links on, `hibd proxy` serves them only once its checks pass: the kernel guard is installed, its
+  control socket answers, the host's firewall drops the UDP and ICMP machines send to the link
+  range and E2B's orchestrator may not reach it. Until they do, egress works and links stay off,
+  and it checks again every minute.
 - **Never publishable:** 8081 (the SSH bridge) and 49983 (E2B's agent). TCP only.
 - **Secrets are not swapped on a link.** It doesn't go through the egress proxy, so there is no
   TLS interception and no placeholder swap: a machine that sends a placeholder over a link sends
@@ -614,7 +630,8 @@ hib port rm api 8080
   fork or a machine from a saved image starts with none.
 - **Audit.** A line when a link opens and one when it closes, in its own log: who called, which
   machine and port, whether it was refused and why, whether it woke the target, bytes and how
-  long it was open. `hib port ls` shows how many links are open now.
+  long it was open. `hib log --links` shows the newest entries, and `hib port ls` shows how many
+  links are open now. `hib ls` lists each machine's published ports in its `PORTS` column.
 - The laptop reaches a published port with `ssh -L 8080:localhost:8080 api.hib`, not through the
   link path.
 
@@ -726,7 +743,7 @@ using a root-only key file (later: Azure Key Vault through the VM's managed iden
 | --- | --- | --- | --- |
 | Unit + fuzz | laptop, CI | seconds | Placeholders, the swap engine, vault crypto, the `/etc/environment` block, idle policy, the CLI ↔ `hibd` JSON |
 | Integration | laptop, CI | seconds | The real proxy against fake GitHub, ChatGPT and Copilot servers over TLS, driven by real `git`, `gh`, `curl` and Node clients. `hibd` against a fake engine. Device flow against a fake GitHub. |
-| Host integration | CI (Linux, sudo), host | ~1 min | The iptables chain and `SO_ORIGINAL_DST`, with a network namespace standing in for a machine. From M12, that the link rule sits ahead of the egress rule and that both survive `Keep`. |
+| Host integration | CI (Linux, sudo), host | ~1 min | The iptables chain and `SO_ORIGINAL_DST`, with a network namespace standing in for a machine. From M12, that the link rule sits ahead of the egress rule and that both survive `Keep`, and the kernel guard against real nftables and conntrack. |
 | End-to-end | the Azure host | minutes | Real E2B, Firecracker, GitHub, ChatGPT and Copilot. One scenario per milestone (§7). |
 
 **Seams that keep the fast layers fast** (interfaces with test fakes):
@@ -778,13 +795,13 @@ using a root-only key file (later: Azure Key Vault through the VM's managed iden
 - GitHub tests use a private fixture repo (`solev/hibernaut-e2e`) and always clean up their
   branches and PRs. A run first removes `e2e-` branches and PRs that killed runs left.
 - AI tests use one-line prompts ("reply with OK"), which cost almost nothing.
-- Slow scenarios (host reboot and deallocation, 11-minute idle SSH) run only with
-  `make e2e-slow`, before a milestone closes.
+- Slow scenarios (host reboot and deallocation, 11-minute idle SSH, and from M12 the waits for
+  idle timeouts and link leases) run only with `make e2e-slow`, before a milestone closes.
 
-**Commands:** `make test` (unit + integration), `make test-host` (Linux, sudo), `make e2e`,
-`make e2e-slow`. CI runs `make lint test` and checks generated code on every push; `test-host`
-joins CI in M3, with the first host test. CI is parked for now: GitHub Actions is off for the
-repo (see the README).
+**Commands:** `make test` (unit + integration), `make test-host` (Linux, sudo, and from M12 `nft`
+and `conntrack`), `make e2e`, `make e2e-slow`. CI runs `make lint test` and checks generated code
+on every push; `test-host` joins CI in M3, with the first host test. CI is parked for now: GitHub
+Actions is off for the repo (see the README).
 
 ## 9. Open questions and spikes
 
@@ -799,7 +816,7 @@ repo (see the README).
 | S7 | Which env vars and config does each tool need to trust our CA and run unattended? | **Answered** (§4.2 Trust, §4.4). |
 | S8 | Can machines reach host services or the Azure metadata endpoint? | **No, tested live in M3** (`TestNoHostAccess`). A machine probed every port the host listens on, at every host address, the gateway, `169.254.169.254` and `168.63.129.16`. Only SSH on the host's public IP and E2B's service endpoint at `192.0.2.1` answered (§4.5). |
 | S9 | Does the Copilot CLI trade the GitHub token for its own short-lived token? Which hosts get which token? | **No exchange, traced live** with Copilot CLI 1.0.91 ([copilot-auth](research/copilot-auth.md) §9). The `gho_` token goes straight to `api.github.com` (`/copilot_internal/user`, `/copilot/mcp_registry`) and the plan's API host (`api.enterprise.githubcopilot.com` for this account). A placeholder swapped on those hosts works. So `*.githubcopilot.com` joins the GitHub secret's sites (§4.3). |
-| S10 | Can one machine reach a port on another without opening a mesh, and without a path to the host? | **Designed in code, not yet run** ([M12](milestones/m12-machine-links.md)). E2B's per-sandbox firewall denies private, loopback and link-local addresses but not `198.18.0.0/15`, so a virtual address per machine in that range reaches `hibd` through one `nat PREROUTING` redirect, and `internal/slots` already maps the ingress veth back to the calling sandbox. Links can't hold the host awake by themselves: a link wakes and renews its target only while the calling machine has activity that isn't a link, and a machine can't link to itself. The hard part is cutting a link the moment either machine's run ends, because E2B gives a paused machine's address to another machine about three seconds later; the design watches each run's cgroup rather than polling, and backs that with a kernel firewall rule that carries link traffic only to a run `hibd` has re-proved alive within the last second, so a stalled `hibd` fails closed. Open until `TestMachineToMachine` passes: the added latency of the hop, measured warm as p50, p95 and p99 rather than promised, and whether the room reserve and the wake rate limit hold up under a worker fleet. |
+| S10 | Can one machine reach a port on another without opening a mesh, and without a path to the host? | **Built, not yet run on the host** ([M12](milestones/m12-machine-links.md)). E2B's per-sandbox firewall denies private, loopback and link-local addresses but not `198.18.0.0/15`, so a virtual address per machine in that range reaches `hibd` through one `nat PREROUTING` redirect, and `internal/slots` already maps the ingress veth back to the calling sandbox. Links can't hold the host awake by themselves: a link wakes and renews its target only while the calling machine has activity that isn't a link, and a machine can't link to itself. The hard part is cutting a link the moment either machine's run ends, because E2B gives a paused machine's address to another machine about three seconds later; the design watches each run's cgroup rather than polling, and backs that with a kernel firewall rule that carries link traffic only to a run `hibd` has re-proved alive within the last second, so a stalled `hibd` fails closed. Open until `TestMachineToMachine` passes: the added latency of the hop, measured warm as p50, p95 and p99 rather than promised, and whether the room reserve and the wake rate limit hold up under a worker fleet. |
 
 Research: [e2b-capabilities](research/e2b-capabilities.md) (§10 covers egress, `caBundle` and SSH) ·
 [agent-auth](research/agent-auth.md) · [codex-chatgpt-auth](research/codex-chatgpt-auth.md) ·

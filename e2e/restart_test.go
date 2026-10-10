@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,13 +19,45 @@ import (
 const startCounter = `setsid nohup sh -c 'i=0; while :; do i=$((i+1)); echo $i > /tmp/counter; sleep 1; done' </dev/null >/dev/null 2>&1 & echo $!`
 
 // TestSurvivesHostRestart checks that a machine that's running when the VM goes down resumes
-// afterwards with its files and processes, and E2B comes back up on its own.
+// afterwards with its files and processes, and E2B comes back up on its own. Links between
+// machines come back too, at the same addresses, once hibd proxy serves them again.
 func TestSurvivesHostRestart(t *testing.T) {
 	if os.Getenv("HIB_E2E_SLOW") == "" {
 		t.Skip("restarts the VM; run make e2e-slow")
 	}
+	ensureImage(t)
+	ctx := testContext(t, 40*time.Minute)
+	client := linkNew(t, ctx, "1h")
+	target := linkNew(t, ctx, "1h")
+	linkServe(t, ctx, target, 8080, "t", "")
+	hib(t, ctx, "port", "add", target.name, "8080")
+	linkWantReply(t, ctx, client, target.host(), 8080, "t")
+	before := linkPorts(t, ctx)[target.name]
 
-	t.Run("reboot", func(t *testing.T) { survives(t, reboot) })
+	if !t.Run("reboot", func(t *testing.T) { survives(t, reboot) }) {
+		return
+	}
+	// /run is empty after a boot, so this is the cold start of links too: no quiescing marker
+	// left over, and /run/hibernaut made again before hibd proxy starts.
+	t.Run("links after the reboot", func(t *testing.T) {
+		if vm.engine == nil {
+			if err := vm.openTunnel(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		after := linkPorts(t, ctx)[target.name]
+		if after.Addr != before.Addr || !slices.Equal(linkPublished(after), linkPublished(before)) {
+			t.Errorf("after the reboot %s is at %s publishing %v, want %s publishing %v",
+				target.name, after.Addr, linkPublished(after), before.Addr, linkPublished(before))
+		}
+		waitFor(t, ctx, "hibd proxy to serve links after the reboot", 5*time.Minute, func() bool {
+			out, err := vm.ssh(ctx, "journalctl -b -u hibd-proxy --no-pager -o cat")
+			return err == nil && strings.Contains(out, "serving machine links on port")
+		})
+		mustSSH(t, ctx, "test -d /run/hibernaut && test ! -e /run/hibernaut/quiescing && systemctl is-active -q hibd-proxy")
+		// ssh wakes the client, which the pause-all guard paused, and the link wakes the target.
+		linkWantReply(t, ctx, client, target.host(), 8080, "t")
+	})
 }
 
 func survives(t *testing.T, restart func(t *testing.T, ctx context.Context)) {
