@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -282,7 +281,7 @@ func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	for i, m := range r.Machines {
 		states[i] = m.State
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),
-			hibapi.FormatIdle(m.IdleSeconds), machinePorts(m.Ports), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID),
+			hibapi.FormatIdle(m.IdleSeconds), hibapi.FormatPorts(m.Ports), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID),
 			safe(m.ForkOf))
 	}
 	tw.Flush()
@@ -316,19 +315,6 @@ func roomLine(r hibapi.Room) string {
 		return fmt.Sprintf("Room for 1 more %s machine: %s", image, free)
 	}
 	return fmt.Sprintf("Room for %d more %s machines: %s", r.Fits, image, free)
-}
-
-// machinePorts is the ports a machine publishes, joined with commas, or "-" when it publishes
-// none or hibd has links off.
-func machinePorts(ports []int) string {
-	if len(ports) == 0 {
-		return "-"
-	}
-	nums := make([]string, len(ports))
-	for i, p := range ports {
-		nums[i] = strconv.Itoa(p)
-	}
-	return strings.Join(nums, ",")
 }
 
 func pausesIn(m hibapi.Machine, now time.Time) string {

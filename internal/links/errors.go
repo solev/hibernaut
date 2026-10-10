@@ -3,7 +3,7 @@ package links
 import "errors"
 
 // The errors the two sides share. A refusal reason in the link log is the Error text of one of
-// these, so adding a reason means adding an error here.
+// these, so adding a reason means adding an error here and to crossing.
 var (
 	// ErrLinksOff is returned by everything when HIBD_LINK_PORT is 0.
 	ErrLinksOff = errors.New("links are off")
@@ -90,3 +90,39 @@ var (
 	// turns forgetting into a startup failure rather than a link nobody can cancel.
 	ErrNoCloser = errors.New("the link listener is not bound to the admitter")
 )
+
+// crossing are the errors that cross between processes as text, in a link-log reason or a
+// control-socket reply. Known tries them in this order.
+var crossing = []error{
+	ErrLinksOff, ErrNotPublished, ErrReservedPort, ErrUnknownAddress,
+	ErrSelfLink, ErrSourceIdle, ErrPausedByHand, ErrFenced,
+	ErrQuiescing, ErrNoRoom, ErrRateLimited, ErrTooManyLinks,
+	ErrRevoked, ErrRunEnded, ErrLeaseExpired, ErrNotRunning,
+	ErrDialFailed, ErrGuardDown, ErrTokensSpent, ErrUnmarked,
+	ErrWrongRun, ErrStateUnreadable, ErrFull, ErrNoCloser,
+	ErrNotFound,
+}
+
+// Known returns the shared error err is, or nil. When err is more than one of them, it returns
+// the first in crossing.
+func Known(err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, c := range crossing {
+		if errors.Is(err, c) {
+			return c
+		}
+	}
+	return nil
+}
+
+// Named returns the shared error whose text is text, or nil.
+func Named(text string) error {
+	for _, c := range crossing {
+		if c.Error() == text {
+			return c
+		}
+	}
+	return nil
+}

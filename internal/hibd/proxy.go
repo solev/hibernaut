@@ -209,7 +209,8 @@ func (a *App) listenProxy(port int) (net.Listener, error) {
 	return listen("tcp", fmt.Sprintf(":%d", port))
 }
 
-// proxyHook is the iptables hook. With linkPort 0 it carries no link rule, which is M11's hook.
+// proxyHook is the iptables hook. With linkPort 0 it carries the egress rule alone, with no link
+// rule.
 func (a *App) proxyHook(port, linkPort int) proxypkg.Rule {
 	if a.ProxyHook != nil {
 		return a.ProxyHook

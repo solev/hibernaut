@@ -1,11 +1,11 @@
 // Package linkguard installs and maintains the kernel fence around link traffic, and runs the
 // Keeper that owns every gate in it.
 //
-// Everything else in M12 runs inside hibd proxy, and a stalled proxy runs none of it while its
-// sockets go on sending. E2B hands a slot to the next sandbox links.SlotReturnDelay after a run
-// ends, so a fence that depends on a user-space process is not a fence. This one is a pair of
-// nftables objects whose elements expire on their own: the Keeper extends a gate only after
-// re-proving its run is live and unfenced, and anything that stops proving loses its gates
+// Every other part of machine links runs inside hibd proxy, and a stalled proxy runs none of it
+// while its sockets go on sending. E2B hands a slot to the next sandbox links.SlotReturnDelay
+// after a run ends, so a fence that depends on a user-space process is not a fence. This one is
+// a pair of nftables objects whose elements expire on their own: the Keeper extends a gate only
+// after re-proving its run is live and unfenced, and anything that stops proving loses its gates
 // within links.GuardTTL.
 //
 // Gates are keyed on a slot's address together with the token of the run at it, so a gate can
@@ -21,13 +21,13 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/solev/hibernaut/internal/atomicfile"
 	"github.com/solev/hibernaut/internal/links"
 )
 
@@ -334,32 +334,10 @@ func (t *Tokens) Next() (uint32, error) {
 	if next > links.GuardMaxToken {
 		return 0, links.ErrTokensSpent
 	}
-	if err := writeAtomic(t.path, strconv.FormatUint(next+1, 10)+"\n"); err != nil {
+	if err := atomicfile.WriteFile(t.path, []byte(strconv.FormatUint(next+1, 10)+"\n"), 0o600); err != nil {
 		return 0, fmt.Errorf("linkguard: write %s: %w", t.path, err)
 	}
 	return uint32(next), nil
-}
-
-// writeAtomic replaces path with content by renaming a synced file over it, so a crash leaves
-// either the old counter or the new one and never a truncated number.
-func writeAtomic(path, content string) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
 }
 
 // KeeperConfig is everything the Keeper needs. Every dependency is an interface or a function

@@ -151,22 +151,15 @@ func (c *Client) failed(ctx context.Context, req Request, err error) error {
 	return fmt.Errorf("linkctl: %s on %s: %w", req.Op, c.path, err)
 }
 
-// shared are the errors a reply's err can name, so a caller can still tell them apart with
-// errors.Is once they have crossed the socket.
-var shared = []error{
-	links.ErrLinksOff, links.ErrNoCloser, links.ErrNotPublished, links.ErrReservedPort,
-	links.ErrUnknownAddress, links.ErrFenced, links.ErrQuiescing, links.ErrRevoked,
-	links.ErrRunEnded, links.ErrNotRunning, links.ErrGuardDown, links.ErrNotFound,
-	links.ErrStateUnreadable, links.ErrTokensSpent,
-}
-
+// remote turns a reply's err back into the shared error it names, alone or after a prefix and
+// ": ", so a caller can still tell them apart with errors.Is once they have crossed the socket.
 func remote(text string) error {
-	for _, err := range shared {
-		if text == err.Error() {
-			return fmt.Errorf("linkctl: %w", err)
-		}
-		if prefix, ok := strings.CutSuffix(text, ": "+err.Error()); ok {
-			return fmt.Errorf("linkctl: %s: %w", prefix, err)
+	if err := links.Named(text); err != nil {
+		return fmt.Errorf("linkctl: %w", err)
+	}
+	if i := strings.LastIndex(text, ": "); i >= 0 {
+		if err := links.Named(text[i+len(": "):]); err != nil {
+			return fmt.Errorf("linkctl: %s: %w", text[:i], err)
 		}
 	}
 	return fmt.Errorf("linkctl: %s", text)

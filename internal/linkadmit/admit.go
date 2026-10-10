@@ -50,15 +50,8 @@ type wakeup struct {
 	hadBefore bool
 }
 
-func (a *Admitter) ready() bool {
-	c := a.cfg
-	return c.Engine != nil && c.Runs != nil && c.Keeper != nil && c.Store != nil && c.Clock != nil && a.wake != nil
-}
-
-func (a *Admitter) admit(ctx context.Context, req links.AdmitRequest) (links.Admission, error) {
-	if !a.ready() {
-		return links.Admission{}, links.ErrLinksOff
-	}
+// Admit reserves room and caps, wakes the target if it is paused, and returns an Admission.
+func (a *Admitter) Admit(ctx context.Context, req links.AdmitRequest) (links.Admission, error) {
 	if !idRE.MatchString(req.Source) || !idRE.MatchString(req.Target) {
 		return links.Admission{}, fmt.Errorf("bad machine ID in %q -> %q", req.Source, req.Target)
 	}
@@ -357,7 +350,9 @@ func admOf(ad links.Admission) *adm {
 	return p
 }
 
-func (a *Admitter) release(ad links.Admission) {
+// Release gives back the room and the caps. It keeps the rate history of a successful wake, so
+// a link opened and closed in a loop cannot wake a machine every second.
+func (a *Admitter) Release(ad links.Admission) {
 	p := admOf(ad)
 	if p == nil {
 		return
@@ -369,7 +364,12 @@ func (a *Admitter) release(ad links.Admission) {
 	cancel(context.Canceled)
 }
 
-func (a *Admitter) renew(ad links.Admission, payload int64) {
+// Renew pushes the target's idle timeout back for payload bytes. It re-derives the lease from
+// the activity clock on every call rather than reading ad.LeaseUntil, so a source still being
+// worked on keeps renewing, and a source whose own non-link activity has gone stale stops, after
+// which the target pauses on its own idle timeout. It never cuts a link, and link bytes never
+// feed the clock.
+func (a *Admitter) Renew(ad links.Admission, payload int64) {
 	p := admOf(ad)
 	if payload <= 0 || p == nil || a.quiescing() {
 		return

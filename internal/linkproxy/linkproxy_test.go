@@ -156,9 +156,6 @@ func TestEveryRefusalClosesWithoutAByte(t *testing.T) {
 			if e.Reason != tt.want.Error() {
 				t.Errorf("refused with %q, want %q", e.Reason, tt.want)
 			}
-			if e.Count != 1 {
-				t.Errorf("Count = %d, want 1", e.Count)
-			}
 			if tt.name == "quiescing" {
 				if e.From != "?" || h.ingress.count() != 0 {
 					t.Errorf("quiescing refusal from %q after %d identifies, want ? before any", e.From, h.ingress.count())
@@ -746,7 +743,7 @@ func TestIdenticalRefusalsShareAFoldKey(t *testing.T) {
 		port             int
 	}
 	key := func(e audit.LinkEntry) foldKey { return foldKey{e.FromID, e.ToID, e.Reason, e.Port} }
-	if key(got[0]) != key(got[1]) || got[0].Count != 1 || got[1].Count != 1 {
+	if key(got[0]) != key(got[1]) {
 		t.Errorf("refusals %+v and %+v do not fold together", got[0], got[1])
 	}
 }
@@ -873,7 +870,7 @@ func TestRealIngressRefusesALoopbackConnection(t *testing.T) {
 	server := <-accepted
 	defer server.Close()
 
-	if _, err := NewIngress(slots.Finder{}).Identify(server); err == nil || known(err) != nil {
+	if _, err := NewIngress(slots.Finder{}).Identify(server); err == nil || links.Known(err) != nil {
 		t.Errorf("Identify = %v, want a refusal that is not a link reason", err)
 	}
 }

@@ -43,7 +43,7 @@ func (a *Admitter) sweep(ctx context.Context) {
 		}
 	}
 	a.mu.Unlock()
-	if len(held) == 0 || !a.ready() {
+	if len(held) == 0 {
 		return
 	}
 

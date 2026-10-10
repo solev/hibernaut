@@ -73,7 +73,7 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 		err = links.ErrUnmarked
 	}
 	if err != nil {
-		if reason := known(err); reason != nil {
+		if reason := links.Known(err); reason != nil {
 			_ = conn.Close()
 			p.refused(peer, "", reason)
 			return
@@ -112,8 +112,10 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 	l.pipe()
 }
 
-// connect takes the link from an identified connection to an open one, in the order of the
-// design's numbered steps, and returns the reason it was refused.
+// connect takes the link from an identified connection to an open one, and returns the reason it
+// was refused. It checks the destination against links.json, binds the connection to the
+// source's run and only then admits it, because admit may wake the target. The recheck and the
+// aborts come after the dial and before the first byte.
 func (l *link) connect() error {
 	p := l.p
 	dst := l.peer.Dst
@@ -168,7 +170,7 @@ func (l *link) connect() error {
 		if l.ctx.Err() != nil {
 			return l.cause()
 		}
-		if reason := known(err); reason != nil {
+		if reason := links.Known(err); reason != nil {
 			return reason
 		}
 		return l.diag("admit", err, links.ErrNotRunning)
@@ -207,7 +209,7 @@ func (l *link) sourceGate(run links.Run) (links.Gate, error) {
 	if l.ctx.Err() != nil {
 		return links.Gate{}, l.cause()
 	}
-	if reason := known(err); reason != nil && reason != links.ErrRunEnded && reason != links.ErrNotRunning {
+	if reason := links.Known(err); reason != nil && reason != links.ErrRunEnded && reason != links.ErrNotRunning {
 		return links.Gate{}, reason
 	}
 	return links.Gate{}, l.diag("source gate", err, links.ErrWrongRun)
@@ -253,8 +255,8 @@ func (l *link) dial() error {
 	return nil
 }
 
-// recheck is step 10: both runs still the ones admitted, the port's generation unchanged and
-// neither gate retired, all read after the dial and before the first byte.
+// recheck checks that both runs are still the ones admitted, that the port's generation is
+// unchanged and that neither gate is retired, all read after the dial and before the first byte.
 func (l *link) recheck(gen uint64) error {
 	adm := l.admission()
 	if !l.stillRunning(adm.Source, adm.SourceRun) || !l.stillRunning(adm.Target, adm.TargetRun) {
@@ -283,8 +285,8 @@ func (l *link) recheck(gen uint64) error {
 	return nil
 }
 
-// arm is step 11: from here on, either run ending, either gate being retired or the admission
-// being cancelled aborts both halves.
+// arm makes either run ending, either gate being retired or the admission being cancelled abort
+// both halves from here on.
 func (l *link) arm() error {
 	adm := l.admission()
 	srcRun, err := l.p.cfg.Runs.Watch(adm.Source, adm.SourceRun)
@@ -351,7 +353,7 @@ func (l *link) retiredReason() error {
 // errors, and otherwise whatever in the world has changed since it was granted.
 func (l *link) ctxReason() error {
 	adm := l.admission()
-	if reason := known(context.Cause(adm.Ctx)); reason != nil {
+	if reason := links.Known(context.Cause(adm.Ctx)); reason != nil {
 		return reason
 	}
 	doc, err := l.state()
@@ -544,7 +546,7 @@ func (l *link) state() (*links.Doc, error) {
 
 // diag tells Logf about err when the link log will name it only as reason, and returns reason.
 func (l *link) diag(step string, err, reason error) error {
-	if known(err) != reason {
+	if links.Known(err) != reason {
 		l.mu.Lock()
 		target, open := l.target, l.open
 		l.mu.Unlock()
@@ -591,10 +593,7 @@ func (l *link) entry(event string, reason error, woke bool) audit.LinkEntry {
 	if reason != nil {
 		e.Reason = reason.Error()
 	}
-	switch event {
-	case "refused":
-		e.Count = 1
-	case "close":
+	if event == "close" {
 		e.BytesIn = l.in.Load()
 		e.BytesOut = l.out.Load()
 		e.SecondsOpen = int64(now.Sub(opened) / time.Second)
@@ -613,7 +612,6 @@ func (p *Proxy) refused(peer Peer, target string, reason error) {
 		ToID:   target,
 		Port:   int(peer.Dst.Port()),
 		Reason: reason.Error(),
-		Count:  1,
 	})
 }
 

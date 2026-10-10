@@ -1,16 +1,15 @@
 package hibd
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
@@ -65,7 +64,7 @@ func (a *App) portChange(ctx context.Context, args []string, publishing bool) in
 		return 2
 	}
 	name := rest[0]
-	ports, err := parsePorts(rest[1:])
+	ports, err := hibapi.ParsePorts(rest[1:])
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "hibd %s: %s\n", cmd, termsafe.String(err.Error()))
 		return 2
@@ -200,7 +199,7 @@ func (a *App) portLS(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Ports: all})
 	}
-	printPorts(a.Stdout, all)
+	hibapi.PrintPorts(a.Stdout, all)
 	if len(all) == 0 {
 		fmt.Fprintln(a.Stderr, "no published ports. hib port add NAME PORT publishes one")
 	}
@@ -219,21 +218,6 @@ func linksConfig(getenv func(string) string) (config, error) {
 	return cfg, nil
 }
 
-// parsePorts reads a batch of port numbers and drops repeats, keeping the order they came in.
-func parsePorts(args []string) ([]int, error) {
-	var ports []int
-	for _, arg := range args {
-		n, err := strconv.ParseUint(arg, 10, 16)
-		if err != nil || n == 0 {
-			return nil, fmt.Errorf("%s isn't a port. Ports are 1 to 65535", arg)
-		}
-		if !slices.Contains(ports, int(n)) {
-			ports = append(ports, int(n))
-		}
-	}
-	return ports, nil
-}
-
 func countNew(m *links.Machine, ports []int) int {
 	n := 0
 	for _, p := range ports {
@@ -245,13 +229,7 @@ func countNew(m *links.Machine, ports []int) int {
 }
 
 func reservedPort(p int) error {
-	switch p {
-	case 8081:
-		return errors.New("port 8081 is Hibernaut's SSH bridge and can't be published")
-	case 49983:
-		return errors.New("port 49983 is E2B's agent and can't be published")
-	}
-	return fmt.Errorf("port %d is reserved and can't be published", p)
+	return fmt.Errorf("port %d is %s and can't be published", p, cmp.Or(links.Reserved[p], "reserved"))
 }
 
 // portRefusal turns the store's errors into what a person reads.
@@ -400,32 +378,6 @@ func apiPorts(name string, m links.Machine, stats *links.Stats, id string) hibap
 		p.Published = append(p.Published, pp)
 	}
 	return p
-}
-
-// printPorts writes hib port ls's table. OPEN is "-" for a machine when any of its counts is
-// unknown.
-func printPorts(w io.Writer, all []hibapi.Ports) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
-	for _, p := range all {
-		nums := make([]string, len(p.Published))
-		total, counted := 0, true
-		for i, pp := range p.Published {
-			nums[i] = strconv.Itoa(pp.Port)
-			if pp.Open == nil {
-				counted = false
-			} else {
-				total += *pp.Open
-			}
-		}
-		open := "-"
-		if counted {
-			open = strconv.Itoa(total)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", termsafe.Line(p.Machine), termsafe.Line(p.Machine+".hib"),
-			termsafe.Line(p.Addr), strings.Join(nums, ","), open)
-	}
-	tw.Flush()
 }
 
 // hostPorts writes ports as host:port, joined with "and".

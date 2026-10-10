@@ -1,12 +1,7 @@
 package audit
 
 import (
-	"bufio"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -61,12 +56,8 @@ type LinkReadResult struct {
 // LinkLog is an open link log. A nil *LinkLog drops entries instead of failing, so a listener
 // whose log could not be opened still carries traffic.
 type LinkLog struct {
-	path     string
-	maxBytes int64
-
 	mu    sync.Mutex
-	file  *os.File
-	size  int64
+	out   jsonlFile[LinkEntry]
 	folds map[foldKey]*fold
 	// perSource is how many of folds each source holds, by FromID. Overflow folds hold none.
 	perSource map[string]int
@@ -91,12 +82,11 @@ type fold struct {
 
 // OpenLinks opens path for link log writes and creates it with mode 0644 if needed.
 func OpenLinks(path string, maxBytes int64) (*LinkLog, error) {
-	file, size, err := openFile(path)
+	out, err := openJSONL[LinkEntry](path, maxBytes, "link log")
 	if err != nil {
 		return nil, err
 	}
-	return &LinkLog{path: path, maxBytes: maxBytes, file: file, size: size, folds: map[foldKey]*fold{},
-		perSource: map[string]int{}}, nil
+	return &LinkLog{out: out, folds: map[foldKey]*fold{}, perSource: map[string]int{}}, nil
 }
 
 // Path is where the log is being written.
@@ -104,7 +94,7 @@ func (l *LinkLog) Path() string {
 	if l == nil {
 		return ""
 	}
-	return l.path
+	return l.out.path
 }
 
 // MaxBytes is the size the log rotates at, keeping one older file.
@@ -112,7 +102,7 @@ func (l *LinkLog) MaxBytes() int64 {
 	if l == nil {
 		return 0
 	}
-	return l.maxBytes
+	return l.out.maxBytes
 }
 
 // Write appends one JSON line for e and flushes it before returning, as the secret log does.
@@ -131,12 +121,12 @@ func (l *LinkLog) Write(e LinkEntry) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.file == nil {
+	if l.out.closed() {
 		return errors.New("link log is closed")
 	}
 	e = cleanLinkEntry(e)
 	if e.Event != "refused" {
-		return l.writeLocked(e)
+		return l.out.write(e)
 	}
 	key := foldKey{from: e.FromID, to: e.ToID, port: e.Port, reason: e.Reason}
 	f, ok := l.folds[key]
@@ -166,35 +156,26 @@ func (l *LinkLog) Close() error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.file == nil {
+	if l.out.closed() {
 		return nil
 	}
 	var errs []error
 	for key, f := range l.folds {
 		f.timer.Stop()
 		l.forget(key, f)
-		errs = append(errs, l.writeLocked(f.line()))
+		errs = append(errs, l.out.write(f.line()))
 	}
-	errs = append(errs, l.file.Close())
-	l.file = nil
+	errs = append(errs, l.out.close())
 	return errors.Join(errs...)
 }
 
 // ReadLinks reads the last n entries of the link log at path.
 func ReadLinks(path string, n int) (LinkReadResult, error) {
-	var out LinkReadResult
-	for _, p := range []string{path + ".1", path} {
-		entries, corrupt, err := readLinkFile(p)
-		if err != nil {
-			return LinkReadResult{}, err
-		}
-		out.Entries = append(out.Entries, entries...)
-		out.Corrupt += corrupt
+	entries, corrupt, err := readJSONL[LinkEntry](path, n)
+	if err != nil {
+		return LinkReadResult{}, err
 	}
-	if n > 0 && len(out.Entries) > n {
-		out.Entries = out.Entries[len(out.Entries)-n:]
-	}
-	return out, nil
+	return LinkReadResult{Entries: entries, Corrupt: corrupt}, nil
 }
 
 func (f *fold) line() LinkEntry {
@@ -209,12 +190,12 @@ func (f *fold) line() LinkEntry {
 func (l *LinkLog) flush(key foldKey, f *fold) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.file == nil || l.folds[key] != f {
+	if l.out.closed() || l.folds[key] != f {
 		return
 	}
 	l.forget(key, f)
 	// A timer has nobody to return an error to. The next Write fails the same way.
-	_ = l.writeLocked(f.line())
+	_ = l.out.write(f.line())
 }
 
 // forget drops f, pending under key, and gives its source back the place it held.
@@ -226,44 +207,6 @@ func (l *LinkLog) forget(key foldKey, f *fold) {
 	if l.perSource[key.from]--; l.perSource[key.from] == 0 {
 		delete(l.perSource, key.from)
 	}
-}
-
-func (l *LinkLog) writeLocked(e LinkEntry) error {
-	line, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	line = append(line, '\n')
-	if l.maxBytes > 0 && l.size > 0 && l.size+int64(len(line)) > l.maxBytes {
-		if err := l.rotate(); err != nil {
-			return err
-		}
-	}
-	n, err := l.file.Write(line)
-	l.size += int64(n)
-	if err != nil {
-		return err
-	}
-	if n != len(line) {
-		return fmt.Errorf("short link log write: wrote %d of %d bytes", n, len(line))
-	}
-	return nil
-}
-
-func (l *LinkLog) rotate() error {
-	if err := l.file.Close(); err != nil {
-		return err
-	}
-	l.file = nil
-	if err := os.Rename(l.path, l.path+".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	file, size, err := openFile(l.path)
-	if err != nil {
-		return err
-	}
-	l.file, l.size = file, size
-	return nil
 }
 
 func cleanLinkEntry(e LinkEntry) LinkEntry {
@@ -279,38 +222,4 @@ func cleanLinkEntry(e LinkEntry) LinkEntry {
 	e.Reason = cleanString(e.Reason, maxReasonBytes)
 	e.Count = 0
 	return e
-}
-
-func readLinkFile(path string) ([]LinkEntry, int, error) {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, 0, nil
-	}
-	if err != nil {
-		return nil, 0, err
-	}
-	defer file.Close()
-	var entries []LinkEntry
-	corrupt := 0
-	reader := bufio.NewReader(file)
-	for {
-		line, readErr := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			var e LinkEntry
-			if len(line) > maxAuditLineBytes {
-				corrupt++
-			} else if err := json.Unmarshal(line, &e); err != nil {
-				corrupt++
-			} else {
-				entries = append(entries, e)
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return nil, 0, readErr
-		}
-	}
-	return entries, corrupt, nil
 }

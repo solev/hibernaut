@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -94,7 +93,7 @@ func (a *App) logLinks(cfg config, n int, asJSON bool) int {
 	if asJSON {
 		return a.reply(hibapi.Response{Links: entries, Corrupt: result.Corrupt})
 	}
-	printLinkEntries(a.Stdout, entries)
+	hibapi.PrintLinkEntries(a.Stdout, entries, nil)
 	return 0
 }
 
@@ -154,62 +153,4 @@ func apiLinkEntries(entries []audit.LinkEntry, names map[string]string) []hibapi
 		}
 	}
 	return out
-}
-
-func printLinkEntries(w io.Writer, entries []hibapi.LinkEntry) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TIME\tMACHINE\tTO\tPORT\tRESULT\tWOKE\tBYTES")
-	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			termsafe.Line(e.Time),
-			termsafe.Line(e.From),
-			termsafe.Line(e.To),
-			linkPort(e),
-			termsafe.Line(linkResult(e)),
-			linkWoke(e),
-			linkBytes(e))
-	}
-	tw.Flush()
-}
-
-// linkResult is what became of a link: "open", "closed after 1h" or "refused: not published",
-// with why it was refused or cut short and how many refusals the line stands for.
-func linkResult(e hibapi.LinkEntry) string {
-	result := e.Event
-	if e.Event == "close" {
-		result = "closed"
-		if e.SecondsOpen > 0 {
-			result += " after " + hibapi.FormatIdle(&e.SecondsOpen)
-		}
-	}
-	if e.Reason != "" {
-		result += ": " + e.Reason
-	}
-	if e.Count > 1 {
-		result += fmt.Sprintf(" (%d times)", e.Count)
-	}
-	return result
-}
-
-// linkPort is the target's port, or - on a line with none.
-func linkPort(e hibapi.LinkEntry) string {
-	if e.Port == 0 {
-		return "-"
-	}
-	return strconv.Itoa(e.Port)
-}
-
-func linkWoke(e hibapi.LinkEntry) string {
-	if e.Woke {
-		return "yes"
-	}
-	return "-"
-}
-
-// linkBytes is what the calling machine sent and received, which a link's close carries.
-func linkBytes(e hibapi.LinkEntry) string {
-	if e.Event != "close" {
-		return "-"
-	}
-	return fmt.Sprintf("%d sent, %d received", e.BytesIn, e.BytesOut)
 }

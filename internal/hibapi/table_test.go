@@ -58,6 +58,50 @@ func TestPrintSecrets(t *testing.T) {
 	}
 }
 
+func TestPrintPorts(t *testing.T) {
+	one := 1
+	for _, tc := range []struct {
+		name string
+		all  []hibapi.Ports
+		want string
+	}{
+		{
+			name: "terminal escapes stay in their cells",
+			all: []hibapi.Ports{
+				{Machine: "a\tb\x1b", Addr: "198.18.0.1\n", Published: []hibapi.PublishedPort{{Port: 80, Open: &one}}},
+			},
+			want: "NAME        HOST            IP              PORTS  OPEN\n" +
+				"a\\x09b\\x1b  a\\x09b\\x1b.hib  198.18.0.1\\x0a  80     1\n",
+		},
+		{
+			name: "empty fields",
+			all:  []hibapi.Ports{{Machine: "web", Published: []hibapi.PublishedPort{{Port: 3000}}}},
+			want: "NAME  HOST     IP  PORTS  OPEN\n" +
+				"web   web.hib  -   3000   -\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			hibapi.PrintPorts(&out, tc.all)
+			if got := out.String(); got != tc.want {
+				t.Errorf("PrintPorts = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// What when returns is escaped like every other field, and an empty field shows as "-".
+func TestPrintLinkEntriesEscapesTheTime(t *testing.T) {
+	var out bytes.Buffer
+	entries := []hibapi.LinkEntry{{Time: "t", Event: "refused", Reason: "not published"}}
+	hibapi.PrintLinkEntries(&out, entries, func(s string) string { return s + "\x1b" })
+	want := "TIME   MACHINE  TO  PORT  RESULT                  WOKE  BYTES\n" +
+		"t\\x1b  -        -   -     refused: not published  -     -\n"
+	if got := out.String(); got != want {
+		t.Errorf("PrintLinkEntries = %q, want %q", got, want)
+	}
+}
+
 var colourRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func red(word string) string { return "\x1b[31m" + word + "\x1b[0m" }

@@ -23,10 +23,14 @@ const (
 // a different machine.
 var First = netip.MustParseAddr("198.18.0.1")
 
-// Reserved ports are never publishable. 8081 is the SSH bridge envd exposes, and publishing it
-// would let one machine reach another's shell with the host's own credentials; 49983 is envd
-// itself, which would hand over filesystem and exec access.
-var Reserved = []int{8081, 49983}
+// Reserved ports are never publishable, and each maps to what holds it, in the words hibd port
+// refuses it with. 8081 is the SSH bridge envd exposes, and publishing it would let one machine
+// reach another's shell with the host's own credentials; 49983 is envd itself, which would hand
+// over filesystem and exec access.
+var Reserved = map[int]string{
+	8081:  "Hibernaut's SSH bridge",
+	49983: "E2B's agent",
+}
 
 // Where state lives. The two files sit in HIBD_STATE_DIR beside vault.json. links.json is
 // written atomically and given the state directory's owner, every read-modify-write of it holds
@@ -72,8 +76,8 @@ const (
 // not know stops rather than guessing, the way hibapi does.
 const Version = 1
 
-// The caps. They are M12's own: the egress proxy has none to inherit, its Accept loop starts a
-// goroutine per connection with nothing counting them.
+// The caps. Links keep their own, because the egress proxy has none to inherit: its Accept loop
+// starts a goroutine per connection with nothing counting them.
 const (
 	// MaxPerSource and MaxPerTarget are live links per machine, counted by sandbox ID so a
 	// rename does not reset them.
@@ -221,10 +225,6 @@ const Port = 5444
 
 // IsReserved reports whether p may never be published.
 func IsReserved(p int) bool {
-	for _, r := range Reserved {
-		if p == r {
-			return true
-		}
-	}
-	return false
+	_, ok := Reserved[p]
+	return ok
 }

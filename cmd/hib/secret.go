@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -112,7 +111,7 @@ func (a *app) logLinks(ctx context.Context, cfg *config, n int) int {
 	if r.Corrupt > 0 {
 		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt link log line(s)\n", r.Corrupt)
 	}
-	printLinkEntries(a.stdout, links)
+	hibapi.PrintLinkEntries(a.stdout, links, linkTime)
 	return 0
 }
 
@@ -144,65 +143,12 @@ func printLogEntries(w io.Writer, entries []hibapi.LogEntry) {
 	tw.Flush()
 }
 
-// printLinkEntries writes the link log as a table. MACHINE is the machine that made the link,
-// and BYTES what it sent and received, which only a link's close carries.
-func printLinkEntries(w io.Writer, entries []hibapi.LinkEntry) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TIME\tMACHINE\tTO\tPORT\tRESULT\tWOKE\tBYTES")
-	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", linkTime(e.Time), safe(e.From), safe(e.To), linkPort(e), safe(linkResult(e)),
-			linkWoke(e), linkBytes(e))
-	}
-	tw.Flush()
-}
-
 // linkTime shows the time hibd sends in local time, as the secret log does, and anything else
 // as it came.
 func linkTime(s string) string {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return safe(s)
+		return s
 	}
 	return t.Local().Format(time.RFC3339)
-}
-
-// linkResult is what became of a link: "open", "closed after 1h" or "refused: not published",
-// with why it was refused or cut short and how many refusals the line stands for.
-func linkResult(e hibapi.LinkEntry) string {
-	result := e.Event
-	if e.Event == "close" {
-		result = "closed"
-		if e.SecondsOpen > 0 {
-			result += " after " + hibapi.FormatIdle(&e.SecondsOpen)
-		}
-	}
-	if e.Reason != "" {
-		result += ": " + e.Reason
-	}
-	if e.Count > 1 {
-		result += fmt.Sprintf(" (%d times)", e.Count)
-	}
-	return result
-}
-
-// linkPort is the target's port, or - on a line with none.
-func linkPort(e hibapi.LinkEntry) string {
-	if e.Port == 0 {
-		return "-"
-	}
-	return strconv.Itoa(e.Port)
-}
-
-func linkWoke(e hibapi.LinkEntry) string {
-	if e.Woke {
-		return "yes"
-	}
-	return "-"
-}
-
-func linkBytes(e hibapi.LinkEntry) string {
-	if e.Event != "close" {
-		return "-"
-	}
-	return fmt.Sprintf("%d sent, %d received", e.BytesIn, e.BytesOut)
 }

@@ -4,12 +4,12 @@
 // It owns the room reserve, the caps, the wake rate limit, the activity clock, the run watcher
 // and the control socket hibd's other invocations use to cancel links across processes.
 //
-// An admitter missing any of Engine, Runs, Keeper, Store or Clock admits nothing and reports
-// that links are off.
+// New refuses a configuration missing any of Engine, Runs, Keeper, Store or Clock.
 package linkadmit
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -85,6 +85,18 @@ var _ links.Admitter = (*Admitter)(nil)
 
 // New checks the configuration and returns an admitter. It does not open the control socket.
 func New(cfg Config) (*Admitter, error) {
+	switch {
+	case cfg.Engine == nil:
+		return nil, errors.New("linkadmit: no engine")
+	case cfg.Runs == nil:
+		return nil, errors.New("linkadmit: no run watcher")
+	case cfg.Keeper == nil:
+		return nil, errors.New("linkadmit: no gate keeper")
+	case cfg.Store == nil:
+		return nil, errors.New("linkadmit: no link store")
+	case cfg.Clock == nil:
+		return nil, errors.New("linkadmit: no activity clock")
+	}
 	a := &Admitter{
 		cfg: cfg, closer: cfg.Closer,
 		now: cfg.Now, quiescing: cfg.Quiescing, readRoom: room.Read,
@@ -98,18 +110,13 @@ func New(cfg Config) (*Admitter, error) {
 	if a.quiescing == nil {
 		a.quiescing = func() bool { return false }
 	}
-	if cfg.Engine != nil {
-		mcfg := machines.Config{
-			Engine:   cfg.Engine,
-			Now:      a.now,
-			ReadRoom: func() (room.Host, error) { return a.readRoom() },
-			Activity: cfg.Clock,
-		}
-		if cfg.Store != nil {
-			mcfg.Fence = cfg.Store.Fence
-		}
-		a.wake = machines.New(mcfg).Wake
-	}
+	a.wake = machines.New(machines.Config{
+		Engine:   cfg.Engine,
+		Now:      a.now,
+		ReadRoom: func() (room.Host, error) { return a.readRoom() },
+		Activity: cfg.Clock,
+		Fence:    cfg.Store.Fence,
+	}).Wake
 	return a, nil
 }
 
@@ -121,7 +128,7 @@ func (a *Admitter) SetCloser(c links.Closer) {
 	a.closer = c
 }
 
-// closerOrNil is how the bodies reach the listener.
+// closerOrNil returns the closer SetCloser bound, or nil before it is called.
 func (a *Admitter) closerOrNil() links.Closer {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -140,19 +147,3 @@ func (a *Admitter) Serve(ctx context.Context) error {
 	}
 	return a.serve(ctx)
 }
-
-// Admit reserves room and caps, wakes the target if it is paused, and returns an Admission.
-func (a *Admitter) Admit(ctx context.Context, req links.AdmitRequest) (links.Admission, error) {
-	return a.admit(ctx, req)
-}
-
-// Renew pushes the target's idle timeout back for payload bytes. It re-derives the lease from
-// the activity clock on every call rather than reading ad.LeaseUntil, so a source still being
-// worked on keeps renewing, and a source whose own non-link activity has gone stale stops, after
-// which the target pauses on its own idle timeout. It never cuts a link, and link bytes never
-// feed the clock.
-func (a *Admitter) Renew(ad links.Admission, payload int64) { a.renew(ad, payload) }
-
-// Release gives back the room and the caps. It keeps the rate history of a successful wake, so
-// a link opened and closed in a loop cannot wake a machine every second.
-func (a *Admitter) Release(ad links.Admission) { a.release(ad) }

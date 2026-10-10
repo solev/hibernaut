@@ -3,9 +3,9 @@
 // may move.
 //
 // It sits below both internal/linkproxy and internal/linkadmit so neither imports the other, and
-// it holds every constant, error and type the two share. M12's design document describes what
-// these mean and why; this package is what they are. Changing anything here is changing the
-// contract, so it changes the design document in the same commit.
+// it holds every constant, error and type the two share. docs/milestones/m12-machine-links.md
+// describes what these mean and why; this package is what they are. Changing anything here is
+// changing the contract, so it changes that document in the same commit.
 package links
 
 import (
@@ -194,8 +194,8 @@ type Gate struct {
 	Token uint32
 }
 
-// Guard is the kernel's own fence around link traffic, and the only part of M12 that still
-// holds when the proxy stops running. internal/linkguard implements it.
+// Guard is the kernel's own fence around link traffic, and the only part of machine links that
+// still holds when the proxy stops running. internal/linkguard implements it.
 //
 // It is a pair of nftables objects in a table of their own: a set of the gates that are open,
 // and a map from a slot address to the mark of the run there now, which is how a connection's

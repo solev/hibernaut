@@ -140,6 +140,54 @@ func (l *breakingListener) Close() error {
 
 func (l *breakingListener) Addr() net.Addr { return &net.TCPAddr{} }
 
+// heldLink is a link connection whose handler can't return until released is closed, because
+// closing the connection waits for it.
+type heldLink struct {
+	net.Conn
+	released <-chan struct{}
+}
+
+func (c heldLink) Close() error {
+	<-c.released
+	return c.Conn.Close()
+}
+
+// heldLinks is a link listener with n held connections waiting. Once they are all accepted,
+// Accept waits for Close.
+type heldLinks struct {
+	n        int64
+	accepted atomic.Int64
+	released chan struct{}
+	closed   chan struct{}
+	once     sync.Once
+}
+
+func newHeldLinks(n int64) *heldLinks {
+	return &heldLinks{n: n, released: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (l *heldLinks) Accept() (net.Conn, error) {
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+	}
+	if l.accepted.Load() == l.n {
+		<-l.closed
+		return nil, net.ErrClosed
+	}
+	l.accepted.Add(1)
+	c, _ := net.Pipe()
+	return heldLink{Conn: c, released: l.released}, nil
+}
+
+func (l *heldLinks) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *heldLinks) Addr() net.Addr { return &net.TCPAddr{} }
+
 func passing(name string) linkCheck {
 	return linkCheck{name: name, run: func(context.Context) error { return nil }}
 }
@@ -262,6 +310,38 @@ func TestProxyServesLinksBesideEgress(t *testing.T) {
 			c.Close()
 			t.Errorf("%s still accepts after shutdown", l.Addr())
 		}
+	}
+}
+
+// With as many link connections in hand as the host allows, the link listener stops accepting
+// and egress goes on serving.
+func TestProxyServesEgressWhileTheLinkCapIsSaturated(t *testing.T) {
+	a, env, egress, _ := proxyApp(t, newFakeHook())
+	held := newHeldLinks(links.MaxLinks + 1)
+	release := sync.OnceFunc(func() { close(held.released) })
+	linksOn(t, a, env, egress, &fakeGuard{}, func() (net.Listener, error) { return held, nil })
+	stop := runProxyCmd(t, a)
+	// Cleanups run last first, so this lets the links go before the proxy is stopped.
+	t.Cleanup(release)
+	logs := a.Stderr.(*syncBuffer)
+
+	waitFor(t, logs, "the link listener holds the host's cap of links", func() bool {
+		return held.accepted.Load() == links.MaxLinks
+	})
+	// The listener looks for room every AcceptPause and finds none. Egress is asked more than
+	// once, since its first Accept may have begun before the cap was reached.
+	time.Sleep(2 * links.AcceptPause)
+	for range 3 {
+		assertServes(t, egress.Addr().String())
+	}
+	if n := held.accepted.Load(); n != links.MaxLinks {
+		t.Fatalf("the link listener accepted %d connections, want it stopped at the cap of %d", n, links.MaxLinks)
+	}
+
+	release()
+	waitFor(t, logs, "the link listener accepts again", func() bool { return held.accepted.Load() == held.n })
+	if code := stop(); code != 0 {
+		t.Fatalf("exit %d: %s", code, a.Stderr)
 	}
 }
 
