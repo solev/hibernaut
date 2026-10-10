@@ -94,8 +94,8 @@ func TestSandboxFirewallDropsTheLinkRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := `iifname "veth-*" ip daddr ` + links.CIDR + ` meta l4proto { udp, icmp } counter drop`
+	rule := `iifname "veth-*" ip daddr ` + links.CIDR + ` counter drop`
 	if !strings.Contains(string(data), "\t\t"+rule+"\n") {
-		t.Errorf("sandbox-firewall.nft must drop UDP and ICMP from machines to the link range:\n%s", rule)
+		t.Errorf("sandbox-firewall.nft must drop everything machines send to the link range:\n%s", rule)
 	}
 }
