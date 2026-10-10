@@ -870,7 +870,7 @@ func TestRealIngressRefusesALoopbackConnection(t *testing.T) {
 	server := <-accepted
 	defer server.Close()
 
-	if _, err := NewIngress(slots.Finder{}).Identify(server); err == nil || known(err) != nil {
+	if _, err := NewIngress(slots.Finder{}).Identify(server); err == nil || links.Known(err) != nil {
 		t.Errorf("Identify = %v, want a refusal that is not a link reason", err)
 	}
 }

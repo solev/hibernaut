@@ -185,39 +185,14 @@ func (p *Proxy) diagnose(step string, peer Peer, target string, open bool, err e
 	p.cfg.Logf("links: %s from %s to %s at %s: %v", what, from, to, step, err)
 }
 
-// reasons are the errors a refusal or an abort can name in the link log.
-var reasons = []error{
-	links.ErrLinksOff, links.ErrNotPublished, links.ErrReservedPort, links.ErrUnknownAddress,
-	links.ErrSelfLink, links.ErrSourceIdle, links.ErrPausedByHand, links.ErrFenced,
-	links.ErrQuiescing, links.ErrNoRoom, links.ErrRateLimited, links.ErrTooManyLinks,
-	links.ErrRevoked, links.ErrRunEnded, links.ErrLeaseExpired, links.ErrNotRunning,
-	links.ErrDialFailed, links.ErrGuardDown, links.ErrTokensSpent, links.ErrUnmarked,
-	links.ErrWrongRun, links.ErrStateUnreadable, links.ErrFull,
-}
-
-// known returns the shared error err is, or nil.
-func known(err error) error {
-	if err == nil {
-		return nil
-	}
-	for _, r := range reasons {
-		if errors.Is(err, r) {
-			return r
-		}
-	}
-	return nil
-}
-
 // reasonFor turns an abort's reason, which arrives as text over the control socket, back into
 // the error it names. Empty text is fallback.
 func reasonFor(text string, fallback error) error {
 	if text == "" {
 		return fallback
 	}
-	for _, r := range reasons {
-		if r.Error() == text {
-			return r
-		}
+	if err := links.Named(text); err != nil {
+		return err
 	}
 	return errors.New(text)
 }

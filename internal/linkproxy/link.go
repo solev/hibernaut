@@ -73,7 +73,7 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 		err = links.ErrUnmarked
 	}
 	if err != nil {
-		if reason := known(err); reason != nil {
+		if reason := links.Known(err); reason != nil {
 			_ = conn.Close()
 			p.refused(peer, "", reason)
 			return
@@ -170,7 +170,7 @@ func (l *link) connect() error {
 		if l.ctx.Err() != nil {
 			return l.cause()
 		}
-		if reason := known(err); reason != nil {
+		if reason := links.Known(err); reason != nil {
 			return reason
 		}
 		return l.diag("admit", err, links.ErrNotRunning)
@@ -209,7 +209,7 @@ func (l *link) sourceGate(run links.Run) (links.Gate, error) {
 	if l.ctx.Err() != nil {
 		return links.Gate{}, l.cause()
 	}
-	if reason := known(err); reason != nil && reason != links.ErrRunEnded && reason != links.ErrNotRunning {
+	if reason := links.Known(err); reason != nil && reason != links.ErrRunEnded && reason != links.ErrNotRunning {
 		return links.Gate{}, reason
 	}
 	return links.Gate{}, l.diag("source gate", err, links.ErrWrongRun)
@@ -353,7 +353,7 @@ func (l *link) retiredReason() error {
 // errors, and otherwise whatever in the world has changed since it was granted.
 func (l *link) ctxReason() error {
 	adm := l.admission()
-	if reason := known(context.Cause(adm.Ctx)); reason != nil {
+	if reason := links.Known(context.Cause(adm.Ctx)); reason != nil {
 		return reason
 	}
 	doc, err := l.state()
@@ -546,7 +546,7 @@ func (l *link) state() (*links.Doc, error) {
 
 // diag tells Logf about err when the link log will name it only as reason, and returns reason.
 func (l *link) diag(step string, err, reason error) error {
-	if known(err) != reason {
+	if links.Known(err) != reason {
 		l.mu.Lock()
 		target, open := l.target, l.open
 		l.mu.Unlock()
