@@ -478,10 +478,9 @@ Numbers are for today's host (4 vCPU, 16 GB, 123 GB disk) and the `dev` image (2
   `hib pause NAME` frees memory, `hib rm` frees disk. Two starts can race the check, so when E2B
   refuses anyway, `hibd` checks again and gives the same message.
 - **A reserve for people.** From M12 a machine can wake another by connecting to a published
-  port, so the check keeps one `dev` machine's memory free that only a person's command may use.
-  A link that doesn't fit is refused at once and says so, rather than taking the last of the
-  room or holding the host awake. For now a link counts the room in machines of the default size,
-  so one that wakes a `large` machine can use part of the reserve.
+  port, so the check keeps one `dev` machine's memory free that only a person's command may use,
+  however big the machine a link wakes. A link that doesn't fit is refused at once and says so,
+  rather than taking the last of the room or holding the host awake.
 - **Snapshot cleanup:** `hibd` deletes the build directories in
   `/var/lib/e2b/local-template-storage` that nothing can resume or start from any more. It
   reads E2B's database (through `docker exec psql`), the machines and each directory's headers,
@@ -597,9 +596,9 @@ hib port rm api 8080
 - **On by default.** `HIBD_LINK_PORT=0` in `/etc/hibernaut/hibd.env` turns links off for the whole
   host: nothing is redirected, `hib port` says links are off and `hib ls` shows no ports. With
   links on, `hibd proxy` serves them only once its checks pass: the kernel guard is installed, its
-  control socket answers, the host's firewall drops the UDP and ICMP machines send to the link
-  range and E2B's orchestrator may not reach it. Until they do, egress works and links stay off,
-  and it checks again every minute.
+  control socket answers, the host's firewall drops what machines send to the link range and E2B's
+  orchestrator may not reach it. Until they do, egress works and links stay off, and it checks
+  again every minute.
 - **Never publishable:** 8081 (the SSH bridge) and 49983 (E2B's agent). TCP only.
 - **Secrets are not swapped on a link.** It doesn't go through the egress proxy, so there is no
   TLS interception and no placeholder swap: a machine that sends a placeholder over a link sends
@@ -630,8 +629,11 @@ hib port rm api 8080
   fork or a machine from a saved image starts with none.
 - **Audit.** A line when a link opens and one when it closes, in its own log: who called, which
   machine and port, whether it was refused and why, whether it woke the target, bytes and how
-  long it was open. `hib log --links` shows the newest entries, and `hib port ls` shows how many
-  links are open now. `hib ls` lists each machine's published ports in its `PORTS` column.
+  long it was open. Repeated refusals share a line with a count, and one machine's refusals take
+  at most 64 lines in 10 s plus one per kind of refusal, so a machine trying every port can't push
+  the owner's history out of the log. `hib log --links` shows the newest entries, and
+  `hib port ls` shows how many links are open now. `hib ls` lists each machine's published ports
+  in its `PORTS` column.
 - The laptop reaches a published port with `ssh -L 8080:localhost:8080 api.hib`, not through the
   link path.
 

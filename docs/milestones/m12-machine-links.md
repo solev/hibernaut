@@ -488,6 +488,8 @@ web   web.hib  198.18.0.2  3000        0
   including `port rm` that unpublished but couldn't confirm the close.
 - `hib log --links` prints a link table with a header printed unconditionally, like
   `printLogEntries` (`cmd/hib/secret.go:131-144`): `TIME MACHINE TO PORT RESULT WOKE BYTES`.
+  `PORT` shows `-` on a line with no port, which is a refusal while the host quiesces or a
+  source's overflow line, and `--json` keeps 0. `hibd log --links` prints its table the same way.
   `--json` fills `Response.Links`, and `Corrupt` counts the lines it couldn't read. `hib log`
   without the flag is byte-for-byte what it is today. `--links` is gated on `FeaturePorts`, with a
   too-old message of its own that names `hib log --links` (`cmd/hib/secret.go:96`).
@@ -813,6 +815,19 @@ for admissions and `linkadmit` grants them and neither should import the other.
   none of this binds a machine that has its own reason to be awake.
 - **The room reserve is one default `dev` machine**, fixed for v1. No configuration knob. A
   refusal is immediate and says what it was waiting for.
+  - **A wake is charged its target's size.** The admitter counts room in default machines.
+    `linkadmit.Config.Room(target)` answers how many more may run after the reserve (`free`) and
+    how many waking the target takes (`need`): its memory over a `dev` machine's, rounded up and
+    at least 1. A wake is refused with `links.ErrNoRoom` when `free` less the room held by wakes
+    in flight (`pendingWakes`) is below `need`, and it holds `need` until it ends. Charging every
+    wake one default machine let a `large` target, twice the default, spend the reserve.
+  - **Rounding up charges enough.** A machine with at most `k` times a `dev` machine's memory
+    takes no more of the huge-page pool and no more pause disk than `k` of them
+    (`internal/room/room.go`), so `Fits(dev) >= 1 + pendingWakes + k` means the target, every
+    wake in flight and the reserve all fit, by memory and by disk.
+  - **A size that can't be read can't be charged.** `hibd`'s `linkRoom` reads the target with
+    the engine's `Get`, which reports `MemoryMB` for a paused machine as it does for a running
+    one, and refuses a target with no size.
 
 **2. Run identity is the run cgroup, and it is an event, not a poll.** The requirement is absolute:
 **no link byte is sent or received after either endpoint's run ends**, whatever ends it: E2B's idle
@@ -1346,6 +1361,7 @@ quiescing works today, both of which M12 has to fix for this to hold:
 | Control socket reply | 7 s | `links.CtlTimeout` |
 | Idle link timeout | none, TCP keepalive 30 s | `links.Keepalive` |
 | Link log | `/var/log/hibernaut/links.jsonl`, 10 MiB, one rotation | `HIBD_LINK_LOG` |
+| Refusal lines per source in a `links.FoldWindow` (10 s) | 64, then one line per reason for the rest | `links.MaxFoldsPerSource` |
 
 **The caps are M12's own.** The earlier draft said they were taken from the egress proxy. They are
 not, because the egress proxy has none: `internal/egress/egress.go:105-117` is a bare `Accept` loop
@@ -1369,10 +1385,12 @@ every second by giving its reservation back each time. Only the reservation and 
 returned. The rate accounting is not.
 
 **The reserve is one `dev` machine.** The admitter's room is how many machines of the default image
-(`images.Default`) fit in free memory, less one (`linkRoom`, `internal/hibd/linkside.go:150-161`),
-and every wake still pending counts against it. A link-woken target bigger than `dev` can therefore
-spend part of the reserve, which Security item 4 records. Counting the target's own size is a
-follow-up.
+(`images.Default`) fit, by memory and by disk, less one (`linkRoom`,
+`internal/hibd/linkside.go:152-177`). A wake is charged its target's size in those machines, its
+memory over a `dev` machine's rounded up. It is refused unless that fits beside the room the wakes
+in flight hold, and it holds that much until it ends. A `large` target, twice the default, needs
+room for two besides the reserve, so no link-woken target can spend it. `linkRoom` refuses a target
+whose size it can't read.
 
 **Why `LinkGrace` is 5 minutes.** It has to be long enough that a person who stops typing for a
 moment doesn't lose their links, and short enough that an abandoned ring costs little. Five minutes
@@ -1426,7 +1444,16 @@ Why it is shaped that way:
 - **Refusals are folded.** Identical refusals (same source, target, port and reason) within 10 s
   become one line with `Count`, keyed on `(fromId, toId, port, reason)` and flushed when the window
   ends or the process shuts down. A retry loop writes a line every 10 s, not thousands. `open` and
-  `close` are never folded.
+  `close` are never folded. **A source has at most `links.MaxFoldsPerSource` (64) refusals folding
+  at once.** Its other refusals fold into one overflow line per reason, with no target and port 0,
+  whose `Count` covers them all. The per-source accept rate limit's own refusals and the ones made
+  before it are written at whatever rate the guest connects, most with the port it dialled, so
+  without the cap a machine trying every port would write a line and hold a timer per port, enough
+  to rotate the owner's history out of the 10 MiB log and its one old file in seconds. Sources are
+  counted by sandbox ID and refusals with no source share one count, so one machine's scan leaves
+  another's lines alone. Writing a fold's line gives its source the place back, so the next window
+  starts with all 64. It mirrors the journal's limit of 64 different lines in a window, in the
+  paragraph above.
 - The writer flushes each line before returning, as the secret log does, and the proxy flushes
   every pending fold on shutdown so nothing is lost on a restart.
 - `hib log --links` reads it. `--json` puts the entries in `Response.Links`. `hib log` without the
@@ -1505,16 +1532,19 @@ person asked, and the check can't run on a paused machine. The docs say the same
 `vm/idle-deallocate/idle-deallocate:34-41` treats **any** running machine as activity, so one
 machine held awake by a link holds the whole host. *Mitigations:* a **reserve** of one `dev`
 machine's memory that only a person can use, taken under the same lock as the admission so two
-concurrent wakes can't both spend it. A **rate limit** of one wake per target per 30 s, charged at
-admission and rolled back on failure. **Per-source, per-target and global link caps** (64, 64, 512).
-An audit line when a link **opens**, carrying `Woke`, plus an `OPEN` column in `hib port ls`, so
-"this machine is awake because of a link from X" is answerable while it is happening rather than
-after it ends. A refusal is immediate and says `no room`. *Limitation:* the reserve is counted in
-machines of the default image, `dev`, so a link-woken target bigger than `dev` can spend part of it
-(*Limits and constants*). Counting the target's own size is a follow-up. *Test:*
+concurrent wakes can't both spend it. Each wake is charged its target's size in `dev` machines,
+rounded up, so a bigger target can't spend it either. A **rate limit** of one wake per target per
+30 s, charged at admission and rolled back on failure. **Per-source, per-target and global link
+caps** (64, 64, 512). An audit line when a link **opens**, carrying `Woke`, plus an `OPEN` column
+in `hib port ls`, so "this machine is awake because of a link from X" is answerable while it is
+happening rather than after it ends. A refusal is immediate and says `no room`. *Test:*
 `TestMachineToMachine/no_room_refuses_fast`, a unit test that N concurrent admissions for different
 targets never take the reserve and a unit test that concurrent admissions for the same target
-coalesce into one wake.
+coalesce into one wake. `TestABigTargetNeverSpendsTheReserve` refuses a target that needs two `dev`
+machines when there is room for one besides the reserve and wakes it when there is room for two,
+and while that wake is held a default-size target is refused. `TestLinkRoomChargesATargetItsSize`
+checks `hibd`'s side: a target twice the default size or just over it needs 2, one the default size
+or smaller needs 1, `free` is `Fits - 1` and a failed `Get` or a missing size is an error.
 
 **4b. Links that hold each other up.** Two machines linking to each other, or a machine linking to
 itself, renew each other for ever, and `vm/idle-deallocate` then never shuts the host down. Checking
@@ -1600,14 +1630,18 @@ bytes before closing.
 
 **8. The unused range.** `198.18.0.0/15` isn't E2B's, so nothing else guards it. *Mitigations:* the
 listener refuses any address `links.json` hasn't handed out. `vm/e2b/sandbox-firewall.nft` gains a
-rule dropping UDP and ICMP to `198.18.0.0/15` from `veth-*`, which TCP never reaches because it is
-redirected in `nat PREROUTING` first. `e2b-orchestrator.service` gains `IPAddressDeny=198.18.0.0/15`
-next to its existing denies. The last one matters: E2B's `tcpfirewall` redirects all other guest TCP
-to a CIDR-only listener which then dials the original address **from the host**, and `198.18.0.0/15`
-is in neither its allow nor its deny set. If `hibd`'s rule were missing, that path would be the one
+rule dropping everything `veth-*` sends to `198.18.0.0/15`, so nothing machines send to the range
+is forwarded out of the host. Link TCP never reaches it, because it is redirected in
+`nat PREROUTING` first and delivered locally. The rule drops every other protocol, SCTP or raw IP
+for example. It also drops TCP the redirect missed, because NAT skips a packet conntrack marks
+invalid. `e2b-orchestrator.service` gains `IPAddressDeny=198.18.0.0/15` next to its existing
+denies. The last one matters: E2B's `tcpfirewall` redirects all other guest TCP to a CIDR-only
+listener which then dials the original address **from the host**, and `198.18.0.0/15` is in
+neither its allow nor its deny set. If `hibd`'s rule were missing, that path would be the one
 answering. With the `IPAddressDeny` it can't be, so a missing rule gives a reset, not a surprise.
-*Test:* `TestMachineToMachine/an_unallocated_address_is_refused`, and a `vm/systemd` unit test that
-the deny line is in the unit.
+*Test:* `TestMachineToMachine/an_unallocated_address_is_refused`, a `vm/systemd` unit test that the
+deny line is in the unit and `TestSandboxFirewallDropsTheLinkRange`, which checks the drop names no
+protocol.
 
 **9. Rule ordering.** Two owners fighting over `nat PREROUTING`, and a window where nothing is
 intercepted. *Decision:* one owner and one transaction. The jump and the chain are installed,
@@ -1696,10 +1730,16 @@ goes out of a host process, not a veth, so the `-i veth-+` jump can't catch it a
 round. *Test:* `linkproxy` unit tests that a destination outside `198.18.0.0/15`, an unallocated
 address and an unpublished port are each refused before any dial.
 
-**16. Flooding the log.** A retry loop could write millions of lines. *Mitigation:* identical
-refusals fold into one line with `Count` over a 10 s window, and the log rotates at 10 MiB with
-one old file kept, like the audit log. *Test:* an `internal/audit` unit test that 1000 identical
-refusals in a window produce one line, and that a different port starts a new one.
+**16. Flooding the log.** A retry loop could write millions of lines, and a machine trying every
+port a line per port. *Mitigation:* identical refusals fold into one line with `Count` over a 10 s
+window, and the log rotates at 10 MiB with one old file kept, like the audit log. A source has at
+most `links.MaxFoldsPerSource` (64) lines folding at once and folds the rest into one line per
+reason with no target or port. *Test:* an `internal/audit` unit test that 1000 identical refusals
+in a window produce one line, and that a different port starts a new one.
+`TestLinkRefusalsFromOneSourceAreCapped` has one machine refused on 1000 ports write 64 lines and
+an overflow line with `Count` 936, which `Close` writes, while all of another machine's 64 lines in
+the same window are written. `TestLinkRefusalCapEndsWithTheWindow` checks the next window has all
+64 again.
 
 **17. Connection hygiene.** Half-open connections and trickled bytes. *Mitigation:* TCP keepalive on
 both legs at 30 s. Half-close is propagated, so a client that shuts down writing lets the server
@@ -2212,7 +2252,7 @@ The default is the commit that turns links on, and it cannot be anywhere else.
       boot, because systemd builds the mount namespace for `ReadWritePaths` before `ExecStart` runs
       and `/run` is a tmpfs.
 - [x] **The fail-closed firewall pieces land here, with or before the commit that turns links
-      on**, never after: `vm/e2b/sandbox-firewall.nft` drops UDP and ICMP from `veth-*` to
+      on**, never after: `vm/e2b/sandbox-firewall.nft` drops everything from `veth-*` to
       `198.18.0.0/15`, and `e2b-orchestrator.service` gains `IPAddressDeny=198.18.0.0/15`.
       Shipping the range live before the drops exist would open it unprotected for a release.
 - [x] With links on, `snapshot.go`'s internal pause and resume fence, close and wait like any other
@@ -2343,18 +2383,20 @@ Unit (no host):
       new links with `links.ErrStateUnreadable`, and the open ones abort once the fake Keeper
       retires their gates. The aborts and `Stat` answer 0 and empty counts while the listener is not
       serving.
-- [ ] `internal/linkadmit`: concurrent admissions for different targets never spend the reserve.
-      Concurrent admissions for one target coalesce into one wake. A failed wake rolls the rate
-      limit and the room back together. `revoke` cuts an open link and one waiting mid-wake, and
-      leaves links on the machine's **other** ports alone. **Cross-process** cancellation over the
-      control socket. A stale source is refused with `ErrSourceIdle` and stops renewing. A self-link
-      is refused. A **running** target still goes through `PausedByHand`. The run watcher fires on
-      `populated 0` and on the directory disappearing, and `Live` lists only populated runs. The
-      sweep catches a paused machine whose `StartedAt` never moved. An `idle=0` machine is observed
-      by `busy` and still not renewed. `Admit` fills `TargetGate` from a fake Keeper after the wake.
-      A `close` left unacknowledged past `LinkCloseGrace` reaches a fake `Dropper`. `Release` keeps
-      the rate history. Over a closer that is not serving, the control socket answers `close` and
-      `revoke` with 0 and `stat` with empty counts, and a closer's error comes back as `err`.
+- [ ] `internal/linkadmit`: concurrent admissions for different targets never spend the reserve,
+      and nor does a target bigger than the default, which is charged its size. Concurrent
+      admissions for one target coalesce into one wake. A failed wake rolls the rate limit and all
+      the room it was charged back together. `revoke` cuts an open link and one waiting mid-wake,
+      and leaves links on the machine's **other** ports alone. **Cross-process** cancellation over
+      the control socket. A stale source is refused with `ErrSourceIdle` and stops renewing. A
+      self-link is refused. A **running** target still goes through `PausedByHand`. The run
+      watcher fires on `populated 0` and on the directory disappearing, and `Live` lists only
+      populated runs. The sweep catches a paused machine whose `StartedAt` never moved. An `idle=0`
+      machine is observed by `busy` and still not renewed. `Admit` fills `TargetGate` from a fake
+      Keeper after the wake. A `close` left unacknowledged past `LinkCloseGrace` reaches a fake
+      `Dropper`. `Release` keeps the rate history. Over a closer that is not serving, the control
+      socket answers `close` and `revoke` with 0 and `stat` with empty counts, and a closer's error
+      comes back as `err`.
 - [ ] `internal/hostsblock`: merge, remove, user lines kept, reserved names refused.
 - [ ] `internal/machines`: `Wake` by ID with and without room, a wake **slower than the lease**
       being cancelled, the reconcile that brings a woken target's end back to `LeaseUntil`, the
@@ -2363,7 +2405,9 @@ Unit (no host):
       pause clears the fence and that the SSH heartbeat ticks for an `idle=0` machine where
       `keepalive` does not.
 - [ ] `internal/audit`: link entries, `open` and `close` pairs, folding identical refusals,
-      flushing a fold on shutdown, rotation.
+      flushing a fold on shutdown, rotation, a source capped at `links.MaxFoldsPerSource` lines in
+      a window with an overflow line counting the rest, another source in the same window
+      unaffected and the cap ending with the window.
 - [ ] `internal/hibd`: `port add|rm|ls` including every error and exit code, `pushSetup` called and
       its failure warned rather than fatal, `cleanup` dropping only the entries a `Get` confirms E2B
       has forgotten and reconciling a stale fence in each of its cases, `pause` setting the mark and
@@ -2373,11 +2417,12 @@ Unit (no host):
       `Dropper`, set no mark and create no marker, and `cleanup` leaves `links.json` alone and still
       prunes activity files. `hibd proxy` serves the control socket while the listener is off, so a
       pause goes through with a Keeper whose first `Install` failed, and it starts the listener once
-      a check that failed passes.
+      a check that failed passes. `linkRoom` charges a target its size in default machines and
+      refuses one whose size it can't read. `hibd log --links` shows `-` for a line with no port.
 - [ ] `cmd/hib`: the command table, help, **completion for `port add` and `port rm`**, every message
       in Design, `--json` shapes including the empty one, the old-hibd path, `hib pause` and
       `hib rm` sending SSH commands that start with `sudo -n hibd`, the `PORTS` column in the `ls`
-      header and the README check.
+      header, `-` for a link line with no port and the README check.
 
 `make test-host` (Linux root, no E2B). `Makefile:28-40` runs these, among them
 `internal/statefile`'s `TestHost` test and every `TestGuard` test in `internal/linkguard`. The
@@ -2786,7 +2831,7 @@ Superseded statements are marked inline.
   in default machines.** The admitter's `Room` is the number of `images.Default` machines that fit,
   less one (`linkRoom`, `internal/hibd/linkside.go:150-161`), so a link that wakes a machine bigger
   than the default can use up part of the reserve. Security item 4 and Limits record it as a
-  limitation. A fix needs `linkadmit`'s `Room` to know the target's size, which is follow-up work.
+  limitation. The 2026-10-10 security review, below, fixed it.
   **`hib log --links` has its own too-old message.** It checks for `FeaturePorts`, because a `hibd`
   without the port command keeps no link log, and the shared message names `hib port`.
   **What it added.** `machines.Config.Fenced`, which `hibd` sets only with links on. The new files
@@ -2842,3 +2887,26 @@ Superseded statements are marked inline.
   block. `hibd rm` delivers no setup, so the line goes at the daemon's next delivery pass, about 15
   seconds later, and until then it points at an address that is never reused, which is refused. The
   subtest waits for that pass.
+- 2026-10-10: The delta security review of M12's integration found one issue and two hardening
+  items, and all three are fixed. **The reserve holds whatever size a link wakes.** The admitter
+  counted room in default machines and charged every wake one, so waking a `large` target passed
+  when two `medium` ones fit and left the owner nothing. `linkadmit.Config.Room` now takes the
+  target and answers how many default machines may run after the reserve and how many the target
+  takes, its memory over a `dev` machine's rounded up. A wake is refused unless its charge fits
+  beside the wakes in flight, and it holds the charge until it ends. `hibd`'s `linkRoom` reads the
+  size with `Get`, which reports `MemoryMB` for a paused machine, and a target whose size it can't
+  read is refused. Tests: `TestABigTargetNeverSpendsTheReserve`,
+  `TestAFailedWakeRollsBackTheRateAndTheRoom` for a wake that needed 2 and
+  `TestLinkRoomChargesATargetItsSize`. **The firewall drops everything machines send to the link
+  range.** It dropped only UDP and ICMP, so other protocols and any TCP the redirect missed, which
+  NAT skips when conntrack marks it invalid, were forwarded out of the host.
+  `TestSandboxFirewallDropsTheLinkRange` checks the new rule, and the proxy's startup check, which
+  already accepted a drop with no protocol, still accepts the UDP and ICMP pair. **A machine can't
+  flood the link log.** The accept rate limit's own refusals and the ones made before it are
+  written at whatever rate the guest connects, most with the port it dialled, so a scan at line
+  rate wrote a line and held a timer per port in each window, enough to rotate the owner's history
+  away in seconds. A source now has at most `links.MaxFoldsPerSource` (64) refusals folding at
+  once, and the rest fold into one line per reason with no target and port 0, which
+  `hib log --links` shows as `-`. Tests: `TestLinkRefusalsFromOneSourceAreCapped`,
+  `TestLinkRefusalCapEndsWithTheWindow` and `TestLogLinksShowsNoPortAsADash` in `cmd/hib` and
+  `internal/hibd`.
