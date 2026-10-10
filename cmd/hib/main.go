@@ -355,7 +355,7 @@ func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
 			return 1
 		}
 	}
-	if _, err := a.remote(ctx, cfg, shortTimeout, "rm", name, "--json"); err != nil {
+	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "rm", name, "--json"); err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be deleting %s: check hib ls", name))
 	}
 	if err := cfg.unpin(name); err != nil {
@@ -392,7 +392,7 @@ func (a *app) pause(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 	stopLive := a.showLive(ctx, "pausing "+name, pausingFace)
-	_, err := a.remote(ctx, cfg, shortTimeout, "pause", name, "--json")
+	_, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "pause", name, "--json")
 	stopLive()
 	if err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be pausing %s: check hib ls", name))
