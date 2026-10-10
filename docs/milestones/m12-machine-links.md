@@ -487,12 +487,13 @@ web   web.hib  198.18.0.2  3000        0
   unknown flag, a name that isn't a name), 1 for everything the host refused or couldn't do,
   including `port rm` that unpublished but couldn't confirm the close.
 - `hib log --links` prints a link table with a header printed unconditionally, like
-  `printLogEntries` (`cmd/hib/secret.go:131-144`): `TIME MACHINE TO PORT RESULT WOKE BYTES`.
-  `PORT` shows `-` on a line with no port, which is a refusal while the host quiesces or a
-  source's overflow line, and `--json` keeps 0. `hibd log --links` prints its table the same way.
-  `--json` fills `Response.Links`, and `Corrupt` counts the lines it couldn't read. `hib log`
-  without the flag is byte-for-byte what it is today. `--links` is gated on `FeaturePorts`, with a
-  too-old message of its own that names `hib log --links` (`cmd/hib/secret.go:96`).
+  `printLogEntries` (`cmd/hib/secret.go:131-144`): `TIME MACHINE TO PORT RESULT WOKE BYTES`. `PORT`
+  shows `-` on a line with no port, which is a refusal while the host quiesces or a source's
+  overflow line, and `--json` keeps 0. `hibd log --links` prints its table the same way, because
+  both call `hibapi.PrintLinkEntries`. `--json` fills `Response.Links`, and `Corrupt` counts the
+  lines it couldn't read. `hib log` without the flag is byte-for-byte what it is today. `--links` is
+  gated on `FeaturePorts`, with a too-old message of its own that names `hib log --links`
+  (`cmd/hib/secret.go:96`).
 - **Warnings and the fork hint reach the CLI as text, not as structure.** `hibd` writes them to
   **stderr**, `hib` passes stderr through and `--json` leaves them out of the document entirely.
   This is what `hibd`'s `warn` already does (`internal/hibd/delivery.go:56-60`). No new field
@@ -678,10 +679,10 @@ Per connection, in order:
    way to keep a machine awake forever.
 7. the port must be published on the target in the current `links.json`, and must not be in
    `links.Reserved`. Remember that port's generation.
-8. **bind the connection to the source's run, then `admit`.** `Runs.Current(source)`, then
+8. **bind the connection to the source's run, then `Admit`.** `Runs.Current(source)`, then
    `Keeper.Gate` for that run: the gate's address must be the connection's source address and its
    token the one on the socket, or the connection is refused with `links.ErrWrongRun`. Then
-   `admit`, **always, whether the target is paused or running**. One atomic admission checks
+   `Admit`, **always, whether the target is paused or running**. One atomic admission checks
    quiescing, `PausedByHand`, the source's own activity freshness, the wake rate limit, the
    per-source, per-target and host caps and the room reserve together under one lock, reserves what
    it needs and coalesces with any wake already in flight for the same sandbox ID. A running target
@@ -694,7 +695,7 @@ Per connection, in order:
    address when it opened the gate, and a run never changes slot, so the address cannot be stale
    while the gate is open.
 10. **re-check before the first byte moves**, all together: that both ends' runs are still the
-    ones `admit` returned, that the port's generation is unchanged and that neither gate has been
+    ones `Admit` returned, that the port's generation is unchanged and that neither gate has been
     retired. E2B returns a slot to the pool 3 s after a pause, and the Keeper retires a gate as soon
     as its run stops being live, so a retired gate is how a recycled slot shows up here. And
     `hib port rm` may have landed during the wake. Any mismatch aborts both halves and audits the
@@ -702,7 +703,7 @@ Per connection, in order:
 11. **arm the aborts** before any byte moves: both runs' cgroups (`Runs.Watch`), both gates
     (`Keeper.Retired`) and `Admission.Ctx`. Any of them aborts both halves. The listener opens no
     gate itself. Both were open before the link's first packet: the source's because prerouting lets
-    nothing through without it, and the target's because `admit` waited for it.
+    nothing through without it, and the target's because `Admit` waited for it.
 12. copy both ways, renew the target's **link lease** while payload bytes move and while the
     source's own activity is fresh and write an audit line when the link opens as well as when it
     ends.
@@ -808,8 +809,8 @@ for admissions and `linkadmit` grants them and neither should import the other.
     wake that takes 40 s of a 60 s lease would leave the target up for 60 s more.
   - After the resume, the admitter **reads back the real `EndAt`** and shortens it if it is past
     the lease. If the lease has already gone and nothing else is keeping the target up, the
-    admitter **pauses it again through the fenced pause path** rather than leaving a machine
-    running that nobody asked for.
+    admitter **pauses it again behind its fence** rather than leaving a machine running that
+    nobody asked for.
 
   A target that is also doing its own work renews normally through the ordinary idle path, so
   none of this binds a machine that has its own reason to be awake.
@@ -1143,7 +1144,9 @@ rather than reaching for it:
 4. the store and the activity clock, `links.NewStore` and `links.NewClock` over `HIBD_STATE_DIR`.
 5. the Keeper, `linkguard.NewKeeper`, with the guard, the tokens, the runs, the resolver, the store
    and `statefile.Held` as the fence check.
-6. the admitter, with the Keeper, the guard as its `Dropper` and the resolver.
+6. the admitter, `linkadmit.New`, with the engine, the run watcher, the Keeper, the store, the
+   clock, the resolver, the guard as its `Dropper` and `linkRoom` as its `Room`. `New` refuses a
+   configuration missing any of the first five.
 7. the listener, with the Keeper, then `admitter.SetCloser(listener)`.
 8. `admitter.Serve`, which serves the control socket, and `Keeper.Run`, each in its own goroutine.
 9. `listener.Serve`, once `Ready` is closed and the startup checks pass: the control socket
@@ -1332,7 +1335,7 @@ quiescing works today, both of which M12 has to fix for this to hold:
 | Virtual address range | `198.18.0.0/15` | `links.CIDR` |
 | First address | `198.18.0.1` | `links.First` |
 | Link listener port | 5444 by default, `HIBD_LINK_PORT`. **0 turns links off** | `links.Port`, `hibd.go` |
-| Never publishable | 8081 (SSH bridge), 49983 (envd) | `links.Reserved` |
+| Never publishable | 8081 (Hibernaut's SSH bridge), 49983 (E2B's agent) | `links.Reserved` |
 | Ports per machine | 16 | `links.MaxPorts` |
 | Machines holding a virtual address | 256 | `links.MaxMachines` |
 | Links per source machine | 64 | `links.MaxPerSource` |
@@ -1461,7 +1464,8 @@ Why it is shaped that way:
 - `internal/audit` grows `OpenLinks(path string, maxBytes int64) (*LinkLog, error)`,
   `(*LinkLog) Write(LinkEntry) error`, `(*LinkLog) Close() error` and
   `ReadLinks(path string, n int) (LinkReadResult, error)` (`internal/audit/links.go:88,117,142,163`)
-  alongside the secret log, and reuses its rotation and line-length cap.
+  alongside the secret log, and shares one JSON-lines writer and reader with it,
+  `internal/audit/jsonl.go`, so the two have one rotation and one line-length cap.
 
 ### Messages and errors
 
@@ -1562,17 +1566,20 @@ clamp lets a slow wake outlive the lease that justified it, and a frozen lease w
 link whose source was still working. The lease by itself never closes an established link: it stops
 renewal and the target pauses on its own timeout. A pending wake is cancelled once the lease passes,
 the target's `EndAt` is read back and shortened after the resume and a target whose lease is already
-gone is paused again through the fenced path. A cycle of any length with nothing but link traffic
-therefore stops within `LinkGrace` plus the longest idle timeout in it, and stays stopped. A
-benchmark machine with SSH open or CPU burning keeps its downstream target awake for as long as it
-is actually working, which is the case this has to keep. The clock is not unforgeable (see the
-design's note on what it is not), but a guest that fakes activity gains only its targets' RAM,
-bounded by the caps and the reserve, and quiesce still ends everything. *Test:* a `linkproxy` unit
-test that a self-link is refused and one that `Admit` refuses a stale source with `ErrSourceIdle`.
-`linkadmit` tests for a wake slower than the lease, for the reconcile after the resume and for the
-rollback. Slow e2e tests that a two-machine and a three-machine ring with **retrying** clients, SSH
-closed, no agents and CPU under the busy threshold, both stop within the stated bound and do not
-come back, and that a source with an open SSH session keeps reaching its targets throughout.
+gone is paused again behind its fence. That pause doesn't wait for the proxy to close the target's
+links as `hib pause` does: no link can reach a machine while its wake is in flight, because those
+admissions wait on the wake and fail with it, and a link it opened since the resume ends with its
+run. A cycle of any length with nothing but link traffic therefore stops within `LinkGrace` plus the
+longest idle timeout in it, and stays stopped. A benchmark machine with SSH open or CPU burning
+keeps its downstream target awake for as long as it is actually working, which is the case this has
+to keep. The clock is not unforgeable (see the design's note on what it is not), but a guest that
+fakes activity gains only its targets' RAM, bounded by the caps and the reserve, and quiesce still
+ends everything. *Test:* a `linkproxy` unit test that a self-link is refused and one that `Admit`
+refuses a stale source with `ErrSourceIdle`. `linkadmit` tests for a wake slower than the lease, for
+the reconcile after the resume and for the rollback. Slow e2e tests that a two-machine and a
+three-machine ring with **retrying** clients, SSH closed, no agents and CPU under the busy
+threshold, both stop within the stated bound and do not come back, and that a source with an open
+SSH session keeps reaching its targets throughout.
 
 **5. Human pause intent.** After `hib pause api`, a worker's retry could wake it a second later.
 *Decision:* `hib pause` sets `PausedByHand` for that sandbox ID, and `Admit` refuses while it is
@@ -1614,9 +1621,11 @@ machine opening thousands of links could starve both. *Mitigation:* `linkproxy`'
 timeouts, listed in Limits. They are not inherited from the egress proxy, which has none:
 `internal/egress/egress.go:105-117` accepts in a loop and starts a goroutine per connection with no
 limit at all. A link over the cap is closed without a read. A source over the accept rate is closed
-without a read. The host cap stops the accept loop for 100 ms instead. *Test:* a `linkproxy` unit
-test that the 65th link from one source is refused and the first 64 keep working, and that the
-egress proxy still serves while the link cap is saturated.
+without a read. The host cap stops the accept loop for 100 ms instead. *Test:* `linkproxy`'s
+`TestPerSourceCap` checks that the 65th link from one source is refused and the first 64 keep
+working. Its `TestHostCapStopsAccepting` checks that the host cap stops the accept loop.
+`internal/hibd`'s `TestProxyServesEgressWhileTheLinkCapIsSaturated` fills a real `hibd proxy`'s link
+listener to `links.MaxLinks` and checks that the egress proxy still serves.
 
 **7. The listener's exposure.** A new listening port on the host. *Mitigations:* it accepts only
 from `veth-*` interfaces. E2B's per-sandbox firewall drops `10.0.0.0/8`, so machines can't reach the
@@ -2058,7 +2067,7 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
       an **absolute** lease, not a duration. A pending wake is cancelled once the lease passes.
       After the resume the real `EndAt` is read back and shortened if it is past the lease. If the
       lease has already gone and nothing else is keeping the target up, the machine is paused again
-      through the fenced path. A relative clamp does not hold, because E2B computes `endTime` from a
+      behind its fence. A relative clamp does not hold, because E2B computes `endTime` from a
       `startTime` taken after placement (`create_instance.go:440-443`).
 - [ ] **The lease is re-derived, not frozen.** `Admission.LeaseUntil` is only the value at
       admission. Every renewal and every wake decision recomputes `links.LeaseUntil` from the clock,
@@ -2910,3 +2919,28 @@ Superseded statements are marked inline.
   `hib log --links` shows as `-`. Tests: `TestLinkRefusalsFromOneSourceAreCapped`,
   `TestLinkRefusalCapEndsWithTheWindow` and `TestLogLinksShowsNoPortAsADash` in `cmd/hib` and
   `internal/hibd`.
+- 2026-10-10: The code review of `528850b...98d6914` checked the code against the coding standards
+  and against this doc. **It found one gap against this doc.** Security item 6 promised a test that
+  egress serves while the link cap is saturated, and none existed.
+  `TestProxyServesEgressWhileTheLinkCapIsSaturated` now checks it. **What changed for the
+  standards.** Comments say what the code does rather than how it was built. `hib` and `hibd` share
+  `hibapi.FormatPorts`, `ParsePorts`, `PrintPorts` and `PrintLinkEntries`, so the ports table and
+  the link-log table print `-` for an empty field in both. The token counter is written with
+  `atomicfile`, which also syncs the directory. The listener no longer sets a refusal's `Count`,
+  which the link log always reset. `linkadmit.New` refuses a configuration missing any of `Engine`,
+  `Runs`, `Keeper`, `Store` or `Clock`, and the admitter no longer answers `links.ErrLinksOff`
+  itself, because `hibd` builds no link side with links off. `Admit`, `Renew` and `Release` hold
+  their own bodies. `hibd pause` and `hibd rm` go through `byName` with links on too. `links` keeps
+  one list of the errors that cross as text, and `linkctl` now hands back every error on it, where
+  it named 14. `links.Reserved` maps each port to what holds it, and `hibd`'s refusal reads from it.
+  `hostsblock` checks names with `hibapi.CheckName`. The secret log and the link log share one
+  JSON-lines writer and reader, `internal/audit/jsonl.go`. **A late wake's pause doesn't close links
+  first.** This doc said in three places that a target whose wake outlived its lease is paused again
+  through the fenced path, which closes the machine's links before it pauses. `pauseAgain` raises
+  the fence and pauses. The code is right, because no link can reach a machine while its wake is in
+  flight, so Security item 4b, the design and the slice 3 task now say what it does. **The slice 8
+  merge ranges over the sorted keys of `links.Reserved`** in the e2e tests, since it became a map.
+  **Left for later.** The state booleans in `linkproxy`'s `link`, the Keeper's `over` and the
+  sweep's `verdict`. `reserve`'s five return values. The overlap between `recheck` and `ctxReason`
+  in `linkproxy`. One type for sandbox IDs. Typed names for the link log's events. The `vm/systemd`
+  tests that pin lines of the unit files.
