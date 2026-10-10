@@ -19,7 +19,7 @@ import (
 	"github.com/solev/hibernaut/internal/statefile"
 )
 
-// store is the one reader and writer of links.json. Every slice goes through it rather than
+// store is the one reader and writer of links.json. Everything goes through it rather than
 // reading the file, so the lock order, the fence's owner file and the version check live in one
 // place.
 //

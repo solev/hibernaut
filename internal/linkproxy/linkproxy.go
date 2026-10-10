@@ -1,11 +1,6 @@
 // Package linkproxy carries the bytes of a machine-to-machine link: it accepts the connections
 // nat redirects into it, asks internal/linkadmit whether each one may become a link, dials the
 // target's slot and copies both ways.
-//
-// The shape here is the contract M12's slices are built against, frozen before any of them
-// starts so they build against each other without waiting. The bodies are the listener slice's
-// to write; until then every entry point reports that links are off, which is also what the
-// default HIBD_LINK_PORT of 0 means.
 package linkproxy
 
 import (
@@ -45,7 +40,7 @@ type Peer struct {
 // no link mark with links.ErrUnmarked.
 // On macOS the whole hook package is a stub whose functions all fail, and slots.Finder is a
 // concrete struct that cannot be faked, so without this seam none of the listener's tests could
-// run where its slice is written.
+// run on macOS.
 type Ingress interface {
 	Identify(net.Conn) (Peer, error)
 }

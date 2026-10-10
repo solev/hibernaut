@@ -297,7 +297,7 @@ type Keeper interface {
 
 // Resolver turns machines into slot addresses and back. The Keeper and the close fallbacks are
 // given one rather than reaching for internal/slots themselves, because slots.Finder only works
-// on Linux and the slice workers run the tests on macOS. slots.Resolver is the production one.
+// on Linux and their tests also run on macOS. slots.Resolver is the production one.
 type Resolver interface {
 	// Addr returns the host address of the slot machine id is running at, and the run that is
 	// there now. It returns ErrNotRunning when the machine is not running.
@@ -312,7 +312,7 @@ type Slot struct {
 	Run Run
 }
 
-// Store is the one way into links.json. Every slice uses it rather than reading or writing the
+// Store is the one way into links.json. Everything uses it rather than reading or writing the
 // file, so the lock order and the fence rules are written once.
 type Store interface {
 	// Read returns the document. It never blocks on the lock, so the read paths that only
