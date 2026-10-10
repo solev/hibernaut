@@ -15,14 +15,19 @@ import (
 	"github.com/solev/hibernaut/internal/links"
 )
 
-// snapshotEngine logs each pause, resume and save into f before it happens.
+// snapshotEngine logs each pause, resume and save into f before it happens, and fails every
+// pause with pauseErr when that's set.
 type snapshotEngine struct {
 	engine.Engine
-	f *fakeLinks
+	f        *fakeLinks
+	pauseErr error
 }
 
 func (e snapshotEngine) Pause(ctx context.Context, id string) error {
 	e.f.event("pause %s", id)
+	if e.pauseErr != nil {
+		return e.pauseErr
+	}
 	return e.Engine.Pause(ctx, id)
 }
 
@@ -136,6 +141,48 @@ func TestSaveAndForkLeaveTheMachineAsItWasWhenTheFenceFails(t *testing.T) {
 			}
 			leftAlone(t, e, id)
 		})
+	}
+}
+
+func TestSaveAndForkLiftTheFenceWhenTheirPauseFails(t *testing.T) {
+	for _, op := range []string{"fork", "image save"} {
+		for _, byHand := range []bool{false, true} {
+			name := op + " of a running machine"
+			if byHand {
+				name = op + " of a machine paused by hand"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := &fakeLinks{}
+				a, e, out, id := snapshotApp(t, f, true)
+				steps, want := []string{"pause"}, "couldn't pause web before saving"
+				if byHand {
+					if code, r := runJSONReply(t, a, out, "pause", "web", "-json"); code != 0 {
+						t.Fatalf("pause = %d, %s", code, r.Error)
+					}
+					steps, want = []string{"resume", "save", "pause"}, "couldn't pause web again"
+				}
+				f.mu.Lock()
+				f.events = nil
+				f.mu.Unlock()
+				a.NewEngine = func() (engine.Engine, error) {
+					return snapshotEngine{Engine: e, f: f, pauseErr: errors.New("e2b refused the pause")}, nil
+				}
+				if code, r := runJSONReply(t, a, out, snapshotArgs(op)...); code != 1 || !strings.Contains(r.Error, want) {
+					t.Fatalf("%s = %d, %q, want 1 and %q", op, code, r.Error, want)
+				}
+				events := []string{fmt.Sprintf("fence %s %s", id, op), "close " + id}
+				for _, step := range steps {
+					events = append(events, step+" "+id)
+				}
+				events = append(events, "release "+id)
+				if got := eventsOf(f, id); !slices.Equal(got, events) {
+					t.Errorf("events = %q, want %q", got, events)
+				}
+				if m, _ := f.entry(id); m.Fence != nil || m.PausedByHand != byHand {
+					t.Errorf("entry = %+v, want no fence and PausedByHand %v", m, byHand)
+				}
+			})
+		}
 	}
 }
 
