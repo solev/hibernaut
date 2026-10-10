@@ -568,7 +568,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 		t.Fatalf("ls exit %d: %s", code, c.errOut)
 	}
 	lines := tableLines(c.out.String())
-	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "SIZE", "IDLE", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
+	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "SIZE", "IDLE", "PORTS", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
 		t.Errorf("ls header = %q, want %q", got, want)
 	}
 	want := map[string][2]string{
@@ -584,17 +584,38 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	for _, line := range lines[1:] {
 		f := strings.Fields(line)
 		w, ok := want[f[0]]
-		if !ok || len(f) != 10 {
+		if !ok || len(f) != 11 {
 			t.Errorf("unexpected ls line %q", line)
 			continue
 		}
-		if f[4] != w[0] || f[5] != w[1] {
-			t.Errorf("%s: IDLE %q, PAUSES IN %q; want %q, %q", f[0], f[4], f[5], w[0], w[1])
+		if f[4] != w[0] || f[5] != "-" || f[6] != w[1] {
+			t.Errorf("%s: IDLE %q, PORTS %q, PAUSES IN %q; want %q, -, %q", f[0], f[4], f[5], f[6], w[0], w[1])
 		}
 		delete(want, f[0])
 	}
 	if len(want) != 0 {
 		t.Errorf("ls is missing %v:\n%s", want, c.out)
+	}
+}
+
+func TestLsShowsPublishedPorts(t *testing.T) {
+	_, c, _ := portHost(t)
+	if code := c.hib("port", "add", "api", "8080", "5432"); code != 0 {
+		t.Fatalf("port add exit %d: %s", code, c.errOut)
+	}
+	if code := c.hib("ls"); code != 0 {
+		t.Fatalf("ls exit %d: %s", code, c.errOut)
+	}
+	lines := tableLines(c.out.String())
+	if len(lines) != 3 || strings.Fields(lines[0])[5] != "PORTS" {
+		t.Fatalf("ls =\n%s", c.out)
+	}
+	want := map[string]string{"api": "5432,8080", "web": "-"}
+	for _, line := range lines[1:] {
+		f := strings.Fields(line)
+		if len(f) != 11 || f[5] != want[f[0]] {
+			t.Errorf("ls line %q, want PORTS %q", line, want[f[0]])
+		}
 	}
 }
 
