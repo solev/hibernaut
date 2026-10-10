@@ -147,19 +147,3 @@ func (a *Admitter) Serve(ctx context.Context) error {
 	}
 	return a.serve(ctx)
 }
-
-// Admit reserves room and caps, wakes the target if it is paused, and returns an Admission.
-func (a *Admitter) Admit(ctx context.Context, req links.AdmitRequest) (links.Admission, error) {
-	return a.admit(ctx, req)
-}
-
-// Renew pushes the target's idle timeout back for payload bytes. It re-derives the lease from
-// the activity clock on every call rather than reading ad.LeaseUntil, so a source still being
-// worked on keeps renewing, and a source whose own non-link activity has gone stale stops, after
-// which the target pauses on its own idle timeout. It never cuts a link, and link bytes never
-// feed the clock.
-func (a *Admitter) Renew(ad links.Admission, payload int64) { a.renew(ad, payload) }
-
-// Release gives back the room and the caps. It keeps the rate history of a successful wake, so
-// a link opened and closed in a loop cannot wake a machine every second.
-func (a *Admitter) Release(ad links.Admission) { a.release(ad) }
