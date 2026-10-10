@@ -593,10 +593,7 @@ func (l *link) entry(event string, reason error, woke bool) audit.LinkEntry {
 	if reason != nil {
 		e.Reason = reason.Error()
 	}
-	switch event {
-	case "refused":
-		e.Count = 1
-	case "close":
+	if event == "close" {
 		e.BytesIn = l.in.Load()
 		e.BytesOut = l.out.Load()
 		e.SecondsOpen = int64(now.Sub(opened) / time.Second)
@@ -615,7 +612,6 @@ func (p *Proxy) refused(peer Peer, target string, reason error) {
 		ToID:   target,
 		Port:   int(peer.Dst.Port()),
 		Reason: reason.Error(),
-		Count:  1,
 	})
 }
 
