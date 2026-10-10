@@ -15,7 +15,7 @@ var errSnapshotFenceWait = errors.New("the fence wait ran out")
 
 // snapshotFence is machines.Config.Fenced: with links on, it runs a save's or a fork's whole
 // round trip on machine id behind pauseFenced's fence, close and wait, so no link wakes id or
-// reaches it mid-save. With links off it is nil, and the round trip is M11's.
+// reaches it mid-save. With links off it is nil, and the round trip runs with no fence.
 //
 // Fork and SaveImage hold hibd.lock while they wait for the fence, and a pause or rm of the same
 // machine holds the fence while it waits for hibd.lock. So the wait before op is bounded: past

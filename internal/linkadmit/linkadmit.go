@@ -121,7 +121,7 @@ func (a *Admitter) SetCloser(c links.Closer) {
 	a.closer = c
 }
 
-// closerOrNil is how the bodies reach the listener.
+// closerOrNil returns the closer SetCloser bound, or nil before it is called.
 func (a *Admitter) closerOrNil() links.Closer {
 	a.mu.Lock()
 	defer a.mu.Unlock()

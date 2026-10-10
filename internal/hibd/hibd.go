@@ -349,7 +349,7 @@ func (a *App) ls(ctx context.Context, args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(a.Stdout, 0, 4, 2, ' ', 0)
-	// With links off the table is M11's, so the PORTS column only shows with links on.
+	// The PORTS column only shows with links on.
 	ports := func(string) string { return "" }
 	if withPorts {
 		ports = func(s string) string { return s + "\t" }
@@ -428,10 +428,10 @@ func (a *App) byName(ctx context.Context, cmd string, args []string, do func(*ma
 	return 0
 }
 
-// pauseOrRemove is hibd pause and hibd rm. With links off they are M11's byName. With links on
-// they go through pauseFenced, pause marks the machine as paused by hand, and rm drops its entry
-// from the link state once it's gone. Its address stays spent, because addresses are never
-// handed out twice.
+// pauseOrRemove is hibd pause and hibd rm. With links off they are byName with Manager.Pause or
+// Manager.Remove. With links on they go through pauseFenced, pause marks the machine as paused
+// by hand, and rm drops its entry from the link state once it's gone. Its address stays spent,
+// because addresses are never handed out twice.
 func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int {
 	do := (*machines.Manager).Pause
 	if cmd == "rm" {
@@ -521,7 +521,7 @@ func (a *App) linkPartsFor(cfg config) linkParts {
 }
 
 // pauseMachine pauses m the way every pause Hibernaut starts has to: with e.Pause and nothing
-// else with links off, as M11 did, and through pauseFenced with links on.
+// else with links off, and through pauseFenced with links on.
 func (a *App) pauseMachine(ctx context.Context, cfg config, e engine.Engine, m engine.Machine, why, rerun string) error {
 	if !cfg.linksConfiguredOn() {
 		return e.Pause(ctx, m.ID)

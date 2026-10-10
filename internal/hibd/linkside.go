@@ -74,9 +74,10 @@ type linkSide struct {
 	stop       func() error
 }
 
-// newLinkSide builds the links side in the order the design gives: the guard and the tokens,
-// the run watcher, the resolver, the store and the clock, the Keeper, the admitter and then the
-// listener. It touches no kernel state and binds nothing.
+// newLinkSide builds the links side: the guard and the tokens, the run watcher, the resolver,
+// the store and the clock, the Keeper, the admitter and then the listener. Each part is built
+// after the parts it is given, and the admitter gets the listener as its closer once both exist.
+// It touches no kernel state and binds nothing.
 func (a *App) newLinkSide(setup proxySetup, logf func(format string, args ...any)) (*linkSide, error) {
 	host, cfg := proxyLinkHost, setup.cfg
 	guard, tokens := host.guard(), host.tokens()

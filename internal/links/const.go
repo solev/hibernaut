@@ -72,8 +72,8 @@ const (
 // not know stops rather than guessing, the way hibapi does.
 const Version = 1
 
-// The caps. They are M12's own: the egress proxy has none to inherit, its Accept loop starts a
-// goroutine per connection with nothing counting them.
+// The caps. Links keep their own, because the egress proxy has none to inherit: its Accept loop
+// starts a goroutine per connection with nothing counting them.
 const (
 	// MaxPerSource and MaxPerTarget are live links per machine, counted by sandbox ID so a
 	// rename does not reset them.

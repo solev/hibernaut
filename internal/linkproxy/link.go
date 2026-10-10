@@ -112,8 +112,10 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 	l.pipe()
 }
 
-// connect takes the link from an identified connection to an open one, in the order of the
-// design's numbered steps, and returns the reason it was refused.
+// connect takes the link from an identified connection to an open one, and returns the reason it
+// was refused. It checks the destination against links.json, binds the connection to the
+// source's run and only then admits it, because admit may wake the target. The recheck and the
+// aborts come after the dial and before the first byte.
 func (l *link) connect() error {
 	p := l.p
 	dst := l.peer.Dst
@@ -253,8 +255,8 @@ func (l *link) dial() error {
 	return nil
 }
 
-// recheck is step 10: both runs still the ones admitted, the port's generation unchanged and
-// neither gate retired, all read after the dial and before the first byte.
+// recheck checks that both runs are still the ones admitted, that the port's generation is
+// unchanged and that neither gate is retired, all read after the dial and before the first byte.
 func (l *link) recheck(gen uint64) error {
 	adm := l.admission()
 	if !l.stillRunning(adm.Source, adm.SourceRun) || !l.stillRunning(adm.Target, adm.TargetRun) {
@@ -283,8 +285,8 @@ func (l *link) recheck(gen uint64) error {
 	return nil
 }
 
-// arm is step 11: from here on, either run ending, either gate being retired or the admission
-// being cancelled aborts both halves.
+// arm makes either run ending, either gate being retired or the admission being cancelled abort
+// both halves from here on.
 func (l *link) arm() error {
 	adm := l.admission()
 	srcRun, err := l.p.cfg.Runs.Watch(adm.Source, adm.SourceRun)

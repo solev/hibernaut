@@ -48,7 +48,7 @@ type Config struct {
 	// Logf logs machines turning busy or idle, and problems looking at them. Default: no log.
 	Logf func(format string, args ...any)
 	// Activity records that a machine did something that was not a link, at the time it was
-	// seen. M12's links read it: a machine whose own activity has gone stale may not wake or
+	// seen. Machine links read it: a machine whose own activity has gone stale may not wake or
 	// renew another, which is what stops a ring of machines holding each other up. The
 	// watcher calls it for every busy observation, machines with idle=0 included — they never
 	// pause, so there is nothing to renew, but whether they are working still decides whether
