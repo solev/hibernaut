@@ -65,7 +65,7 @@ func (a *App) portChange(ctx context.Context, args []string, publishing bool) in
 		return 2
 	}
 	name := rest[0]
-	ports, err := parsePorts(rest[1:])
+	ports, err := hibapi.ParsePorts(rest[1:])
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "hibd %s: %s\n", cmd, termsafe.String(err.Error()))
 		return 2
@@ -217,21 +217,6 @@ func linksConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("%w on this host", links.ErrLinksOff)
 	}
 	return cfg, nil
-}
-
-// parsePorts reads a batch of port numbers and drops repeats, keeping the order they came in.
-func parsePorts(args []string) ([]int, error) {
-	var ports []int
-	for _, arg := range args {
-		n, err := strconv.ParseUint(arg, 10, 16)
-		if err != nil || n == 0 {
-			return nil, fmt.Errorf("%s isn't a port. Ports are 1 to 65535", arg)
-		}
-		if !slices.Contains(ports, int(n)) {
-			ports = append(ports, int(n))
-		}
-	}
-	return ports, nil
 }
 
 func countNew(m *links.Machine, ports []int) int {

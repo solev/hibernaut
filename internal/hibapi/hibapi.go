@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,22 @@ func FormatPorts(ports []int) string {
 		nums[i] = strconv.Itoa(p)
 	}
 	return strings.Join(nums, ",")
+}
+
+// ParsePorts reads a batch of port numbers, as hib port add and hib port rm take them, and drops
+// repeats, keeping the order they came in.
+func ParsePorts(args []string) ([]int, error) {
+	var ports []int
+	for _, arg := range args {
+		n, err := strconv.ParseUint(arg, 10, 16)
+		if err != nil || n == 0 {
+			return nil, fmt.Errorf("%s isn't a port. Ports are 1 to 65535", arg)
+		}
+		if !slices.Contains(ports, int(n)) {
+			ports = append(ports, int(n))
+		}
+	}
+	return ports, nil
 }
 
 // Response is what a hibd command prints with -json: one object, then the command exits. A

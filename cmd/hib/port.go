@@ -39,15 +39,9 @@ func (a *app) portChange(ctx context.Context, cfg *config, args []string, publis
 	if !a.checkNames(name) {
 		return 2
 	}
-	var ports []int
-	for _, arg := range args[1:] {
-		n, err := strconv.ParseUint(arg, 10, 16)
-		if err != nil || n == 0 {
-			return a.mistake(arg + " isn't a port. Ports are 1 to 65535")
-		}
-		if !slices.Contains(ports, int(n)) {
-			ports = append(ports, int(n))
-		}
+	ports, err := hibapi.ParsePorts(args[1:])
+	if err != nil {
+		return a.mistake(err.Error())
 	}
 	if err := a.needPorts(ctx, cfg); err != nil {
 		return a.failWaiting(ctx, err, "")
