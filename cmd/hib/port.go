@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strconv"
-	"strings"
-	"text/tabwriter"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 )
@@ -92,7 +89,7 @@ func (a *app) portLS(ctx context.Context, cfg *config, _ []string) int {
 	if a.json {
 		return a.reply(hibapi.Response{Ports: all}, nil)
 	}
-	printPorts(a.stdout, all)
+	hibapi.PrintPorts(a.stdout, all)
 	if len(all) == 0 {
 		fmt.Fprintln(a.stderr, "no published ports. hib port add NAME PORT publishes one")
 	}
@@ -109,31 +106,6 @@ func (a *app) needPorts(ctx context.Context, cfg *config) error {
 		return errNoPorts
 	}
 	return nil
-}
-
-// printPorts writes the published ports as a table. OPEN is how many links use a machine's
-// ports now, or "-" when hibd proxy didn't count one of them.
-func printPorts(w io.Writer, all []hibapi.Ports) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
-	for _, p := range all {
-		nums := make([]string, len(p.Published))
-		total, counted := 0, true
-		for i, pp := range p.Published {
-			nums[i] = strconv.Itoa(pp.Port)
-			if pp.Open == nil {
-				counted = false
-			} else {
-				total += *pp.Open
-			}
-		}
-		open := "-"
-		if counted {
-			open = strconv.Itoa(total)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", safe(p.Machine), safe(p.Machine+".hib"), safe(p.Addr), strings.Join(nums, ","), open)
-	}
-	tw.Flush()
 }
 
 // hostPorts writes each port as host:port, in one list.

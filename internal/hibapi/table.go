@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -124,17 +125,37 @@ func PrintFork(w io.Writer, origin string, copies []Machine) {
 
 // PrintSecrets writes a terminal-safe metadata table. Empty fields show as "-".
 func PrintSecrets(w io.Writer, secrets []Secret) {
-	field := func(s string) string {
-		if s == "" {
-			return "-"
-		}
-		return termsafe.Line(s)
-	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tENV\tSITES\tPLACEHOLDER")
 	for _, s := range secrets {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", field(s.Name), field(s.Env),
 			field(strings.Join(s.Sites, ",")), field(s.Placeholder))
+	}
+	tw.Flush()
+}
+
+// PrintPorts writes hib port ls's table, terminal-safe. Empty fields show as "-". OPEN is how
+// many links use a machine's ports now, or "-" when hibd proxy didn't count one of them.
+func PrintPorts(w io.Writer, all []Ports) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
+	for _, p := range all {
+		nums := make([]string, len(p.Published))
+		total, counted := 0, true
+		for i, pp := range p.Published {
+			nums[i] = strconv.Itoa(pp.Port)
+			if pp.Open == nil {
+				counted = false
+			} else {
+				total += *pp.Open
+			}
+		}
+		open := "-"
+		if counted {
+			open = strconv.Itoa(total)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", field(p.Machine), field(p.Machine+".hib"), field(p.Addr),
+			strings.Join(nums, ","), open)
 	}
 	tw.Flush()
 }
@@ -216,4 +237,12 @@ func oneLine(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// field is s escaped to stay in its cell, or "-" when it is empty.
+func field(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return termsafe.Line(s)
 }

@@ -5,12 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
@@ -200,7 +198,7 @@ func (a *App) portLS(ctx context.Context, args []string) int {
 	if *asJSON {
 		return a.reply(hibapi.Response{Ports: all})
 	}
-	printPorts(a.Stdout, all)
+	hibapi.PrintPorts(a.Stdout, all)
 	if len(all) == 0 {
 		fmt.Fprintln(a.Stderr, "no published ports. hib port add NAME PORT publishes one")
 	}
@@ -385,32 +383,6 @@ func apiPorts(name string, m links.Machine, stats *links.Stats, id string) hibap
 		p.Published = append(p.Published, pp)
 	}
 	return p
-}
-
-// printPorts writes hib port ls's table. OPEN is "-" for a machine when any of its counts is
-// unknown.
-func printPorts(w io.Writer, all []hibapi.Ports) {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
-	for _, p := range all {
-		nums := make([]string, len(p.Published))
-		total, counted := 0, true
-		for i, pp := range p.Published {
-			nums[i] = strconv.Itoa(pp.Port)
-			if pp.Open == nil {
-				counted = false
-			} else {
-				total += *pp.Open
-			}
-		}
-		open := "-"
-		if counted {
-			open = strconv.Itoa(total)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", termsafe.Line(p.Machine), termsafe.Line(p.Machine+".hib"),
-			termsafe.Line(p.Addr), strings.Join(nums, ","), open)
-	}
-	tw.Flush()
 }
 
 // hostPorts writes ports as host:port, joined with "and".
