@@ -208,6 +208,10 @@ const (
 	// FoldWindow is how long identical refusals are folded into one line with a count, so a
 	// client retrying in a loop writes one line per window instead of thousands.
 	FoldWindow = 10 * time.Second
+	// MaxFoldsPerSource is how many refusals one source may have folding at once. Its further
+	// refusals fold into one line per reason with no target or port, so a machine trying every
+	// port can't flood the log and rotate the owner's history away.
+	MaxFoldsPerSource = 64
 )
 
 // Port is the default port the listener serves on. It is not the default value of the setting:

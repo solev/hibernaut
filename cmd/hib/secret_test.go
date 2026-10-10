@@ -508,6 +508,25 @@ func TestLogLinksShowsLinksByMachineName(t *testing.T) {
 	}
 }
 
+// A line with no port shows - in the table and keeps 0 in JSON.
+func TestLogLinksShowsNoPortAsADash(t *testing.T) {
+	h, c, _ := portHost(t)
+	web := machineID(t, h, "web")
+	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
+	writeLinkLog(t, h, audit.LinkEntry{Time: at, Event: "refused", From: web, FromID: web, To: "?", Reason: "rate limited", Count: 936})
+	if code := c.hib("log", "--links"); code != 0 {
+		t.Fatalf("hib log --links exit %d: %s", code, c.errOut)
+	}
+	lines := strings.Split(strings.TrimSuffix(c.out.String(), "\n"), "\n")
+	want := []string{at.Local().Format(time.RFC3339), "web", "?", "-", "refused: rate limited (936 times)", "-", "-"}
+	if got := regexp.MustCompile(`\s{2,}`).Split(lines[len(lines)-1], -1); len(lines) != 2 || !slices.Equal(got, want) {
+		t.Errorf("hib log --links printed\n%s\nwant the line %q", c.out, want)
+	}
+	if code := c.hib("log", "--links", "--json"); code != 0 || !strings.Contains(c.out.String(), `"port":0,`) {
+		t.Errorf("hib log --links --json exit %d, printed %s; want port 0", code, c.out)
+	}
+}
+
 func TestLogLinksWithNoLinkLog(t *testing.T) {
 	_, c, _ := portHost(t)
 	if code := c.hib("log", "--links"); code != 0 {
