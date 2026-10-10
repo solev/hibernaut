@@ -35,7 +35,8 @@ var (
 )
 
 // checkSandboxFirewall checks the live ruleset for sandbox-firewall.nft's drops. hibd proxy's
-// rule takes machines' TCP to the link range, and nothing should answer the UDP and ICMP.
+// rule takes machines' link TCP before routing, and the firewall drops everything else they send
+// to the link range.
 func checkSandboxFirewall(ctx context.Context) error {
 	out, err := runCheck(ctx, "nft", "list", "table", "inet", sandboxFirewall)
 	if err != nil {
@@ -71,7 +72,8 @@ func runCheck(ctx context.Context, name string, args ...string) ([]byte, error) 
 }
 
 // firewallDropsLinks reads a listing of the sandbox firewall and reports whether its forward
-// chains drop both UDP and ICMP from machines' veths to the link range.
+// chains drop what machines' veths send to the link range: everything, as sandbox-firewall.nft
+// does, or at least UDP and ICMP.
 func firewallDropsLinks(listing []byte) error {
 	dropped := map[string]bool{}
 	inChain, forward := false, false

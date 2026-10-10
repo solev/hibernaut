@@ -42,8 +42,10 @@ type Config struct {
 	// Clock is the record of non-link activity, which decides whether a source may wake or
 	// renew anything.
 	Clock links.Clock
-	// Room reports how many more machines may run, after the reserve the owner is kept.
-	Room func() (int, error)
+	// Room reports the room for a wake of target, a sandbox ID, counted in default machines:
+	// free is how many more may run after the reserve the owner is kept, and need is how many
+	// waking target takes, at least 1.
+	Room func(target string) (free, need int, err error)
 	// Quiescing reports whether the host is winding down for the night.
 	Quiescing func() bool
 	// Socket is the control socket path, or "" for the default.
@@ -70,8 +72,8 @@ type Admitter struct {
 	perSource map[string]int
 	perTarget map[string]int
 	total     int
-	// pendingWakes is the room held by wakes in flight. A woken machine is in Room's own
-	// count once it runs, so the reservation ends with the wake.
+	// pendingWakes is the room held by wakes in flight, counted in default machines. A woken
+	// machine is in Room's own count once it runs, so the reservation ends with the wake.
 	pendingWakes int
 	waking       map[string]*wakeup
 	lastWake     map[string]time.Time

@@ -68,6 +68,8 @@ type LinkLog struct {
 	file  *os.File
 	size  int64
 	folds map[foldKey]*fold
+	// perSource is how many of folds each source holds, by FromID. Overflow folds hold none.
+	perSource map[string]int
 }
 
 // foldKey is what makes two refusals identical.
@@ -82,6 +84,9 @@ type fold struct {
 	entry LinkEntry
 	count int
 	timer *time.Timer
+	// held is whether the fold is one of its source's MaxFoldsPerSource. An overflow fold, which
+	// stands for the refusals beyond them, is not.
+	held bool
 }
 
 // OpenLinks opens path for link log writes and creates it with mode 0644 if needed.
@@ -90,7 +95,8 @@ func OpenLinks(path string, maxBytes int64) (*LinkLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &LinkLog{path: path, maxBytes: maxBytes, file: file, size: size, folds: map[foldKey]*fold{}}, nil
+	return &LinkLog{path: path, maxBytes: maxBytes, file: file, size: size, folds: map[foldKey]*fold{},
+		perSource: map[string]int{}}, nil
 }
 
 // Path is where the log is being written.
@@ -114,6 +120,11 @@ func (l *LinkLog) MaxBytes() int64 {
 // A refusal identical to one already written in the last FoldWindow, by source, target, port and
 // reason, is not written. It is counted, and the window's one line is written with the count
 // when the window ends or the log is closed. Opens and closes are never folded.
+//
+// A source, by FromID, has at most MaxFoldsPerSource windows open at once. A refusal that would
+// open another folds instead into the source's overflow line for its reason, which has no target
+// and port 0 and counts every refusal folded into it, so a machine trying every port can't flood
+// the log.
 func (l *LinkLog) Write(e LinkEntry) error {
 	if l == nil {
 		return nil
@@ -128,12 +139,22 @@ func (l *LinkLog) Write(e LinkEntry) error {
 		return l.writeLocked(e)
 	}
 	key := foldKey{from: e.FromID, to: e.ToID, port: e.Port, reason: e.Reason}
-	if f, ok := l.folds[key]; ok {
+	f, ok := l.folds[key]
+	full := !ok && l.perSource[e.FromID] >= links.MaxFoldsPerSource
+	if full {
+		e.To, e.ToID, e.Port = "?", "", 0
+		key = foldKey{from: e.FromID, reason: e.Reason}
+		f, ok = l.folds[key]
+	}
+	if ok {
 		f.count++
 		return nil
 	}
-	f := &fold{entry: e, count: 1}
+	f = &fold{entry: e, count: 1, held: !full}
 	l.folds[key] = f
+	if f.held {
+		l.perSource[e.FromID]++
+	}
 	f.timer = time.AfterFunc(links.FoldWindow, func() { l.flush(key, f) })
 	return nil
 }
@@ -151,7 +172,7 @@ func (l *LinkLog) Close() error {
 	var errs []error
 	for key, f := range l.folds {
 		f.timer.Stop()
-		delete(l.folds, key)
+		l.forget(key, f)
 		errs = append(errs, l.writeLocked(f.line()))
 	}
 	errs = append(errs, l.file.Close())
@@ -191,9 +212,20 @@ func (l *LinkLog) flush(key foldKey, f *fold) {
 	if l.file == nil || l.folds[key] != f {
 		return
 	}
-	delete(l.folds, key)
+	l.forget(key, f)
 	// A timer has nobody to return an error to. The next Write fails the same way.
 	_ = l.writeLocked(f.line())
+}
+
+// forget drops f, pending under key, and gives its source back the place it held.
+func (l *LinkLog) forget(key foldKey, f *fold) {
+	delete(l.folds, key)
+	if !f.held {
+		return
+	}
+	if l.perSource[key.from]--; l.perSource[key.from] == 0 {
+		delete(l.perSource, key.from)
+	}
 }
 
 func (l *LinkLog) writeLocked(e LinkEntry) error {

@@ -16,7 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/egress/hook"
+	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/linkctl"
 	"github.com/solev/hibernaut/internal/links"
 )
@@ -423,5 +426,34 @@ func TestProxyWithLinksOffHasNoLinksSide(t *testing.T) {
 	}
 	if logs := fmt.Sprint(a.Stderr); strings.Contains(logs, "links") {
 		t.Errorf("links off logged about links: %s", logs)
+	}
+}
+
+// A link's wake is charged the room its target takes, in default machines rounded up, beside
+// the room for default machines less the one the owner is kept. A target whose size can't be
+// read is refused rather than charged too little.
+func TestLinkRoomChargesATargetItsSize(t *testing.T) {
+	def, err := images.MemoryMB(images.Default)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := fake.New()
+	for id, mb := range map[string]int{"big1": 2 * def, "dev1": def, "small1": def / 2, "odd1": def + 1, "nosize1": 0} {
+		e.Add(engine.Machine{ID: id, State: engine.Paused, MemoryMB: mb})
+	}
+	a, _, _ := newApp(t, e)
+	roomFor := a.linkRoom(e)
+	for _, tc := range []struct {
+		target string
+		need   int
+	}{{"big1", 2}, {"dev1", 1}, {"small1", 1}, {"odd1", 2}} {
+		if free, need, err := roomFor(tc.target); err != nil || free != 2 || need != tc.need {
+			t.Errorf("room for %s = %d, %d, %v; want 2, %d, nil", tc.target, free, need, err, tc.need)
+		}
+	}
+	for _, target := range []string{"nosize1", "gone1"} {
+		if free, need, err := roomFor(target); err == nil {
+			t.Errorf("room for %s = %d, %d, nil; want an error", target, free, need)
+		}
 	}
 }

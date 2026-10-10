@@ -115,6 +115,26 @@ func TestLogLinksPrintsATable(t *testing.T) {
 	}
 }
 
+// Some lines have no port: a refusal while the host quiesces, and the line a machine's refusals
+// beyond MaxFoldsPerSource fold into. The table shows - for their port, and JSON keeps 0.
+func TestLogLinksShowsNoPortAsADash(t *testing.T) {
+	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
+	a, out, errOut := linkLogApp(t, audit.LinkEntry{Time: at, Event: "refused", From: "web1", FromID: "web1", To: "?",
+		Reason: "rate limited", Count: 936})
+	if code := a.Run(t.Context(), []string{"log", "-links"}); code != 0 {
+		t.Fatalf("log -links = %d; stderr %s", code, errOut)
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	want := []string{"2026-10-03T07:00:00Z", "web", "?", "-", "refused: rate limited (936 times)", "-", "-"}
+	if got := regexp.MustCompile(`\s{2,}`).Split(lines[len(lines)-1], -1); len(lines) != 2 || !slices.Equal(got, want) {
+		t.Errorf("log -links printed %q, want the line %q", out, want)
+	}
+	code, _, err := runJSON(t, a, out, "log", "-links", "-json")
+	if code != 0 || err != nil || !strings.Contains(out.String(), `"port":0,`) {
+		t.Errorf("log -links -json = %d, %v, printed %s; want port 0", code, err, out)
+	}
+}
+
 func TestLogLinksShowsIDsWhenTheMachinesCantBeListed(t *testing.T) {
 	a, out, errOut := linkLogApp(t, listenerLines()...)
 	a.NewEngine = func() (engine.Engine, error) { return nil, errors.New("e2b is down") }

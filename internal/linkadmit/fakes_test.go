@@ -297,7 +297,11 @@ type env struct {
 	guard  *guard
 	// free is what Room reports.
 	free atomic.Int64
-	a    *linkadmit.Admitter
+	// needMu guards needs: the room Room reports each target's wake takes, 1 unless a test
+	// sets it.
+	needMu sync.Mutex
+	needs  map[string]int
+	a      *linkadmit.Admitter
 }
 
 func newEnv(t *testing.T, configure ...func(*linkadmit.Config)) *env {
@@ -311,12 +315,13 @@ func newEnv(t *testing.T, configure ...func(*linkadmit.Config)) *env {
 		keeper: &keeper{gates: map[string]links.Gate{}},
 		closer: &closer{ports: map[string][]int{}},
 		guard:  &guard{addrs: map[string]netip.Addr{}},
+		needs:  map[string]int{},
 	}
 	v.free.Store(8)
 	cfg := linkadmit.Config{
 		Engine: v.e, Runs: v.runs, Keeper: v.keeper, Dropper: v.guard, Closer: v.closer,
 		Resolver: v.guard, Store: v.store, Clock: v.clock,
-		Room: func() (int, error) { return int(v.free.Load()), nil },
+		Room: func(target string) (int, int, error) { return int(v.free.Load()), v.need(target), nil },
 	}
 	for _, c := range configure {
 		c(&cfg)
@@ -339,6 +344,22 @@ func (v *env) machine(id string, state engine.State) {
 		ID: id, State: state, StartedAt: now.Add(-time.Hour), EndAt: now.Add(10 * time.Minute), MemoryMB: 1024,
 		Metadata: map[string]string{"hib.name": id, "hib.idle": "10m0s"},
 	})
+}
+
+// setNeed makes Room report that waking target takes the room of n default machines.
+func (v *env) setNeed(target string, n int) {
+	v.needMu.Lock()
+	defer v.needMu.Unlock()
+	v.needs[target] = n
+}
+
+func (v *env) need(target string) int {
+	v.needMu.Lock()
+	defer v.needMu.Unlock()
+	if n, ok := v.needs[target]; ok {
+		return n
+	}
+	return 1
 }
 
 // source adds a running machine that has just been active.

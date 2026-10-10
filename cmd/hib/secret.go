@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -149,7 +150,7 @@ func printLinkEntries(w io.Writer, entries []hibapi.LinkEntry) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TIME\tMACHINE\tTO\tPORT\tRESULT\tWOKE\tBYTES")
 	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", linkTime(e.Time), safe(e.From), safe(e.To), e.Port, safe(linkResult(e)),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", linkTime(e.Time), safe(e.From), safe(e.To), linkPort(e), safe(linkResult(e)),
 			linkWoke(e), linkBytes(e))
 	}
 	tw.Flush()
@@ -182,6 +183,14 @@ func linkResult(e hibapi.LinkEntry) string {
 		result += fmt.Sprintf(" (%d times)", e.Count)
 	}
 	return result
+}
+
+// linkPort is the target's port, or - on a line with none.
+func linkPort(e hibapi.LinkEntry) string {
+	if e.Port == 0 {
+		return "-"
+	}
+	return strconv.Itoa(e.Port)
 }
 
 func linkWoke(e hibapi.LinkEntry) string {

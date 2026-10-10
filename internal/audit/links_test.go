@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -143,6 +144,106 @@ func TestLinkFoldFlushesAfterWindow(t *testing.T) {
 		synctest.Wait()
 		if got := readLinks(t, path); len(got) != 2 || got[1].Count != 0 {
 			t.Fatalf("second window = %+v, want a second line for one refusal", got)
+		}
+	})
+}
+
+// refusalFrom is a refusal of machine id's link to api on port.
+func refusalFrom(id string, port int) audit.LinkEntry {
+	e := refusal(port, links.ErrNotPublished)
+	e.From, e.FromID = id, id
+	return e
+}
+
+// A machine refused on every port it tries writes MaxFoldsPerSource lines in a window, and one
+// more with no target or port that counts the rest. Another machine refused in the same window
+// keeps all its lines, and Close writes the overflow line with the others.
+func TestLinkRefusalsFromOneSourceAreCapped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "links.jsonl")
+		l := openLinks(t, path, 1<<20)
+		for port := 1; port <= 1000; port++ {
+			if err := l.Write(refusalFrom("web1", port)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for port := 1; port <= links.MaxFoldsPerSource; port++ {
+			if err := l.Write(refusalFrom("db1", port)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := readLinks(t, path); len(got) != 0 {
+			t.Fatalf("inside the window = %d lines, want nothing yet", len(got))
+		}
+		if err := l.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		ports := map[string][]int{}
+		var overflow []audit.LinkEntry
+		for _, e := range readLinks(t, path) {
+			if e.Port == 0 {
+				e.Time = time.Time{}
+				overflow = append(overflow, e)
+				continue
+			}
+			if e.Count != 0 || e.ToID != "api1" {
+				t.Errorf("line %+v, want one refusal to api1", e)
+			}
+			ports[e.FromID] = append(ports[e.FromID], e.Port)
+		}
+		first := make([]int, links.MaxFoldsPerSource)
+		for i := range first {
+			first[i] = i + 1
+		}
+		for _, id := range []string{"web1", "db1"} {
+			slices.Sort(ports[id])
+			if !slices.Equal(ports[id], first) {
+				t.Errorf("%s has lines for ports %v, want the first %d", id, ports[id], links.MaxFoldsPerSource)
+			}
+		}
+		want := audit.LinkEntry{Event: "refused", From: "web1", FromID: "web1", To: "?", Reason: "not published",
+			Count: 1000 - links.MaxFoldsPerSource}
+		if len(overflow) != 1 || overflow[0] != want {
+			t.Errorf("overflow lines = %+v, want only %+v", overflow, want)
+		}
+	})
+}
+
+// Writing a window's lines gives their source back all its MaxFoldsPerSource, so a machine
+// capped in one window has a line for each refusal again in the next.
+func TestLinkRefusalCapEndsWithTheWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "links.jsonl")
+		l := openLinks(t, path, 1<<20)
+		defer l.Close()
+		for port := 1; port <= 1000; port++ {
+			if err := l.Write(refusalFrom("web1", port)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(links.FoldWindow + time.Second)
+		synctest.Wait()
+		first := len(readLinks(t, path))
+		if first != links.MaxFoldsPerSource+1 {
+			t.Fatalf("first window = %d lines, want %d and the overflow line", first, links.MaxFoldsPerSource)
+		}
+
+		for port := 2001; port <= 2000+links.MaxFoldsPerSource; port++ {
+			if err := l.Write(refusalFrom("web1", port)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(links.FoldWindow + time.Second)
+		synctest.Wait()
+		got := readLinks(t, path)[first:]
+		if len(got) != links.MaxFoldsPerSource {
+			t.Fatalf("second window = %d lines, want %d", len(got), links.MaxFoldsPerSource)
+		}
+		for _, e := range got {
+			if e.Port <= 2000 || e.Count != 0 {
+				t.Errorf("second window wrote %+v, want one line for each of its own ports", e)
+			}
 		}
 	})
 }
