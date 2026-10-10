@@ -14,10 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/links"
 )
 
@@ -48,7 +48,6 @@ var (
 )
 
 var (
-	nameRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.hib$`)
 	addrRange = netip.MustParsePrefix(links.CIDR)
 	reserved  = map[string]bool{
 		"localhost":             true,
@@ -130,7 +129,7 @@ func check(hosts []Host) error {
 		if reserved[strings.ToLower(h.Name)] {
 			return fmt.Errorf("%w: %q", ErrReservedName, h.Name)
 		}
-		if !nameRE.MatchString(h.Name) {
+		if base, ok := strings.CutSuffix(h.Name, ".hib"); !ok || hibapi.CheckName(base) != nil {
 			return fmt.Errorf("%w: %q", ErrBadName, h.Name)
 		}
 		ip, err := netip.ParseAddr(h.IP)
