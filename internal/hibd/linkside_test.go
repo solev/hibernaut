@@ -179,6 +179,21 @@ func socketMode(path string) (fs.FileMode, error) {
 	return fi.Mode(), nil
 }
 
+// The proxy serves its control socket where hibd's pause, rm and port commands dial it, in the
+// directory the tmpfiles entry makes and hibd-proxy.service may write.
+func TestProxyServesTheControlSocketWhereHibdDialsIt(t *testing.T) {
+	ctl, err := linkctl.Dial("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxyLinkHost.socket != ctl.Path() {
+		t.Errorf("hibd proxy serves its control socket at %s, but hibd dials %s", proxyLinkHost.socket, ctl.Path())
+	}
+	if dir := filepath.Dir(proxyLinkHost.socket); dir != links.RunDir {
+		t.Errorf("the control socket is in %s, want %s", dir, links.RunDir)
+	}
+}
+
 func TestProxyHookCarriesTheLinkRuleOnlyWithLinksOn(t *testing.T) {
 	a := &App{}
 	if got, want := a.proxyHook(5443, 5444), (proxyRule{hook.Rule{ProxyPort: 5443, LinkPort: 5444, LinkCIDR: links.CIDR}}); got != want {
