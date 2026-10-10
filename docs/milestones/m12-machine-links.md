@@ -1,6 +1,6 @@
 # M12 Machine links
 
-Status: **not started** · Spec: §5 (Machines), §4.5, D6 · Needs: M10
+Status: **in progress** · Spec: §5 (Machines), §4.5, D6 · Needs: M10
 
 **Goal:** a machine can reach a port on another of your machines. You publish the port from the
 laptop with `hib port add api 8080`, and after that your other machines reach it as
@@ -126,14 +126,15 @@ finds it fixes both.
 the cgroups and `links.Guard` hides nftables. `links.Keeper` hides the guard from the listener and
 the admitter, and `links.Resolver` hides `slots.Finder` from the Keeper. Slice workers run
 `make test` on macOS, where the whole hook package is a stub whose functions all return
-`errLinuxOnly` (`internal/egress/hook/hook_stub.go:15-32`) and `slots.Finder` is a concrete struct
+`errLinuxOnly` (`internal/egress/hook/hook_stub.go:15-33`) and `slots.Finder` is a concrete struct
 that cannot be faked. Without that seam the listener's tests could not run where the listener is
 written.
 
-**`LinkPort=0` means links are off**, and it stays the default until the integration slice turns it
-on. Every slice before that ships dark: the listener isn't started, the chain isn't installed, the
-guard set isn't created and `hib port` reports that links are off. The integration slice is the one
-that changes the default, once slices 1 to 6 have landed.
+**`LinkPort=0` means links are off.** It was the default until the integration slice turned links
+on, and `HIBD_LINK_PORT=0` still turns them off. Every slice before that shipped dark: the listener
+wasn't started, the chain wasn't installed, the guard set wasn't created and `hib port` reported
+that links were off. The integration slice changed the default to `links.Port`, 5444, once slices 1
+to 6 had landed.
 
 **With links off, every pause is M11's pause.** `hibd pause`, `hibd rm`, `pauseAll`, the leak scan
 and `snapshot.go`'s internal pause raise no fence, send no `close`, never call `Drop` and set no
@@ -222,9 +223,11 @@ root-written file would be root-owned and the login user could not read it.
 
 `internal/machines` already solved this, and M12 reuses the solution rather than inventing one:
 `directoryOwner` (`internal/machines/ownership.go:18`) reads the state directory's owner and refuses
-a directory others can write to, and `publishOwned` (`:52`) writes `0600`, chowns to that owner when
-running as root and renames into place. `openLock` (`internal/machines/statedir.go:15`) opens
-`hibd.lock` the same way, with a root branch and a non-root branch.
+a directory others can write to, and `publishOwned` (`:37`) writes `0600`, chowns to that
+owner when running as root and renames into place. `openLock` (`internal/machines/statedir.go:15`)
+opens `hibd.lock` the same way, with a root branch and a non-root branch. Slice 4 lifted all three
+into `internal/statefile` (`internal/statefile/owned.go:47,98,209`), and the `internal/machines`
+names are now wrappers over them.
 
 - `links.json` and `links.lock` are **mode `0600`, owned by the state directory's owner**, which
   is the login user. Root reads and writes them through the same ownership-aware path, so a file
@@ -239,8 +242,8 @@ running as root and renames into place. `openLock` (`internal/machines/statedir.
   in `internal/hibd` (`internal/hibd/lock.go:12`). `internal/links` cannot import either without a
   cycle, because `hibd` imports both. **The contract commit extracts the locks** into a new package
   `internal/statefile` (`WaitLock`, `TryLock`, `OpenLock` and `Held`), moved verbatim, with `hibd`'s
-  three wrappers delegating so its call sites are untouched (`internal/machines/machines.go:674`,
-  `internal/hibd/hibd.go:1362`). `Held` is new: it takes `LOCK_SH|LOCK_NB` and reports whether an
+  three wrappers delegating so its call sites are untouched (`internal/machines/machines.go:689`,
+  `internal/hibd/hibd.go:1363`). `Held` is new: it takes `LOCK_SH|LOCK_NB` and reports whether an
   exclusive holder is alive, which is how a fence's owner is checked.
 - **The ownership helpers are not extracted in the contract commit, and that is deliberate.**
   `stateRoot`, `publishOwned` and `ensureDirectory` are `*Manager` methods over the manager's own
@@ -418,10 +421,12 @@ links. It does nothing to a connection that is already open or to one sitting in
   `vm/systemd/hibernaut-tmpfiles.conf` (`d /run/hibernaut 0755 root root -`), installed into
   `/usr/lib/tmpfiles.d/`, which `systemd-tmpfiles-setup.service` runs before any of our units.
   The proxy still unlinks its own socket on the way out.
-- The unit also gains `WatchdogSec=30` and `Restart=always`, pinged from the same loop as the
-  sweep, so a wedged proxy is eventually replaced. That is recovery, not protection: the kernel
-  guard has shut a wedged proxy's gates long before the watchdog fires (*The kernel's own fence*,
-  *What was rejected*).
+- The unit also gains `WatchdogSec=30` and `Restart=always`. The proxy pings the watchdog from a
+  loop of its own, every third of `WATCHDOG_USEC`, and only while its serve goroutines run and,
+  with links configured on, the control socket answers `stat` (`internal/hibd/watchdog.go`), so a
+  wedged proxy is eventually replaced. That is recovery, not protection: the kernel guard has shut
+  a wedged proxy's gates long before the watchdog fires (*The kernel's own fence*, *What was
+  rejected*).
 
 **Delivery is not promised** (D10). `pushSetup` returns without having reached every machine:
 `internal/hibd/delivery.go:52-75` skips the whole push while the host is quiescing, gives the batch
@@ -482,9 +487,10 @@ web   web.hib  198.18.0.2  3000        0
   unknown flag, a name that isn't a name), 1 for everything the host refused or couldn't do,
   including `port rm` that unpublished but couldn't confirm the close.
 - `hib log --links` prints a link table with a header printed unconditionally, like
-  `printLogEntries` (`cmd/hib/secret.go:104-117`): `TIME MACHINE TO PORT RESULT WOKE BYTES`.
-  `--json` fills `Response.Links`. `hib log` without the flag is byte-for-byte what it is today.
-  `--links` is gated on `FeaturePorts`, with the same too-old message.
+  `printLogEntries` (`cmd/hib/secret.go:131-144`): `TIME MACHINE TO PORT RESULT WOKE BYTES`.
+  `--json` fills `Response.Links`, and `Corrupt` counts the lines it couldn't read. `hib log`
+  without the flag is byte-for-byte what it is today. `--links` is gated on `FeaturePorts`, with a
+  too-old message of its own that names `hib log --links` (`cmd/hib/secret.go:96`).
 - **Warnings and the fork hint reach the CLI as text, not as structure.** `hibd` writes them to
   **stderr**, `hib` passes stderr through and `--json` leaves them out of the document entirely.
   This is what `hibd`'s `warn` already does (`internal/hibd/delivery.go:56-60`). No new field
@@ -493,11 +499,11 @@ web   web.hib  198.18.0.2  3000        0
 **Two places meet [M11](m11-bot-faces.md)**, which landed first (`fc1f7b5`):
 
 - `hib ls` gains a `PORTS` column after `IDLE`, `-` when a machine has none. M11 puts a face in
-  front of every row of the same table (`cmd/hib/main.go:279-287`). `faces.table` only prefixes
+  front of every row of the same table (`cmd/hib/main.go:279-289`). `faces.table` only prefixes
   each line, so the new column needs nothing from it.
 - the fork hint is written to stderr by `hibd`, from `internal/hibd/fork.go` (slice 7). `hib`
   relays `hibd`'s stderr (`cmd/hib/remote.go:185-197`), and M11's live line prints it
-  (`cmd/hib/liveline.go:42`, `live.Write` at 207-220). `hib` adds no text of its own, so
+  (`cmd/hib/liveline.go:42`, `live.Write` at 207-226). `hib` adds no text of its own, so
   `cmd/hib/fork.go`, which M11 rewrote, does not change and the hint keeps the live line and the
   face.
 
@@ -505,8 +511,8 @@ Keeping M12 to one column, one field and one extra line is what keeps both small
 
 **Completion is not free.** `cmd/hib/commands.go` drives help and mistakes from the command
 table, but machine-name completion is a hand-written switch on the command path in
-`cmd/hib/complete.go:207-211`, listing `"rm", "pause", "ssh", "exec", "fork"`. `"port add"` and
-`"port rm"` have to be added there to complete a machine name in the first position. `port ls`
+`cmd/hib/complete.go:207-211`, which listed `"rm", "pause", "ssh", "exec", "fork"`. Slice 4 added
+`"port add"` and `"port rm"` there, so they complete a machine name in the first position. `port ls`
 takes no argument and needs nothing.
 
 ### Delivering /etc/hosts
@@ -613,9 +619,10 @@ breaks the egress proxy. So M12 changes the hook instead of adding to it.
   through the egress proxy (which denies `198.18.0.0/15` anyway and would reset it).
 - `hook.Rule` grows from `{Port, Iptables}` to `{ProxyPort, LinkPort, LinkCIDR, Iptables}`.
   `Ensure`, `Keep` and `Remove` keep their names and their contract. `Remove` deletes the jump,
-  flushes the chain and deletes the chain. **`Rule.Port` has a caller:**
-  `internal/hibd/proxy.go:152` builds `proxyRule{hook.Rule{Port: port}}`, so the field rename is
-  part of the contract commit, not of a slice.
+  flushes the chain and deletes the chain. **`Rule.Port` had a caller:** M11's
+  `internal/hibd/proxy.go` built `proxyRule{hook.Rule{Port: port}}`, so the field rename was
+  part of the contract commit, not of a slice. `proxyHook` now builds `hook.Rule{ProxyPort: port}`
+  and adds the link fields when links are on (`internal/hibd/proxy.go:213-222`).
 
 **Install and repair are one transaction.** Flushing a live chain and refilling it is *not* safe:
 while `HIBERNAUT` is empty, every packet falls straight through to the rest of `PREROUTING`, 443
@@ -635,14 +642,14 @@ rules come back. So:
   works". An interrupted migration leaves both, which is harmless: the chain's 443 rule and the
   legacy rule redirect to the same port, and the next `Ensure` finishes the job.
 - **Comparison is normalized.** `iptables-save` writes `-m tcp` that `iptables -A` doesn't require,
-  and the current parser already has to skip it (`internal/egress/hook/parser.go:80-82`). `Keep`
-  canonicalizes both sides (drop `-m tcp`, normalize `--to-port`/`--to-ports`, sort nothing) and
-  only rewrites when the canonical forms differ. That is what stops `Keep` rewriting and logging on
+  and M11's parser already had to skip it. `Keep` canonicalizes both sides (drop `-m tcp`, normalize
+  `--to-port`/`--to-ports`, sort nothing, `internal/egress/hook/rules.go:129-145`) and only
+  rewrites when the canonical forms differ. That is what stops `Keep` rewriting and logging on
   every five-second pass.
 - **Migration.** `Ensure` deletes a bare `-A PREROUTING … --comment hibernaut … --dport 443`
-  rule left by the previous `hibd`. The strict parser goes: matching is by comment and shape, and
-  an unrecognised `hibernaut` rule is deleted rather than turned into an error, so one stray rule
-  can never again stop the hook from being repaired.
+  rule left by the previous `hibd`. M11's strict parser is gone: matching is by comment and shape,
+  and an unrecognised `hibernaut` rule is deleted rather than turned into an error, so one stray
+  rule can never again stop the hook from being repaired.
 
 **The listener.** It lives in a new package `internal/linkproxy`, and `hibd proxy` serves it, not
 `hibd daemon`, because `hibd proxy` already owns the
@@ -744,7 +751,7 @@ through the bridge woke a machine. Four things have to be true at once for that 
 each has its own mechanism.
 
 **1. Admission is one atomic decision.** Copying `Manager.Dial`'s shape
-(`internal/machines/machines.go:377-407`: lookup, `Idle`, `Renew`, `checkRoom`, `readPin`, dial)
+(`internal/machines/machines.go:383-435`: lookup, `Idle`, `Renew`, `checkRoom`, `readPin`, dial)
 would let two connections to two different paused targets both pass `checkRoom` and both take the
 last slot, because nothing holds the decision while the resume runs. So `linkproxy` owns an
 admitter:
@@ -757,7 +764,7 @@ for admissions and `linkadmit` grants them and neither should import the other.
 - **Every connection is admitted, running targets included.** There is no fast path that skips
   `Admit` because the target is already up. A running target that skipped admission would also skip
   the caps, the revocation check and `PausedByHand`: `save` and `fork` resume a by-hand-paused
-  machine for a few seconds (`internal/machines/snapshot.go:130`), so "it is running" is not
+  machine for a few seconds (`internal/machines/snapshot.go:150`), so "it is running" is not
   evidence that anyone wants it reachable.
 - One mutex covers the quiescing check, `PausedByHand`, the source authorization, the wake rate
   limit, the per-source and global link caps and the room arithmetic. Nothing between them can
@@ -811,7 +818,7 @@ for admissions and `linkadmit` grants them and neither should import the other.
 **no link byte is sent or received after either endpoint's run ends**, whatever ends it: E2B's idle
 timeout, `hib pause`, `hib rm`, `save`, `fork`, `pause-all`, a crash or the OOM killer.
 `engine.Machine.StartedAt` can't carry that. Pausing doesn't change it (the engine sets it only on
-resume, `internal/engine/fake/fake.go:279-281` against `:302-304`), it needs an API round trip to
+resume, `internal/engine/fake/fake.go:280-282` against `:302-304`), it needs an API round trip to
 read and a poll is always late.
 
 E2B already gives us a local, per-run object. Each run of a machine has its own cgroup
@@ -843,8 +850,8 @@ they are faster, and because a guard nobody helps is a guard that drops traffic 
 
 **There is no deadline from `EndAt`.** An earlier draft aborted each link at the earlier `EndAt` of
 its two ends minus a margin, on the grounds that Hibernaut only ever extends `EndAt`. That was wrong
-twice over. `Manager.Renew` reads the `EndAt` it was handed by an earlier listing and then calls
-`SetTimeout` (`internal/machines/machines.go:579-583`), so two processes renewing from two listings
+twice over. `machines.Renew` reads the `EndAt` it was handed by an earlier listing and then calls
+`SetTimeout` (`internal/machines/machines.go:589-594`), so two processes renewing from two listings
 can move it **backwards**. And E2B's own API shortens it: `KeepAliveFor` is called with `overwrite`
 true, and a `Timeout` below zero becomes a duration of zero (`sandbox_timeout.go:52` at the pinned
 ref). Since the kernel fence below bounds every way a run can end, nothing is lost by deleting the
@@ -1111,7 +1118,8 @@ check says nothing about what the kernel will carry. The slot address alone cann
 apart, and the whole race is that a slot outlives the run that was in it.
 
 **Startup and shutdown.** `hibd proxy` builds the links side in one order, in
-`internal/hibd/proxy.go`, and each piece is given what it needs rather than reaching for it:
+`internal/hibd/proxy.go` and `internal/hibd/linkside.go`, and each piece is given what it needs
+rather than reaching for it:
 
 1. the guard and the token counter, `linkguard.New()` and `linkguard.NewTokens()`.
 2. the run watcher, `linkadmit.NewRuns("")`.
@@ -1123,11 +1131,13 @@ apart, and the whole race is that a slot outlives the run that was in it.
 6. the admitter, with the Keeper, the guard as its `Dropper` and the resolver.
 7. the listener, with the Keeper, then `admitter.SetCloser(listener)`.
 8. `admitter.Serve`, which serves the control socket, and `Keeper.Run`, each in its own goroutine.
-9. `listener.Serve`, once `Ready` is closed and the startup checks pass. Until then links stay off
-   and `hibd proxy` goes on serving egress without them. It re-runs the checks once a minute and
-   logs the one that failed each time, so a host whose E2B pieces arrive after the proxy gets links
-   without a restart. A Keeper whose first `Install` failed has returned and its `Ready` never
-   closes, so that one keeps links off until the proxy restarts.
+9. `listener.Serve`, once `Ready` is closed and the startup checks pass: the control socket
+   answers a `stat`, `sandbox-firewall.nft` has the drops and the orchestrator has the
+   `IPAddressDeny` (`internal/hibd/linkchecks.go`). The link port is bound only then. Until then
+   links stay off and `hibd proxy` goes on serving egress without them. It re-runs the checks once
+   a minute and logs the ones that failed each time, so a host whose E2B pieces arrive after the
+   proxy gets links without a restart. A Keeper whose first `Install` failed has returned and its
+   `Ready` never closes, so that one keeps links off until the proxy restarts.
 
 **The control socket is served whenever links are configured on, even while the listener is
 off.** A listener that is not serving holds no sockets, so it answers `close` and `revoke` at once
@@ -1135,6 +1145,14 @@ with nothing closed and `stat` with zero counts, and `hibd proxy` has logged why
 Without it, a proxy that had handed out tokens earlier in the boot and then failed to install the
 guard again would leave every pause to fall back to `Drop` on a missing table, which fails (*The
 kernel's own fence*, 10).
+
+**The first `make up` of M12 runs the E2B install again.** Slice 7 changed
+`vm/systemd/e2b-orchestrator.service` and `vm/e2b/sandbox-firewall.nft`, which `vm/install-e2b.sh`
+hashes into its `install_id` (`vm/install-e2b.sh:15-16`). So that `make up` pauses every machine
+through `quiesce`, rebuilds E2B at the same ref, installs the units and the firewall file and
+restarts E2B. Until the orchestrator has restarted with them the checks fail and links stay off,
+and `hibd proxy` logs `links are off, checking again in 1m0s` with the checks that failed, once a
+minute. Egress goes on meanwhile, and links come on at the first check after E2B is back.
 
 Shutdown runs the other way. `Serve` closes every link socket and flushes the link log, the Keeper
 retires its gates and they expire within `GuardTTL`, and the control socket is unlinked.
@@ -1144,7 +1162,7 @@ while the proxy still answers rather than racing its stop.
 **3. Closing links is cross-process, and there is one mechanism.** `hibd pause` and `hibd rm` run as
 separate `hibd` invocations (`internal/hibd/hibd.go:209-255`), E2B pauses machines on their idle
 timeout without telling anyone and `save` and `fork` **resume a machine internally** before
-snapshotting it (`internal/machines/snapshot.go:113-139` always calls `m.e.Resume`, even for a
+snapshotting it (`internal/machines/snapshot.go:133-163` always calls `m.e.Resume`, even for a
 machine that was paused, and pauses it again afterwards). A check made after dialling does nothing
 for any of these. So:
 
@@ -1160,7 +1178,7 @@ for any of these. So:
   fenced. It has to be persisted rather than held in memory, because the process doing the pausing
   is not the process serving links, and a proxy restarted in the middle of a pause would otherwise
   come back with an open gate.
-  - Every path raises it: `hibd pause`, `hibd rm`, `pauseAll` (`internal/hibd/hibd.go:876-918`,
+  - Every path raises it: `hibd pause`, `hibd rm`, `pauseAll` (`internal/hibd/hibd.go:877-919`,
     which is also where the quiesce marker is now created), the leak scan's direct pause
     (`internal/hibd/leakscan.go:38-47`) and `snapshot.go`'s internal pause for `save` and `fork`. A
     pause that does not raise it is a bug, and the slice that owns each path owns that too.
@@ -1168,7 +1186,7 @@ for any of these. So:
     and leaves the fence up would make the machine unreachable for no reason.
   - **Age is not the staleness rule.** An earlier draft ignored a fence older than two minutes. That
     is wrong: `save` and `fork` legitimately run for ten minutes
-    (`internal/machines/snapshot.go:16-17`), so age cannot tell a long save from a crashed `hibd`.
+    (`internal/machines/snapshot.go:17-18`), so age cannot tell a long save from a crashed `hibd`.
     Instead the fence records an **owner that dies with the operation**: an `flock` on
     `links.FenceName`, held for the whole of the pause. A checker takes `LOCK_SH|LOCK_NB` on it:
     failing means the owner is alive. This works inside `hibd-proxy.service`'s sandbox, which
@@ -1229,7 +1247,7 @@ source's `EndAt` doesn't help, because links renew `EndAt`. Three parts:
     the `machines.New` constructor, which only builds a `Manager`.
   - an **open SSH or `hib exec` session**, on a heartbeat of 30 s or less for as long as it is open.
     This can't ride `Manager.keepalive`: with `idle=0` that function blocks on `<-ctx.Done()` and
-    never ticks at all (`internal/machines/machines.go:545-550`), so the heartbeat is its own
+    never ticks at all (`internal/machines/machines.go:555-560`), so the heartbeat is its own
     ticker, independent of `idle/4`.
   - every **`internal/busy` observation**, including machines with `idle=0`. M11's `busy` skipped
     those in the same condition that skipped non-running machines. M12 changes it to *observe* them
@@ -1298,7 +1316,7 @@ quiescing works today, both of which M12 has to fix for this to hold:
 | --- | --- | --- |
 | Virtual address range | `198.18.0.0/15` | `links.CIDR` |
 | First address | `198.18.0.1` | `links.First` |
-| Link listener port | 5444, `HIBD_LINK_PORT`. **0 means links are off**, and 0 is the default until slice 7 | `hibd.go` |
+| Link listener port | 5444 by default, `HIBD_LINK_PORT`. **0 turns links off** | `links.Port`, `hibd.go` |
 | Never publishable | 8081 (SSH bridge), 49983 (envd) | `links.Reserved` |
 | Ports per machine | 16 | `links.MaxPorts` |
 | Machines holding a virtual address | 256 | `links.MaxMachines` |
@@ -1349,6 +1367,12 @@ accepting and closing, so the kernel's backlog does the queueing.
 and survives `Release`, so a source that opens and closes a link in a loop cannot wake a machine
 every second by giving its reservation back each time. Only the reservation and the caps are
 returned. The rate accounting is not.
+
+**The reserve is one `dev` machine.** The admitter's room is how many machines of the default image
+(`images.Default`) fit in free memory, less one (`linkRoom`, `internal/hibd/linkside.go:150-161`),
+and every wake still pending counts against it. A link-woken target bigger than `dev` can therefore
+spend part of the reserve, which Security item 4 records. Counting the target's own size is a
+follow-up.
 
 **Why `LinkGrace` is 5 minutes.** It has to be long enough that a person who stops typing for a
 moment doesn't lose their links, and short enough that an abandoned ring costs little. Five minutes
@@ -1434,6 +1458,7 @@ Why it is shaped that way:
 | delivery failed | `warning: published ports saved, but updating web failed: %v` |
 | `hib fork`, parent has ports | `copies don't inherit published ports. hib port add task-2 8080 publishes one` |
 | hibd too old | `this host's hibd is too old for hib port. Upgrade it` |
+| hibd too old, `hib log --links` | `this host's hibd is too old for hib log --links. Upgrade it` |
 
 **The listener's refusals send no bytes.** The connection is closed without a write and the
 reason goes to the link log. A client sees a reset, which is what it would see if nothing were
@@ -1484,7 +1509,9 @@ concurrent wakes can't both spend it. A **rate limit** of one wake per target pe
 admission and rolled back on failure. **Per-source, per-target and global link caps** (64, 64, 512).
 An audit line when a link **opens**, carrying `Woke`, plus an `OPEN` column in `hib port ls`, so
 "this machine is awake because of a link from X" is answerable while it is happening rather than
-after it ends. A refusal is immediate and says `no room`. *Test:*
+after it ends. A refusal is immediate and says `no room`. *Limitation:* the reserve is counted in
+machines of the default image, `dev`, so a link-woken target bigger than `dev` can spend part of it
+(*Limits and constants*). Counting the target's own size is a follow-up. *Test:*
 `TestMachineToMachine/no_room_refuses_fast`, a unit test that N concurrent admissions for different
 targets never take the reserve and a unit test that concurrent admissions for the same target
 coalesce into one wake.
@@ -1522,7 +1549,7 @@ come back, and that a source with an open SSH session keeps reaching its targets
 set, including when the target happens to be **running**, since every connection is admitted and
 none skips the check. It is cleared only when a person starts the machine, never by observing that
 it is running: `save` and `fork` resume a paused machine for a few seconds
-(`internal/machines/snapshot.go:130` calls `Resume` unconditionally) and pause it again, and a link
+(`internal/machines/snapshot.go:150` calls `Resume` unconditionally) and pause it again, and a link
 must not slip into that window. Every pause Hibernaut starts, by hand or not, raises `Machine.Fence`
 before the `close` is sent and **clears it once the pause settles either way**, so a failed `save`
 doesn't leave a machine permanently unreachable. Admission refuses while either endpoint is fenced.
@@ -1590,9 +1617,10 @@ the chain is empty every packet falls through to the rest of `PREROUTING`, 443 e
 and conntrack can hold that bypass open afterwards. Inside the transaction the chain is filled
 before the jump is added, and the legacy bare 443 rule is deleted **last**, so an interrupted
 upgrade leaves two working rules rather than none. `Keep` compares canonical forms (`-m tcp`
-dropped, `--to-port` and `--to-ports` normalized, as `internal/egress/hook/parser.go:80-82` already
-has to) so it doesn't flap or log on every pass. The strict parser that made any unexpected
-`hibernaut` rule fatal is replaced by matching on the comment, and an unrecognised one is deleted.
+dropped, `--to-port` and `--to-ports` normalized, as M11's parser already had to,
+`internal/egress/hook/rules.go:129-145`) so it doesn't flap or log on every pass. The strict
+parser that made any unexpected `hibernaut` rule fatal was replaced by matching on the comment, and
+an unrecognised one is deleted.
 *Test:* `internal/egress/hook` host tests for install, for a foreign rule inserted above the jump,
 for a stale bare 443 rule from the previous version, for an **interrupted** migration (jump present,
 chain half-written) and its repair and for `Keep` being silent when `iptables-save` renders a rule
@@ -1620,10 +1648,10 @@ nothing. nftables checks an element's expiry at lookup, before any garbage colle
 shuts on its own when nothing holds it open. A stalled or killed proxy therefore loses its slots
 within about a second, comfortably inside the 3 s. The 5 s sweep stays as a backstop, re-checking
 for **both** ends that the machine exists, is `Running` and is the same run: `Running` explicitly,
-because a pause leaves `StartedAt` untouched (`internal/engine/fake/fake.go:279-281`).
+because a pause leaves `StartedAt` untouched (`internal/engine/fake/fake.go:280-282`).
 
 The `EndAt`-minus-margin deadline of the previous draft is **gone**, because its premise was false:
-`Manager.Renew` writes back a stale `EndAt` (`internal/machines/machines.go:579-583`) and E2B's API
+`machines.Renew` writes back a stale `EndAt` (`internal/machines/machines.go:589-594`) and E2B's API
 shortens timeouts (`sandbox_timeout.go:52`). And because the kernel guard covers what it was for.
 
 *Test:* `linkproxy` unit tests with a fake clock and fake run events for each path (cgroup emptied,
@@ -1679,12 +1707,12 @@ finish its reply. Renewal is counted from the **last payload byte**, at most onc
 when the connection closes, so an open but silent link holds nothing. Trickled bytes renew the
 target only while the source has non-link activity of its own (item 4b). *Test:* a `linkproxy` unit
 test for half-close in each direction, and
-`TestMachineToMachine/an_idle_link_doesn't_hold_a_machine_awake` (slow).
+`TestMachineToMachineSlow/an_idle_link_doesn't_hold_a_machine_awake`.
 
 **18. Lifecycle edges.** The thread through all of them is that **pausing, removing and unpublishing
 happen in other processes**: `hibd pause` and `hibd rm` are separate invocations
 (`internal/hibd/hibd.go:209-255`), E2B pauses machines on their idle timeout with no involvement
-from `hibd` at all (the daemon at `internal/hibd/hibd.go:1434` only watches and renews, and it never
+from `hibd` at all (the daemon at `internal/hibd/hibd.go:1435` only watches and renews, and it never
 calls `Pause`) and `save` and `fork` pause and resume a machine inside one command. So every
 Hibernaut-initiated one raises the fence, sends `close` or `revoke` on the proxy's control socket
 and waits for the answer before pausing. E2B's own timeout is caught by the run-cgroup watch
@@ -1695,8 +1723,8 @@ is what holds when neither of them runs.
   links and nothing else. The command also cancels pending admissions and closes established links
   for that exact `(sandbox ID, port)`, and reports success only once the proxy confirms. A
   revocation that lands during a wake is caught by the generation re-check before the first byte.
-  *Test:* `port rm` cuts an open connection, and `port rm` during a wake cuts the connection that
-  was waiting on it.
+  *Test:* `TestMachineToMachine/port_rm_cuts_an_open_link` and
+  `TestMachineToMachine/port_rm_cuts_a_link_waiting_on_a_wake`.
 - `hib pause`, `pause-all`, nightly quiesce and the leak scan: links to and from that machine are
   aborted behind the fence, and the pause goes ahead only once the proxy says no socket is left or
   the machine's guard elements are gone.
@@ -1705,7 +1733,10 @@ is what holds when neither of them runs.
   (item 5). Saved images carry no ports.
 - `hib fork`: the copy has a new sandbox ID and so no entry, no address and no ports. `hib fork`
   prints the hint.
-- `hib rm`: the entry goes, the address is burned, open links close and the hosts block is pushed.
+- `hib rm`: the entry goes, the address is burned and open links close. `rm` pushes nothing, so the
+  machine's line leaves the other machines' hosts blocks on the daemon's next delivery pass, about
+  15 s later. Until then a stale line points at an address that is never handed out again, which
+  is refused (item 11).
 - A host reboot: running machines are gone anyway. `links.json` survives, and addresses with it.
 - A `hibd proxy` restart: `ExecStopPost` runs `hibd proxy -unhook`, which removes the jump and the
   chain, so links fail closed while it's down. Open links die with the process, and the control
@@ -1765,8 +1796,8 @@ Frozen by the commit:
 - [x] **`internal/statefile`** (new): `WaitLock`, `TryLock`, `OpenLock` and `Held`, lifted from
       `internal/hibd/lock.go` **with no change in behaviour** and with their tests. `hibd`'s
       three wrappers delegate, so its twenty-odd call sites are untouched. It is in the contract
-      commit because slices 3, 4 and 6 would otherwise all have to cross `machines.go:674` and
-      `hibd.go:1362` to get at a lock. `Held` is the fence-owner oracle: `LOCK_SH|LOCK_NB`
+      commit because slices 3, 4 and 6 would otherwise all have to cross `machines.go:689` and
+      `hibd.go:1363` to get at a lock. `Held` is the fence-owner oracle: `LOCK_SH|LOCK_NB`
       failing means the pause that raised the fence is still running.
 - [x] **Constructors and clients, with their bodies left to the slices**, so no slice waits on
       another's build: `linkproxy.New`, `Serve`, `AbortMachine`, `AbortPorts` and `Stat`.
@@ -1803,16 +1834,16 @@ Frozen by the commit:
       `v` (`internal/hibapi/hibapi.go:325`), so the empty document is `{"v":1,"ports":[]}`.
 - [x] **`internal/audit`**: `LinkEntry`, `LinkLog`, `OpenLinks`, `Write`, `Close`, `ReadLinks`.
 - [x] **`internal/busy`**: `Config.Activity` and `Config.StateDir`, so slice 3 can write the
-      activity clock and slice 6 can wire it at `internal/hibd/hibd.go:1453` without the two
+      activity clock and slice 6 can wire it at `internal/hibd/hibd.go:1454-1457` without the two
       meeting in the same file.
 - [x] **`cmd/hib`**: `log()` takes the links flag and ignores it, and `commands.go` passed `false`
       until slice 4 registered `--links`. Slice 4 can add `--links` to the command table and slice 7
       can write the body, in either order.
 - [x] **`internal/egress/hook`**: `Rule.Port` is renamed `ProxyPort`, and `LinkPort` and
-      `LinkCIDR` are added, **with no change in behaviour**. The one caller,
-      `internal/hibd/proxy.go:152`, is updated here. It has to be here rather than in slice 1,
+      `LinkCIDR` are added, **with no change in behaviour**. The one caller, in
+      `internal/hibd/proxy.go`, is updated here. It has to be here rather than in slice 1,
       because `proxy.go` belongs to slice 7 and slice 1 renaming the field would break slice 7's
-      build. `LinkPort=0` means links are off, and that stays the default until slice 7.
+      build. `LinkPort=0` means links are off, and that stayed the default until slice 7.
 - [x] **`internal/slots`**: `Finder.Slot(id)` and `Addr(slot)` in `slots.go`, and `Resolver`
       (`Finder` and `Runs`, with `Addr` and `At`) in the new `resolver.go`. Stubs that return
       `links.ErrLinksOff`. Slice 2 owns both files. Pure additions, no callers.
@@ -1908,7 +1939,7 @@ Owns `internal/linkproxy/` and `internal/linkctl/` (both new): the client and th
 wire and its only two speakers change together. Also owns `internal/slots/slots.go` and
 `internal/slots/resolver.go`. Depends on the contract. Uses `links.Admitter` and
 `links.Runs`, so it is built and tested against fakes before slice 3 exists, and it builds on macOS
-because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-32`).
+because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-33`).
 
 - [ ] Accept loop with the accept rate limit and the host cap.
 - [ ] Per connection: quiescing, `Ingress.Identify` (veth, original destination, source lookup and
@@ -1982,7 +2013,7 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
       answers for the listener.
 - [ ] The 5 s sweep as a backstop: for both ends, the machine exists, is **`Running`** and its run
       matches. `Running` explicitly: a pause leaves `StartedAt` alone
-      (`internal/engine/fake/fake.go:279-281`).
+      (`internal/engine/fake/fake.go:280-282`).
 - [ ] `machines.Manager.Wake(ctx, id string, leaseUntil time.Time)`: resume **by sandbox ID**, with
       an **absolute** lease, not a duration. A pending wake is cancelled once the lease passes.
       After the resume the real `EndAt` is read back and shortened if it is past the lease. If the
@@ -1997,13 +2028,13 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
       counted from the last payload byte, at most once per `LinkRenew`.
 - [ ] **The activity clock's feeds**, which is why this slice owns `machines.go` and `busy.go`: an
       SSH/`exec` session heartbeat on its own ≤30 s ticker, **not** `Manager.keepalive`, which never
-      ticks at all when `idle=0` (`internal/machines/machines.go:545-550`). Every `busy`
+      ticks at all when `idle=0` (`internal/machines/machines.go:555-560`). Every `busy`
       observation, with `idle=0` machines now **observed but still not renewed** (M11's `busy`
       skipped them entirely). A successful `hib new` or `hib fork`: the touch goes in
       `forkplan.go`'s `makeCopy` after it has succeeded (`internal/machines/forkplan.go:97-113`),
       not in the `machines.New` constructor, which only builds a `Manager`. The proxy never touches
       the clock. `busy.Config.Activity` and `StateDir` are frozen in the contract, and slice 6 wires
-      them at `internal/hibd/hibd.go:1453`, so the two slices never meet in a file.
+      them at `internal/hibd/hibd.go:1454-1457`, so the two slices never meet in a file.
 - [ ] Unit tests: concurrent admissions for different targets never take the reserve. Concurrent
       admissions for one target coalesce into one wake. A failed wake rolls back the rate limit and
       the room together. `revoke` cancels an open link and one waiting mid-wake. A stale source is
@@ -2124,7 +2155,7 @@ contract's `hibd port` handler signature, so it doesn't wait for slice 4's body.
       meanwhile can fall between them. One that `Get` can't answer for is kept, with an error.
       Removing one that a `Touch` is still using only loses that touch, which errs toward less
       activity. It **prunes after releasing the cleanup lock**: `clean` already holds `lockCleanup`
-      across the whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:967,1013`),
+      across the whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:968,1014`),
       and taking `links.lock` underneath that would add a third level to the order in Design.
 - [ ] `cleanup` reconciles every fence up for `links.FenceStale` or longer, as item 3 of *Waking,
       keeping awake and pausing* describes, sharing one `Get` per machine with the prune.
@@ -2134,7 +2165,7 @@ contract's `hibd port` handler signature, so it doesn't wait for slice 4's body.
 - [ ] `leakscan` pauses through the same fenced path instead of calling `e.Pause` directly
       (`internal/hibd/leakscan.go:38-47`), so a machine the leak scan takes down can't be left
       with links open.
-- [ ] The busy wiring at `internal/hibd/hibd.go:1453` passes `busy.Config.Activity` and
+- [ ] The busy wiring at `internal/hibd/hibd.go:1454-1457` passes `busy.Config.Activity` and
       `StateDir`, so slice 3's clock is fed. The hook and the field are frozen in the contract,
       so the two slices don't collide.
 - [ ] Unit tests: dispatch and usage, `version`, the `ls` field, `pauseAll` creating the marker,
@@ -2165,67 +2196,72 @@ The default is the commit that turns links on, and it cannot be anywhere else.
       sets `LinkPort` away from 0 and turns links on, and it may not land until **every one of slice
       1's guard kernel gates has passed on the host**. A kernel that does not behave as the guard
       assumes keeps links off. The gates are how that is noticed, not an argument in this document.
-- [ ] Build the links side in `internal/hibd/proxy.go` in the order *Startup and shutdown* gives
-      (guard and tokens, run watcher, resolver, store and clock, Keeper, admitter, listener, then
-      `admitter.Serve` and `Keeper.Run`, then `listener.Serve`), with the control socket and the
-      link log, and unlink the socket on the way out. The control socket is served even while the
-      listener is off, and egress goes on either way.
-- [ ] `hibd-proxy.service` gains `ReadWritePaths=/run/hibernaut` (**not** `RuntimeDirectory`, which
-      systemd would delete on stop, taking the quiescing marker with it) plus `WatchdogSec=30`,
-      `Restart=always` and a `CPUWeight` above the default, so a busy host does not starve the
-      Keeper into a stall longer than `GuardTTL - GuardKeep`. It never gains
-      `ProtectKernelTunables=yes`, which would stop `Install` from setting
+- [x] Build the links side in `internal/hibd/proxy.go` and `internal/hibd/linkside.go` in the order
+      *Startup and shutdown* gives (guard and tokens, run watcher, resolver, store and clock,
+      Keeper, admitter, listener, then `admitter.Serve` and `Keeper.Run`, then `listener.Serve`),
+      with the control socket and the link log, and unlink the socket on the way out. The control
+      socket is served even while the listener is off, and egress goes on either way.
+- [x] `hibd-proxy.service` gains `ReadWritePaths=/run/hibernaut` (**not** `RuntimeDirectory`, which
+      systemd would delete on stop, taking the quiescing marker with it) and `WatchdogSec=30`,
+      beside the `Restart=always` it already had. It gains `CPUWeight=200`, twice the default, so a
+      busy host does not starve the Keeper into a stall longer than `GuardTTL - GuardKeep`. It
+      never gains `ProtectKernelTunables=yes`, which would stop `Install` from setting
       `net.ipv4.tcp_fwmark_accept`.
-- [ ] `vm/systemd/hibernaut-tmpfiles.conf` creates `/run/hibernaut` at boot. Without it the unit
-      fails `226/NAMESPACE` on a cold boot, because systemd builds the mount namespace for
-      `ReadWritePaths` before `ExecStart` runs and `/run` is a tmpfs.
-- [ ] **The fail-closed firewall pieces land here, with or before the commit that turns links
+- [x] `vm/systemd/hibernaut-tmpfiles.conf` creates `/run/hibernaut` at boot, installed as
+      `/usr/lib/tmpfiles.d/hibernaut.conf`. Without it the unit fails `226/NAMESPACE` on a cold
+      boot, because systemd builds the mount namespace for `ReadWritePaths` before `ExecStart` runs
+      and `/run` is a tmpfs.
+- [x] **The fail-closed firewall pieces land here, with or before the commit that turns links
       on**, never after: `vm/e2b/sandbox-firewall.nft` drops UDP and ICMP from `veth-*` to
       `198.18.0.0/15`, and `e2b-orchestrator.service` gains `IPAddressDeny=198.18.0.0/15`.
       Shipping the range live before the drops exist would open it unprotected for a release.
-- [ ] With links on, `snapshot.go`'s internal pause and resume fence, close and wait like any other
+- [x] With links on, `snapshot.go`'s internal pause and resume fence, close and wait like any other
       pause, and keep `PausedByHand` across the round trip. If the pause fails, the fence is lifted.
-      With links off it is M11's pause (*With links off, every pause is M11's pause*).
-- [ ] **The proxy checks its protections at startup and refuses to serve links without them**:
-      the Keeper's `Ready` (the guard installed and its first cycle run), the
-      `sandbox-firewall.nft` drops and the orchestrator's `IPAddressDeny`. `azure/up.sh` deploys
-      before `install-e2b.sh`, so ordering the files is not enough on a fresh host: a boot can
-      reach `hibd proxy` before the E2B pieces exist. If any check fails the listener stays off and
-      egress goes on. The proxy re-runs the checks once a minute, logs the one that failed each time
-      and starts the listener once they all pass, so a host whose E2B pieces arrive after the proxy
-      gets links without a restart. `azure/` itself is not edited.
-- [ ] `vm/setup-host.sh` installs the tmpfiles entry and runs `systemd-tmpfiles --create`
-      **before** `systemctl restart hibd-proxy.service` (`vm/setup-host.sh:36-43`), so the first
+      With links off it is M11's pause (*With links off, every pause is M11's pause*). `hibd` hands
+      the fence in as `machines.Config.Fenced` (`internal/hibd/snapshotfence.go`), which waits at
+      most 30 s for it.
+- [x] **The proxy checks its protections at startup and refuses to serve links without them**:
+      the Keeper's `Ready` (the guard installed and its first cycle run), the control socket
+      answering a `stat`, the `sandbox-firewall.nft` drops and the orchestrator's `IPAddressDeny`
+      (`internal/hibd/linkchecks.go`). It binds the link port only once they all pass.
+      `azure/up.sh` deploys before `install-e2b.sh`, so ordering the files is not enough on a fresh
+      host: a boot can reach `hibd proxy` before the E2B pieces exist. If any check fails the
+      listener stays off and egress goes on. The proxy re-runs the checks once a minute, logs the
+      ones that failed each time and starts the listener once they all pass, so a host whose E2B
+      pieces arrive after the proxy gets links without a restart. `azure/` itself is not edited.
+- [x] `vm/setup-host.sh` installs the tmpfiles entry and runs `systemd-tmpfiles --create`
+      **before** `systemctl restart hibd-proxy.service` (`vm/setup-host.sh:40-47`), so the first
       start after an upgrade already has `/run/hibernaut`.
-- [ ] `hibd fork` writes the no-inherited-ports hint to stderr from `internal/hibd/fork.go`. `hib`
+- [x] `hibd fork` writes the no-inherited-ports hint to stderr from `internal/hibd/fork.go`. `hib`
       relays hibd's stderr (`cmd/hib/remote.go:185-197`) and M11's live line prints it
-      (`cmd/hib/liveline.go:42`, `live.Write` at 207-220), so `cmd/hib/fork.go` does not change and
+      (`cmd/hib/liveline.go:42`, `live.Write` at 207-226), so `cmd/hib/fork.go` does not change and
       **M11's live line and face stay as they are**.
-- [ ] `hibd new` and `hibd fork` deliver the hosts block with the rest of the setup, so a new
+- [x] `hibd new` and `hibd fork` deliver the hosts block with the rest of the setup, so a new
       machine has its names from the start rather than from the daemon's next pass. `loadSetup` has
       no engine to map IDs to names, so the block is built from `links.json` and the machine list
       the way `updateSetup` builds it (`hostsBlock`, `internal/hibd/delivery.go:116`), and only with
-      links on. `internal/machines/scriptlock_test.go` lists the hosts script next to the env
-      script.
-- [ ] `hibd log --links` puts machine names in `From` and `To`, which the listener writes as sandbox
+      links on (`internal/hibd/newhosts.go`). When it can't be built, they warn and start the
+      machine without the names. `internal/machines/scriptlock_test.go` lists the hosts script next
+      to the env script.
+- [x] `hibd log --links` puts machine names in `From` and `To`, which the listener writes as sandbox
       IDs, and keeps the ID for a machine that has none.
-- [ ] `hib pause` and `hib rm` call `hibd` through `remoteSudo` (`cmd/hib/main.go:358,395`), like
+- [x] `hib pause` and `hib rm` call `hibd` through `remoteSudo` (`cmd/hib/main.go:373,410`), like
       `fork` and `status`, so the pause fallback's `Drop` has `CAP_NET_ADMIN`.
-- [ ] `cmd/hib`'s fake host keeps up. It runs `sudo -n hibd` with EUID 0 whether or not `sudoApp`
+- [x] `cmd/hib`'s fake host keeps up. It runs `sudo -n hibd` with EUID 0 whether or not `sudoApp`
       is set and calls `sudoApp` only when it is, since every test that pauses or removes now goes
       through sudo (`cmd/hib/faces_test.go:186-187` among them). The overrides that match `rm` and
-      `pause` (`cmd/hib/hib_test.go:712,739-741`) also match them behind `sudo -n hibd`, and the
-      ones that look for `sudo` itself (`cmd/hib/secret_test.go:52-57`) still see it.
+      `pause` (`cmd/hib/hib_test.go:752-753,779-782`) also match them behind `sudo -n hibd`, and the
+      ones that look for `sudo` itself (`cmd/hib/secret_test.go:54-60`) still see it.
       `cmd/hib/rm_test.go:84` expects `sudo -n hibd 'rm' 'app' '--json'`, and the `ls` header test
-      (`cmd/hib/hib_test.go:552`) gains `PORTS`. In the commit that changes the default, the fake
+      (`cmd/hib/hib_test.go:572`) gains `PORTS`. In the commit that changes the default, the fake
       host's environment sets `HIBD_LINK_PORT=0`, which wins over the file
-      (`internal/hibd/hibd.go:1720-1728`), so the in-process `hibd` keeps links off. A test that
+      (`internal/hibd/hibd.go:1722-1730`), so the in-process `hibd` keeps links off. A test that
       wants them on sets it in `h.env`.
-- [ ] `cmd/hib/main.go`'s `ls` rendering gains the `PORTS` column (`cmd/hib/main.go:279`), and the
+- [x] `cmd/hib/main.go`'s `ls` rendering gains the `PORTS` column (`cmd/hib/main.go:280`), and the
       body of `log` in `cmd/hib/secret.go` learns the `links` flag the contract already added to its
       signature. `hib log` without the flag is unchanged. Slice 4 registers the flag, slice 7 makes
       it do something and neither waits for the other.
-- [ ] Unit tests: both listeners up and down together, the socket path, the tmpfiles entry, the
+- [x] Unit tests: both listeners up and down together, the socket path, the tmpfiles entry, the
       startup order, the control socket answering while the listener is off, the startup self-check
       refusing to serve when a protection is missing and starting the listener once a later check
       passes, the fork hint on hibd's stderr, `hib pause` and `hib rm` sending SSH commands that
@@ -2238,17 +2274,21 @@ Owns `e2e/machinelink_test.go` (new), `e2e/restart_test.go`, `e2e/hibd_test.go`,
 `docs/spec.md`, `docs/milestones/README.md` and this file. Starts when slice 7 has landed.
 `README.md` belongs to slice 4, not here.
 
-- [ ] `TestPauseAll` (`e2e/hibd_test.go:30`) runs `sudo -n hibd pause-all --timeout 2m`, because
+- [ ] `TestPauseAll` (`e2e/hibd_test.go:17`) runs `sudo -n hibd pause-all --timeout 2m`, because
       with links on `pauseAll` creates the quiescing marker in the root-owned `/run/hibernaut` and
       fences and closes like any other pause. It removes the marker in a `t.Cleanup`, as
       `e2e/quiescing_test.go:24-32` does, because a marker left behind fails every later `hib new`
-      (`awake`, `internal/hibd/hibd.go:1617-1630`) and skips delivery.
+      (`awake`, `internal/hibd/hibd.go:1618-1631`) and skips delivery.
 - [ ] `TestMachineToMachine`, split deliberately: the fast subtests run under plain `make e2e`,
       and the ones that have to wait out a timeout run only under `make e2e-slow`
-      (`Makefile:68-75`), because `e2e` doesn't set `HIB_E2E_SLOW`. The host-reboot case joins
-      the existing slow guard in `e2e/restart_test.go` (`:22-24`), which this slice edits.
-- [ ] `Makefile`'s `test-host` target gains the new root test packages (`Makefile:30-33`).
-- [ ] `docs/spec.md` and this document reconciled with what was actually built.
+      (`Makefile:80-91`), because `e2e` doesn't set `HIB_E2E_SLOW`. The host-reboot case joins
+      the existing slow guard in `e2e/restart_test.go` (`:25-27`), which this slice edits.
+- [x] `Makefile`'s `test-host` and `test-host-remote` targets gain the new root test packages,
+      `internal/statefile`'s `TestHost` test and `internal/linkguard`'s `TestGuard` tests
+      (`Makefile:28-64`). `test-host` checks for `nft` and `conntrack` first, `test-host-remote`
+      installs them on the host when they are missing and CI's `test-host` job installs them before
+      it runs `make test-host`.
+- [x] `docs/spec.md` and this document reconciled with what was actually built.
 - [ ] Measure the hop's added round-trip latency on the host (warm p50, p95 and p99, with connection
       setup timed apart from a wake) and write the numbers into this file's Changes. No number goes
       into the spec.
@@ -2339,7 +2379,15 @@ Unit (no host):
       `hib rm` sending SSH commands that start with `sudo -n hibd`, the `PORTS` column in the `ls`
       header and the README check.
 
-`make test-host` (Linux root, no E2B). `Makefile:30-33` gains these packages:
+`make test-host` (Linux root, no E2B). `Makefile:28-40` runs these, among them
+`internal/statefile`'s `TestHost` test and every `TestGuard` test in `internal/linkguard`. The
+linkguard tests need `ip`, `iptables` and `nft`, and `TestGuardConntrackLossFailsClosed` needs
+`conntrack` too (`newHostRig` and `underStop` in `internal/linkguard/guard_host_test.go`). They fail
+rather than skip when one is missing. `make test-host` checks for `nft` and `conntrack` and names
+the package to install, `make test-host-remote` installs `nftables` and `conntrack` on the host
+when either is missing and CI's `test-host` job installs both first. `vm/install-e2b.sh` installs
+neither: only the tests need them, and the script hashes itself into its `install_id`, so editing
+it would make `make up` reinstall E2B.
 
 - [ ] The chain is installed, kept and removed against real `iptables` in a private network
       namespace, including the migration from the bare 443 rule and the repair of an interrupted
@@ -2376,9 +2424,10 @@ Unit (no host):
 - [ ] The run watcher sees a real cgroup empty and disappear.
 
 End-to-end. The fast subtests go in **`make e2e`**. The ones that have to wait out a timeout go
-behind `HIB_E2E_SLOW` and so run only under **`make e2e-slow`** (`Makefile:68-75`), because plain
-`e2e` doesn't set it. The reboot case joins the existing slow guard at `e2e/restart_test.go:22-24`
-rather than inventing a second one.
+behind `HIB_E2E_SLOW` and so run only under **`make e2e-slow`** (`Makefile:80-91`), because plain
+`e2e` doesn't set it. The reboot case joins the existing slow guard at `e2e/restart_test.go:25-27`
+rather than inventing a second one. The subtests below are named as they are in
+`e2e/machinelink_test.go`.
 
 - [ ] `TestMachineToMachine`, in `e2e`:
   - a published port is reachable from another machine by name.
@@ -2393,10 +2442,15 @@ rather than inventing a second one.
   - a port published on 443 is reached, not intercepted by the egress proxy.
   - `hib port rm` cuts a connection that is already open.
   - the hosts block holds only `.hib` names and the machine's own lines survive.
-  - `hib rm` closes the links and removes the entry.
+  - a hosts line rewritten to another machine's address reaches that machine, and one rewritten to
+    an address nobody has is refused.
   - a fork inherits no ports.
+  - `hib rm` closes the links and removes the entry.
   - `hib port rm` cuts a connection that is **waiting on a wake**, not only an established one.
+  - with the guard's table removed by hand, the open link is cut, `hibd proxy` says the guard is
+    down and puts it back, and a new link works once it has.
   - with the proxy stopped, a link fails closed rather than falling through to anything.
+  - `latency` logs the numbers below.
 - [ ] `TestMachineToMachineSlow`, in `e2e-slow`:
   - an idle open link doesn't hold a machine awake.
   - a **two-machine and a three-machine ring**, with retrying clients, SSH closed, no agents and CPU
@@ -2405,24 +2459,28 @@ rather than inventing a second one.
   - a source with an open SSH session keeps reaching its targets for as long as it is open, which is
     the case the rule above must not break.
   - a finite-idle machine pauses within the grace-plus-idle bound.
-  - a target that resumes onto a different slot mid-link is closed, not misrouted.
+  - a target paused under an open link is cut off, and when it resumes after another machine has
+    been made, possibly on another slot, neither the old link nor a new one reaches the wrong
+    machine.
   - with a target left to pause on **E2B's own idle timeout** while traffic is flowing, no link byte
     reaches the target after its run ends: the cgroup event aborts the link first, the kernel guard
     drops anything left within `2*GuardTTL` at worst and nothing carries into the next run.
   - a link-woken target whose wake took longer than the source's lease is paused again rather than
     left running for a fresh idle.
-  - a host reboot leaves `links.json` and its addresses intact, and a cold boot brings the proxy up
-    with `/run/hibernaut` present.
   - an interrupted chain migration is repaired on the next `Keep`.
-- [ ] With the guard's table removed by hand, `hibd proxy` refuses to serve links and says so,
-      rather than serving them unguarded.
+- [ ] `TestSurvivesHostRestart`, in `e2e-slow`: a host reboot leaves a machine's address and
+      published ports intact, and the boot, which starts with an empty `/run`, brings the proxy
+      up serving links with `/run/hibernaut` present and no quiescing marker. A link from a machine
+      the reboot paused then wakes its target.
 - [ ] `TestPauseAll` runs `hibd pause-all` through `sudo -n` and leaves no quiescing marker behind.
 - [ ] `TestNoHostAccess` passes unchanged, with the link listener running.
 - [ ] `TestMachineNetwork` passes unchanged.
 
-Latency is **measured, not promised**: a benchmark reports warm p50, p95 and p99 for a round trip
-over a link, with connection setup timed separately from a wake, and the numbers go in this
-file's Changes. No number is written into the spec.
+Latency is **measured, not promised**. `TestMachineToMachine/latency` logs, from inside a machine,
+p50, p95 and p99 for 20 connection setups (a connect, one line and its answer) and for 1000 warm
+round trips over one link to `api.hib`. It logs the same against `127.0.0.1` inside the target, the
+cost without a link, and apart from both how long a link takes to wake a paused machine and get its
+answer. The numbers go in this file's Changes. No number is written into the spec.
 
 ## Done when
 
@@ -2712,3 +2770,75 @@ Superseded statements are marked inline.
   at or below the highest it has seen, so a gate opened again always gets a new one. Its one low
   finding, a pause losing to a wake that is already resuming the machine, is recorded as a residual
   under Security item 5.
+- 2026-10-09: Slice 7 landed without its last commit, the one that turns links on, and this
+  records what it settled. **The watchdog has a loop of its own.** `hibd proxy` pings systemd every
+  third of `WATCHDOG_USEC` while every serve goroutine runs and, with links on, while the control
+  socket answers a `stat` (`internal/hibd/watchdog.go`). The doc had the sweep ping it, and with
+  links off nothing sweeps. **A save or a fork waits at most 30 s for its fence**
+  (`snapshotFenceWait` in `internal/hibd/snapshotfence.go`), to raise it and close the machine's
+  links. A pause or `rm` of the same machine holds the fence while it waits for `hibd.lock`, which
+  the save holds, so neither would ever go on. Past 30 s the save leaves the machine as it was and
+  says why. **The link port is bound only once every check passes**, and the control socket
+  answering a `stat` is one of them, beside `Ready`, the firewall drops and `IPAddressDeny`. The
+  socket is how a pause closes a machine's links, so links are not served before it answers.
+  **`hibd new` and `hibd fork` warn and start the machine without the names** when the hosts block
+  can't be built, as the daemon does, because its next pass delivers them. **The reserve is counted
+  in default machines.** The admitter's `Room` is the number of `images.Default` machines that fit,
+  less one (`linkRoom`, `internal/hibd/linkside.go:150-161`), so a link that wakes a machine bigger
+  than the default can use up part of the reserve. Security item 4 and Limits record it as a
+  limitation. A fix needs `linkadmit`'s `Room` to know the target's size, which is follow-up work.
+  **`hib log --links` has its own too-old message.** It checks for `FeaturePorts`, because a `hibd`
+  without the port command keeps no link log, and the shared message names `hib port`.
+  **What it added.** `machines.Config.Fenced`, which `hibd` sets only with links on. The new files
+  `internal/hibd/linkside.go`, `linkchecks.go`, `watchdog.go`, `snapshotfence.go` and
+  `newhosts.go`, and `vm/systemd/links_test.go`. `vm/systemd/hibernaut-tmpfiles.conf`, which
+  `vm/setup-host.sh` installs as `/usr/lib/tmpfiles.d/hibernaut.conf`. `CPUWeight=200` in
+  `hibd-proxy.service`. `hibd proxy -unhook` warns about a stray rule and exits 0, which slice 1
+  left to it. **The formats.** `hibd log -links` and `hib log --links` print the columns
+  `TIME MACHINE TO PORT RESULT WOKE BYTES`, and `--json` prints `{"v":1,"links":[...],"corrupt":N}`,
+  leaving `corrupt` out when it is 0. `hib ls` has a `PORTS` column between `IDLE` and `PAUSES IN`,
+  the published ports joined with commas, or `-` when a machine publishes none or `hibd` has links
+  off. **The tests.** `internal/hibd`'s `newApp` and `newLeakscanApp` set `HIBD_LINK_PORT=0`, so
+  their tests keep links off under the new default. The commit that turns links on sets it in
+  `cmd/hib`'s fake host too, changes the unset row of `TestLoadConfigReadsTheLinkPortOneWay` to
+  expect links on and makes `links.Port` the default, with a comment that says so. **The
+  rollout.** Slice 7 changed two files `vm/install-e2b.sh` hashes into its `install_id`, so the
+  first `make up` of M12 runs the E2B install again and links stay off until it has (*Startup and
+  shutdown*).
+- 2026-10-09: Slice 8 wrote the end-to-end tests and the test targets, and reconciled this file and
+  the spec with the code. **Nothing that needs the host has run.** `TestMachineToMachine`,
+  `TestMachineToMachineSlow`, the reboot case and `TestPauseAll` through `sudo -n` compile under
+  `GOOS=linux go vet -tags e2e,host ./...` and have never run, and neither have the
+  `internal/statefile` and `internal/linkguard` root tests that `make test-host` and
+  `make test-host-remote` now run. Their boxes stay open. **The latency numbers are not taken yet.**
+  To take them, run `make e2e` on the host with links on and copy what
+  `TestMachineToMachine/latency` logs: p50, p95 and p99 of 20 connection setups and of 1000 warm
+  round trips from one machine to `api.hib:8080` over a link, the same inside `api` against
+  `127.0.0.1`, which is the cost without a link, and the seconds a link takes to wake a paused
+  machine and get its answer. The hop adds the difference between the first two. The numbers go here
+  and never in the spec. **The timeouts grow.** `make e2e` runs for up to 70 minutes and
+  `make e2e-slow` for up to 270, up from 40 and 180, because `TestMachineToMachine` adds about 30
+  minutes and the slow subtests about 60, waiting out idle timeouts and link leases. **Where the
+  tests differ from the list in Tests, and why.** Two subtests have to land an event inside a wake
+  whose length only the host knows: `hib port rm` while a link waits on a wake, and a lease that
+  ends during a wake. Each guesses when, adjusts after every try and gives up after 6 tries with
+  `t.Skip`, which says the run couldn't tell rather than that it passed. The lease subtest and the
+  no-byte subtest make a source stale by setting its activity file's mtime back with `touch -m`,
+  rather than waiting out `LinkGrace` on every try. The target whose wake outlives the lease has an
+  idle timeout of an hour, so being paused again within two minutes can't be E2B's idle timeout. The
+  no-byte subtest counts the lines the target's server logged before and after its resume, since a
+  packet capture inside E2B's network isn't open to the test. A target resumed after another machine
+  has been made may or may not get a new slot, which E2B picks, so the subtest checks that nothing
+  reaches the wrong machine and not that the slot changed. While `save` runs a machine paused by
+  hand, links to it are refused as paused by hand or as a pause in progress, because the save holds
+  the machine's fence for the whole round trip. The guard's table removed by hand cuts the open link
+  and `hibd proxy` puts the table back by itself, so the subtest checks the cut and the repair, and
+  the refusal to serve without protections is the startup check's, which unit tests cover. A fork's
+  copy publishes nothing and so has no address, which makes its no-reply check trivial, and the
+  subtest's weight is on `hib port ls` and the hint. The reboot case covers the cold boot too,
+  because `/run` is empty after any boot. The two own-activity subtests run in parallel to save an
+  idle cycle. The rewritten hosts line, which Security item 12 names, and the latency subtest are
+  additions to the list. **`hib rm` pushes nothing.** Security item 18 had `hib rm` push the hosts
+  block. `hibd rm` delivers no setup, so the line goes at the daemon's next delivery pass, about 15
+  seconds later, and until then it points at an address that is never reused, which is refused. The
+  subtest waits for that pass.
