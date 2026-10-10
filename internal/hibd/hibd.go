@@ -417,10 +417,10 @@ func (a *App) byName(ctx context.Context, cmd string, args []string, do func(*ma
 	return 0
 }
 
-// pauseOrRemove is hibd pause and hibd rm. With links off they are byName with Manager.Pause or
-// Manager.Remove. With links on they go through pauseFenced, pause marks the machine as paused
-// by hand, and rm drops its entry from the link state once it's gone. Its address stays spent,
-// because addresses are never handed out twice.
+// pauseOrRemove is hibd pause and hibd rm: byName with Manager.Pause or Manager.Remove. With
+// links on, that goes through pauseFenced, pause marks the machine as paused by hand, and rm
+// drops its entry from the link state once it's gone. Its address stays spent, because
+// addresses are never handed out twice.
 func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int {
 	do := (*machines.Manager).Pause
 	if cmd == "rm" {
@@ -430,45 +430,34 @@ func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int 
 	if err != nil || !cfg.linksConfiguredOn() {
 		return a.byName(ctx, cmd, args, do)
 	}
-	fl := a.flags(cmd)
-	asJSON := fl.Bool("json", false, "print JSON")
-	names, ok := a.parse(fl, args, 1, cmd+" NAME")
-	if !ok {
-		return 2
-	}
-	name := names[0]
-	m, err := a.manager()
-	if err != nil {
-		return a.fail(*asJSON, cmd, err)
-	}
-	e, err := a.engine()
-	if err != nil {
-		return a.fail(*asJSON, cmd, err)
-	}
-	em, err := machines.Lookup(ctx, e, name)
-	if err != nil {
-		return a.fail(*asJSON, cmd, err)
-	}
-	store := a.linkPartsFor(cfg).store
-	err = a.pauseFenced(ctx, cfg, em.ID, name, cmd, cmd+" "+name, func(ctx context.Context) error {
-		if err := do(m, ctx, name); err != nil || cmd != "pause" {
+	return a.byName(ctx, cmd, args, func(m *machines.Manager, ctx context.Context, name string) error {
+		e, err := a.engine()
+		if err != nil {
 			return err
 		}
-		err := store.Update(ctx, func(d *links.Doc) error {
-			d.Entry(em.ID).PausedByHand = true
+		em, err := machines.Lookup(ctx, e, name)
+		if err != nil {
+			return err
+		}
+		store := a.linkPartsFor(cfg).store
+		err = a.pauseFenced(ctx, cfg, em.ID, name, cmd, cmd+" "+name, func(ctx context.Context) error {
+			if err := do(m, ctx, name); err != nil || cmd != "pause" {
+				return err
+			}
+			err := store.Update(ctx, func(d *links.Doc) error {
+				d.Entry(em.ID).PausedByHand = true
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("paused %s, but couldn't mark it as paused by hand, so a link may wake it: %w", name, err)
+			}
 			return nil
 		})
-		if err != nil {
-			return fmt.Errorf("paused %s, but couldn't mark it as paused by hand, so a link may wake it: %w", name, err)
+		if err != nil || cmd != "rm" {
+			return err
 		}
-		return nil
-	})
-	if err != nil {
-		return a.fail(*asJSON, cmd, err)
-	}
-	if cmd == "rm" {
 		unchanged := errors.New("no entry")
-		err := store.Update(ctx, func(d *links.Doc) error {
+		err = store.Update(ctx, func(d *links.Doc) error {
 			if _, ok := d.Machines[em.ID]; !ok {
 				return unchanged
 			}
@@ -478,11 +467,8 @@ func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int 
 		if err != nil && !errors.Is(err, unchanged) {
 			a.warnf("removed %s, but couldn't drop its entry from the link state: %v. hibd cleanup drops it later", name, err)
 		}
-	}
-	if *asJSON {
-		return a.reply(hibapi.Response{})
-	}
-	return 0
+		return nil
+	})
 }
 
 // linksConfiguredOn reports whether HIBD_LINK_PORT turns links on. Only a port of 0 is off.
@@ -509,12 +495,9 @@ func (a *App) linkPartsFor(cfg config) linkParts {
 	return p
 }
 
-// pauseMachine pauses m the way every pause Hibernaut starts has to: with e.Pause and nothing
-// else with links off, and through pauseFenced with links on.
+// pauseMachine pauses m the way every pause Hibernaut starts has to: with e.Pause through
+// pauseFenced, which adds nothing to it with links off.
 func (a *App) pauseMachine(ctx context.Context, cfg config, e engine.Engine, m engine.Machine, why, rerun string) error {
-	if !cfg.linksConfiguredOn() {
-		return e.Pause(ctx, m.ID)
-	}
 	name := cmp.Or(machines.Name(m), m.ID)
 	return a.pauseFenced(ctx, cfg, m.ID, name, why, rerun, func(ctx context.Context) error {
 		return e.Pause(ctx, m.ID)
