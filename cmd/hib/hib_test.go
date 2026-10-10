@@ -115,6 +115,7 @@ func newHost(t *testing.T) *host {
 			"HIBD_AUTHORIZED_KEYS": keys,
 			"HIBD_CA_CERT":         caCert,
 			"HIBD_QUIESCING":       filepath.Join(state, "quiescing"),
+			"HIBD_LINK_LOG":        filepath.Join(state, "links.jsonl"),
 		},
 	}
 	h.engine = fake.New(
@@ -216,7 +217,7 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 			return code, nil
 		}
 	}
-	sudo := h.sudoApp != nil && len(words) >= 3 && slices.Equal(words[:3], []string{"sudo", "-n", "hibd"})
+	sudo := len(words) >= 3 && slices.Equal(words[:3], []string{"sudo", "-n", "hibd"})
 	if sudo {
 		words = words[2:]
 	}
@@ -237,7 +238,9 @@ func (h *host) ssh(ctx context.Context, args []string, stdin io.Reader, stdout, 
 	}
 	if sudo {
 		app.EUID = func() int { return 0 }
-		h.sudoApp(app)
+		if h.sudoApp != nil {
+			h.sudoApp(app)
+		}
 		run := &hostRun{done: make(chan struct{})}
 		h.mu.Lock()
 		h.sudoRuns = append(h.sudoRuns, run)
@@ -420,6 +423,14 @@ func tableLines(out string) []string {
 	return strings.Split(strings.TrimSpace(table), "\n")
 }
 
+// hibdWords is what words ask hibd to do, whether or not they run it with sudo -n.
+func hibdWords(words []string) []string {
+	if len(words) > 3 && slices.Equal(words[:3], []string{"sudo", "-n", "hibd"}) {
+		return words[3:]
+	}
+	return words
+}
+
 func remoteCommands(calls [][]string) []string {
 	var cmds []string
 	for _, call := range calls {
@@ -470,16 +481,25 @@ func TestMachineCommands(t *testing.T) {
 		!strings.Contains(lines[1], " running ") || !strings.Contains(lines[1], " dev ") || !strings.HasPrefix(lines[2], "web ") {
 		t.Errorf("ls =\n%s", c.out)
 	}
+	h.takeCalls()
 
+	// Pause and rm run hibd as root, so that a pause whose links won't close can drop the
+	// machine's gates itself.
 	if code := c.hib("pause", "app"); code != 0 || c.out.String() != "paused app\n" {
 		t.Errorf("pause exit %d, printed %q: %s", code, c.out, c.errOut)
 	}
 	if m, _ := h.engine.Get(t.Context(), machineID(t, h, "app")); m.State != engine.Paused {
 		t.Errorf("app is %s after pause", m.State)
 	}
+	if got, want := remoteCommands(h.takeCalls()), []string{"sudo -n hibd 'pause' 'app' '--json'"}; !slices.Equal(got, want) {
+		t.Errorf("pause's remote commands = %q, want %q", got, want)
+	}
 
 	if code := c.hib("rm", "web", "--yes"); code != 0 || c.out.String() != "removed web\n" {
 		t.Errorf("rm exit %d, printed %q: %s", code, c.out, c.errOut)
+	}
+	if got, want := remoteCommands(h.takeCalls()), []string{"sudo -n hibd 'rm' 'web' '--json'"}; !slices.Equal(got, want) {
+		t.Errorf("rm's remote commands = %q, want %q", got, want)
 	}
 	if code := c.hib("rm", "web", "--yes"); code != 1 || !strings.Contains(c.errOut.String(), `hib: no machine called "web"`) {
 		t.Errorf("rm again: exit %d, stderr %q", code, c.errOut)
@@ -549,7 +569,7 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 		t.Fatalf("ls exit %d: %s", code, c.errOut)
 	}
 	lines := tableLines(c.out.String())
-	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "SIZE", "IDLE", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
+	if got, want := strings.Fields(lines[0]), []string{"NAME", "STATE", "IMAGE", "SIZE", "IDLE", "PORTS", "PAUSES", "IN", "STARTED", "ID", "FROM"}; !slices.Equal(got, want) {
 		t.Errorf("ls header = %q, want %q", got, want)
 	}
 	want := map[string][2]string{
@@ -565,17 +585,38 @@ func TestLsShowsWhenMachinesPause(t *testing.T) {
 	for _, line := range lines[1:] {
 		f := strings.Fields(line)
 		w, ok := want[f[0]]
-		if !ok || len(f) != 10 {
+		if !ok || len(f) != 11 {
 			t.Errorf("unexpected ls line %q", line)
 			continue
 		}
-		if f[4] != w[0] || f[5] != w[1] {
-			t.Errorf("%s: IDLE %q, PAUSES IN %q; want %q, %q", f[0], f[4], f[5], w[0], w[1])
+		if f[4] != w[0] || f[5] != "-" || f[6] != w[1] {
+			t.Errorf("%s: IDLE %q, PORTS %q, PAUSES IN %q; want %q, -, %q", f[0], f[4], f[5], f[6], w[0], w[1])
 		}
 		delete(want, f[0])
 	}
 	if len(want) != 0 {
 		t.Errorf("ls is missing %v:\n%s", want, c.out)
+	}
+}
+
+func TestLsShowsPublishedPorts(t *testing.T) {
+	_, c, _ := portHost(t)
+	if code := c.hib("port", "add", "api", "8080", "5432"); code != 0 {
+		t.Fatalf("port add exit %d: %s", code, c.errOut)
+	}
+	if code := c.hib("ls"); code != 0 {
+		t.Fatalf("ls exit %d: %s", code, c.errOut)
+	}
+	lines := tableLines(c.out.String())
+	if len(lines) != 3 || strings.Fields(lines[0])[5] != "PORTS" {
+		t.Fatalf("ls =\n%s", c.out)
+	}
+	want := map[string]string{"api": "5432,8080", "web": "-"}
+	for _, line := range lines[1:] {
+		f := strings.Fields(line)
+		if len(f) != 11 || f[5] != want[f[0]] {
+			t.Errorf("ls line %q, want PORTS %q", line, want[f[0]])
+		}
 	}
 }
 
@@ -708,7 +749,7 @@ func TestOutputFromTheHostIsTerminalSafe(t *testing.T) {
 	c := initClient(t, h)
 	h.override = func(words []string, stdout, stderr io.Writer) (int, bool) {
 		fmt.Fprint(stderr, "log \x1b]0;pwned\x07 \x1b[2J\n")
-		switch words[0] {
+		switch hibdWords(words)[0] {
 		case "rm":
 			fmt.Fprintln(stdout, `{"v":1,"error":"bad \u001b[31mthing\u009b"}`)
 			return 1, true
@@ -735,7 +776,7 @@ func TestRemoteFailures(t *testing.T) {
 	h := newHost(t)
 	c := initClient(t, h, true)
 	h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
-		switch words[0] {
+		switch hibdWords(words)[0] {
 		case "pause":
 			return 127, true
 		case "rm":

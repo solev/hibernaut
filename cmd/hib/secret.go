@@ -66,13 +66,13 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-// log prints the audit log. The links argument selects M12's link log instead of the secret
-// log; the body ignores it until the slice that reads that log lands, so the flag and the
-// command table can be written against this signature first.
+// log prints the audit log: the secret log, or with links the link log.
 func (a *app) log(ctx context.Context, cfg *config, n int, links bool) int {
-	_ = links
 	if n < 0 {
 		return a.mistake("--n must be non-negative")
+	}
+	if links {
+		return a.logLinks(ctx, cfg, n)
 	}
 	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--json")
 	if err != nil {
@@ -85,6 +85,33 @@ func (a *app) log(ctx context.Context, cfg *config, n int, links bool) int {
 		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt audit log line(s)\n", r.Corrupt)
 	}
 	printLogEntries(a.stdout, r.Logs)
+	return 0
+}
+
+// logLinks prints the newest n entries of the link log, which only a hibd with the port command
+// keeps.
+func (a *app) logLinks(ctx context.Context, cfg *config, n int) int {
+	switch err := a.needPorts(ctx, cfg); {
+	case errors.Is(err, errNoPorts):
+		return a.fail(errors.New("this host's hibd is too old for hib log --links. Upgrade it"))
+	case err != nil:
+		return a.failWaiting(ctx, err, "")
+	}
+	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--links", "--json")
+	if err != nil {
+		return a.failWaiting(ctx, err, "")
+	}
+	links := r.Links
+	if links == nil {
+		links = []hibapi.LinkEntry{}
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Links: links, Corrupt: r.Corrupt}, nil)
+	}
+	if r.Corrupt > 0 {
+		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt link log line(s)\n", r.Corrupt)
+	}
+	printLinkEntries(a.stdout, links)
 	return 0
 }
 
@@ -114,4 +141,59 @@ func printLogEntries(w io.Writer, entries []hibapi.LogEntry) {
 			termsafe.Line(strings.Join(e.Secrets, ",")))
 	}
 	tw.Flush()
+}
+
+// printLinkEntries writes the link log as a table. MACHINE is the machine that made the link,
+// and BYTES what it sent and received, which only a link's close carries.
+func printLinkEntries(w io.Writer, entries []hibapi.LinkEntry) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tMACHINE\tTO\tPORT\tRESULT\tWOKE\tBYTES")
+	for _, e := range entries {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", linkTime(e.Time), safe(e.From), safe(e.To), e.Port, safe(linkResult(e)),
+			linkWoke(e), linkBytes(e))
+	}
+	tw.Flush()
+}
+
+// linkTime shows the time hibd sends in local time, as the secret log does, and anything else
+// as it came.
+func linkTime(s string) string {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return safe(s)
+	}
+	return t.Local().Format(time.RFC3339)
+}
+
+// linkResult is what became of a link: "open", "closed after 1h" or "refused: not published",
+// with why it was refused or cut short and how many refusals the line stands for.
+func linkResult(e hibapi.LinkEntry) string {
+	result := e.Event
+	if e.Event == "close" {
+		result = "closed"
+		if e.SecondsOpen > 0 {
+			result += " after " + hibapi.FormatIdle(&e.SecondsOpen)
+		}
+	}
+	if e.Reason != "" {
+		result += ": " + e.Reason
+	}
+	if e.Count > 1 {
+		result += fmt.Sprintf(" (%d times)", e.Count)
+	}
+	return result
+}
+
+func linkWoke(e hibapi.LinkEntry) string {
+	if e.Woke {
+		return "yes"
+	}
+	return "-"
+}
+
+func linkBytes(e hibapi.LinkEntry) string {
+	if e.Event != "close" {
+		return "-"
+	}
+	return fmt.Sprintf("%d sent, %d received", e.BytesIn, e.BytesOut)
 }

@@ -290,6 +290,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
+	a.addHosts(ctx, cfg, &setup, names[0])
 	m, err := a.managerWithSetup(setup)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
@@ -1648,6 +1649,7 @@ func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) 
 		Durable: func(ctx context.Context, id string) error {
 			return a.durableSnapshot(ctx, cfg, id)
 		},
+		Fenced: a.snapshotFence(cfg),
 	}), nil
 }
 

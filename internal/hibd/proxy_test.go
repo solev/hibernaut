@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/codex/codextest"
 	"github.com/solev/hibernaut/internal/egress"
+	"github.com/solev/hibernaut/internal/egress/hook"
 	"github.com/solev/hibernaut/internal/egress/swap"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
@@ -243,6 +245,7 @@ func proxyApp(t *testing.T, hook *fakeHook) (a *App, env map[string]string, list
 		"HIBD_CA_KEY":     filepath.Join(dir, "ca.key"),
 		"HIBD_AUDIT_LOG":  filepath.Join(dir, "log", "audit.jsonl"),
 		"HIBD_PROXY_PORT": "5443",
+		"HIBD_LINK_PORT":  "0",
 	}
 	if _, err := ca.Init(env["HIBD_CA_CERT"], env["HIBD_CA_KEY"], "Hibernaut CA"); err != nil {
 		t.Fatal(err)
@@ -272,6 +275,8 @@ func TestProxyStartupFailuresLeaveTheHookAlone(t *testing.T) {
 		name  string
 		setup func(t *testing.T, a *App, env map[string]string)
 		want  string
+		// linksOnly is a failure only links can have.
+		linksOnly bool
 	}{
 		{name: "no E2B key", want: "E2B_API_KEY is not set", setup: func(_ *testing.T, _ *App, env map[string]string) {
 			delete(env, "E2B_API_KEY")
@@ -304,21 +309,37 @@ func TestProxyStartupFailuresLeaveTheHookAlone(t *testing.T) {
 		{name: "port taken", want: "address already in use", setup: func(_ *testing.T, a *App, _ map[string]string) {
 			a.ProxyListen = func(string, string) (net.Listener, error) { return nil, errors.New("address already in use") }
 		}},
+		{name: "link port is the proxy port", want: "HIBD_LINK_PORT and HIBD_PROXY_PORT are both 5443", setup: setProxyEnv("HIBD_LINK_PORT", "5443"), linksOnly: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			hook := newFakeHook()
-			a, env, _, _ := proxyApp(t, hook)
-			tc.setup(t, a, env)
-			if code := a.Run(t.Context(), []string{"proxy"}); code != 1 {
-				t.Fatalf("exit %d, want 1: %s", code, a.Stderr)
+		for _, on := range []bool{false, true} {
+			if tc.linksOnly && !on {
+				continue
 			}
-			if logs := fmt.Sprint(a.Stderr); !strings.Contains(logs, "hibd proxy: ") || !strings.Contains(logs, tc.want) {
-				t.Fatalf("stderr = %q, want %q", logs, tc.want)
-			}
-			if calls := hook.Calls(); len(calls) > 0 {
-				t.Fatalf("a failed start touched the hook: %q", calls)
-			}
-		})
+			t.Run(fmt.Sprintf("%s with links on %v", tc.name, on), func(t *testing.T) {
+				hook := newFakeHook()
+				a, env, listener, _ := proxyApp(t, hook)
+				socket := ""
+				if on {
+					socket, _ = linksOn(t, a, env, listener, &fakeGuard{}, func() (net.Listener, error) {
+						t.Error("a failed start listened for links")
+						return nil, errors.New("not in this test")
+					})
+				}
+				tc.setup(t, a, env)
+				if code := a.Run(t.Context(), []string{"proxy"}); code != 1 {
+					t.Fatalf("exit %d, want 1: %s", code, a.Stderr)
+				}
+				if logs := fmt.Sprint(a.Stderr); !strings.Contains(logs, "hibd proxy: ") || !strings.Contains(logs, tc.want) {
+					t.Fatalf("stderr = %q, want %q", logs, tc.want)
+				}
+				if calls := hook.Calls(); len(calls) > 0 {
+					t.Fatalf("a failed start touched the hook: %q", calls)
+				}
+				if _, err := os.Lstat(socket); on && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("a failed start left a control socket: %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -424,6 +445,21 @@ func TestProxyUnhookRemovesTheHookWithoutConfiguration(t *testing.T) {
 	}
 	if len(*listen) > 0 {
 		t.Fatalf("unhook listened on %q", *listen)
+	}
+}
+
+func TestProxyUnhookWarnsAboutAStrayRule(t *testing.T) {
+	rule := newFakeHook()
+	a, _, _, _ := proxyApp(t, rule)
+	rule.removeErr = fmt.Errorf("removing proxy hook: %w", hook.ErrStrayRule)
+	if code := a.Run(t.Context(), []string{"proxy", "-unhook"}); code != 0 {
+		t.Fatalf("unhook exit %d, want 0: %s", code, a.Stderr)
+	}
+	if logs := fmt.Sprint(a.Stderr); !strings.Contains(logs, "hibd proxy: warning: ") || !strings.Contains(logs, hook.ErrStrayRule.Error()) {
+		t.Fatalf("stderr = %q, want a warning about the stray rule", logs)
+	}
+	if calls := rule.Calls(); !slices.Equal(calls, []string{"remove"}) {
+		t.Fatalf("hook calls = %q, want one remove", calls)
 	}
 }
 

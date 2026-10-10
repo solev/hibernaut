@@ -102,6 +102,14 @@ type Config struct {
 	// Fence fences machine id before Wake pauses it again, and the pause happens only while it
 	// holds. Default: no fence, which is right only while links are off.
 	Fence func(ctx context.Context, id, why string) (release func(), err error)
+	// Fenced runs op on machine id the way every pause runs with links on: behind id's fence, so
+	// nothing admits a link to or from id, and only once id's links are closed. SaveImage and
+	// Fork run their whole round trip in it, from before the first pause or resume of the
+	// machine they save until it is back in the state it started in. name is what messages call
+	// the machine and why is the fence's reason. Fenced returns op's error as it was, or its own
+	// when it left the machine as it was without running op. Default: op runs unfenced, which
+	// is right only while links are off.
+	Fenced func(ctx context.Context, id, name, why string, op func(context.Context) error) error
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -121,6 +129,7 @@ type Manager struct {
 	bootID    func() string
 	activity  links.Clock
 	fence     func(ctx context.Context, id, why string) (release func(), err error)
+	fenced    func(ctx context.Context, id, name, why string, op func(context.Context) error) error
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -153,6 +162,7 @@ func New(cfg Config) *Manager {
 		bootID:   bootID,
 		activity: activity,
 		fence:    cfg.Fence,
+		fenced:   cfg.Fenced,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/room"
@@ -55,7 +56,26 @@ func (m *Manager) checkPlan(ctx context.Context, name string, p room.Plan) error
 	return safeError(host.CheckPlan(name, p, roomMachines(ems)))
 }
 
+// saveOrigin saves em as alias, and puts em back in the state it started in. With links on, the
+// whole round trip runs behind em's fence, so no link wakes em or reaches it meanwhile.
 func (m *Manager) saveOrigin(ctx context.Context, em engine.Machine, alias string) (engine.TemplateInfo, error) {
+	if m.fenced == nil {
+		return m.saveRoundTrip(ctx, em, alias)
+	}
+	why := "image save"
+	if images.IsForkTemplate(alias) {
+		why = "fork"
+	}
+	var tmpl engine.TemplateInfo
+	err := m.fenced(ctx, em.ID, Name(em), why, func(ctx context.Context) error {
+		var err error
+		tmpl, err = m.saveRoundTrip(ctx, em, alias)
+		return err
+	})
+	return tmpl, err
+}
+
+func (m *Manager) saveRoundTrip(ctx context.Context, em engine.Machine, alias string) (engine.TemplateInfo, error) {
 	if err := m.prepareSnapshot(ctx, em); err != nil {
 		return engine.TemplateInfo{}, err
 	}

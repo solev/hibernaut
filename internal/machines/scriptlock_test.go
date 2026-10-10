@@ -14,6 +14,7 @@ func TestSetupScriptsTakeSharedLockBeforeWriting(t *testing.T) {
 	}{
 		{"git", gitScript},
 		{"env CAS", casScript},
+		{"hosts CAS", hostsFile.script},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

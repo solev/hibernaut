@@ -48,6 +48,7 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 		"HIBD_AUTHORIZED_KEYS": keys,
 		"HIBD_QUIESCING":       filepath.Join(t.TempDir(), "quiescing"),
 		"HIBD_CA_CERT":         filepath.Join(state, "ca.crt"),
+		"HIBD_LINK_PORT":       "0",
 	}
 	if err := os.WriteFile(env["HIBD_CA_CERT"], testCAPEM(t), 0o644); err != nil {
 		t.Fatal(err)
