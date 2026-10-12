@@ -123,6 +123,43 @@ func TestImageBuildFailsOnUnreadableProgress(t *testing.T) {
 	}
 }
 
+// Once hibd has sent anything, ssh's 255 means the connection broke rather than the host slept, so
+// hib neither wakes the host nor starts the build again.
+func TestImageBuildIsNotRetriedOnceHibdWasHeard(t *testing.T) {
+	started := eventLine(t, hibapi.Event{Image: "dev", Size: "medium", Step: "1/2", Text: "RUN make", State: hibapi.EventStarted})
+	reply := `{"v":1,"sizes":["medium"]}` + "\n"
+	for _, tc := range []struct{ name, stdout string }{
+		{"an event and the reply", started + reply},
+		{"the reply alone", reply},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHost(t)
+			c, term := liveClient(t, h, "xterm-256color")
+			h.states = []string{"VM deallocated"}
+			h.override = func(words []string, stdout, _ io.Writer) (int, bool) {
+				if !slices.Equal(words[:2], []string{"image", "build"}) {
+					return 0, false
+				}
+				io.WriteString(stdout, tc.stdout)
+				return 255, true
+			}
+			if code := c.hib("image", "build", "dev"); code != 1 {
+				t.Errorf("exit %d, want 1: %q", code, term)
+			}
+			calls := h.takeCalls()
+			want := []string{"hibd version --json", "hibd image build dev --json --events"}
+			if got := remoteCommands(calls); !slices.Equal(got, want) {
+				t.Errorf("remote commands = %q, want one build: %q", got, want)
+			}
+			for _, call := range calls {
+				if call[0] == "az" {
+					t.Errorf("hib ran %q after hibd answered, want no wake", call)
+				}
+			}
+		})
+	}
+}
+
 func TestImageBuildPassesStderrOnWithAnOlderHibd(t *testing.T) {
 	h := newHost(t)
 	c, term := liveClient(t, h, "xterm-256color")
