@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -688,6 +689,115 @@ func TestUpgradesUseHTTP1WhenSiteOffersHTTP2(t *testing.T) {
 			got, err := io.ReadAll(resp.Body)
 			if err != nil || string(got) != tc.want {
 				t.Fatalf("read %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// dialedConn is a connection the proxy dialed to the site. closed is closed when the proxy
+// closes it.
+type dialedConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *dialedConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// The proxy keeps the site connection that carried a request for the next one until the client's
+// connection ends. Then it closes it, whether or not the client upgraded in between.
+func TestEndedConnectionClosesItsIdleSiteConnection(t *testing.T) {
+	t.Parallel()
+	echo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") == "" {
+			_, _ = io.WriteString(w, "plain")
+			return
+		}
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Upgrade", "test")
+		w.WriteHeader(http.StatusSwitchingProtocols)
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := rw.ReadString('\n')
+		_, _ = io.WriteString(conn, line)
+	})
+	for _, tc := range []struct {
+		name    string
+		upgrade bool
+	}{
+		{name: "after a request"},
+		{name: "after a request and an upgrade", upgrade: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dialed := make(chan *dialedConn, 8)
+			record := func(s *Server) {
+				dial := s.Dial
+				s.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+					conn, err := dial(ctx, network, addr)
+					if err != nil {
+						return nil, err
+					}
+					d := &dialedConn{Conn: conn, closed: make(chan struct{})}
+					dialed <- d
+					return d, nil
+				}
+			}
+			fx := newFixtureProtocols(t, "localhost", echo, record, false)
+			defer fx.close()
+			conn, err := tls.Dial("tcp", fx.proxyAddr(), &tls.Config{
+				RootCAs:    fx.hibCA.Pool(),
+				ServerName: "localhost",
+				NextProtos: []string{"http/1.1"},
+				MinVersion: tls.VersionTLS12,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			br := bufio.NewReader(conn)
+			send := func(s string) {
+				if _, err := io.WriteString(conn, s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			send("GET /plain HTTP/1.1\r\nHost: localhost\r\n\r\n")
+			resp, err := http.ReadResponse(br, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body, err := io.ReadAll(resp.Body); err != nil || string(body) != "plain" {
+				t.Fatalf("read %q, %v; want plain", body, err)
+			}
+			site := <-dialed
+			if tc.upgrade {
+				send("GET /attach HTTP/1.1\r\nHost: localhost\r\n" +
+					"Connection: Upgrade\r\nUpgrade: test\r\n\r\n")
+				resp, err := http.ReadResponse(br, nil)
+				if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+					t.Fatalf("upgrade = %v, %v; want 101", resp, err)
+				}
+				send("ping\n")
+				if rest, err := io.ReadAll(br); err != nil || string(rest) != "ping\n" {
+					t.Fatalf("read %q, %v; want the site's echo and then its close", rest, err)
+				}
+			}
+			select {
+			case <-site.closed:
+				t.Fatal("the proxy closed the site connection while the client's was open")
+			default:
+			}
+			_ = conn.Close()
+			select {
+			case <-site.closed:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the proxy kept the site connection open after the client's closed")
 			}
 		})
 	}
