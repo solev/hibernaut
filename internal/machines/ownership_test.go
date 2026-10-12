@@ -118,7 +118,7 @@ func TestOtherUsersCannotUseState(t *testing.T) {
 }
 
 func TestRootStillRefusesWritableOrSymlinkedState(t *testing.T) {
-	for _, unsafe := range []string{"state mode", "pins mode", "pins symlink"} {
+	for _, unsafe := range []string{"state mode", "state symlink", "pins mode", "pins symlink"} {
 		t.Run(unsafe, func(t *testing.T) {
 			m, _ := sharedStateManager(t)
 			m.euid = func() int { return 0 }
@@ -127,6 +127,12 @@ func TestRootStillRefusesWritableOrSymlinkedState(t *testing.T) {
 				if err := os.Chmod(m.dir, 0o777); err != nil {
 					t.Fatal(err)
 				}
+			} else if unsafe == "state symlink" {
+				link := filepath.Join(t.TempDir(), "state")
+				if err := os.Symlink(m.dir, link); err != nil {
+					t.Fatal(err)
+				}
+				m.dir = link
 			} else if unsafe == "pins mode" {
 				if err := os.Mkdir(pins, 0o700); err != nil {
 					t.Fatal(err)

@@ -1,7 +1,6 @@
 package machines
 
 import (
-	"io/fs"
 	"os"
 
 	"github.com/solev/hibernaut/internal/statefile"
@@ -15,11 +14,6 @@ func ownerOf(o statefile.Owner) stateOwner { return stateOwner{uid: o.UID, gid: 
 
 func (o stateOwner) statefile() statefile.Owner { return statefile.Owner{UID: o.uid, GID: o.gid} }
 
-func directoryOwner(fi fs.FileInfo, name string, uid int) (stateOwner, error) {
-	o, err := statefile.DirectoryOwner(fi, name, uid)
-	return ownerOf(o), err
-}
-
 // stateDir is the manager's state directory as statefile sees it. It's built on every call so
 // that tests which swap m.euid or m.chownFile reach the helpers.
 func (m *Manager) stateDir() statefile.Dir {
@@ -27,9 +21,6 @@ func (m *Manager) stateDir() statefile.Dir {
 }
 
 func (m *Manager) stateRoot() (*os.Root, stateOwner, error) {
-	if err := checkDir(m.dir, m.euid()); err != nil {
-		return nil, stateOwner{}, err
-	}
 	root, owner, err := m.stateDir().Root()
 	return root, ownerOf(owner), err
 }

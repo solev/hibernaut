@@ -51,6 +51,23 @@ func TestRootRefusesAnotherUsersDirectory(t *testing.T) {
 	}
 }
 
+func TestRootRefusesASymlinkedDirectory(t *testing.T) {
+	target := t.TempDir()
+	root, _, err := (Dir{Path: target}).Root()
+	if err != nil {
+		t.Fatalf("Root refused the link's target: %v", err)
+	}
+	root.Close()
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if root, _, err := (Dir{Path: link}).Root(); err == nil {
+		root.Close()
+		t.Fatal("Root opened a state directory through a symlink")
+	}
+}
+
 func TestPublishOwnedReplacesOnlyWhenAsked(t *testing.T) {
 	dir := t.TempDir()
 	d, given := asRoot(t, dir)

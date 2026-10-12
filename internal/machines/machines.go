@@ -676,15 +676,6 @@ func (m *Manager) checkState() error {
 	return m.ensurePins(root, owner)
 }
 
-func checkDir(dir string, uid int) error {
-	fi, err := os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("state directory: %w", err)
-	}
-	_, err = directoryOwner(fi, dir, uid)
-	return err
-}
-
 func (m *Manager) lock(ctx context.Context) (unlock func(), err error) {
 	f, err := m.openLock()
 	if err != nil {
