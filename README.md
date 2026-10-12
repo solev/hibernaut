@@ -688,6 +688,14 @@ it. The next login uses it.
 sudo sed -i 's/^ClientAliveCountMax .*/ClientAliveCountMax 15/' /etc/hibernaut/sshd_config
 ```
 
+**`x509: certificate signed by unknown authority` in a machine.** For sites a secret is bound to,
+such as `api.github.com` after `hib connect github`, the host's proxy answers with a certificate
+from the Hibernaut CA. Machines made before the `dev` image trusted the CA fail like this. Run
+`hib image build dev` and make a new machine. A tool that brings its own list of CAs needs
+pointing at the system's, `/etc/ssl/certs/ca-certificates.crt`. The `dev` image sets
+`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CODEX_CA_CERTIFICATE` in
+`/etc/environment` for the tools that read them.
+
 ## Development
 
 ```bash
