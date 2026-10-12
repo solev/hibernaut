@@ -2307,10 +2307,10 @@ The default is the commit that turns links on, and it cannot be anywhere else.
 - [x] `cmd/hib`'s fake host keeps up. It runs `sudo -n hibd` with EUID 0 whether or not `sudoApp`
       is set and calls `sudoApp` only when it is, since every test that pauses or removes now goes
       through sudo (`cmd/hib/faces_test.go:186-187` among them). The overrides that match `rm` and
-      `pause` (`cmd/hib/hib_test.go:752-753,779-782`) also match them behind `sudo -n hibd`, and the
+      `pause` (`cmd/hib/hib_test.go:753-754,780-783`) also match them behind `sudo -n hibd`, and the
       ones that look for `sudo` itself (`cmd/hib/secret_test.go:54-60`) still see it.
       `cmd/hib/rm_test.go:84` expects `sudo -n hibd 'rm' 'app' '--json'`, and the `ls` header test
-      (`cmd/hib/hib_test.go:572`) gains `PORTS`. In the commit that changes the default, the fake
+      (`cmd/hib/hib_test.go:573`) gains `PORTS`. In the commit that changes the default, the fake
       host's environment sets `HIBD_LINK_PORT=0`, which wins over the file
       (`internal/hibd/hibd.go:1694-1702`), so the in-process `hibd` keeps links off. A test that
       wants them on sets it in `h.env`.
@@ -2338,11 +2338,11 @@ Owns `e2e/machinelink_test.go` (new), `e2e/restart_test.go`, `e2e/hibd_test.go`,
       (`awake`, `internal/hibd/hibd.go:1590-1603`) and skips delivery.
 - [ ] `TestMachineToMachine`, split deliberately: the fast subtests run under plain `make e2e`,
       and the ones that have to wait out a timeout run only under `make e2e-slow`
-      (`Makefile:80-91`), because `e2e` doesn't set `HIB_E2E_SLOW`. The host-reboot case joins
+      (`Makefile:89-100`), because `e2e` doesn't set `HIB_E2E_SLOW`. The host-reboot case joins
       the existing slow guard in `e2e/restart_test.go` (`:25-27`), which this slice edits.
 - [x] `Makefile`'s `test-host` and `test-host-remote` targets gain the new root test packages,
       `internal/statefile`'s `TestHost` test and `internal/linkguard`'s `TestGuard` tests
-      (`Makefile:28-64`). `test-host` checks for `nft` and `conntrack` first, `test-host-remote`
+      (`Makefile:28-73`). `test-host` checks for `nft` and `conntrack` first, `test-host-remote`
       installs them on the host when they are missing and CI's `test-host` job installs them before
       it runs `make test-host`.
 - [x] `docs/spec.md` and this document reconciled with what was actually built.
@@ -2441,31 +2441,40 @@ Unit (no host):
       `hib rm` sending SSH commands that start with `sudo -n hibd`, the `PORTS` column in the `ls`
       header, `-` for a link line with no port and the README check.
 
-`make test-host` (Linux root, no E2B). `Makefile:28-40` runs these, among them
-`internal/statefile`'s `TestHost` test and every `TestGuard` test in `internal/linkguard`. The
-linkguard tests need `ip`, `iptables` and `nft`, and `TestGuardConntrackLossFailsClosed` needs
-`conntrack` too (`newHostRig` and `underStop` in `internal/linkguard/guard_host_test.go`). They fail
-rather than skip when one is missing. `make test-host` checks for `nft` and `conntrack` and names
-the package to install, `make test-host-remote` installs `nftables` and `conntrack` on the host
-when either is missing and CI's `test-host` job installs both first. `vm/install-e2b.sh` installs
-neither: only the tests need them, and the script hashes itself into its `install_id`, so editing
-it would make `make up` reinstall E2B.
+`make test-host` (Linux root, no E2B). `Makefile:28-45` runs these, among them
+`internal/statefile`'s `TestHost` test and every `TestGuard` test in `internal/linkguard`. It also
+runs unit tests whose subject is Linux itself, which the laptop can't stand in for:
+`internal/linkadmit`'s run watcher and control socket tests as root, over inotify and Unix sockets,
+and `internal/linkproxy`'s abort tests, over Linux's own resets. The linkguard tests need `ip`,
+`iptables` and `nft`, and `TestGuardConntrackLossFailsClosed` needs `conntrack` too (`newHostRig`
+and `underStop` in `internal/linkguard/guard_host_test.go`). They fail rather than skip when one is
+missing. `make test-host` checks for `nft` and `conntrack` and names the package to install,
+`make test-host-remote` installs `nftables` and `conntrack` on the host when either is missing and
+CI's `test-host` job installs both first. `vm/install-e2b.sh` installs neither: only the tests need
+them, and the script hashes itself into its `install_id`, so editing it would make `make up`
+reinstall E2B.
 
 - [ ] The chain is installed, kept and removed against real `iptables` in a private network
       namespace, including the migration from the bare 443 rule and the repair of an interrupted
       one.
 - [ ] The listener accepts on a veth-named interface and refuses on another.
 - [ ] The proxy survives a restart: the socket is unlinked and re-created, and links fail closed
-      while it is down.
+      while it is down. `TestTheControlSocketAcrossProcesses` runs here to replace the socket a
+      killed proxy left behind, and the restart itself is the e2e subtest *a stopped proxy fails
+      closed*, on the host's own `hibd-proxy`.
 - [ ] A pause that gets no ack deletes every `(S . *)` element and `S`'s `link_src` entry, reads
-      them back until none are left and only then pauses.
+      them back until none are left and only then pauses. The deleting is
+      `TestGuardDropTakesEveryGateAtAnAddress`: gates at `S` with other tokens, one of them expiring
+      between the read and the delete, all go, and `T`'s stay. The order, drop and then pause, is
+      `TestPauseWithLinksOn` in `internal/hibd`, over a fake guard.
 - [ ] `Drop` against a real table that has been deleted fails while the guard's token file exists
       and returns nil once it does not.
-- [ ] **`TestGuardDropsAllFourWaysUnderStop`.** With a link carrying traffic, `SIGSTOP` the proxy
-      and end the target's run. Assert that packets are dropped in **all four** directions (source
-      leg in and out, target leg out and in) within `2*GuardTTL`, which is inside `SlotReturnDelay`,
-      measured with the set's own counters and with a socket on each side. Then `SIGCONT` and assert
-      the proxy cleans up.
+- [ ] **`TestGuardDropsAllFourWaysUnderStop`.** With a link carrying traffic, `SIGSTOP` a helper
+      standing in for the proxy, its Keeper holding the link's gates, and end the target's run.
+      Assert that packets are dropped in **all four** directions (source leg in and out, target leg
+      out and in) within `2*GuardTTL`, which is inside `SlotReturnDelay`, measured with counters
+      before and after the guard in the test's own `inet hlgtest` table and with a socket on each
+      side. Then `SIGCONT` and assert the proxy cleans up.
 - [ ] **The kernel facts the guard assumes**, each its own named case logging the host's kernel
       version, and all of which must pass before slice 7 may turn links on: the rest of the table
       in *The kernel's own fence*, 12. `TestGuardExpiredDeleteAbortsBatch` (deleting an expired
@@ -2482,11 +2491,13 @@ it would make `make up` reinstall E2B.
 - [ ] A slot recycled to a new run does not inherit the old run's gate: a socket holding the old
       token is dropped even though the address is unchanged.
 - [ ] `SO_LINGER 0` is actually set on both legs: an aborted link sends RST and the peer sees no
-      further bytes.
-- [ ] The run watcher sees a real cgroup empty and disappear.
+      further bytes. `TestAborts` runs here, and its `expectReset` fails on any byte before the
+      reset.
+- [ ] The run watcher sees a real cgroup empty and disappear, woken by the kernel's `cgroup.events`
+      within half its backstop (`TestHostRunWatcherSeesARealCgroup`).
 
 End-to-end. The fast subtests go in **`make e2e`**. The ones that have to wait out a timeout go
-behind `HIB_E2E_SLOW` and so run only under **`make e2e-slow`** (`Makefile:80-91`), because plain
+behind `HIB_E2E_SLOW` and so run only under **`make e2e-slow`** (`Makefile:89-100`), because plain
 `e2e` doesn't set it. The reboot case joins the existing slow guard at `e2e/restart_test.go:25-27`
 rather than inventing a second one. The subtests below are named as they are in
 `e2e/machinelink_test.go`.

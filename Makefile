@@ -25,9 +25,12 @@ lint:
 test:
 	go test -race ./...
 
-# Tests that need root on a Linux host. Every hook test runs under sudo. Of the machines, cleanup
-# and statefile tests, only those named TestHost do, because the rest expect an ordinary user. Of
-# the linkguard tests, only the TestGuard ones do, and they need ip, iptables, nft and conntrack.
+# Tests that need root on a Linux host, and a few that need Linux. Every hook test runs under sudo.
+# Of the machines, cleanup and statefile tests, only those named TestHost do, because the rest
+# expect an ordinary user. Of the linkguard tests, only the TestGuard ones do, and they need ip,
+# iptables, nft and conntrack. Of the linkadmit tests, the TestHost one and the run watcher's and
+# control socket's do, to meet real cgroups, inotify and Unix sockets. The linkproxy abort tests
+# run as an ordinary user, to see an abort reset both legs on Linux.
 test-host:
 	@for need in nft:nftables conntrack:conntrack; do \
 		PATH="$$PATH:/usr/sbin:/sbin" command -v "$${need%%:*}" >/dev/null || \
@@ -38,6 +41,8 @@ test-host:
 	go test -tags host -exec sudo -run '^TestHost' ./internal/cleanup/
 	go test -tags host -exec sudo -run '^TestHost' ./internal/statefile/
 	go test -tags host -exec sudo -run '^TestGuard' ./internal/linkguard/
+	go test -tags host -exec sudo -run '^(TestHost|TestRunWatcher|TestTheControlSocketAcrossProcesses)' ./internal/linkadmit/
+	go test -run '^TestAbort' ./internal/linkproxy/
 
 # Cross-compiles the host tests, runs them on the Azure host and removes the binaries. Each runs
 # from its package's directory, as go test runs it, so the repo files it reads are where it looks.
@@ -47,7 +52,7 @@ test-host-remote:
 	dir=$$(mktemp -d -t hibernaut-host-test.XXXXXX); \
 	remote=/tmp/hibernaut-host-test-$$$$; \
 	trap 'rm -rf "$$dir"' EXIT; \
-	for pkg in internal/egress/hook internal/machines internal/cleanup internal/statefile internal/linkguard; do \
+	for pkg in internal/egress/hook internal/machines internal/cleanup internal/statefile internal/linkguard internal/linkadmit internal/linkproxy; do \
 		GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/$$pkg/" "./$$pkg"; \
 	done; \
 	mkdir -p "$$dir/vm/e2b"; \
@@ -62,6 +67,9 @@ test-host-remote:
 		cd $$remote/internal/cleanup && sudo ./cleanup.test -test.v -test.run '^TestHost' || status=1; \
 		cd $$remote/internal/statefile && sudo ./statefile.test -test.v -test.run '^TestHost' || status=1; \
 		cd $$remote/internal/linkguard && sudo ./linkguard.test -test.v -test.run '^TestGuard' || status=1; \
+		cd $$remote/internal/linkadmit && sudo ./linkadmit.test -test.v \
+			-test.run '^(TestHost|TestRunWatcher|TestTheControlSocketAcrossProcesses)' || status=1; \
+		cd $$remote/internal/linkproxy && ./linkproxy.test -test.v -test.run '^TestAbort' || status=1; \
 		cd /; rm -rf $$remote; exit \$$status"
 
 generate:

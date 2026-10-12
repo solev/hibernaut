@@ -172,6 +172,70 @@ func TestGuardDroppedGateStaysGone(t *testing.T) {
 	}
 }
 
+// TestGuardDropTakesEveryGateAtAnAddress: Drop deletes every gate at S whatever its token, and
+// S's map entry, and leaves T's. One of S's gates expires between Drop's read and its delete,
+// which fails the batch, so Drop deletes them one at a time and reads back until the kernel lists
+// none. A pause that gets no ack is what calls Drop. That it drops before it pauses is
+// TestPauseWithLinksOn in internal/hibd.
+func TestGuardDropTakesEveryGateAtAnAddress(t *testing.T) {
+	r := newHostRig(t)
+	r.install(t)
+	kept := links.Gate{Addr: addrT, Token: 2}
+	opened := time.Now()
+	mustOpen(t, r.g, links.Gate{Addr: addrS, Token: 1})
+	mustOpen(t, r.g, kept)
+	// Gates earlier runs left at S, one of them about to expire.
+	const expiring = 100 * time.Millisecond
+	r.batch(t,
+		elemOp{set: r.g.set, key: gateKey(addrS, 3), timeout: links.GuardTTL},
+		elemOp{set: r.g.set, key: gateKey(addrS, 4), timeout: expiring})
+	late := &lateBackend{backend: r.g.nft, delay: 3 * expiring}
+	r.g.nft = late
+	if err := r.g.Drop(addrS); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(late.first, syscall.ENOENT) {
+		t.Fatalf("the first delete = %v, want ENOENT from the gate that expired after the read", late.first)
+	}
+	if late.lists < 4 {
+		t.Errorf("Drop listed %d times. It has to read back after deleting", late.lists)
+	}
+	gates, srcs := r.kernelState(t)
+	if took := time.Since(opened); took > links.GuardTTL*8/10 {
+		t.Fatalf("took %s, too near GuardTTL to tell a delete from an expiry", took)
+	}
+	if !slices.Equal(gates, []links.Gate{kept}) || len(srcs) != 1 || srcs[addrT] != kept.Token {
+		t.Fatalf("after Drop(%s) the kernel holds gates %v and map entries %v, want only %v", addrS, gates, srcs, kept)
+	}
+}
+
+// lateBackend holds the first batch back by delay, keeps its error and counts the lists.
+type lateBackend struct {
+	backend
+	delay time.Duration
+	once  sync.Once
+	first error
+	lists int
+}
+
+func (b *lateBackend) batch(table string, ops []elemOp) error {
+	held := false
+	b.once.Do(func() {
+		time.Sleep(b.delay)
+		held = true
+	})
+	err := b.backend.batch(table, ops)
+	if held {
+		b.first = err
+	}
+	return err
+}
+
+func (b *lateBackend) list(table, set string) ([]element, error) {
+	b.lists++
+	return b.backend.list(table, set)
+}
+
 // TestGuardReopenAfterExpiry: a run whose gate expired gets a new token through Drop and
 // Open, and the old token stays shut, in the sets and on the wire.
 func TestGuardReopenAfterExpiry(t *testing.T) {

@@ -202,20 +202,14 @@ func expectNothing(t *testing.T, c net.Conn) {
 	}
 }
 
-// expectReset reads c until it fails and wants a reset rather than an orderly close.
+// expectReset reads c and wants a reset, not an orderly close, and no byte before it: a link
+// that aborts sends nothing more.
 func expectReset(t *testing.T, c net.Conn) {
 	t.Helper()
 	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	buf := make([]byte, 64)
-	for {
-		_, err := c.Read(buf)
-		if err == nil {
-			continue
-		}
-		if !isReset(err) {
-			t.Fatalf("read %v, want a reset", err)
-		}
-		return
+	n, err := c.Read(make([]byte, 64))
+	if n != 0 || !isReset(err) {
+		t.Fatalf("read %d bytes and %v, want a reset with nothing before it", n, err)
 	}
 }
 

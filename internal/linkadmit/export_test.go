@@ -7,6 +7,9 @@ import (
 	"github.com/solev/hibernaut/internal/room"
 )
 
+// RunBackstop is how often the run watcher re-reads its cgroups without an event.
+const RunBackstop = runBackstop
+
 // SetReadRoom replaces what wakes read the host's room with. Call it before admitting.
 func SetReadRoom(a *Admitter, f func() (room.Host, error)) { a.readRoom = f }
 
