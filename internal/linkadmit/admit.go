@@ -26,6 +26,12 @@ type adm struct {
 	sourceRun, targetRun links.Run
 	port                 int
 	gen                  uint64
+	// lease is the Admission's LeaseUntil, read at the reservation.
+	lease time.Time
+	// wake is the wake the admission waits for, which is nil when the target was already
+	// running. woke is whether the admission started it rather than joined it.
+	wake *wakeup
+	woke bool
 	// cancel cancels the admission's current context: Admit's while it is pending, the
 	// Admission's Ctx once it is established. Both are switched under the admitter's mutex.
 	cancel      context.CancelCauseFunc
@@ -61,86 +67,84 @@ func (a *Admitter) Admit(ctx context.Context, req links.AdmitRequest) (links.Adm
 	pctx, pcancel := context.WithCancelCause(ctx)
 	defer pcancel(context.Canceled)
 
-	p, w, woke, lease, err := a.reserve(req, pcancel)
+	p, err := a.reserve(req, pcancel)
 	if err != nil {
 		return links.Admission{}, err
 	}
-	ad, err := a.complete(pctx, p, w, woke, req)
+	ad, err := a.complete(pctx, p, req)
 	if err != nil {
 		a.drop(p)
 		return links.Admission{}, err
 	}
-	ad.LeaseUntil = lease
 	return ad, nil
 }
 
 // reserve is the one atomic decision: everything that can refuse a link before any waiting,
 // and the reservation of caps, rate and room, all under the mutex. It starts the wake, or joins
 // the one already in flight for the same target.
-func (a *Admitter) reserve(req links.AdmitRequest, cancel context.CancelCauseFunc) (*adm, *wakeup, bool, time.Time, error) {
+func (a *Admitter) reserve(req links.AdmitRequest, cancel context.CancelCauseFunc) (*adm, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	fail := func(err error) (*adm, *wakeup, bool, time.Time, error) {
-		return nil, nil, false, time.Time{}, err
-	}
 	if a.quiescing() {
-		return fail(links.ErrQuiescing)
+		return nil, links.ErrQuiescing
 	}
 	if req.Source == req.Target {
-		return fail(links.ErrSelfLink)
+		return nil, links.ErrSelfLink
 	}
 	doc, err := a.cfg.Store.Read()
 	if err != nil {
-		return fail(fmt.Errorf("%w: %w", links.ErrStateUnreadable, err))
+		return nil, fmt.Errorf("%w: %w", links.ErrStateUnreadable, err)
 	}
 	gen, err := checkDoc(doc, req.Source, req.Target, req.Port)
 	if err != nil {
-		return fail(err)
+		return nil, err
 	}
 	if tm := doc.Machines[req.Target]; tm != nil && tm.PausedByHand {
-		return fail(fmt.Errorf("%w: %s", links.ErrPausedByHand, req.Target))
+		return nil, fmt.Errorf("%w: %s", links.ErrPausedByHand, req.Target)
 	}
 	now := a.now()
 	if !links.Fresh(a.cfg.Clock, req.Source, now) {
-		return fail(fmt.Errorf("%w: %s", links.ErrSourceIdle, req.Source))
+		return nil, fmt.Errorf("%w: %s", links.ErrSourceIdle, req.Source)
 	}
 	lease := links.LeaseUntil(a.cfg.Clock, req.Source, now)
 	if run, err := a.cfg.Runs.Current(req.Source); err != nil || run != req.SourceRun {
-		return fail(fmt.Errorf("%w: source %s", links.ErrRunEnded, req.Source))
+		return nil, fmt.Errorf("%w: source %s", links.ErrRunEnded, req.Source)
 	}
 	switch {
 	case a.perSource[req.Source] >= links.MaxPerSource:
-		return fail(fmt.Errorf("%w: %s has %d links open", links.ErrTooManyLinks, req.Source, links.MaxPerSource))
+		return nil, fmt.Errorf("%w: %s has %d links open", links.ErrTooManyLinks, req.Source, links.MaxPerSource)
 	case a.perTarget[req.Target] >= links.MaxPerTarget:
-		return fail(fmt.Errorf("%w: %s has %d links open", links.ErrTooManyLinks, req.Target, links.MaxPerTarget))
+		return nil, fmt.Errorf("%w: %s has %d links open", links.ErrTooManyLinks, req.Target, links.MaxPerTarget)
 	case a.total >= links.MaxLinks:
-		return fail(fmt.Errorf("%w: the host has %d links open", links.ErrTooManyLinks, links.MaxLinks))
+		return nil, fmt.Errorf("%w: the host has %d links open", links.ErrTooManyLinks, links.MaxLinks)
 	}
 
-	p := &adm{source: req.Source, target: req.Target, sourceRun: req.SourceRun, port: req.Port, gen: gen, cancel: cancel}
-	w, woke := a.waking[req.Target], false
-	if w == nil {
+	p := &adm{
+		source: req.Source, target: req.Target, sourceRun: req.SourceRun, port: req.Port, gen: gen,
+		lease: lease, wake: a.waking[req.Target], cancel: cancel,
+	}
+	if p.wake == nil {
 		run, err := a.cfg.Runs.Current(req.Target)
 		switch {
 		case err == nil:
 			p.targetRun = run
 		case !errors.Is(err, links.ErrNotRunning):
-			return fail(fmt.Errorf("target %s: %w", req.Target, err))
+			return nil, fmt.Errorf("target %s: %w", req.Target, err)
 		default:
-			if w, err = a.startWake(req.Target, now, lease); err != nil {
-				return fail(err)
+			if p.wake, err = a.startWake(req.Target, now, lease); err != nil {
+				return nil, err
 			}
-			woke = true
+			p.woke = true
 		}
 	}
-	if w != nil {
-		w.waiters++
+	if p.wake != nil {
+		p.wake.waiters++
 	}
 	a.perSource[p.source]++
 	a.perTarget[p.target]++
 	a.total++
 	a.adms[p] = struct{}{}
-	return p, w, woke, lease, nil
+	return p, nil
 }
 
 // startWake charges the rate limit and the room target takes, and resumes target in the
@@ -211,9 +215,9 @@ func (a *Admitter) await(ctx context.Context, w *wakeup) error {
 
 // complete waits for the wake, finds the target's run and gate, checks again what may have
 // changed meanwhile and turns the reservation into an established admission.
-func (a *Admitter) complete(ctx context.Context, p *adm, w *wakeup, woke bool, req links.AdmitRequest) (links.Admission, error) {
-	if w != nil {
-		if err := a.await(ctx, w); err != nil {
+func (a *Admitter) complete(ctx context.Context, p *adm, req links.AdmitRequest) (links.Admission, error) {
+	if p.wake != nil {
+		if err := a.await(ctx, p.wake); err != nil {
 			return links.Admission{}, err
 		}
 	}
@@ -225,7 +229,7 @@ func (a *Admitter) complete(ctx context.Context, p *adm, w *wakeup, woke bool, r
 		}
 		return links.Admission{}, err
 	}
-	if woke || p.targetRun == "" {
+	if p.woke || p.targetRun == "" {
 		run, err := a.waitRun(bctx, p.target)
 		if err != nil {
 			return fail(err)
@@ -281,8 +285,8 @@ func (a *Admitter) complete(ctx context.Context, p *adm, w *wakeup, woke bool, r
 		SourceRun: p.sourceRun, TargetRun: p.targetRun,
 		SourceGate: req.SourceGate, TargetGate: gate,
 		Port: p.port, PortGen: p.gen,
-		Woke: woke,
-		Ctx:  lctx,
+		LeaseUntil: p.lease, Woke: p.woke,
+		Ctx: lctx,
 	}, nil
 }
 
