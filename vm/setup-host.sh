@@ -6,8 +6,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 hibd="$here/../bin/hibd"
 [[ -x "$hibd" ]] || { echo "Missing $hibd; run \`make deploy\` from your laptop" >&2; exit 1; }
 
-echo "==> Hardening SSH (keys only, no root login)"
-install -m 644 "$here/sshd/00-hardening.conf" /etc/ssh/sshd_config.d/00-hardening.conf
+echo "==> Hardening SSH (keys only, no root login), with keepalives that outlast a short sleep"
+install -m 644 "$here/sshd/00-hardening.conf" "$here/sshd/00-keepalive.conf" /etc/ssh/sshd_config.d/
 sshd -t
 systemctl reload ssh
 

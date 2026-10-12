@@ -557,6 +557,9 @@ ssh app.hib ─▶ ProxyCommand: hib bridge app ─▶ ssh host "hibd bridge app
 - The laptop-to-machine SSH session is end-to-end encrypted; the host only relays bytes.
 - E2B's proxies close connections that are idle for ~10 minutes (610 s / 620 s), so `hib init`
   sets `ServerAliveInterval 60` for `*.hib`.
+- A sleeping laptop answers no keepalives. The machine's sshd and the host's drop it after 15
+  missed ones a minute apart (`ClientAliveCountMax 15`), about when the host's TCP gives up on
+  unacknowledged data (`tcp_retries2`). So a session outlasts a shorter sleep.
 - E2B's proxy isn't exposed outside the host. If it ever is, create machines with E2B's private
   ingress, and have `hibd` send each machine's `trafficAccessToken`.
 - `hib exec app -- cmd` is `ssh app.hib -- cmd`. Interactive sessions and exec then get the same

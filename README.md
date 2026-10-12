@@ -152,6 +152,7 @@ vm/                        Runs on the VM (synced to ~/hibernaut/vm)
   idle-deallocate/         Script + systemd service/timer + config for auto-deallocation
   e2b/, hibd/              Settings for E2B's orchestrator and for hibd
   sshd/00-hardening.conf   No root login, no passwords, keys only
+  sshd/00-keepalive.conf   Keeps sessions through a laptop's short sleep
 
 examples/
   try.py                   Create → run → pause → resume → kill, with timings
@@ -669,6 +670,22 @@ exit codes:
   130  stopped by Ctrl-C (128 plus the signal's number)
 
 run hib help COMMAND for a command's flags and examples.
+```
+
+### Troubleshooting
+
+**`Connection to app.hib closed by remote host` after the laptop slept.** A sleeping laptop
+answers no keepalives. The machine's sshd and the host's drop it after about 15 minutes, about
+when the host's TCP gives up on it too. So a shorter sleep keeps the session, as long as the
+laptop's network address doesn't change. After a longer one, run `ssh app.hib` again. Keep work
+that must outlast the connection in tmux, which the `dev` image has: `tmux new -A -s main` starts
+a session, or attaches to the one you left.
+
+Machines from an older `dev` image drop after about 4 minutes. To fix one in place, run this in
+it. The next login uses it.
+
+```bash
+sudo sed -i 's/^ClientAliveCountMax .*/ClientAliveCountMax 15/' /etc/hibernaut/sshd_config
 ```
 
 ## Development

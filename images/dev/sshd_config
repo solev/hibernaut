@@ -31,8 +31,10 @@ X11Forwarding no
 PermitTunnel no
 PermitUserEnvironment no
 
+# A sleeping laptop answers no keepalives. The host's sshd waits as long
+# (vm/sshd/00-keepalive.conf), so a session outlasts a sleep of up to about 15 minutes.
 ClientAliveInterval 60
-ClientAliveCountMax 3
+ClientAliveCountMax 15
 PrintMotd no
 AcceptEnv LANG LC_*
 Subsystem sftp internal-sftp
