@@ -123,7 +123,7 @@ func TestTrim(t *testing.T) {
 		fresh, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if fork != "" {
-			runHib(fresh, "rm", fork)
+			runHib(fresh, "rm", fork, "--yes")
 		}
 		for _, image := range []string{imageA, imageB} {
 			if _, stderr, code := runHib(fresh, "image", "rm", image); code != 0 && vm.engine != nil {
