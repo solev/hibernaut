@@ -10,9 +10,8 @@ v1's milestones are done: [M0 Foundations](m0-foundations.md), [M1 Machines](m1-
 [M7 GitHub device flow](m7-github-device-flow.md), [M8 Machine sizes](m8-machine-sizes.md),
 [M9 Snapshot compaction](m9-snapshot-compaction.md) and
 [M10 CLI friendliness](m10-cli-friendliness.md). What's left is under **Later**. What comes after
-v1 is in [the goals](../goals.md), and its milestones start at
-[M11 Bot faces](m11-bot-faces.md), which is done. [M12 Machine links](m12-machine-links.md) is
-in progress: it is built, and its end-to-end tests haven't run on the host yet.
+v1 is in [the goals](../goals.md). Its first milestones, [M11 Bot faces](m11-bot-faces.md) and
+[M12 Machine links](m12-machine-links.md), are done.
 
 | # | Milestone | Status | End-to-end tests |
 | --- | --- | --- | --- |
@@ -28,7 +27,7 @@ in progress: it is built, and its end-to-end tests haven't run on the host yet.
 | M9 | [Snapshot compaction](m9-snapshot-compaction.md) | done | `TestTrim`, `TestPauseCycles` (sentinels) |
 | M10 | [CLI friendliness](m10-cli-friendliness.md) | done | none new (unit tests in `cmd/hib`) |
 | M11 | [Bot faces](m11-bot-faces.md) | done | none new (unit tests in `internal/bot` and `cmd/hib`) |
-| M12 | [Machine links](m12-machine-links.md) | in progress | `TestMachineToMachine`, `TestMachineToMachineSlow`, `TestSurvivesHostRestart` (links after a reboot) |
+| M12 | [Machine links](m12-machine-links.md) | done | `TestMachineToMachine`, `TestMachineToMachineSlow`, `TestSurvivesHostRestart` (links after a reboot) |
 
 M8, M9 and M10 came last. M8 and M9 needed only M2, and M10 nothing. M12 needs M10, for the
 command table its `hib port` commands go in.

@@ -1,6 +1,6 @@
 # M12 Machine links
 
-Status: **in progress** · Spec: §5 (Machines), §4.5, D6 · Needs: M10
+Status: **done** · Spec: §5 (Machines), §4.5, D6 · Needs: M10
 
 **Goal:** a machine can reach a port on another of your machines. You publish the port from the
 laptop with `hib port add api 8080`, and after that your other machines reach it as
@@ -1930,19 +1930,19 @@ the `Drop` that hibd's pause fallback calls) because it already owns the firewal
 a guard with two owners is a guard nobody owns. The listener and the admitter reach it through
 `links.Keeper`, and hibd's pause fallback through `links.Dropper`.
 
-- [ ] `Ensure` installs the jump and the `HIBERNAUT` chain in **one** `iptables-restore
+- [x] `Ensure` installs the jump and the `HIBERNAUT` chain in **one** `iptables-restore
       --noflush` transaction: chain filled, then jump, then the legacy bare 443 rule deleted.
-- [ ] `Keep` compares canonical forms (`-m tcp` dropped, `--to-port` normalized) and rewrites
+- [x] `Keep` compares canonical forms (`-m tcp` dropped, `--to-port` normalized) and rewrites
       only on a real difference. `Remove` takes the jump, flushes the chain, deletes the chain.
-- [ ] Delete the strict parser. An unrecognised `hibernaut` rule is deleted, never fatal.
-- [ ] `linkguard.Install` **atomically replaces** `table inet hibernaut-links`: the `link_live` set
+- [x] Delete the strict parser. An unrecognised `hibernaut` rule is deleted, never fatal.
+- [x] `linkguard.Install` **atomically replaces** `table inet hibernaut-links`: the `link_live` set
       (`ipv4_addr . mark`, `flags timeout`, `timeout` `links.GuardTTL`), the `link_src` map and the
       `prerouting`, `output` and `input` chains at `links.GuardPriority`. Both sets start empty, so
       a crash cannot leave a gate open across a restart. `Install` also sets
       `net.ipv4.tcp_fwmark_accept` to 1 in the host's namespace. `Installed` reports whether it is
       all there with this version's rules and the setting still 1. `Remove` deletes the table and
       leaves the setting alone.
-- [ ] `Open`, `Extend`, `Drop` and `Has` over `links.Gate` pairs. `Open` creates the set element
+- [x] `Open`, `Extend`, `Drop` and `Has` over `links.Gate` pairs. `Open` creates the set element
       and the `link_src` entry with `NLM_F_EXCL` in one batch, and keeps a high-water mark: it
       records a token as spent before it sends and refuses one at or below the highest it has sent
       (`links.ErrGateSpent`). `Extend` submits **one atomic batch** per cycle, deleting and
@@ -1953,31 +1953,31 @@ a guard with two owners is a guard nobody owns. The listener and the admitter re
       fallback pauses on the strength of it. A missing table is an error unless the guard's token
       file, `links.TokenFile` from `New`, does not exist, when `Drop` returns nil (*The kernel's own
       fence*, 10). A false from `Has` stays false.
-- [ ] `linkguard.Tokens`: a never-reused 24-bit counter in `links.TokenFile` that starts at 1 and
+- [x] `linkguard.Tokens`: a never-reused 24-bit counter in `links.TokenFile` that starts at 1 and
       is monotonic across proxy restarts. It writes the counter before it returns a token, so the
       file exists whenever a token is in use. At the end it returns `links.ErrTokensSpent` and
       links fail closed until the host reboots: no restart of the counter and no reinstall.
-- [ ] **The Keeper**, `linkguard.Keeper` (`NewKeeper`, `Run`, `Ready`, `Gate` and `Retired`), which
+- [x] **The Keeper**, `linkguard.Keeper` (`NewKeeper`, `Run`, `Ready`, `Gate` and `Retired`), which
       lives here and not in the listener, so the guard has one owner. It is one serialized loop
       that, every `GuardKeep`, extends the gates of live, unfenced runs first, retires the rest and
       then opens the missing ones, as *The kernel's own fence*, 7 describes. `Gate` nudges a cycle
       and waits for it. `Retired` is closed for a gate the Keeper does not hold.
-- [ ] The self-check: every `links.GuardSelfCheck` the Keeper calls `Installed`. On an `ENOENT`
+- [x] The self-check: every `links.GuardSelfCheck` the Keeper calls `Installed`. On an `ENOENT`
       from `Extend` it calls `Installed` first, and if the table is intact it retires the gates
       `Has` says have vanished and resends the rest. On any other failure it retires every gate,
       `Gate` returns `links.ErrGuardDown` and it reinstalls, retrying every `GuardSelfCheck`.
       `links.ErrTokensSpent` stops new gates and leaves the open ones extended.
-- [ ] Unit tests with a fake nftables backend. `Open` is create-only and refuses a spent token with
+- [x] Unit tests with a fake nftables backend. `Open` is create-only and refuses a spent token with
       `ErrGateSpent`. `Drop` re-reads until empty, fails on a missing table and returns nil for one
       only when there is no token file. `Tokens` writes the file before the first token leaves it.
       The Keeper opens gates for live, unfenced runs, drops before it opens and re-checks after. It
       retires a gate on a fence, on a run ending and on `ENOENT`. It reinstalls on an `ENOENT` with
       the table missing. Spent tokens fail closed, `Gate` waits for a cycle, `Retired` is closed for
       an unknown gate and a failed `Store.Read` shuts every gate.
-- [ ] Root tests in `test-host` for the iptables chain: install from nothing, repair after a
+- [x] Root tests in `test-host` for the iptables chain: install from nothing, repair after a
       foreign rule above the jump, migrate from the bare 443 rule, repair an **interrupted**
       migration, `Keep` silent when `iptables-save` renders `-m tcp`, `Remove` leaving nothing.
-- [ ] **The guard's kernel gates**, each a named `test-host` case logging the kernel version, and
+- [x] **The guard's kernel gates**, each a named `test-host` case logging the kernel version, and
       all of which must pass before slice 7 may turn links on: the table in *The kernel's own
       fence*, 12. They are `TestGuardExpiredDeleteAbortsBatch`, `TestGuardDeleteAddResetsExpiry`,
       `TestGuardOpenIsCreateOnly`, `TestGuardDroppedGateStaysGone`, `TestGuardReopenAfterExpiry`,
@@ -1986,7 +1986,7 @@ a guard with two owners is a guard nobody owns. The listener and the admitter re
       `TestGuardConntrackLossFailsClosed`, `TestGuardSetBackendIsRhash` and
       `TestGuardDropsAllFourWaysUnderStop` (`SIGSTOP` the proxy, end the run and assert that all
       four directions drop within `2*GuardTTL`, which is inside `SlotReturnDelay`).
-- [ ] Install and uninstall are idempotent, and the table coexists with `hibernaut-sandboxes` and
+- [x] Install and uninstall are idempotent, and the table coexists with `hibernaut-sandboxes` and
       E2B's `slot-firewall` without changing what either of them does, including across an E2B
       ruleset reload.
 
@@ -1998,8 +1998,8 @@ wire and its only two speakers change together. Also owns `internal/slots/slots.
 `links.Runs`, so it is built and tested against fakes before slice 3 exists, and it builds on macOS
 because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-33`).
 
-- [ ] Accept loop with the accept rate limit and the host cap.
-- [ ] Per connection: quiescing, `Ingress.Identify` (veth, original destination, source lookup and
+- [x] Accept loop with the accept rate limit and the host cap.
+- [x] Per connection: quiescing, `Ingress.Identify` (veth, original destination, source lookup and
       the token in the accepted socket's `SO_MARK`), the address check, the self-link check, the
       published-port check, **the run binding** (the socket's token against `Keeper.Gate` for the
       source's current run, at the connection's source address, refused with `links.ErrUnmarked` or
@@ -2008,22 +2008,22 @@ because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-33`)
       copy with half-close and keepalive, byte counts, renew on payload at most once per `LinkRenew`
       for each source and target pair, `open` and `close` audit lines, in the order of the
       listener's twelve numbered steps.
-- [ ] **Every link socket is created with `SO_LINGER 0`**, before connect on the target leg and
+- [x] **Every link socket is created with `SO_LINGER 0`**, before connect on the target leg and
       on accept for the source leg, so an abort discards queued bytes instead of letting the
       kernel deliver them to whatever inherits the slot. The real `Dialer` sets `SO_MARK` to
       `links.Mark(TargetGate.Token)` and `SO_LINGER 0` before connect.
-- [ ] **Abort paths**: `Admission.Ctx` cancelled, either end's `Runs.Watch` channel closed or
+- [x] **Abort paths**: `Admission.Ctx` cancelled, either end's `Runs.Watch` channel closed or
       either gate's `Keeper.Retired` channel closed. All of them abort. The ordinary EOF path stays
       graceful (`shutdown(SHUT_WR)`, bounded drain, close). There is no `EndAt` deadline.
-- [ ] Every refusal closes without writing a byte.
-- [ ] `Config.Logf` gets the real error behind a refusal or an abort whose link log line can only
+- [x] Every refusal closes without writing a byte.
+- [x] `Config.Logf` gets the real error behind a refusal or an abort whose link log line can only
       name a `links` error, at most once per step, source and error in a `links.FoldWindow` and at
       most 64 different lines in a window.
-- [ ] `AbortMachine`, `AbortPorts` and `Stat` work whether or not `Serve` is running. A listener
+- [x] `AbortMachine`, `AbortPorts` and `Stat` work whether or not `Serve` is running. A listener
       that is not serving, before `Serve` or after it has returned, holds no sockets, so the aborts
       answer 0 with no error and `Stat` answers empty counts. The control socket relies on this
       while links are off (*Startup and shutdown*).
-- [ ] Unit tests over a loopback pair with a fake `Ingress`, a fake `Dialer`, a fake admitter, a
+- [x] Unit tests over a loopback pair with a fake `Ingress`, a fake `Dialer`, a fake admitter, a
       fake clock, fake run events and a fake Keeper: every refusal reason and zero bytes written on
       each, the caps, half-close in both directions, abort on the **target's** run ending and on the
       **source's**, the gate-retired and generation-changed races, renew only on payload and per
@@ -2033,7 +2033,7 @@ because `Ingress` and `Dialer` hide everything Linux-only (`hook_stub.go:27-33`)
       unreadable `links.json` refuses every new link with `links.ErrStateUnreadable`, and the links
       already open are aborted once the fake Keeper retires every gate. The aborts and `Stat` answer
       0 and empty counts before `Serve` and after it returns. These run on macOS.
-- [ ] `internal/slots`: `Finder.Slot(id)` (the walk `sandboxForNetns` does, in the other
+- [x] `internal/slots`: `Finder.Slot(id)` (the walk `sandboxForNetns` does, in the other
       direction), `Addr(slot)` (the inverse of `slotFromSource`) and `Resolver.Addr` and
       `Resolver.At`, which read the run on both sides of the slot lookup and fail with
       `links.ErrNotRunning` unless the two reads agree. Unit tests over fake cgroup, proc and netns
@@ -2045,7 +2045,7 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
 `internal/machines/machines.go`, `internal/machines/forkplan.go`, `internal/busy/busy.go` and
 `internal/audit/links.go` (new). Depends on the contract.
 
-- [ ] The admitter: one mutex over quiescing, `PausedByHand`, the source's activity freshness, the
+- [x] The admitter: one mutex over quiescing, `PausedByHand`, the source's activity freshness, the
       wake rate limit, the per-source, per-target and host caps and the room reserve. **Every**
       connection admitted, running targets included. Reserve and count taken under the mutex before
       the wake, mutex released during the resume, all counters rolled back together on failure.
@@ -2054,36 +2054,36 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
       the target's run and fills `TargetGate`, so the gate is open before the listener dials.
       `Release` gives back the caps only, and keeps the rate history of a successful wake. A wake
       holds its room until it ends.
-- [ ] The close fallback: when the listener does not acknowledge a `close` within
+- [x] The close fallback: when the listener does not acknowledge a `close` within
       `LinkCloseGrace`, the admitter finds the machine's address with `Resolver.Addr` and drops its
       gates with the `Dropper`.
-- [ ] The **run watcher**: map a sandbox ID to its `sbx-<id>-<run>` cgroup, and report the run's end
+- [x] The **run watcher**: map a sandbox ID to its `sbx-<id>-<run>` cgroup, and report the run's end
       when `cgroup.events` says `populated 0` or the directory disappears. Identity is the directory
       name. Liveness is `populated`, because ended runs' cgroups can linger
       (`internal/busy/busy.go:241`). `RunWatcher.Live` returns every machine that has a run now,
       read from the cgroups at the time of the call.
-- [ ] The control socket: `/run/hibernaut/links.sock`, `revoke`, `close`, `stat`, owned by the state
+- [x] The control socket: `/run/hibernaut/links.sock`, `revoke`, `close`, `stat`, owned by the state
       owner at `0600`, removed before binding if a killed proxy left it behind and unlinked by the
       proxy on the way out. `Serve` serves it from startup step 8 whenever links are configured on,
       whether or not the listener ever serves (*Startup and shutdown*). It cancels its own pending
       admissions and then always asks the closer, which answers for its own sockets. It never
       answers for the listener.
-- [ ] The 5 s sweep as a backstop: for both ends, the machine exists, is **`Running`** and its run
+- [x] The 5 s sweep as a backstop: for both ends, the machine exists, is **`Running`** and its run
       matches. `Running` explicitly: a pause leaves `StartedAt` alone
       (`internal/engine/fake/fake.go:280-282`).
-- [ ] `machines.Manager.Wake(ctx, id string, leaseUntil time.Time)`: resume **by sandbox ID**, with
+- [x] `machines.Manager.Wake(ctx, id string, leaseUntil time.Time)`: resume **by sandbox ID**, with
       an **absolute** lease, not a duration. A pending wake is cancelled once the lease passes.
       After the resume the real `EndAt` is read back and shortened if it is past the lease. If the
       lease has already gone and nothing else is keeping the target up, the machine is paused again
       behind its fence. A relative clamp does not hold, because E2B computes `endTime` from a
       `startTime` taken after placement (`create_instance.go:440-443`).
-- [ ] **The lease is re-derived, not frozen.** `Admission.LeaseUntil` is only the value at
+- [x] **The lease is re-derived, not frozen.** `Admission.LeaseUntil` is only the value at
       admission. Every renewal and every wake decision recomputes `links.LeaseUntil` from the clock,
       so a source that is still working keeps its links. The lease alone never closes an established
       link: it stops the renewal and the target pauses on its own timeout.
-- [ ] The renewal rule: renew the target only while the source's activity is inside `LinkGrace`,
+- [x] The renewal rule: renew the target only while the source's activity is inside `LinkGrace`,
       counted from the last payload byte, at most once per `LinkRenew`.
-- [ ] **The activity clock's feeds**, which is why this slice owns `machines.go` and `busy.go`: an
+- [x] **The activity clock's feeds**, which is why this slice owns `machines.go` and `busy.go`: an
       SSH/`exec` session heartbeat on its own ≤30 s ticker, **not** `Manager.keepalive`, which never
       ticks at all when `idle=0` (`internal/machines/machines.go:555-560`). Every `busy`
       observation, with `idle=0` machines now **observed but still not renewed** (M11's `busy`
@@ -2092,7 +2092,7 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
       not in the `machines.New` constructor, which only builds a `Manager`. The proxy never touches
       the clock. `busy.Config.Activity` and `StateDir` are frozen in the contract, and slice 6 wires
       them at `internal/hibd/hibd.go:1426-1429`, so the two slices never meet in a file.
-- [ ] Unit tests: concurrent admissions for different targets never take the reserve. Concurrent
+- [x] Unit tests: concurrent admissions for different targets never take the reserve. Concurrent
       admissions for one target coalesce into one wake. A failed wake rolls back the rate limit and
       the room together. `revoke` cancels an open link and one waiting mid-wake. A stale source is
       refused with `ErrSourceIdle` **and** stops renewing. A self-link is refused. A running target
@@ -2113,7 +2113,7 @@ Owns `internal/hibd/port.go`, `internal/links/store.go`, `internal/statefile/`,
 `cmd/hib/commands.go`, `cmd/hib/complete.go` and `README.md`. Depends on the contract, which
 already carries the `internal/statefile` extraction and the empty `hibd/port.go` handler.
 
-- [ ] Lift `stateRoot`, `publishOwned`, `ensureDirectory` and `openLock` out of `internal/machines`
+- [x] Lift `stateRoot`, `publishOwned`, `ensureDirectory` and `openLock` out of `internal/machines`
       into `internal/statefile`, unchanged except that `openLock` takes the lock's name, so `links`
       can write an owned file and take an owned lock. `statefile` gets its own copy of `checkDir`,
       which stays in `machines.go`. In `internal/machines`, `stateOwner`, `directoryOwner` and the
@@ -2122,14 +2122,14 @@ already carries the `internal/statefile` extraction and the empty `hibd/port.go`
       (`internal/machines/saves.go:193,227`) still compile. The machines tests stay where they are
       and keep passing. The `statefile` tests are new, among them a root host test: a lock that root
       creates belongs to the state directory's owner, and the login user can take it afterwards.
-- [ ] `Held` opens the lock without creating it, and a lock that is not there has no holder.
-- [ ] The bodies of `links.NewStore` and `links.NewClock`: read with the owned-file rules, take
+- [x] `Held` opens the lock without creating it, and a lock that is not there has no holder.
+- [x] The bodies of `links.NewStore` and `links.NewClock`: read with the owned-file rules, take
       `links.lock` and every fence lock through the owned open rather than `statefile.OpenLock`,
       update under `links.lock` with `WaitLock`'s cancellable wait, write `links.json` with
       `publishOwned` and set and clear a fence with an owner that `statefile.Held` can check.
       Failing and corrupt reads and an unknown `v` all fail closed. Every other slice goes through
       this, so the lock order and the version check have one home.
-- [ ] The activity clock's bodies in `links.NewClock`, as *The activity clock is not in
+- [x] The activity clock's bodies in `links.NewClock`, as *The activity clock is not in
       `links.json`* and *The mtime only moves forward* describe. `Touch` creates the directory
       (`0700`) as needed and opens everything through the state root with `O_NOFOLLOW`. On a file
       that exists it takes `LOCK_EX` on the file itself and never `links.lock`, reads the mtime with
@@ -2143,19 +2143,19 @@ already carries the `internal/statefile` extraction and the empty `hibd/port.go`
       first touch with a past `t` recording that `t`, and two races that both leave the latest time
       and no temporary file: concurrent `Touch` calls on separate descriptors with out-of-order
       times, and concurrent first touches.
-- [ ] `hibd port add|rm|ls`: resolve the name to an ID, validate the batch, update the store,
+- [x] `hibd port add|rm|ls`: resolve the name to an ID, validate the batch, update the store,
       `revoke` through the control socket for `rm`, `pushSetup`, warn on a failed push.
-- [ ] `hib port add|rm|ls` in the command table with help, examples and `--json`, modelled on
+- [x] `hib port add|rm|ls` in the command table with help, examples and `--json`, modelled on
       `secret`. The `--links` flag registered on `log`.
-- [ ] `cmd/hib/complete.go`'s `positional()` gains `"port add"` and `"port rm"` for machine-name
+- [x] `cmd/hib/complete.go`'s `positional()` gains `"port add"` and `"port rm"` for machine-name
       completion. This is a hand-written switch and does **not** come from the command table.
-- [ ] The localhost-bind check and its warning. It never refuses.
-- [ ] `README.md`: the `### Command reference` block, which `cmd/hib/readme_test.go` compares with
+- [x] The localhost-bind check and its warning. It never refuses.
+- [x] `README.md`: the `### Command reference` block, which `cmd/hib/readme_test.go` compares with
       `hib help` byte for byte, **and** the `hib port` prose (the lateral-movement warning, the
       localhost-relay note and `ssh -L` for reaching a port from the laptop). This slice owns the
       whole file: the reference and the prose can't be split across two owners, and the reference
       has to land with the commands or `readme_test` fails.
-- [ ] Unit tests in `internal/hibd` and `cmd/hib`: every message and exit code in Design, the
+- [x] Unit tests in `internal/hibd` and `cmd/hib`: every message and exit code in Design, the
       reserved ports, the caps, the `--json` shapes including the empty one, the old-hibd path,
       completion for `port add`.
 
@@ -2165,18 +2165,18 @@ Owns `internal/hostsblock/` (new), `internal/machines/hosts.go` (new),
 `internal/machines/env.go`, `internal/machines/setup.go` and `internal/hibd/delivery.go`.
 Depends on the contract.
 
-- [ ] `internal/hostsblock`: `Render`, `Merge`, markers, reserved names, user lines kept, the error
+- [x] `internal/hostsblock`: `Render`, `Merge`, markers, reserved names, user lines kept, the error
       set. It shares only the idea of marker scanning with `envblock`. The syntaxes stay separate
       and no code is common.
-- [ ] Factor the compare-and-swap retry loop out of `machines.WriteBlock`, which was
+- [x] Factor the compare-and-swap retry loop out of `machines.WriteBlock`, which was
       `/etc/environment`-specific (the loop is reusable, the
       `readEnvironment`/`compareAndSwapEnvironment` pair is not), and add `machines.WriteHosts` on
       top of it. This slice owns `env.go` for that reason.
-- [ ] `machines.Setup.Hosts`, written after the env block. `Setup.Hash` gains the field and the
+- [x] `machines.Setup.Hosts`, written after the env block. `Setup.Hash` gains the field and the
       version goes to v2.
-- [ ] `delivery.go` builds the block from `links.json`, so a port change pushes it, and warns
+- [x] `delivery.go` builds the block from `links.json`, so a port change pushes it, and warns
       rather than failing when a machine doesn't take it.
-- [ ] Unit tests: merge into a file with user lines above and below, into one with no block,
+- [x] Unit tests: merge into a file with user lines above and below, into one with no block,
       removing the block when nothing is published. No reserved name can enter. The hash changes
       with the field and the version. The delivery cache invalidates on a port change.
 
@@ -2187,25 +2187,25 @@ Owns `internal/hibd/hibd.go`, `internal/hibd/leakscan.go`, `internal/pauseall/pa
 contract's `hibd port` handler signature, so it doesn't wait for slice 4's body. `clean` and
 `pauseAll` both live in `hibd.go` already, so this slice owns them with the rest of the file.
 
-- [ ] Dispatch for `port`, and `FeaturePorts` in `version`.
-- [ ] `ls` gains the `PORTS` column in hibd's response and `ls --json` the `ports` field. The
+- [x] Dispatch for `port`, and `FeaturePorts` in `version`.
+- [x] `ls` gains the `PORTS` column in hibd's response and `ls --json` the `ports` field. The
       laptop-side rendering is slice 7's.
-- [ ] `pause` and `rm`, with links on: raise `Machine.Fence`, send `close`, wait for the ack and
+- [x] `pause` and `rm`, with links on: raise `Machine.Fence`, send `close`, wait for the ack and
       only then pause. If the ack doesn't come within `CtlTimeout`, delete the machine's elements
       from the guard set and confirm they are gone rather than pausing past sockets the proxy may
       still hold. Clear the fence once the pause settles, succeeded or failed. If `Drop` fails, the
       fallback fails closed: it leaves the machine as it was, clears the fence and exits 1, and
       says that root is needed when the error is `EPERM`.
-- [ ] With links off, `pause`, `rm`, `pauseAll` and the leak scan stay M11's, as *With links off,
+- [x] With links off, `pause`, `rm`, `pauseAll` and the leak scan stay M11's, as *With links off,
       every pause is M11's pause* describes: no fence, no `close`, no `Drop`, no `PausedByHand`
       and no marker, and `rm` and `cleanup` leave `links.json` alone. `cleanup` still prunes
       `activity/<id>` files.
-- [ ] `vm/systemd/hibd-pause-all.service` gains `After=hibd-proxy.service` and nothing that
+- [x] `vm/systemd/hibd-pause-all.service` gains `After=hibd-proxy.service` and nothing that
       requires it, so at shutdown `pause-all` runs while the proxy still answers `close`, and it
       still runs on a host whose proxy is not.
-- [ ] `pause` sets `PausedByHand`. It is cleared only by a person-initiated start.
-- [ ] `rm` removes the entry and burns the address.
-- [ ] `cleanup` drops entries and `activity/<id>` files for sandboxes E2B has forgotten, and the
+- [x] `pause` sets `PausedByHand`. It is cleared only by a person-initiated start.
+- [x] `rm` removes the entry and burns the address.
+- [x] `cleanup` drops entries and `activity/<id>` files for sandboxes E2B has forgotten, and the
       temporary files whose names start with a dot that a crashed `Touch` left behind. A sandbox
       missing from E2B's listing counts as forgotten only once a `Get` for it says not found,
       because the listing reads running and paused machines page by page and a machine paused
@@ -2214,18 +2214,18 @@ contract's `hibd port` handler signature, so it doesn't wait for slice 4's body.
       activity. It **prunes after releasing the cleanup lock**: `clean` already holds `lockCleanup`
       across the whole run and nests `lockCleanupRead` inside it (`internal/hibd/hibd.go:940,986`),
       and taking `links.lock` underneath that would add a third level to the order in Design.
-- [ ] `cleanup` reconciles every fence up for `links.FenceStale` or longer, as item 3 of *Waking,
+- [x] `cleanup` reconciles every fence up for `links.FenceStale` or longer, as item 3 of *Waking,
       keeping awake and pausing* describes, sharing one `Get` per machine with the prune.
-- [ ] `pauseAll` **creates** the quiescing marker itself, so the `ExecStop` path
+- [x] `pauseAll` **creates** the quiescing marker itself, so the `ExecStop` path
       (`vm/systemd/hibd-pause-all.service:14`) is fenced too, and the doc comment stops claiming it
       pauses only idle machines: `internal/pauseall/pauseall.go:52-66` pauses every running machine.
-- [ ] `leakscan` pauses through the same fenced path instead of calling `e.Pause` directly
+- [x] `leakscan` pauses through the same fenced path instead of calling `e.Pause` directly
       (`internal/hibd/leakscan.go:38-47`), so a machine the leak scan takes down can't be left
       with links open.
-- [ ] The busy wiring at `internal/hibd/hibd.go:1426-1429` passes `busy.Config.Activity` and
+- [x] The busy wiring at `internal/hibd/hibd.go:1426-1429` passes `busy.Config.Activity` and
       `StateDir`, so slice 3's clock is fed. The hook and the field are frozen in the contract,
       so the two slices don't collide.
-- [ ] Unit tests: dispatch and usage, `version`, the `ls` field, `pauseAll` creating the marker,
+- [x] Unit tests: dispatch and usage, `version`, the `ls` field, `pauseAll` creating the marker,
       `pause` setting the mark, a pause that can't get an ack deleting the guard elements, a failed
       pause clearing the fence, the fallback failing closed with a fake `Dropper` that returns
       `EPERM`, the leak scan's fenced pause, cleanup pruning outside the lock and only what a `Get`
@@ -2248,7 +2248,7 @@ only for two things: giving `new` the hosts block, and changing the `HIBD_LINK_P
 to 5444, which is the value `loadSettings` falls back to, the usage text and the `linkPort` comment.
 The default is the commit that turns links on, and it cannot be anywhere else.
 
-- [ ] `hibd proxy` serves **both** listeners: the egress proxy on 5443 and the link listener on
+- [x] `hibd proxy` serves **both** listeners: the egress proxy on 5443 and the link listener on
       5444, sharing one `hook.Rule`, one `slots.Finder` and one shutdown. This is the commit that
       sets `LinkPort` away from 0 and turns links on, and it may not land until **every one of slice
       1's guard kernel gates has passed on the host**. A kernel that does not behave as the guard
@@ -2331,12 +2331,12 @@ Owns `e2e/machinelink_test.go` (new), `e2e/restart_test.go`, `e2e/hibd_test.go`,
 `docs/spec.md`, `docs/milestones/README.md` and this file. Starts when slice 7 has landed.
 `README.md` belongs to slice 4, not here.
 
-- [ ] `TestPauseAll` (`e2e/hibd_test.go:17`) runs `sudo -n hibd pause-all --timeout 2m`, because
+- [x] `TestPauseAll` (`e2e/hibd_test.go:17`) runs `sudo -n hibd pause-all --timeout 2m`, because
       with links on `pauseAll` creates the quiescing marker in the root-owned `/run/hibernaut` and
       fences and closes like any other pause. It removes the marker in a `t.Cleanup`, as
       `e2e/quiescing_test.go:24-32` does, because a marker left behind fails every later `hib new`
       (`awake`, `internal/hibd/hibd.go:1590-1603`) and skips delivery.
-- [ ] `TestMachineToMachine`, split deliberately: the fast subtests run under plain `make e2e`,
+- [x] `TestMachineToMachine`, split deliberately: the fast subtests run under plain `make e2e`,
       and the ones that have to wait out a timeout run only under `make e2e-slow`
       (`Makefile:89-100`), because `e2e` doesn't set `HIB_E2E_SLOW`. The host-reboot case joins
       the existing slow guard in `e2e/restart_test.go` (`:25-27`), which this slice edits.
@@ -2346,51 +2346,51 @@ Owns `e2e/machinelink_test.go` (new), `e2e/restart_test.go`, `e2e/hibd_test.go`,
       installs them on the host when they are missing and CI's `test-host` job installs them before
       it runs `make test-host`.
 - [x] `docs/spec.md` and this document reconciled with what was actually built.
-- [ ] Measure the hop's added round-trip latency on the host (warm p50, p95 and p99, with connection
+- [x] Measure the hop's added round-trip latency on the host (warm p50, p95 and p99, with connection
       setup timed apart from a wake) and write the numbers into this file's Changes. No number goes
       into the spec.
-- [ ] Tick the boxes and set the status here and in `docs/milestones/README.md`.
+- [x] Tick the boxes and set the status here and in `docs/milestones/README.md`.
 
 ## Tests
 
 Unit (no host):
 
-- [ ] `internal/links`: allocation in order, never reused, the caps, the reserved ports,
+- [x] `internal/links`: allocation in order, never reused, the caps, the reserved ports,
       `Store.Update` under the lock, a corrupt file reported rather than silently emptied, an
       unknown version refused, `PortGen` rising on every change and the ownership and mode of both
       the file and the lock.
-- [ ] `internal/links` batches: a whole batch validated and deduplicated before anything is written.
+- [x] `internal/links` batches: a whole batch validated and deduplicated before anything is written.
       A failed **first** publish leaving no entry at all. Publishing a port that is already
       published, and unpublishing one that is not, both no-ops. A batch that is entirely no-ops
       refused.
-- [ ] `internal/links` fences: an **old fence with a live owner still refuses**, and so does an
+- [x] `internal/links` fences: an **old fence with a live owner still refuses**, and so does an
       orphaned one. `Stale` only picks a fence for the reconcile and never lets one through.
-- [ ] `internal/links` arithmetic: `Mark` and `Token` round-trip for 1, 4242 and `GuardMaxToken`,
+- [x] `internal/links` arithmetic: `Mark` and `Token` round-trip for 1, 4242 and `GuardMaxToken`,
       and `Mark(GuardMaxToken)` keeps `0x4c` in its top byte. `Token` refuses `Mark(0)`, a mark with
       another top byte and 0 itself. `2*GuardTTL + GuardMargin <= SlotReturnDelay`.
-- [ ] `internal/links` state: a publish refused over the cap leaves no entry for the machine, and
+- [x] `internal/links` state: a publish refused over the cap leaves no entry for the machine, and
       unpublishing a reserved port is `ErrReservedPort`.
-- [ ] `internal/links` activity clock: `Touch` moves the mtime forward only, a first touch with a
+- [x] `internal/links` activity clock: `Touch` moves the mtime forward only, a first touch with a
       past time records that time, concurrent touches with out-of-order times leave the latest
       whether or not the file existed and leave no temporary file, a missing file is the zero time
       and an ID that is not one path element or that starts with a dot is ignored.
-- [ ] `internal/linkadmit`: `Serve` refuses with `ErrNoCloser` until `SetCloser` has been called,
+- [x] `internal/linkadmit`: `Serve` refuses with `ErrNoCloser` until `SetCloser` has been called,
       and accepts a closer passed in the config.
-- [ ] `internal/statefile`: the lock tests from the contract commit, plus new tests for what slice 4
+- [x] `internal/statefile`: the lock tests from the contract commit, plus new tests for what slice 4
       lifts, while the `internal/machines` tests stay where they are and keep passing. `Held` on a
       missing lock reports no holder and creates nothing.
-- [ ] `internal/egress/hook`: the jump at position 1, the chain's rules in order, a foreign
+- [x] `internal/egress/hook`: the jump at position 1, the chain's rules in order, a foreign
       rule inserted above the jump repaired by `Keep`, a stale bare 443 rule deleted last, `Keep`
       silent when `iptables-save` renders `-m tcp`, an interrupted install repaired, `Remove`
       leaving no jump and no chain.
-- [ ] `internal/slots`: `Slot` and `Addr`, over a fake tree, including a sandbox with no process
+- [x] `internal/slots`: `Slot` and `Addr`, over a fake tree, including a sandbox with no process
       and a slot with no netns. `Resolver.Addr` and `Resolver.At` failing with
       `links.ErrNotRunning` when the run changes between the two reads.
-- [ ] `internal/linkguard`, over a fake nftables backend: `Open` create-only and `ErrGateSpent`,
+- [x] `internal/linkguard`, over a fake nftables backend: `Open` create-only and `ErrGateSpent`,
       `Drop` re-reading until empty, `Drop` on a missing table failing while the token file exists
       and returning nil when it does not, `Tokens` writing the file before the first token and the
       Keeper's cycle, as slice 1 lists it.
-- [ ] `internal/linkproxy`, all with a **fake clock and fake run events**, all running on macOS:
+- [x] `internal/linkproxy`, all with a **fake clock and fake run events**, all running on macOS:
       every refusal reason and **zero bytes written on each**, the caps, half-close both ways, byte
       counts, renewal only on payload, a gate retired between the admission and the dial, the
       generation-changed race, a resume that lands the target on a **different slot** mid-link, an
@@ -2400,7 +2400,7 @@ Unit (no host):
       new links with `links.ErrStateUnreadable`, and the open ones abort once the fake Keeper
       retires their gates. The aborts and `Stat` answer 0 and empty counts while the listener is not
       serving.
-- [ ] `internal/linkadmit`: concurrent admissions for different targets never spend the reserve,
+- [x] `internal/linkadmit`: concurrent admissions for different targets never spend the reserve,
       and nor does a target bigger than the default, which is charged its size. Concurrent
       admissions for one target coalesce into one wake. A failed wake rolls the rate limit and all
       the room it was charged back together. `revoke` cuts an open link and one waiting mid-wake,
@@ -2414,18 +2414,18 @@ Unit (no host):
       `Dropper`. `Release` keeps the rate history. Over a closer that is not serving, the control
       socket answers `close` and `revoke` with 0 and `stat` with empty counts, and a closer's error
       comes back as `err`.
-- [ ] `internal/hostsblock`: merge, remove, user lines kept, reserved names refused.
-- [ ] `internal/machines`: `Wake` by ID with and without room, a wake **slower than the lease**
+- [x] `internal/hostsblock`: merge, remove, user lines kept, reserved names refused.
+- [x] `internal/machines`: `Wake` by ID with and without room, a wake **slower than the lease**
       being cancelled, the reconcile that brings a woken target's end back to `LeaseUntil`, the
       rollback that pauses it again when the lease has already passed, `Setup.Hash` with `Hosts`,
       that `save` and `fork` leave `PausedByHand` set across their internal resume, that a failed
       pause clears the fence and that the SSH heartbeat ticks for an `idle=0` machine where
       `keepalive` does not.
-- [ ] `internal/audit`: link entries, `open` and `close` pairs, folding identical refusals,
+- [x] `internal/audit`: link entries, `open` and `close` pairs, folding identical refusals,
       flushing a fold on shutdown, rotation, a source capped at `links.MaxFoldsPerSource` lines in
       a window with an overflow line counting the rest, another source in the same window
       unaffected and the cap ending with the window.
-- [ ] `internal/hibd`: `port add|rm|ls` including every error and exit code, `pushSetup` called and
+- [x] `internal/hibd`: `port add|rm|ls` including every error and exit code, `pushSetup` called and
       its failure warned rather than fatal, `cleanup` dropping only the entries a `Get` confirms E2B
       has forgotten and reconciling a stale fence in each of its cases, `pause` setting the mark and
       sending `close`, the pause fallback failing closed with a fake `Dropper` that returns `EPERM`,
@@ -2436,7 +2436,7 @@ Unit (no host):
       pause goes through with a Keeper whose first `Install` failed, and it starts the listener once
       a check that failed passes. `linkRoom` charges a target its size in default machines and
       refuses one whose size it can't read. `hibd log --links` shows `-` for a line with no port.
-- [ ] `cmd/hib`: the command table, help, **completion for `port add` and `port rm`**, every message
+- [x] `cmd/hib`: the command table, help, **completion for `port add` and `port rm`**, every message
       in Design, `--json` shapes including the empty one, the old-hibd path, `hib pause` and
       `hib rm` sending SSH commands that start with `sudo -n hibd`, the `PORTS` column in the `ls`
       header, `-` for a link line with no port and the README check.
@@ -2454,28 +2454,28 @@ CI's `test-host` job installs both first. `vm/install-e2b.sh` installs neither: 
 them, and the script hashes itself into its `install_id`, so editing it would make `make up`
 reinstall E2B.
 
-- [ ] The chain is installed, kept and removed against real `iptables` in a private network
+- [x] The chain is installed, kept and removed against real `iptables` in a private network
       namespace, including the migration from the bare 443 rule and the repair of an interrupted
       one.
-- [ ] The listener accepts on a veth-named interface and refuses on another.
-- [ ] The proxy survives a restart: the socket is unlinked and re-created, and links fail closed
+- [x] The listener accepts on a veth-named interface and refuses on another.
+- [x] The proxy survives a restart: the socket is unlinked and re-created, and links fail closed
       while it is down. `TestTheControlSocketAcrossProcesses` runs here to replace the socket a
       killed proxy left behind, and the restart itself is the e2e subtest *a stopped proxy fails
       closed*, on the host's own `hibd-proxy`.
-- [ ] A pause that gets no ack deletes every `(S . *)` element and `S`'s `link_src` entry, reads
+- [x] A pause that gets no ack deletes every `(S . *)` element and `S`'s `link_src` entry, reads
       them back until none are left and only then pauses. The deleting is
       `TestGuardDropTakesEveryGateAtAnAddress`: gates at `S` with other tokens, one of them expiring
       between the read and the delete, all go, and `T`'s stay. The order, drop and then pause, is
       `TestPauseWithLinksOn` in `internal/hibd`, over a fake guard.
-- [ ] `Drop` against a real table that has been deleted fails while the guard's token file exists
+- [x] `Drop` against a real table that has been deleted fails while the guard's token file exists
       and returns nil once it does not.
-- [ ] **`TestGuardDropsAllFourWaysUnderStop`.** With a link carrying traffic, `SIGSTOP` a helper
+- [x] **`TestGuardDropsAllFourWaysUnderStop`.** With a link carrying traffic, `SIGSTOP` a helper
       standing in for the proxy, its Keeper holding the link's gates, and end the target's run.
       Assert that packets are dropped in **all four** directions (source leg in and out, target leg
       out and in) within `2*GuardTTL`, which is inside `SlotReturnDelay`, measured with counters
       before and after the guard in the test's own `inet hlgtest` table and with a socket on each
       side. Then `SIGCONT` and assert the proxy cleans up.
-- [ ] **The kernel facts the guard assumes**, each its own named case logging the host's kernel
+- [x] **The kernel facts the guard assumes**, each its own named case logging the host's kernel
       version, and all of which must pass before slice 7 may turn links on: the rest of the table
       in *The kernel's own fence*, 12. `TestGuardExpiredDeleteAbortsBatch` (deleting an expired
       element returns `ENOENT` and aborts the batch), `TestGuardDeleteAddResetsExpiry`,
@@ -2483,17 +2483,17 @@ reinstall E2B.
       `TestGuardMapMissLeavesMarkZero`, `TestGuardAcceptTakesSynMark`,
       `TestGuardInputUsesSocketMark`, `TestGuardEgressKeepsMarkZero`,
       `TestGuardConntrackLossFailsClosed` and `TestGuardSetBackendIsRhash`.
-- [ ] The guard's table installs beside `hibernaut-sandboxes` and E2B's `slot-firewall` without
+- [x] The guard's table installs beside `hibernaut-sandboxes` and E2B's `slot-firewall` without
       disturbing either, survives an E2B ruleset reload and `nft delete table inet
       hibernaut-links` removes every trace.
-- [ ] A gate that stops being extended stops matching within `GuardTTL`, measured, and an
+- [x] A gate that stops being extended stops matching within `GuardTTL`, measured, and an
       extension delayed past the expiry **cannot** bring it back.
-- [ ] A slot recycled to a new run does not inherit the old run's gate: a socket holding the old
+- [x] A slot recycled to a new run does not inherit the old run's gate: a socket holding the old
       token is dropped even though the address is unchanged.
-- [ ] `SO_LINGER 0` is actually set on both legs: an aborted link sends RST and the peer sees no
+- [x] `SO_LINGER 0` is actually set on both legs: an aborted link sends RST and the peer sees no
       further bytes. `TestAborts` runs here, and its `expectReset` fails on any byte before the
       reset.
-- [ ] The run watcher sees a real cgroup empty and disappear, woken by the kernel's `cgroup.events`
+- [x] The run watcher sees a real cgroup empty and disappear, woken by the kernel's `cgroup.events`
       within half its backstop (`TestHostRunWatcherSeesARealCgroup`).
 
 End-to-end. The fast subtests go in **`make e2e`**. The ones that have to wait out a timeout go
@@ -2502,7 +2502,7 @@ behind `HIB_E2E_SLOW` and so run only under **`make e2e-slow`** (`Makefile:89-10
 rather than inventing a second one. The subtests below are named as they are in
 `e2e/machinelink_test.go`.
 
-- [ ] `TestMachineToMachine`, in `e2e`:
+- [x] `TestMachineToMachine`, in `e2e`:
   - a published port is reachable from another machine by name.
   - an unpublished port on the same machine is refused.
   - a paused target is woken by a link and serves the request.
@@ -2524,7 +2524,7 @@ rather than inventing a second one. The subtests below are named as they are in
     down and puts it back, and a new link works once it has.
   - with the proxy stopped, a link fails closed rather than falling through to anything.
   - `latency` logs the numbers below.
-- [ ] `TestMachineToMachineSlow`, in `e2e-slow`:
+- [x] `TestMachineToMachineSlow`, in `e2e-slow`:
   - an idle open link doesn't hold a machine awake.
   - a **two-machine and a three-machine ring**, with retrying clients, SSH closed, no agents and CPU
     under the busy threshold, both stop within `LinkGrace` plus the longest idle timeout in the
@@ -2541,13 +2541,13 @@ rather than inventing a second one. The subtests below are named as they are in
   - a link-woken target whose wake took longer than the source's lease is paused again rather than
     left running for a fresh idle.
   - an interrupted chain migration is repaired on the next `Keep`.
-- [ ] `TestSurvivesHostRestart`, in `e2e-slow`: a host reboot leaves a machine's address and
+- [x] `TestSurvivesHostRestart`, in `e2e-slow`: a host reboot leaves a machine's address and
       published ports intact, and the boot, which starts with an empty `/run`, brings the proxy
       up serving links with `/run/hibernaut` present and no quiescing marker. A link from a machine
       the reboot paused then wakes its target.
-- [ ] `TestPauseAll` runs `hibd pause-all` through `sudo -n` and leaves no quiescing marker behind.
-- [ ] `TestNoHostAccess` passes unchanged, with the link listener running.
-- [ ] `TestMachineNetwork` passes unchanged.
+- [x] `TestPauseAll` runs `hibd pause-all` through `sudo -n` and leaves no quiescing marker behind.
+- [x] `TestNoHostAccess` passes unchanged, with the link listener running.
+- [x] `TestMachineNetwork` passes unchanged.
 
 Latency is **measured, not promised**. `TestMachineToMachine/latency` logs, from inside a machine,
 p50, p95 and p99 for 20 connection setups (a connect, one line and its answer) and for 1000 warm
@@ -2557,10 +2557,10 @@ answer. The numbers go in this file's Changes. No number is written into the spe
 
 ## Done when
 
-- [ ] `make lint test` is green. CI is parked, so it stands in for CI.
-- [ ] `make test-host` is green.
-- [ ] `make e2e` and `make e2e-slow` are green on the host.
-- [ ] The README and the spec match what was built.
+- [x] `make lint test` is green. CI is parked, so it stands in for CI.
+- [x] `make test-host` is green.
+- [x] `make e2e` and `make e2e-slow` are green on the host.
+- [x] The README and the spec match what was built.
 
 ## Changes
 
@@ -2741,16 +2741,17 @@ Superseded statements are marked inline.
   **Smaller fixes.** `Publish` checks the cap before it creates an entry and `Unpublish` refuses
   reserved ports too (B1, B2), and the doc gives the address-pool check to `Allocate`, which is
   where it is (B3). `Wake` takes an absolute lease (L1). `Admission.Ctx` is never cancelled by the
-  lease (L2). `Release` gives back room and caps only. The doc now says who runs `hibd` as whom,
-  that the fork hint comes from `hibd`'s stderr, that the activity clock is one file per machine
-  under `links/activity`, the audit signatures as built, `links.ErrStateUnreadable`, `Store.Update`,
-  the default `idle=15m` and that the e2e asserts no link byte after a run ends rather than an abort
-  before an autonomous pause. The files the contract finished and no slice owns are named, and so
-  are slice 8's milestones README and restart test. With `pause` and `rm` now root, the doc also
-  closes a gap the ownership rules already implied: `statefile.OpenLock` and `atomicfile` do not
-  chown, so slice 4 creates `links.lock` and the fence locks the way `openLock` creates
-  `hibd.lock`, writes `links.json` with `publishOwned` and makes `Held` stop creating files.
-  Otherwise a lock the daemon created first would be root's and `hibd port` could never take it.
+  lease (L2). `Release` gives back room and caps only (superseded by the 2026-10-10 security
+  review). The doc now says who runs `hibd` as whom, that the fork hint comes from `hibd`'s stderr,
+  that the activity clock is one file per machine under `links/activity`, the audit signatures as
+  built, `links.ErrStateUnreadable`, `Store.Update`, the default `idle=15m` and that the e2e asserts
+  no link byte after a run ends rather than an abort before an autonomous pause. The files the
+  contract finished and no slice owns are named, and so are slice 8's milestones README and restart
+  test. With `pause` and `rm` now root, the doc also closes a gap the ownership rules already
+  implied: `statefile.OpenLock` and `atomicfile` do not chown, so slice 4 creates `links.lock` and
+  the fence locks the way `openLock` creates `hibd.lock`, writes `links.json` with `publishOwned`
+  and makes `Held` stop creating files. Otherwise a lock the daemon created first would be root's
+  and `hibd port` could never take it.
 - 2026-10-09: Astra's round-7 check. Security found nothing. Design found three contradictions and
   two loose ends, and fixing them turned up two more.
   **The lease is re-derived in the code too (MF1).** `linkadmit.Renew`'s comment still renewed to
@@ -2976,3 +2977,42 @@ Superseded statements are marked inline.
   `TestPushSetupMarksBeforeAndAfterItsWrites`, `TestPushSetupWarnsOnceWhenItCantMark` and
   `TestSetupDeliveryWritesEveryPassWhileTheMarkIsUnreadable` cover the two marks, the warning and a
   mark the daemon can't read.
+- 2026-10-12: Done. `make e2e` passed on the host at `51e4fa4`, and `make e2e-slow` at `6867d8f`,
+  with every test but `TestDeviceFlow`, which needs a person to approve a code. No subtest skipped.
+  The lease subtest ended a lease during a wake on its third try, and links answered after the
+  reboot in `TestSurvivesHostRestart`. **The guard's kernel gates came first.**
+  `make test-host-remote` ran 55 tests on the host's kernel, 7.0.0-1014-azure, once each test binary
+  ran from its package directory (`4eda8aa`). Every guard test passed, and only then did the commit
+  that turns links on merge (`c59e622`). With the tests below it runs 65, and all of them pass.
+  **The latency.** At `51e4fa4`, `TestMachineToMachine/latency` logged these. Over a link a
+  connection setup took 4.56 ms at p50, 5.43 ms at p95 and 5.51 ms at p99, and a warm round trip
+  0.22, 0.39 and 0.61 ms. Inside the target against `127.0.0.1` a setup took 0.49, 0.55 and 0.70 ms,
+  and a round trip 0.01, 0.01 and 0.03 ms. So at p50 the hop adds about 4.07 ms to a setup and
+  0.21 ms to a round trip. A link woke a paused machine and had its answer in 0.171 s. The slow
+  run's numbers were within 0.1 ms of these at p50, and its link had the paused machine's answer in
+  0.153 s. **What the host runs changed.** `make e2e` found the push bug in the entry above. The
+  subtest that lands `hib port rm` in a wake stepped its guess 400 ms at a time, so on this host,
+  where a wake takes about 170 ms, it went from too late to too early and back, and skipped. It now
+  halves or doubles its guess until it has been both, then bisects, as the lease subtest does
+  (`51e4fa4`), and in both runs it cut the link on its fifth try, 93.75 ms after the ask. When
+  `hibd proxy` fails to put the guard's table back, the guard subtest's cleanup restarts it, so the
+  subtests after it don't fail for that reason (`fae38a1`). **The gaps a check of the boxes found.**
+  Two cases had no test: `hibd port add` warning about a machine it can't update, now
+  `TestPortAddWarnsWhenAMachineCantBeUpdated` (`651f5a2`), and cleanup leaving a fence to the
+  operation that holds it, now `TestCleanupLeavesAFenceAnOperationHolds` (`8f5e7c0`). Four Tests
+  boxes were only partly covered, three of them because `internal/linkadmit`'s and
+  `internal/linkproxy`'s tests ran only on the laptop, where the run watcher's inotify code isn't
+  built and macOS stands in for Linux's resets. `make test-host` now runs the run watcher's and the
+  control socket's tests as root, and the abort tests (`6867d8f`).
+  `TestHostRunWatcherSeesARealCgroup` watches a real cgroup and `TestAborts` fails on any byte
+  before the reset. The fourth box gets `TestGuardDropTakesEveryGateAtAnAddress`, which drops gates
+  from a real table. Both new host tests fail on the host when what they check is broken: `Drop`
+  returning nil after its batch fails, and the watcher adding no watch on `cgroup.events`. The
+  four-ways box now says a helper stands in for the proxy, as its test has it.
+  **A test's own child can hide a missing watch.** The watcher's poll returns on any signal, and the
+  SIGCHLD of a process the test started woke it with no event, so the first version of the test
+  passed with no watch at all. The test now starts a process that is not its child, as a machine's
+  processes are not `hibd`'s, and kills it through a pidfd. **`Release` gives back the caps only.**
+  `Admitter.Release`'s comment, the contract's and two places in this file said it gave back a
+  wake's room, which the wake gives back itself when it ends. They say so now (`40147a9`), and the
+  round-6 entry's sentence is marked superseded.
