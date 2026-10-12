@@ -7,14 +7,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -90,16 +88,7 @@ func Init(certPath, keyPath, commonName string) (bool, error) {
 		return false, err
 	}
 	now := time.Now()
-	serial, err := randomSerial()
-	if err != nil {
-		return false, err
-	}
-	subjectKeyID, err := subjectKeyID(&key.PublicKey)
-	if err != nil {
-		return false, err
-	}
 	tmpl := &x509.Certificate{
-		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"Hibernaut"}},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.AddDate(10, 0, 0),
@@ -108,7 +97,6 @@ func Init(certPath, keyPath, commonName string) (bool, error) {
 		IsCA:                  true,
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
-		SubjectKeyId:          subjectKeyID,
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -234,10 +222,6 @@ func (c *CA) now() time.Time {
 }
 
 func (c *CA) mint(host string, now time.Time) (*tls.Certificate, error) {
-	serial, err := randomSerial()
-	if err != nil {
-		return nil, err
-	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -247,13 +231,12 @@ func (c *CA) mint(host string, now time.Time) (*tls.Certificate, error) {
 		notAfter = c.cert.NotAfter
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: host},
-		DNSNames:     []string{host},
-		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     notAfter,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		Subject:     pkix.Name{CommonName: host},
+		DNSNames:    []string{host},
+		NotBefore:   now.Add(-time.Hour),
+		NotAfter:    notAfter,
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &key.PublicKey, c.key)
 	if err != nil {
@@ -375,27 +358,6 @@ func publicKeysEqual(key *ecdsa.PublicKey, other any) bool {
 		return false
 	}
 	return key.Equal(otherKey)
-}
-
-func randomSerial() (*big.Int, error) {
-	for {
-		serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-		if err != nil {
-			return nil, err
-		}
-		if serial.Sign() > 0 {
-			return serial, nil
-		}
-	}
-}
-
-func subjectKeyID(pub *ecdsa.PublicKey) ([]byte, error) {
-	der, err := x509.MarshalPKIXPublicKey(pub)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha1.Sum(der)
-	return sum[:], nil
 }
 
 func cleanHost(host string) (string, error) {

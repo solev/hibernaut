@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -332,6 +333,45 @@ func TestLeafConcurrentCallsReturnTrustedCertificates(t *testing.T) {
 	}
 	if verified != 32 {
 		t.Fatalf("received %d trusted certificates, want 32", verified)
+	}
+}
+
+func TestCertificatesCarryDistinctSerialsAndLinkedKeyIDs(t *testing.T) {
+	var serials []*big.Int
+	for _, host := range []string{"one.example.com", "two.example.com"} {
+		c, _, _ := initCA(t)
+		block, _ := pem.Decode(c.CertPEM())
+		caCert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(caCert.SubjectKeyId) == 0 {
+			t.Error("the CA has no SubjectKeyId")
+		}
+		leaf, err := c.Leaf(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(leaf.Leaf.AuthorityKeyId, caCert.SubjectKeyId) {
+			t.Errorf("leaf AuthorityKeyId = %x, want the CA's SubjectKeyId %x", leaf.Leaf.AuthorityKeyId, caCert.SubjectKeyId)
+		}
+		verifyLeaf(t, c, leaf, host, testNow)
+		serials = append(serials, caCert.SerialNumber, leaf.Leaf.SerialNumber)
+	}
+	for i, serial := range serials {
+		der, err := asn1.Marshal(serial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// der is a tag octet and a length octet followed by the serial's octets.
+		if octets := len(der) - 2; serial.Sign() <= 0 || octets > 20 {
+			t.Errorf("serial %x takes %d octets, want a positive one of at most 20", serial, octets)
+		}
+		for _, other := range serials[:i] {
+			if serial.Cmp(other) == 0 {
+				t.Errorf("serial %x appears twice", serial)
+			}
+		}
 	}
 }
 
