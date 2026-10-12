@@ -572,6 +572,35 @@ func TestAcceptRatePerSource(t *testing.T) {
 	roundTrip(t, h.connect(h.peer()), "one more")
 }
 
+func TestAcceptRateForgetsOnlyRefilledSources(t *testing.T) {
+	r := limiter{rate: links.AcceptRate, burst: links.AcceptBurst}
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i := range 63 {
+		if !r.allow(fmt.Sprint("source ", i), at) {
+			t.Fatalf("source %d refused its first connection", i)
+		}
+	}
+	// A second later those 63 have refilled. The greedy source then takes its whole burst and
+	// makes the 64th bucket, the most allow keeps before a new source prunes them.
+	at = at.Add(time.Second)
+	for range links.AcceptBurst {
+		r.allow("greedy", at)
+	}
+	if r.allow("greedy", at) {
+		t.Fatal("the greedy source was allowed past its burst")
+	}
+
+	if !r.allow("new", at) {
+		t.Fatal("a new source was refused its first connection")
+	}
+	if n := len(r.buckets); n != 2 {
+		t.Errorf("%d buckets once a new source arrived, want the refilled ones forgotten", n)
+	}
+	if r.allow("greedy", at) {
+		t.Error("the greedy source was allowed again once the buckets were pruned")
+	}
+}
+
 func TestAbortPortsLeavesOtherPortsOpen(t *testing.T) {
 	h := start(t)
 	revoked := h.link(h.peer())
