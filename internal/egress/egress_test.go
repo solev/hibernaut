@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/tls"
@@ -349,6 +350,121 @@ func TestNonTLSPassthrough(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	<-done
+}
+
+func TestPassthroughHalfCloseFromTheClient(t *testing.T) {
+	t.Parallel()
+	hello := clientHello(t, "unbound.example")
+	received := make(chan []byte, 1)
+	fx := newPassthroughFixture(t, func(c net.Conn) {
+		got, _ := io.ReadAll(c)
+		received <- got
+		_, _ = io.WriteString(c, "reply")
+	})
+	defer fx.close()
+	conn, err := net.Dial("tcp", fx.proxyAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write(hello); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.(*net.TCPConn).CloseWrite()
+	got, err := io.ReadAll(conn)
+	if err != nil || string(got) != "reply" {
+		t.Fatalf("read %q, %v; want the site's reply after our half-close and then EOF", got, err)
+	}
+	if got := <-received; !bytes.Equal(got, hello) {
+		t.Fatalf("site read %d bytes before EOF, want the %d byte ClientHello", len(got), len(hello))
+	}
+}
+
+func TestPassthroughHalfCloseFromTheSite(t *testing.T) {
+	t.Parallel()
+	hello := clientHello(t, "unbound.example")
+	received := make(chan []byte, 1)
+	fx := newPassthroughFixture(t, func(c net.Conn) {
+		if _, err := io.ReadFull(c, make([]byte, len(hello))); err != nil {
+			received <- nil
+			return
+		}
+		_, _ = io.WriteString(c, "banner")
+		_ = c.(*net.TCPConn).CloseWrite()
+		rest, _ := io.ReadAll(c)
+		received <- rest
+	})
+	defer fx.close()
+	conn, err := net.Dial("tcp", fx.proxyAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write(hello); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(conn)
+	if err != nil || string(got) != "banner" {
+		t.Fatalf("read %q, %v; want the site's banner and then EOF", got, err)
+	}
+	if _, err := io.WriteString(conn, "late reply"); err != nil {
+		t.Fatalf("write after the site's half-close: %v", err)
+	}
+	_ = conn.(*net.TCPConn).CloseWrite()
+	select {
+	case got := <-received:
+		if string(got) != "late reply" {
+			t.Fatalf("site read %q after the ClientHello, want %q and then EOF", got, "late reply")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("site did not see EOF after our half-close")
+	}
+}
+
+// newPassthroughFixture is a proxy whose every destination is a raw TCP listener that serves one
+// connection with serve.
+func newPassthroughFixture(t *testing.T, serve func(net.Conn)) *fixture {
+	t.Helper()
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		serve(conn)
+	}()
+	return newFixtureConfigured(t, "localhost", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), func(s *Server) {
+		s.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, upstream.Addr().String())
+		}
+	})
+}
+
+// clientHello is the first TLS record crypto/tls sends to serverName.
+func clientHello(t *testing.T, serverName string) []byte {
+	t.Helper()
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		defer client.Close()
+		_ = tls.Client(client, &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}).Handshake()
+	}()
+	record := make([]byte, 5)
+	if _, err := io.ReadFull(server, record); err != nil {
+		t.Fatal(err)
+	}
+	record = append(record, make([]byte, int(record[3])<<8|int(record[4]))...)
+	if _, err := io.ReadFull(server, record[5:]); err != nil {
+		t.Fatal(err)
+	}
+	return record
 }
 
 func TestStreamingResponseFlushesBeforeUpstreamFinishes(t *testing.T) {
