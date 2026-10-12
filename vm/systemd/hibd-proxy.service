@@ -10,9 +10,20 @@ ExecStopPost=/usr/local/bin/hibd proxy -unhook
 Restart=always
 RestartSec=2
 TimeoutStopSec=30
+# hibd proxy pings systemd while it serves and, with links on, while its link control socket
+# answers, so a wedged proxy is replaced. That is recovery only: the link guard has shut a wedged
+# proxy's gates long before this fires. It also opens NotifyAccess=main, which the pings need.
+WatchdogSec=30
+# A link guard Keeper starved for longer than GuardTTL - GuardKeep shuts every link.
+CPUWeight=200
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/hibernaut
+# The link control socket, the guard's token file and the quiescing marker. Not
+# RuntimeDirectory=, which systemd deletes on stop, marker and all: hibernaut-tmpfiles.conf
+# creates it at boot. Never ProtectKernelTunables=, which would stop the link guard from setting
+# net.ipv4.tcp_fwmark_accept.
+ReadWritePaths=/run/hibernaut
 ProtectHome=yes
 PrivateTmp=yes
 ProtectControlGroups=yes

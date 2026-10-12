@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -27,7 +28,16 @@ func TestPauseAll(t *testing.T) {
 		t.Errorf("%s = %q, want only %s", listRunning, out, running.ID)
 	}
 
-	out, err := vm.ssh(ctx, "hibd pause-all --timeout 2m 2>&1")
+	// With links on, pause-all makes the quiescing marker and leaves it in place when it succeeds,
+	// as quiesce does, and a marker left behind fails every later hib new.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if _, err := vm.ssh(ctx, "sudo rm -f /run/hibernaut/quiescing"); err != nil {
+			t.Errorf("removing the quiescing marker: %v", err)
+		}
+	})
+	out, err := vm.ssh(ctx, "sudo -n hibd pause-all --timeout 2m 2>&1")
 	t.Logf("hibd pause-all:\n%s", out)
 	if err != nil {
 		t.Fatal(err)

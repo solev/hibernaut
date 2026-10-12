@@ -81,7 +81,7 @@ func TestRmAsksOnATerminal(t *testing.T) {
 		names := machineNames(t, h)
 		calls := remoteCommands(h.takeCalls())
 		switch {
-		case tc.deletes && (code != 0 || c.out.String() != "removed app\n" || len(names) != 0 || !slices.Equal(calls, []string{"hibd rm app --json"})):
+		case tc.deletes && (code != 0 || c.out.String() != "removed app\n" || len(names) != 0 || !slices.Equal(calls, []string{"sudo -n hibd 'rm' 'app' '--json'"})):
 			t.Errorf("answer %q: rm = %d, stdout %q, machines %q, calls %q; want app deleted", tc.answer, code, c.out, names, calls)
 		case !tc.deletes && (code != 1 || c.out.Len() > 0 || len(names) != 1 || len(calls) != 0):
 			t.Errorf("answer %q: rm = %d, stdout %q, machines %q, calls %q; want app kept", tc.answer, code, c.out, names, calls)

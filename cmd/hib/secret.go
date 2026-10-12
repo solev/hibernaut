@@ -66,9 +66,13 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 	return 0
 }
 
-func (a *app) log(ctx context.Context, cfg *config, n int) int {
+// log prints the audit log: the secret log, or with links the link log.
+func (a *app) log(ctx context.Context, cfg *config, n int, links bool) int {
 	if n < 0 {
 		return a.mistake("--n must be non-negative")
+	}
+	if links {
+		return a.logLinks(ctx, cfg, n)
 	}
 	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--json")
 	if err != nil {
@@ -81,6 +85,33 @@ func (a *app) log(ctx context.Context, cfg *config, n int) int {
 		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt audit log line(s)\n", r.Corrupt)
 	}
 	printLogEntries(a.stdout, r.Logs)
+	return 0
+}
+
+// logLinks prints the newest n entries of the link log, which only a hibd with the port command
+// keeps.
+func (a *app) logLinks(ctx context.Context, cfg *config, n int) int {
+	switch err := a.needPorts(ctx, cfg); {
+	case errors.Is(err, errNoPorts):
+		return a.fail(errors.New("this host's hibd is too old for hib log --links. Upgrade it"))
+	case err != nil:
+		return a.failWaiting(ctx, err, "")
+	}
+	r, err := a.remote(ctx, cfg, shortTimeout, "log", "--n", fmt.Sprint(n), "--links", "--json")
+	if err != nil {
+		return a.failWaiting(ctx, err, "")
+	}
+	links := r.Links
+	if links == nil {
+		links = []hibapi.LinkEntry{}
+	}
+	if a.json {
+		return a.reply(hibapi.Response{Links: links, Corrupt: r.Corrupt}, nil)
+	}
+	if r.Corrupt > 0 {
+		fmt.Fprintf(a.stderr, "hib: skipped %d corrupt link log line(s)\n", r.Corrupt)
+	}
+	hibapi.PrintLinkEntries(a.stdout, links, linkTime)
 	return 0
 }
 
@@ -110,4 +141,14 @@ func printLogEntries(w io.Writer, entries []hibapi.LogEntry) {
 			termsafe.Line(strings.Join(e.Secrets, ",")))
 	}
 	tw.Flush()
+}
+
+// linkTime shows the time hibd sends in local time, as the secret log does, and anything else
+// as it came.
+func linkTime(s string) string {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.Local().Format(time.RFC3339)
 }

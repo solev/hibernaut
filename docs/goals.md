@@ -61,6 +61,11 @@ needs Azure, whose network rules hide the ports E2B's local setup leaves open.
 The details are in [ideas](ideas.md#g2-ready-for-strangers). Done when a stranger installs it on
 a fresh server from the docs alone, and a port scan of that server finds only SSH.
 
+[M12 Machine links](milestones/m12-machine-links.md) settles the network policy G2 has to ship
+with: machines reach each other only on ports you publish by hand, never by default. It also adds
+a second host port machines reach, which the default-deny input firewall must keep off the public
+interface.
+
 ## G3. A try server
 
 Developers try Hibernaut with nothing to install and no signup: `ssh NAME@try.DOMAIN`, where NAME

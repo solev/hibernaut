@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -29,10 +31,16 @@ import (
 	"github.com/solev/hibernaut/internal/engine/e2b"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/linkadmit"
+	"github.com/solev/hibernaut/internal/linkctl"
+	"github.com/solev/hibernaut/internal/linkguard"
+	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/pauseall"
 	proxypkg "github.com/solev/hibernaut/internal/proxy"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/slots"
+	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/version"
 )
@@ -53,6 +61,11 @@ commands:
   secret ls         list bound secrets
   secret rm NAME    remove a bound secret
   log               show secret swap audit entries (-n, default 50)
+  port add NAME PORT [PORT...]
+                    publish a machine's ports to the other machines, as NAME.hib:PORT
+  port rm NAME PORT [PORT...]
+                    stop publishing them, and close the links using them
+  port ls           list published ports and how many links each has open
   connect github    store a GitHub token as secret github, after GitHub accepts it, and give
                     machines git's identity, as root. -source gh|token reads the token from
                     stdin. -source device gets one with GitHub's device flow, and stops when
@@ -83,7 +96,7 @@ commands:
                     root
   version           print the version
 
-new, ls, rm, pause, fork, image build|save|ls|rm, connect, disconnect, codex refresh,
+new, ls, rm, pause, fork, port, image build|save|ls|rm, connect, disconnect, codex refresh,
 status and version
 print JSON with -json.
 
@@ -109,6 +122,8 @@ Environment variables of the same names override the file:
   HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
                         default codex copilot claude
   HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
+  HIBD_LINK_PORT        port for links between machines, default 5444, or 0 to turn them off
+  HIBD_LINK_LOG         link log, default /var/log/hibernaut/links.jsonl
 `
 
 const (
@@ -170,6 +185,17 @@ type App struct {
 	DaemonTicks <-chan time.Time
 
 	codexEvery time.Duration
+	// linkParts replaces the links pieces hibd's own commands use, for tests only.
+	linkParts linkParts
+}
+
+// linkParts are the links pieces that pause, rm, pause-all, the leak scan, ls, bridge and
+// cleanup use with links on. A nil field uses the production one.
+type linkParts struct {
+	store    links.Store
+	ctl      links.Controller
+	dropper  links.Dropper
+	resolver links.Resolver
 }
 
 // Run runs the command in args and returns its exit code: 0, 1 if it failed, or 2 if args
@@ -185,10 +211,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.new(ctx, args)
 	case "ls":
 		return a.ls(ctx, args)
-	case "rm":
-		return a.byName(ctx, "rm", args, (*machines.Manager).Remove)
-	case "pause":
-		return a.byName(ctx, "pause", args, (*machines.Manager).Pause)
+	case "rm", "pause":
+		return a.pauseOrRemove(ctx, cmd, args)
 	case "fork":
 		return a.fork(ctx, args)
 	case "bridge":
@@ -203,6 +227,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.runCodex(ctx, args)
 	case "status":
 		return a.status(ctx, args)
+	case "port":
+		return a.port(ctx, args)
 	case "log":
 		return a.log(args)
 	case "ca":
@@ -264,6 +290,7 @@ func (a *App) new(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
 	}
+	a.addHosts(ctx, cfg, &setup, names[0])
 	m, err := a.managerWithSetup(setup)
 	if err != nil {
 		return a.fail(*asJSON, "new", err)
@@ -303,6 +330,10 @@ func (a *App) ls(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.fail(*asJSON, "ls", err)
 	}
+	withPorts := false
+	if !*quiet {
+		withPorts = a.addPorts(ms)
+	}
 	switch {
 	case *asJSON:
 		r := hibapi.Response{Machines: ms}
@@ -318,13 +349,40 @@ func (a *App) ls(ctx context.Context, args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(a.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tSIZE\tIDLE\tSTARTED\tENDS")
+	// The PORTS column only shows with links on.
+	ports := func(string) string { return "" }
+	if withPorts {
+		ports = func(s string) string { return s + "\t" }
+	}
+	fmt.Fprintln(tw, "NAME\tID\tSTATE\tIMAGE\tSIZE\tIDLE\t"+ports("PORTS")+"STARTED\tENDS")
 	for _, m := range ms {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image), orDash(m.Size),
-			hibapi.FormatIdle(m.IdleSeconds), m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s%s\t%s\n", orDash(m.Name), m.ID, m.State, orDash(m.Image), orDash(m.Size),
+			hibapi.FormatIdle(m.IdleSeconds), ports(hibapi.FormatPorts(m.Ports)), m.StartedAt.UTC().Format(time.RFC3339), m.EndAt.UTC().Format(time.RFC3339))
 	}
 	tw.Flush()
 	return 0
+}
+
+// addPorts fills in each machine's published ports with links on, and reports whether they are
+// on. A machine that publishes nothing gets an empty list rather than none. Not being able to
+// read them is a warning, not a failure, so ls still lists the machines.
+func (a *App) addPorts(ms []hibapi.Machine) bool {
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil || !cfg.linksConfiguredOn() {
+		return false
+	}
+	doc, err := a.linkPartsFor(cfg).store.Read()
+	if err != nil {
+		a.warnf("hibd can't read its published ports: %v", err)
+		return true
+	}
+	for i := range ms {
+		ms[i].Ports = []int{}
+		if entry := doc.Machines[ms[i].ID]; entry != nil {
+			ms[i].Ports = append(ms[i].Ports, entry.Ports...)
+		}
+	}
+	return true
 }
 
 func shortDuration(d time.Duration) string {
@@ -359,6 +417,176 @@ func (a *App) byName(ctx context.Context, cmd string, args []string, do func(*ma
 	return 0
 }
 
+// pauseOrRemove is hibd pause and hibd rm: byName with Manager.Pause or Manager.Remove. With
+// links on, that goes through pauseFenced, pause marks the machine as paused by hand, and rm
+// drops its entry from the link state once it's gone. Its address stays spent, because
+// addresses are never handed out twice.
+func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int {
+	do := (*machines.Manager).Pause
+	if cmd == "rm" {
+		do = (*machines.Manager).Remove
+	}
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil || !cfg.linksConfiguredOn() {
+		return a.byName(ctx, cmd, args, do)
+	}
+	return a.byName(ctx, cmd, args, func(m *machines.Manager, ctx context.Context, name string) error {
+		e, err := a.engine()
+		if err != nil {
+			return err
+		}
+		em, err := machines.Lookup(ctx, e, name)
+		if err != nil {
+			return err
+		}
+		store := a.linkPartsFor(cfg).store
+		err = a.pauseFenced(ctx, cfg, em.ID, name, cmd, cmd+" "+name, func(ctx context.Context) error {
+			if err := do(m, ctx, name); err != nil || cmd != "pause" {
+				return err
+			}
+			err := store.Update(ctx, func(d *links.Doc) error {
+				d.Entry(em.ID).PausedByHand = true
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("paused %s, but couldn't mark it as paused by hand, so a link may wake it: %w", name, err)
+			}
+			return nil
+		})
+		if err != nil || cmd != "rm" {
+			return err
+		}
+		unchanged := errors.New("no entry")
+		err = store.Update(ctx, func(d *links.Doc) error {
+			if _, ok := d.Machines[em.ID]; !ok {
+				return unchanged
+			}
+			delete(d.Machines, em.ID)
+			return nil
+		})
+		if err != nil && !errors.Is(err, unchanged) {
+			a.warnf("removed %s, but couldn't drop its entry from the link state: %v. hibd cleanup drops it later", name, err)
+		}
+		return nil
+	})
+}
+
+// linksConfiguredOn reports whether HIBD_LINK_PORT turns links on. Only a port of 0 is off.
+// Every hibd command asks this one question, so none of them can disagree about it.
+func (c config) linksConfiguredOn() bool {
+	return c.linkPort != 0
+}
+
+// parseLinkPort reads HIBD_LINK_PORT. A value that isn't a port number is an error rather than
+// a guess: a pause that read links as off would raise no fence while the listener served.
+func parseLinkPort(v string) (int, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || port < 0 || port > 65535 {
+		return 0, fmt.Errorf("HIBD_LINK_PORT is %q, but it must be a port number, or 0 to leave links off", v)
+	}
+	return port, nil
+}
+
+func (a *App) linkPartsFor(cfg config) linkParts {
+	p := a.linkParts
+	if p.store == nil {
+		p.store = links.NewStore(cfg.stateDir)
+	}
+	return p
+}
+
+// pauseMachine pauses m the way every pause Hibernaut starts has to: with e.Pause through
+// pauseFenced, which adds nothing to it with links off.
+func (a *App) pauseMachine(ctx context.Context, cfg config, e engine.Engine, m engine.Machine, why, rerun string) error {
+	name := cmp.Or(machines.Name(m), m.ID)
+	return a.pauseFenced(ctx, cfg, m.ID, name, why, rerun, func(ctx context.Context) error {
+		return e.Pause(ctx, m.ID)
+	})
+}
+
+// pauseFenced runs op, which pauses or removes machine id, so that no link outlives it. It
+// raises id's fence, so nothing admits a link to or from id, asks hibd proxy to close id's
+// links and waits for the answer, and only then runs op. When the proxy doesn't answer within
+// links.CtlTimeout, it deletes id's gates in the kernel instead, and runs op only once they are
+// gone. Otherwise it fails closed: op doesn't run. The fence comes down once op returns, whether
+// op succeeded or not. op's error comes back as it was, so callers can still tell
+// engine.ErrNotRunning apart.
+//
+// With links off it runs op and nothing else. name is what messages call the machine, why is
+// links.Fence.Why, and rerun is the hibd command to run as root when deleting the gates needs it.
+func (a *App) pauseFenced(ctx context.Context, cfg config, id, name, why, rerun string, op func(context.Context) error) error {
+	if !cfg.linksConfiguredOn() {
+		return op(ctx)
+	}
+	p := a.linkPartsFor(cfg)
+	release, err := p.store.Fence(ctx, id, why)
+	if err != nil {
+		if release != nil {
+			release()
+		}
+		return fmt.Errorf("left %s as it was: couldn't mark it as being paused in the link state: %w", name, err)
+	}
+	defer release()
+	if err := p.closeLinks(ctx, cfg, id, name, rerun); err != nil {
+		return err
+	}
+	return op(ctx)
+}
+
+// closeLinks asks hibd proxy to close every link with id at either end. If the proxy doesn't
+// answer, it deletes id's gates in the kernel, which needs root: the kernel then carries nothing
+// more for any socket the proxy may still hold. A machine that isn't running has no gates.
+func (p linkParts) closeLinks(ctx context.Context, cfg config, id, name, rerun string) error {
+	ctl := p.ctl
+	var closeErr error
+	if ctl == nil {
+		c, err := linkctl.Dial("")
+		if err != nil {
+			closeErr = err
+		} else {
+			ctl = c
+		}
+	}
+	if ctl != nil {
+		cctx, cancel := context.WithTimeout(ctx, links.CtlTimeout)
+		_, closeErr = ctl.Close(cctx, id)
+		cancel()
+	}
+	if closeErr == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("left %s as it was: %w", name, err)
+	}
+	unconfirmed := fmt.Sprintf("left %s as it was: hibd proxy didn't confirm its links are closed (%v)", name, closeErr)
+	resolver := p.resolver
+	if resolver == nil {
+		runs, err := linkadmit.NewRuns(cfg.cgroups)
+		if err != nil {
+			return fmt.Errorf("%s, and finding its gates failed: %w", unconfirmed, err)
+		}
+		resolver = slots.Resolver{Finder: slots.Finder{Cgroups: cfg.cgroups}, Runs: runs}
+	}
+	addr, _, err := resolver.Addr(id)
+	switch {
+	case errors.Is(err, links.ErrNotRunning):
+		return nil
+	case err != nil:
+		return fmt.Errorf("%s, and finding its gates failed: %w", unconfirmed, err)
+	}
+	dropper := p.dropper
+	if dropper == nil {
+		dropper = linkguard.New()
+	}
+	if err := dropper.Drop(addr); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("%s, and deleting its gates in the kernel needs root (%w). Run it as root: sudo hibd %s", unconfirmed, err, rerun)
+		}
+		return fmt.Errorf("%s, and deleting its gates in the kernel failed: %w", unconfirmed, err)
+	}
+	return nil
+}
+
 func (a *App) bridge(ctx context.Context, args []string) int {
 	fl := a.flags("bridge")
 	names, ok := a.parse(fl, args, 1, "bridge NAME")
@@ -374,6 +602,9 @@ func (a *App) bridge(ctx context.Context, args []string) int {
 	}
 	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
 	conn, err := m.Dial(dctx, names[0])
+	if err == nil {
+		a.startedByHand(dctx, names[0])
+	}
 	cancel()
 	if err != nil {
 		return a.fail(false, "bridge", err)
@@ -391,6 +622,43 @@ func (a *App) bridge(ctx context.Context, args []string) int {
 	case <-ctx.Done():
 	}
 	return 0
+}
+
+// startedByHand clears name's paused-by-hand mark with links on, once a person has started it
+// through the bridge, which hib ssh, hib exec and everything else a person runs go through. It
+// is the only thing that clears the mark: save and fork resume a machine too, and must not.
+// Failing to clear it is a warning, since the person still gets their session.
+func (a *App) startedByHand(ctx context.Context, name string) {
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil || !cfg.linksConfiguredOn() {
+		return
+	}
+	e, err := a.engine()
+	if err != nil {
+		a.warnf("couldn't clear %s's paused-by-hand mark, so links still can't reach it: %v", name, err)
+		return
+	}
+	em, err := machines.Lookup(ctx, e, name)
+	if err != nil {
+		a.warnf("couldn't clear %s's paused-by-hand mark, so links still can't reach it: %v", name, err)
+		return
+	}
+	store := a.linkPartsFor(cfg).store
+	doc, err := store.Read()
+	if err == nil {
+		if entry := doc.Machines[em.ID]; entry == nil || !entry.PausedByHand {
+			return
+		}
+		err = store.Update(ctx, func(d *links.Doc) error {
+			if entry := d.Machines[em.ID]; entry != nil {
+				entry.PausedByHand = false
+			}
+			return nil
+		})
+	}
+	if err != nil {
+		a.warnf("couldn't clear %s's paused-by-hand mark, so links still can't reach it: %v", name, err)
+	}
 }
 
 func (a *App) image(ctx context.Context, args []string) int {
@@ -593,14 +861,51 @@ func (a *App) pauseAll(ctx context.Context, args []string) int {
 	defer cancel()
 
 	logger := log.New(a.Stderr, "pause-all: ", 0)
+	opts := pauseall.Options{Logf: logger.Printf}
+	// engine has just loaded the same config, so it only fails here when a test supplies the
+	// engine, and pause-all then runs as it did before links.
+	cfg, err := loadConfig(a.Getenv)
+	made := false
+	if err == nil && cfg.linksConfiguredOn() {
+		made, err = makeQuiescing(cfg.quiescing)
+		if err != nil {
+			logger.Printf("couldn't make %s, so links may wake machines meanwhile: %v", cfg.quiescing, err)
+		}
+		opts.Pause = func(ctx context.Context, id string) error {
+			return a.pauseMachine(ctx, cfg, e, engine.Machine{ID: id}, "pause-all", "pause-all")
+		}
+	}
 	start := time.Now()
-	paused, err := pauseall.Run(ctx, e, pauseall.Options{Logf: logger.Printf})
+	paused, err := pauseall.Run(ctx, e, opts)
 	if err != nil {
 		logger.Printf("%v", err)
+		if made {
+			if err := os.Remove(cfg.quiescing); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				logger.Printf("couldn't remove %s: %v", cfg.quiescing, err)
+			}
+		}
 		return 1
 	}
 	logger.Printf("done: paused %d machine(s) in %v; none running", len(paused), time.Since(start).Round(time.Millisecond))
 	return 0
+}
+
+// makeQuiescing makes the quiescing marker at path, so the link listener stops admitting and
+// renewing links before pause-all pauses anything, and reports whether this call made it. It is
+// left in place once pause-all succeeds, as quiesce leaves it, and removed only by whoever made
+// it, if pausing fails.
+func makeQuiescing(path string) (bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, f.Close()
 }
 
 func (a *App) cleanup(ctx context.Context, args []string) int {
@@ -636,7 +941,36 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	// What might be left over is read before E2B is listed, so nothing made after the listing
+	// can look forgotten.
+	left := a.readLinkLeftovers(cfg, now)
+	var listed map[string]bool
+	err = a.cleanLocked(ctx, listingCtx, cfg, e, now, dryRun, sweep, logf, func(l cleanup.Listing) {
+		listed = make(map[string]bool, len(l.Machines))
+		for _, m := range l.Machines {
+			listed[m.ID] = true
+		}
+	})
+	// Pruning takes links.lock, which must never nest under the cleanup lock.
+	unlock()
+	if listed == nil {
+		return err
+	}
+	pctx := ctx
+	if sweep {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithTimeout(ctx, sweepTimeout)
+		defer cancel()
+	}
+	if perr := a.pruneLinkLeftovers(pctx, cfg, e, left, listed, dryRun, logf); perr != nil {
+		return errors.Join(err, perr)
+	}
+	return err
+}
+
+// cleanLocked is the cleanup itself, run under the cleanup lock. It hands listed the machines
+// E2B lists once it has listed them all. Clean replaces all of it, so nothing is pruned then.
+func (a *App) cleanLocked(ctx, listingCtx context.Context, cfg config, e engine.Engine, now time.Time, dryRun, sweep bool, logf func(format string, args ...any), listed func(cleanup.Listing)) error {
 	if a.Clean != nil {
 		return a.Clean(listingCtx, e, now, dryRun, logf)
 	}
@@ -651,7 +985,10 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 		ReadGuard: func(ctx context.Context) (func(), error) {
 			return a.lockCleanupRead(ctx, m, !sweep, logf)
 		},
-		CheckSaves: m.CheckSaves,
+		CheckSaves: func(ctx context.Context, l cleanup.Listing, dryRun bool, logf func(string, ...any)) error {
+			listed(l)
+			return m.CheckSaves(ctx, l, dryRun, logf)
+		},
 	}
 	if sweep {
 		h.TrimTimeout = trimTimeout
@@ -659,9 +996,301 @@ func (a *App) clean(ctx, listingCtx context.Context, cfg config, e engine.Engine
 	return h.CleanWithListing(ctx, listingCtx, now, dryRun, logf)
 }
 
+// linkLeftovers is what cleanup may prune once E2B has been listed: the names in the activity
+// clock's directory and, with links on, the machines links.json has entries for, and the
+// fences there that have been up for links.FenceStale or longer.
+type linkLeftovers struct {
+	activity []string
+	entries  []string
+	stale    []staleFence
+	err      error
+}
+
+type staleFence struct {
+	id string
+	m  links.Machine
+}
+
+func (a *App) readLinkLeftovers(cfg config, now time.Time) linkLeftovers {
+	var left linkLeftovers
+	var errs []error
+	if names, err := readActivityNames(cfg.stateDir); err != nil {
+		errs = append(errs, fmt.Errorf("reading the activity clock: %w", err))
+	} else {
+		left.activity = names
+	}
+	if cfg.linksConfiguredOn() {
+		doc, err := a.linkPartsFor(cfg).store.Read()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("reading the link state: %w", err))
+		}
+		for id, m := range doc.Machines {
+			left.entries = append(left.entries, id)
+			if m.Stale(now) {
+				left.stale = append(left.stale, staleFence{id: id, m: *m})
+			}
+		}
+		slices.Sort(left.entries)
+		slices.SortFunc(left.stale, func(x, y staleFence) int { return strings.Compare(x.id, y.id) })
+	}
+	left.err = errors.Join(errs...)
+	return left
+}
+
+func readActivityNames(stateDir string) ([]string, error) {
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	dir, err := root.Open(filepath.FromSlash(links.ActivityDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+// pruneLinkLeftovers removes the activity files and, with links on, the link entries of machines
+// E2B has forgotten, and the temporary files a crashed activity update left. Removing one an
+// update is still using only loses that update, which errs toward less activity. With links on
+// it also settles the stale fences. It asks E2B about each machine once.
+func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engine, left linkLeftovers, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
+	type got struct {
+		m   engine.Machine
+		err error
+	}
+	asked := map[string]got{}
+	get := func(id string) (engine.Machine, error) {
+		g, ok := asked[id]
+		if !ok {
+			g.m, g.err = e.Get(ctx, id)
+			asked[id] = g
+		}
+		return g.m, g.err
+	}
+	forgotten, err := confirmForgotten(get, left, listed)
+	errs := []error{left.err, err}
+	for _, f := range left.stale {
+		errs = append(errs, a.reconcileFence(ctx, cfg, f, get, dryRun, logf))
+	}
+	if len(left.activity) > 0 {
+		errs = append(errs, pruneActivity(cfg.stateDir, left.activity, forgotten, dryRun, logf))
+	}
+	var gone []string
+	for _, id := range left.entries {
+		if forgotten[id] {
+			gone = append(gone, id)
+		}
+	}
+	if len(gone) > 0 {
+		errs = append(errs, a.dropLinkEntries(ctx, cfg, gone, dryRun, logf))
+	}
+	return errors.Join(errs...)
+}
+
+// confirmForgotten asks E2B, through get, for each machine in left that the listing missed, and
+// reports the ones it has forgotten. Missing from one listing isn't enough: the listing reads
+// running and paused machines page by page, and a machine E2B pauses meanwhile can fall between
+// them. A machine E2B still has, in any state, is kept, and so is one it can't be asked about,
+// with an error.
+func confirmForgotten(get func(id string) (engine.Machine, error), left linkLeftovers, listed map[string]bool) (map[string]bool, error) {
+	entries, clocks := map[string]bool{}, map[string]bool{}
+	var candidates []string
+	for _, id := range left.entries {
+		if !listed[id] {
+			entries[id] = true
+			candidates = append(candidates, id)
+		}
+	}
+	for _, name := range left.activity {
+		if !strings.HasPrefix(name, ".") && !listed[name] {
+			clocks[name] = true
+			candidates = append(candidates, name)
+		}
+	}
+	slices.Sort(candidates)
+	candidates = slices.Compact(candidates)
+	forgotten := map[string]bool{}
+	var errs []error
+	for _, id := range candidates {
+		_, err := get(id)
+		switch {
+		case err == nil:
+		case errors.Is(err, engine.ErrNotFound):
+			forgotten[id] = true
+		default:
+			what := "the activity clock"
+			switch {
+			case entries[id] && clocks[id]:
+				what = "the link entry and activity clock"
+			case entries[id]:
+				what = "the link entry"
+			}
+			errs = append(errs, fmt.Errorf("kept %s of %s: couldn't confirm E2B has forgotten it: %w", what, id, err))
+		}
+	}
+	return forgotten, errors.Join(errs...)
+}
+
+// reconcileFence settles a fence that has been up for links.FenceStale or longer. Age alone
+// never clears one: a save may run for ten minutes. A fence whose owner is still running is only
+// logged. One whose owner is gone is cleared once E2B reports the machine's state, whatever it
+// is, by taking the fence over and releasing it, so the store clears it as it clears its own. A
+// machine E2B has forgotten is left to the prune, which drops its whole entry.
+func (a *App) reconcileFence(ctx context.Context, cfg config, f staleFence, get func(id string) (engine.Machine, error), dryRun bool, logf func(format string, args ...any)) error {
+	fence := *f.m.Fence
+	since, why := fence.Since.UTC().Format(time.RFC3339), termsafe.Line(fence.Why)
+	state, err := f.m.Fenced(func(owner string) (bool, error) { return statefile.Held(cfg.stateDir, owner) })
+	switch {
+	case err != nil:
+		return fmt.Errorf("kept the fence on %s: couldn't check whether its owner is still running: %w", f.id, err)
+	case state == links.FencedLive:
+		logf("the fence on %s has been up since %s (%s), and the operation that raised it is still running", f.id, since, why)
+		return nil
+	case state != links.FencedOrphaned:
+		return nil
+	}
+	m, err := get(f.id)
+	switch {
+	case errors.Is(err, engine.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("kept the fence on %s: couldn't read its state from E2B: %w", f.id, err)
+	}
+	detail := fmt.Sprintf("left since %s by %s, whose operation is gone: E2B reports it %s", since, why, m.State)
+	if dryRun {
+		logf("would clear the fence on %s, %s", f.id, detail)
+		return nil
+	}
+	store := a.linkPartsFor(cfg).store
+	fctx, cancel := context.WithTimeout(ctx, fenceClearTimeout)
+	release, err := store.Fence(fctx, f.id, "clearing a fence its owner left")
+	timedOut := errors.Is(fctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancel()
+	if err != nil {
+		if release != nil {
+			release()
+		}
+		if timedOut {
+			logf("left the fence on %s: an operation is fencing it now", f.id)
+			return nil
+		}
+		return fmt.Errorf("kept the fence on %s: couldn't take it over to clear it: %w", f.id, err)
+	}
+	release()
+	doc, err := store.Read()
+	if err != nil {
+		return fmt.Errorf("cleared the fence on %s, but couldn't read the link state back: %w", f.id, err)
+	}
+	if after := doc.Machines[f.id]; after != nil && after.Fence != nil {
+		if after.Fence.Since.Equal(fence.Since) {
+			return fmt.Errorf("the fence on %s is still up after clearing it", f.id)
+		}
+		return nil
+	}
+	logf("cleared the fence on %s, %s", f.id, detail)
+	return nil
+}
+
+// dropLinkEntries drops the link entries of the machines in gone that still have one. Their
+// addresses stay spent.
+func (a *App) dropLinkEntries(ctx context.Context, cfg config, gone []string, dryRun bool, logf func(format string, args ...any)) error {
+	if dryRun {
+		for _, id := range gone {
+			logf("would drop the link entry of %s, which E2B has forgotten", id)
+		}
+		return nil
+	}
+	var dropped []string
+	unchanged := errors.New("no entries to drop")
+	err := a.linkPartsFor(cfg).store.Update(ctx, func(d *links.Doc) error {
+		dropped = dropped[:0]
+		for _, id := range gone {
+			if _, ok := d.Machines[id]; ok {
+				delete(d.Machines, id)
+				dropped = append(dropped, id)
+			}
+		}
+		if len(dropped) == 0 {
+			return unchanged
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, unchanged):
+		return nil
+	case err != nil:
+		return fmt.Errorf("dropping the link entries of machines E2B has forgotten: %w", err)
+	}
+	for _, id := range dropped {
+		logf("dropped the link entry of %s, which E2B has forgotten", id)
+	}
+	return nil
+}
+
+// pruneActivity removes the activity files in names whose machines E2B has forgotten, and the
+// temporary files whose names start with a dot. It goes through the state directory as a root,
+// so a symlink planted in it can't point the removals anywhere else.
+func pruneActivity(stateDir string, names []string, forgotten map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
+	state, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return fmt.Errorf("pruning the activity clock: %w", err)
+	}
+	defer state.Close()
+	dir, err := state.OpenRoot(filepath.FromSlash(links.ActivityDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("pruning the activity clock: %w", err)
+	}
+	defer dir.Close()
+	var errs []error
+	for _, name := range names {
+		temporary := strings.HasPrefix(name, ".")
+		if !temporary && !forgotten[name] {
+			continue
+		}
+		what := fmt.Sprintf("the activity clock of %s, which E2B has forgotten", name)
+		if temporary {
+			what = fmt.Sprintf("%s, left by an activity update that didn't finish", name)
+		}
+		if dryRun {
+			logf("would remove %s", what)
+			continue
+		}
+		if err := dir.Remove(name); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			errs = append(errs, fmt.Errorf("pruning the activity clock: %w", err))
+			continue
+		}
+		logf("removed %s", what)
+	}
+	return errors.Join(errs...)
+}
+
 const (
 	sweepTimeout = 30 * time.Second
 	trimTimeout  = 2 * time.Minute
+	// fenceClearTimeout bounds cleanup's wait for a machine's fence lock, so a live operation
+	// that took it meanwhile, such as a ten-minute save, makes cleanup give up, not wait.
+	fenceClearTimeout = 5 * time.Second
 )
 
 var errCleanupLocked = errors.New("another cleanup is running")
@@ -794,7 +1423,10 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		return a.fail(false, "daemon", err)
 	}
 	logger := log.New(a.Stderr, "", 0)
-	w, err := busy.New(busy.Config{Engine: e, CPU: busy.CgroupCPU(cfg.cgroups), Agents: cfg.agents, Logf: logger.Printf})
+	w, err := busy.New(busy.Config{
+		Engine: e, CPU: busy.CgroupCPU(cfg.cgroups), Agents: cfg.agents, Logf: logger.Printf,
+		Activity: links.NewClock(cfg.stateDir).Touch, StateDir: cfg.stateDir,
+	})
 	if err != nil {
 		return a.fail(false, "daemon", err)
 	}
@@ -884,7 +1516,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
-		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect}})
+		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect, hibapi.FeaturePorts}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
 	return 0
@@ -989,6 +1621,7 @@ func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) 
 		Durable: func(ctx context.Context, id string) error {
 			return a.durableSnapshot(ctx, cfg, id)
 		},
+		Fenced: a.snapshotFence(cfg),
 	}), nil
 }
 
@@ -1020,6 +1653,11 @@ type config struct {
 	caCert         string
 	caKey          string
 	proxyPort      string
+	// linkPort is HIBD_LINK_PORT, the port hibd proxy serves links between machines on. It
+	// defaults to 5444, and 0 turns links off.
+	linkPort int
+	// linkLog is HIBD_LINK_LOG, the link log's path.
+	linkLog string
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -1066,6 +1704,10 @@ func loadSettings(getenv func(string) string) (config, error) {
 	if home := getenv("HOME"); home != "" {
 		keys = filepath.Join(home, ".ssh", "authorized_keys")
 	}
+	linkPort, err := parseLinkPort(get("HIBD_LINK_PORT", strconv.Itoa(links.Port)))
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		e2b: e2b.Config{
 			APIURL:     get("E2B_API_URL", "http://127.0.0.1:3000"),
@@ -1086,6 +1728,8 @@ func loadSettings(getenv func(string) string) (config, error) {
 		caCert:         get("HIBD_CA_CERT", "/etc/hibernaut/ca.crt"),
 		caKey:          get("HIBD_CA_KEY", "/etc/hibernaut/ca.key"),
 		proxyPort:      get("HIBD_PROXY_PORT", "5443"),
+		linkPort:       linkPort,
+		linkLog:        get("HIBD_LINK_LOG", links.LogPath),
 	}
 	if cfg.vaultPath == "" {
 		cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")

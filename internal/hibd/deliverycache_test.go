@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -283,5 +285,142 @@ func TestSetupDeliveryRetriesFailedAndPartialWrites(t *testing.T) {
 				t.Error("the complete successful setup was delivered again")
 			}
 		})
+	}
+}
+
+// TestSetupDeliveryWritesAgainAfterAPush: a push writes machines behind the daemon's back, so
+// what the daemon last wrote no longer says what a machine holds. hib rm doesn't push. It leaves
+// the removed machine's line to the next pass, which has to write the block again even though
+// it is back to what the daemon itself last wrote.
+func TestSetupDeliveryWritesAgainAfterAPush(t *testing.T) {
+	e, a, g, ctl, out, errOut := portApp(t)
+	a.linkParts.ctl = ctl
+	if code := run(t, a, out, errOut, "port", "add", "web", "8080"); code != 0 {
+		t.Fatalf("port add web: exit %d: %s", code, errOut)
+	}
+	d := newTestDelivery(t, a, e)
+	d.look(t.Context())
+	if code := run(t, a, out, errOut, "new", "tmp"); code != 0 {
+		t.Fatalf("new tmp: exit %d: %s", code, errOut)
+	}
+	if code := run(t, a, out, errOut, "port", "add", "tmp", "8080"); code != 0 {
+		t.Fatalf("port add tmp: exit %d: %s", code, errOut)
+	}
+	api := mustID(t, e, "api")
+	if got := g.hostsOf(api); !strings.Contains(got, " tmp.hib\n") {
+		t.Fatalf("after port add tmp, api's /etc/hosts = %q, want it to name tmp.hib", got)
+	}
+	if code := run(t, a, out, errOut, "rm", "tmp"); code != 0 {
+		t.Fatalf("rm tmp: exit %d: %s", code, errOut)
+	}
+	d.look(t.Context())
+	if got := g.hostsOf(api); strings.Contains(got, "tmp.hib") || !strings.Contains(got, " web.hib\n") {
+		t.Errorf("after rm tmp and a delivery pass, api's /etc/hosts = %q, want web.hib and not tmp.hib", got)
+	}
+}
+
+// TestPushSetupMarksBeforeAndAfterItsWrites: the daemon has to see a push that is cut short as
+// well as one that overlaps its pass, so the mark changes before the first write and again after
+// the last.
+func TestPushSetupMarksBeforeAndAfterItsWrites(t *testing.T) {
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	var stateDir string
+	var during []string
+	e := fake.New(fake.WithExec(func(ctx context.Context, m engine.Machine, token string, req engine.ExecRequest) (engine.ExecResult, error) {
+		if req.Cmd == "cat" {
+			mark, err := readPushMark(stateDir)
+			if err != nil {
+				t.Error(err)
+			}
+			during = append(during, mark)
+		}
+		return guest.exec(ctx, m, token, req)
+	}))
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC),
+		Metadata: map[string]string{"hib.name": "app"}})
+	a, _, errOut := newApp(t, e)
+	withSecretConfig(t, a)
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir = cfg.stateDir
+	before, err := readPushMark(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.pushSetup(t.Context(), cfg, "setup saved")
+	after, err := readPushMark(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(during) != 1 || during[0] == before || after == during[0] {
+		t.Errorf("the mark was %q before the push, %q during its write and %q after it, want a new one each time", before, during, after)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr %q, want nothing", errOut)
+	}
+}
+
+// TestPushSetupWarnsOnceWhenItCantMark: a push that can't mark still writes the machines, and
+// says once that the daemon may not write them again.
+func TestPushSetupWarnsOnceWhenItCantMark(t *testing.T) {
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	e := runningApp(guest)
+	a, _, errOut := newApp(t, e)
+	withSecretConfig(t, a)
+	saveTestProfile(t, a, "The Octocat")
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cfg.stateDir, pushMark), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a.pushSetup(t.Context(), cfg, "setup saved")
+	if got := errOut.String(); strings.Count(got, "\n") != 1 || !strings.HasPrefix(got, "warning: setup saved, but telling hibd daemon about the update failed: ") {
+		t.Errorf("stderr %q, want one warning that hibd daemon wasn't told", got)
+	}
+	if guest.identity() == nil {
+		t.Error("the push didn't write the machine")
+	}
+}
+
+// TestSetupDeliveryWritesEveryPassWhileTheMarkIsUnreadable: a mark the daemon can't read may
+// hide a push, so each pass writes every machine again until it can, and says so once.
+func TestSetupDeliveryWritesEveryPassWhileTheMarkIsUnreadable(t *testing.T) {
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	e := runningApp(guest)
+	a, _, _ := newApp(t, e)
+	withSecretConfig(t, a)
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark := filepath.Join(cfg.stateDir, pushMark)
+	if err := os.Mkdir(mark, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	d := newSetupDelivery(e, cfg, a.codexStore(cfg, nil), func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	d.look(t.Context())
+	requests := len(guest.allRequests())
+	d.look(t.Context())
+	if len(guest.allRequests()) == requests {
+		t.Error("a pass that couldn't read the mark skipped the machine")
+	}
+	if len(logs) != 1 || !strings.HasPrefix(logs[0], "reading the push mark: ") {
+		t.Errorf("logs = %q, want the unreadable mark once", logs)
+	}
+	if err := os.Remove(mark); err != nil {
+		t.Fatal(err)
+	}
+	d.look(t.Context())
+	requests = len(guest.allRequests())
+	d.look(t.Context())
+	if len(guest.allRequests()) != requests {
+		t.Error("the setup was written again after the mark could be read")
 	}
 }

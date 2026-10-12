@@ -20,9 +20,11 @@ import (
 	"github.com/solev/hibernaut/internal/vault"
 )
 
+// leakscanTarget is what a leak scan scans. resolve finds the build to scan, pausing a running
+// machine first with pause, which is the fenced pause with links on.
 type leakscanTarget interface {
 	api() hibapi.LeakScanTarget
-	resolve(context.Context, engine.Engine, scanpkg.Query) (hibapi.LeakScanTarget, string, error)
+	resolve(ctx context.Context, e engine.Engine, query scanpkg.Query, pause func(context.Context, engine.Machine) error) (hibapi.LeakScanTarget, string, error)
 }
 
 type machineScanTarget struct {
@@ -33,13 +35,13 @@ func (t machineScanTarget) api() hibapi.LeakScanTarget {
 	return hibapi.LeakScanTarget{Kind: "machine", Name: t.name}
 }
 
-func (t machineScanTarget) resolve(ctx context.Context, e engine.Engine, query scanpkg.Query) (hibapi.LeakScanTarget, string, error) {
+func (t machineScanTarget) resolve(ctx context.Context, e engine.Engine, query scanpkg.Query, pause func(context.Context, engine.Machine) error) (hibapi.LeakScanTarget, string, error) {
 	m, err := machines.Lookup(ctx, e, t.name)
 	if err != nil {
 		return hibapi.LeakScanTarget{}, "", err
 	}
 	if m.State == engine.Running {
-		if err := e.Pause(ctx, m.ID); err != nil {
+		if err := pause(ctx, m); err != nil {
 			return hibapi.LeakScanTarget{}, "", err
 		}
 	}
@@ -57,7 +59,7 @@ func (t imageScanTarget) api() hibapi.LeakScanTarget {
 	return hibapi.LeakScanTarget{Kind: "image", Name: t.name}
 }
 
-func (t imageScanTarget) resolve(ctx context.Context, _ engine.Engine, query scanpkg.Query) (hibapi.LeakScanTarget, string, error) {
+func (t imageScanTarget) resolve(ctx context.Context, _ engine.Engine, query scanpkg.Query, _ func(context.Context, engine.Machine) error) (hibapi.LeakScanTarget, string, error) {
 	build, err := scanpkg.TemplateBuild(ctx, query, images.Template(t.name))
 	return t.api(), build, err
 }
@@ -129,7 +131,10 @@ func (a *App) runLeakscan(ctx context.Context, cfg config, target leakscanTarget
 		return hibapi.LeakScan{}, err
 	}
 	query := a.query()
-	resolved, build, err := target.resolve(ctx, e, query)
+	pause := func(ctx context.Context, m engine.Machine) error {
+		return a.pauseMachine(ctx, cfg, e, m, "leak scan", "leakscan "+target.api().Name)
+	}
+	resolved, build, err := target.resolve(ctx, e, query, pause)
 	if err != nil {
 		return hibapi.LeakScan{}, err
 	}
@@ -238,7 +243,7 @@ func (a *App) runCanaryScan(ctx context.Context, cfg config, e engine.Engine, m 
 	} else if res.ExitCode != 0 {
 		return hibapi.LeakScan{}, fmt.Errorf("planting canary failed: exit %d: %s", res.ExitCode, termsafe.String(string(res.Stderr)))
 	}
-	if err := e.Pause(ctx, m.ID); err != nil {
+	if err := a.pauseMachine(ctx, cfg, e, m, "leak scan", "leakscan -canary"); err != nil {
 		return hibapi.LeakScan{}, err
 	}
 	build, err := scanpkg.SnapshotBuild(ctx, a.query(), m.ID)

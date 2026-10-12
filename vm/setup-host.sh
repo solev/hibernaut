@@ -37,6 +37,9 @@ install -m 644 "$here/systemd/hibd.service" "$here/systemd/hibd-proxy.service" "
   "$here/systemd/hibernaut-nightly.service" \
   "$here/systemd/hibernaut-nightly.timer" "$here/idle-deallocate/idle-deallocate.service" \
   "$here/idle-deallocate/idle-deallocate.timer" /etc/systemd/system/
+# hibd-proxy.service can't start without /run/hibernaut, which boot makes from this entry.
+install -D -m 644 "$here/systemd/hibernaut-tmpfiles.conf" /usr/lib/tmpfiles.d/hibernaut.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/hibernaut.conf
 systemctl daemon-reload
 systemctl enable -q --now idle-deallocate.timer hibernaut-nightly.timer
 systemctl enable -q hibd.service hibd-proxy.service hibd-pause-all.service

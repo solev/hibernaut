@@ -205,7 +205,7 @@ func (a *app) positional(w walker) []string {
 	}
 	arg := len(w.positional)
 	switch w.c.path() {
-	case "rm", "pause", "ssh", "exec", "fork":
+	case "rm", "pause", "ssh", "exec", "fork", "port add", "port rm":
 		if arg == 0 {
 			return a.cachedNames(w).Machines
 		}

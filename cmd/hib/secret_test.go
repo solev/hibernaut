@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/audit"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -438,5 +440,120 @@ func TestLogReportsHostErrors(t *testing.T) {
 	}
 	if c.out.Len() != 0 {
 		t.Fatalf("hib log stdout = %q, want nothing", c.out)
+	}
+}
+
+// writeLinkLog points h's hibd at a link log of entries and one corrupt line.
+func writeLinkLog(t *testing.T, h *host, entries ...audit.LinkEntry) {
+	t.Helper()
+	var data []byte
+	for _, e := range entries {
+		line, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(append(data, line...), '\n')
+	}
+	if err := os.WriteFile(h.env["HIBD_LINK_LOG"], append(data, "{not json\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLogLinksShowsLinksByMachineName(t *testing.T) {
+	h, c, _ := portHost(t)
+	api, web := machineID(t, h, "api"), machineID(t, h, "web")
+	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
+	writeLinkLog(t, h,
+		audit.LinkEntry{Time: at, Event: "open", From: web, FromID: web, To: api, ToID: api, Port: 8080, Woke: true},
+		audit.LinkEntry{Time: at.Add(time.Hour), Event: "close", From: web, FromID: web, To: api, ToID: api, Port: 8080,
+			Reason: "revoked", BytesIn: 10, BytesOut: 20, SecondsOpen: 3600},
+		audit.LinkEntry{Time: at.Add(2 * time.Hour), Event: "refused", From: "?", To: "db\x1b]0;owned\x07", ToID: "db1", Port: 22,
+			Reason: "not published", Count: 7},
+	)
+	if code := c.hib("log", "--links", "--n", "5"); code != 0 {
+		t.Fatalf("hib log --links exit %d: %s", code, c.errOut)
+	}
+	if got, want := remoteCommands(h.takeCalls()), []string{"hibd version --json", "hibd log --n 5 --links --json"}; !slices.Equal(got, want) {
+		t.Errorf("remote commands %q, want %q", got, want)
+	}
+	if got, want := c.errOut.String(), "hib: skipped 1 corrupt link log line(s)\n"; got != want {
+		t.Errorf("stderr %q, want %q", got, want)
+	}
+	local := func(d time.Duration) string { return at.Add(d).Local().Format(time.RFC3339) }
+	want := [][]string{
+		{"TIME", "MACHINE", "TO", "PORT", "RESULT", "WOKE", "BYTES"},
+		{local(0), "web", "api", "8080", "open", "yes", "-"},
+		{local(time.Hour), "web", "api", "8080", "closed after 1h: revoked", "-", "10 sent, 20 received"},
+		{local(2 * time.Hour), "?", `db\x1b]0;owned\x07`, "22", "refused: not published (7 times)", "-", "-"},
+	}
+	lines := strings.Split(strings.TrimSuffix(c.out.String(), "\n"), "\n")
+	if len(lines) != len(want) {
+		t.Fatalf("hib log --links printed\n%s", c.out)
+	}
+	for i, line := range lines {
+		if got := regexp.MustCompile(`\s{2,}`).Split(line, -1); !slices.Equal(got, want[i]) {
+			t.Errorf("line %d = %q, want %q", i, got, want[i])
+		}
+	}
+
+	if code := c.hib("log", "--links", "--json"); code != 0 {
+		t.Fatalf("hib log --links --json exit %d: %s", code, c.errOut)
+	}
+	r, err := hibapi.DecodeResponse(c.out.Bytes())
+	if err != nil || len(r.Links) != 3 || r.Links[0].From != "web" || r.Links[0].To != "api" || r.Corrupt != 1 {
+		t.Errorf("reply %+v, %v, want the three entries by name and one corrupt line", r, err)
+	}
+	if c.errOut.Len() != 0 {
+		t.Errorf("stderr %q, want nothing with --json", c.errOut)
+	}
+}
+
+// A line with no port shows - in the table and keeps 0 in JSON.
+func TestLogLinksShowsNoPortAsADash(t *testing.T) {
+	h, c, _ := portHost(t)
+	web := machineID(t, h, "web")
+	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
+	writeLinkLog(t, h, audit.LinkEntry{Time: at, Event: "refused", From: web, FromID: web, To: "?", Reason: "rate limited", Count: 936})
+	if code := c.hib("log", "--links"); code != 0 {
+		t.Fatalf("hib log --links exit %d: %s", code, c.errOut)
+	}
+	lines := strings.Split(strings.TrimSuffix(c.out.String(), "\n"), "\n")
+	want := []string{at.Local().Format(time.RFC3339), "web", "?", "-", "refused: rate limited (936 times)", "-", "-"}
+	if got := regexp.MustCompile(`\s{2,}`).Split(lines[len(lines)-1], -1); len(lines) != 2 || !slices.Equal(got, want) {
+		t.Errorf("hib log --links printed\n%s\nwant the line %q", c.out, want)
+	}
+	if code := c.hib("log", "--links", "--json"); code != 0 || !strings.Contains(c.out.String(), `"port":0,`) {
+		t.Errorf("hib log --links --json exit %d, printed %s; want port 0", code, c.out)
+	}
+}
+
+func TestLogLinksWithNoLinkLog(t *testing.T) {
+	_, c, _ := portHost(t)
+	if code := c.hib("log", "--links"); code != 0 {
+		t.Fatalf("hib log --links exit %d: %s", code, c.errOut)
+	}
+	if got := strings.Fields(c.out.String()); !slices.Equal(got, []string{"TIME", "MACHINE", "TO", "PORT", "RESULT", "WOKE", "BYTES"}) {
+		t.Errorf("stdout %q, want the header alone", c.out)
+	}
+	if code := c.hib("log", "--links", "--json"); code != 0 {
+		t.Fatalf("hib log --links --json exit %d: %s", code, c.errOut)
+	}
+	if got, want := c.out.String(), `{"v":1,"links":[]}`+"\n"; got != want {
+		t.Errorf("stdout %q, want %q", got, want)
+	}
+}
+
+func TestLogLinksNeedsANewEnoughHibd(t *testing.T) {
+	h := newHost(t)
+	hibdVersion(h, `{"v":1,"version":"old","features":["build-events","disconnect"]}`)
+	c := initClient(t, h)
+	if code := c.hib("log", "--links"); code != 1 {
+		t.Errorf("hib log --links = %d, want 1", code)
+	}
+	if got, want := c.errOut.String(), "hib: this host's hibd is too old for hib log --links. Upgrade it\n"; got != want {
+		t.Errorf("stderr %q, want %q", got, want)
+	}
+	if got, want := remoteCommands(h.takeCalls()), []string{"hibd version --json"}; !slices.Equal(got, want) {
+		t.Errorf("hib log --links ran %q, want only %q", got, want)
 	}
 }

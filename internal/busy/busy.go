@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
 )
 
@@ -46,16 +47,28 @@ type Config struct {
 	Now func() time.Time
 	// Logf logs machines turning busy or idle, and problems looking at them. Default: no log.
 	Logf func(format string, args ...any)
+	// Activity records that a machine did something that was not a link, at the time it was
+	// seen. Machine links read it: a machine whose own activity has gone stale may not wake or
+	// renew another, which is what stops a ring of machines holding each other up. The
+	// watcher calls it for every busy observation, machines with idle=0 included — they never
+	// pause, so there is nothing to renew, but whether they are working still decides whether
+	// their links count. Default: not recorded.
+	Activity func(id string, at time.Time)
+	// StateDir is where the activity clock is kept across restarts of hibd, usually
+	// HIBD_STATE_DIR. Empty keeps it in memory only. The watcher records into it when Activity
+	// is nil.
+	StateDir string
 }
 
 // Watcher keeps busy machines running. Its methods must not be called concurrently.
 type Watcher struct {
-	e     engine.Engine
-	cpu   func(id string) (time.Duration, error)
-	pgrep []string
-	now   func() time.Time
-	logf  func(format string, args ...any)
-	seen  map[string]*seen
+	e        engine.Engine
+	cpu      func(id string) (time.Duration, error)
+	pgrep    []string
+	now      func() time.Time
+	logf     func(format string, args ...any)
+	activity func(id string, at time.Time)
+	seen     map[string]*seen
 }
 
 type seen struct {
@@ -89,12 +102,19 @@ func New(cfg Config) (*Watcher, error) {
 		quoted[i] = regexp.QuoteMeta(a)
 	}
 	w := &Watcher{
-		e:     cfg.Engine,
-		cpu:   cfg.CPU,
-		pgrep: []string{"-f", `(^|[ /])(` + strings.Join(quoted, "|") + `)( |$)`},
-		now:   cfg.Now,
-		logf:  cfg.Logf,
-		seen:  map[string]*seen{},
+		e:        cfg.Engine,
+		cpu:      cfg.CPU,
+		pgrep:    []string{"-f", `(^|[ /])(` + strings.Join(quoted, "|") + `)( |$)`},
+		now:      cfg.Now,
+		logf:     cfg.Logf,
+		activity: cfg.Activity,
+		seen:     map[string]*seen{},
+	}
+	if w.activity == nil && cfg.StateDir != "" {
+		w.activity = links.NewClock(cfg.StateDir).Touch
+	}
+	if w.activity == nil {
+		w.activity = func(string, time.Time) {}
 	}
 	if w.now == nil {
 		w.now = time.Now
@@ -105,11 +125,12 @@ func New(cfg Config) (*Watcher, error) {
 	return w, nil
 }
 
-// Tick looks once at each running machine hibd made that pauses when idle, and makes each busy
-// one run for at least its idle time from now. A machine is busy if it used at least CPUBusy
-// of a CPU since the last Tick, or a coding agent is running in it. Tick never shortens a
-// timeout or touches a paused machine. It logs problems with a machine once, and returns an
-// error only if it can't list the machines.
+// Tick looks once at each running machine hibd made, records each busy one's activity, and
+// makes each busy one that pauses when idle run for at least its idle time from now. Machines
+// that never pause are looked at too, for their activity, and never renewed. A machine is busy
+// if it used at least CPUBusy of a CPU since the last Tick, or a coding agent is running in
+// it. Tick never shortens a timeout or touches a paused machine. It logs problems with a
+// machine once, and returns an error only if it can't list the machines.
 func (w *Watcher) Tick(ctx context.Context) error {
 	lctx, cancel := context.WithTimeout(ctx, callTimeout)
 	ms, err := w.e.List(lctx, engine.ListOptions{States: []engine.State{engine.Running}})
@@ -121,7 +142,7 @@ func (w *Watcher) Tick(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, m := range ms {
 		idle, ok := machines.Idle(m)
-		if !ok || idle == 0 || m.State != engine.Running || running[m.ID] {
+		if !ok || m.State != engine.Running || running[m.ID] {
 			continue
 		}
 		running[m.ID] = true
@@ -157,6 +178,10 @@ func (w *Watcher) look(ctx context.Context, m engine.Machine, s *seen, idle time
 		w.logf("%s is idle", s.name)
 	}
 	if why == "" {
+		return
+	}
+	w.activity(m.ID, w.now())
+	if idle == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)

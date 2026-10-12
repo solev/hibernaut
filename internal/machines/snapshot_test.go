@@ -3,12 +3,15 @@ package machines_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/room"
 )
@@ -259,5 +262,128 @@ func TestSaveChecksAwakeAndRoomBeforeChanges(t *testing.T) {
 	}
 	if em := v.get(t, web.ID); em.State != engine.Running || em.StartedAt != web.StartedAt {
 		t.Errorf("origin changed before room check: %+v", em)
+	}
+}
+
+// fencedEngine logs each pause, resume, renewal and save of machine id.
+type fencedEngine struct {
+	engine.Engine
+	id  string
+	log *[]string
+}
+
+func (e fencedEngine) record(id, what string) {
+	if id == e.id {
+		*e.log = append(*e.log, what)
+	}
+}
+
+func (e fencedEngine) Pause(ctx context.Context, id string) error {
+	e.record(id, "pause")
+	return e.Engine.Pause(ctx, id)
+}
+
+func (e fencedEngine) Resume(ctx context.Context, id string, timeout time.Duration) (engine.Machine, error) {
+	e.record(id, "resume")
+	return e.Engine.Resume(ctx, id, timeout)
+}
+
+func (e fencedEngine) SetTimeout(ctx context.Context, id string, timeout time.Duration) error {
+	e.record(id, "renew")
+	return e.Engine.SetTimeout(ctx, id, timeout)
+}
+
+func (e fencedEngine) SaveTemplate(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
+	e.record(id, "save")
+	return e.Engine.SaveTemplate(ctx, id, alias)
+}
+
+func saveOrFork(t *testing.T, m *machines.Manager, op string) error {
+	t.Helper()
+	if op == "fork" {
+		_, err := m.Fork(t.Context(), "web", 1)
+		return err
+	}
+	_, err := m.SaveImage(t.Context(), "web", "myimg")
+	return err
+}
+
+func TestSaveAndForkRunTheirRoundTripBehindTheFence(t *testing.T) {
+	for _, tc := range []struct {
+		op     string
+		paused bool
+		steps  []string
+	}{
+		{"image save", false, []string{"pause", "resume", "save"}},
+		{"image save", true, []string{"resume", "save", "pause"}},
+		{"fork", false, []string{"pause", "resume", "save"}},
+		{"fork", true, []string{"resume", "save", "pause"}},
+	} {
+		t.Run(fmt.Sprintf("%s of a %s machine", tc.op, map[bool]string{false: "running", true: "paused"}[tc.paused]), func(t *testing.T) {
+			v := newEnv(t, fake.WithExec(newCopyGuest().exec))
+			web := v.create(t, "web")
+			state := engine.Running
+			if tc.paused {
+				if err := v.m.Pause(t.Context(), "web"); err != nil {
+					t.Fatal(err)
+				}
+				state = engine.Paused
+			}
+			var log []string
+			m := imageManager(v, func(cfg *machines.Config) {
+				cfg.Engine = fencedEngine{Engine: v.e, id: web.ID, log: &log}
+				cfg.Fenced = func(ctx context.Context, id, name, why string, op func(context.Context) error) error {
+					log = append(log, fmt.Sprintf("fence %s %s %s", id, name, why))
+					defer func() { log = append(log, "release") }()
+					return op(ctx)
+				}
+			})
+			if err := saveOrFork(t, m, tc.op); err != nil {
+				t.Fatal(err)
+			}
+			fence := fmt.Sprintf("fence %s web %s", web.ID, tc.op)
+			if len(log) < 2 || log[0] != fence || log[len(log)-1] != "release" {
+				t.Fatalf("log = %q, want every step between %q and release", log, fence)
+			}
+			got := slices.DeleteFunc(slices.Clone(log[1:len(log)-1]), func(s string) bool { return s == "renew" })
+			if !slices.Equal(got, tc.steps) {
+				t.Errorf("steps inside the fence = %q, want %q", got, tc.steps)
+			}
+			if em := v.get(t, web.ID); em.State != state {
+				t.Errorf("origin = %s, want %s", em.State, state)
+			}
+		})
+	}
+}
+
+func TestSaveAndForkLeaveTheMachineAloneWhenTheFenceFails(t *testing.T) {
+	for _, op := range []string{"image save", "fork"} {
+		t.Run(op, func(t *testing.T) {
+			v := newEnv(t, fake.WithExec(newCopyGuest().exec))
+			web := v.create(t, "web")
+			var log []string
+			fenceErr := errors.New("left web as it was: the link state is unreadable")
+			m := imageManager(v, func(cfg *machines.Config) {
+				cfg.Engine = fencedEngine{Engine: v.e, id: web.ID, log: &log}
+				cfg.Fenced = func(context.Context, string, string, string, func(context.Context) error) error {
+					return fenceErr
+				}
+			})
+			if err := saveOrFork(t, m, op); !errors.Is(err, fenceErr) {
+				t.Fatalf("%s = %v, want the fence's error", op, err)
+			}
+			if len(log) != 0 {
+				t.Errorf("origin was touched without its fence: %q", log)
+			}
+			if em := v.get(t, web.ID); em.State != engine.Running || !em.EndAt.Equal(web.EndAt) {
+				t.Errorf("origin = %+v, want it as it was", em)
+			}
+			if saved, err := v.e.SavedTemplates(t.Context()); err != nil || len(saved) != 0 {
+				t.Errorf("saved templates = %+v, %v, want none", saved, err)
+			}
+			if ms := v.machines(t); len(ms) != 1 {
+				t.Errorf("machines = %+v, want only the origin", ms)
+			}
+		})
 	}
 }

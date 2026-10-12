@@ -367,6 +367,7 @@ func newLeakscanApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.
 		"HIBD_VAULT":           filepath.Join(vaultDir, "vault.json"),
 		"HIBD_VAULT_KEY":       filepath.Join(vaultDir, "vault.key"),
 		"HIBD_E2B_STORAGE":     storage,
+		"HIBD_LINK_PORT":       "0",
 	}
 	var out, errOut bytes.Buffer
 	a := &App{

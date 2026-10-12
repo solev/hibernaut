@@ -11,5 +11,9 @@ table inet hibernaut-sandboxes {
 	chain forward {
 		type filter hook forward priority filter - 10; policy accept;
 		iifname "veth-*" ip daddr { 168.63.129.16, 169.254.169.254 } counter drop
+		# Machine links' addresses. Nothing machines send to them is ever forwarded: hibd proxy
+		# redirects link TCP before routing, and anything else, or TCP the redirect misses, is
+		# dropped here.
+		iifname "veth-*" ip daddr 198.18.0.0/15 counter drop
 	}
 }

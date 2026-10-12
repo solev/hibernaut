@@ -276,12 +276,13 @@ func (a *app) ls(ctx context.Context, cfg *config, _ []string) int {
 	now := a.now()
 	var table strings.Builder
 	tw := hibapi.NewTable(&table, a.style())
-	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPAUSES IN\tSTARTED\tID\tFROM")
+	fmt.Fprintln(tw, "NAME\tSTATE\tIMAGE\tSIZE\tIDLE\tPORTS\tPAUSES IN\tSTARTED\tID\tFROM")
 	states := make([]string, len(r.Machines))
 	for i, m := range r.Machines {
 		states[i] = m.State
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),
-			hibapi.FormatIdle(m.IdleSeconds), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID), safe(m.ForkOf))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", safe(m.Name), tw.State(safe(m.State)), safe(m.Image), safe(m.Size),
+			hibapi.FormatIdle(m.IdleSeconds), hibapi.FormatPorts(m.Ports), pausesIn(m, now), m.StartedAt.Local().Format("2006-01-02 15:04"), safe(m.ID),
+			safe(m.ForkOf))
 	}
 	tw.Flush()
 	io.WriteString(a.stdout, a.printedFaces().table(table.String(), states))
@@ -355,7 +356,7 @@ func (a *app) rm(ctx context.Context, cfg *config, name string, yes bool) int {
 			return 1
 		}
 	}
-	if _, err := a.remote(ctx, cfg, shortTimeout, "rm", name, "--json"); err != nil {
+	if _, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "rm", name, "--json"); err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be deleting %s: check hib ls", name))
 	}
 	if err := cfg.unpin(name); err != nil {
@@ -392,7 +393,7 @@ func (a *app) pause(ctx context.Context, cfg *config, args []string) int {
 		return 2
 	}
 	stopLive := a.showLive(ctx, "pausing "+name, pausingFace)
-	_, err := a.remote(ctx, cfg, shortTimeout, "pause", name, "--json")
+	_, err := a.remoteSudo(ctx, cfg, shortTimeout, callOptions{}, "pause", name, "--json")
 	stopLive()
 	if err != nil {
 		return a.failWaiting(ctx, err, fmt.Sprintf("The host may still be pausing %s: check hib ls", name))

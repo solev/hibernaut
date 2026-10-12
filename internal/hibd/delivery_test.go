@@ -3,10 +3,15 @@ package hibd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +21,8 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/github"
+	"github.com/solev/hibernaut/internal/hostsblock"
+	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
 )
 
@@ -271,5 +278,281 @@ func TestNewRefusesABrokenProfile(t *testing.T) {
 	}
 	if ms, _ := e.List(t.Context(), engine.ListOptions{}); len(ms) != 0 {
 		t.Errorf("new made %d machines", len(ms))
+	}
+}
+
+const namedUserHosts = "127.0.0.1 localhost\n127.0.1.1 e2b.local\n"
+
+// namedGuest is a machine with an /etc/hosts. Everything else goes to its secretGuest.
+type namedGuest struct {
+	*secretGuest
+	mu         sync.Mutex
+	hosts      []byte
+	hostsExecs int
+}
+
+func newNamedGuest(hosts string) *namedGuest {
+	return &namedGuest{secretGuest: &secretGuest{env: []byte("PATH=/usr/bin\n")}, hosts: []byte(hosts)}
+}
+
+func (g *namedGuest) exec(ctx context.Context, m engine.Machine, token string, req engine.ExecRequest) (engine.ExecResult, error) {
+	read := req.Cmd == "cat" && slices.Equal(req.Args, []string{"/etc/hosts"})
+	write := req.Cmd == "sh" && len(req.Args) == 5 && req.Args[2] == "hibd-hosts"
+	if !read && !write {
+		return g.secretGuest.exec(ctx, m, token, req)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hostsExecs++
+	if read {
+		return engine.ExecResult{Stdout: bytes.Clone(g.hosts)}, nil
+	}
+	if sum := sha256.Sum256(g.hosts); req.Args[3] != hexHash(sum[:]) {
+		return engine.ExecResult{ExitCode: 75}, nil
+	}
+	next, err := base64.StdEncoding.DecodeString(req.Args[4])
+	if err != nil {
+		return engine.ExecResult{ExitCode: 64, Stderr: []byte(err.Error())}, nil
+	}
+	g.hosts = next
+	return engine.ExecResult{}, nil
+}
+
+func (g *namedGuest) hostsFile() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return string(g.hosts)
+}
+
+func (g *namedGuest) hostsTouches() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hostsExecs
+}
+
+func (g *namedGuest) touches() int {
+	return g.hostsTouches() + len(g.allRequests())
+}
+
+// hostsLinks is links.json as the delivery reads it.
+type hostsLinks struct {
+	mu  sync.Mutex
+	doc links.Doc
+	err error
+}
+
+func (l *hostsLinks) Read() (links.Doc, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.doc, l.err
+}
+
+func (l *hostsLinks) Update(context.Context, func(*links.Doc) error) error {
+	return errors.New("test: the delivery only reads links.json")
+}
+
+func (l *hostsLinks) Fence(context.Context, string, string) (func(), error) {
+	return func() {}, errors.New("test: the delivery only reads links.json")
+}
+
+func (l *hostsLinks) set(doc links.Doc, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.doc, l.err = doc, err
+}
+
+func published(ports map[string][]int) links.Doc {
+	doc := links.Doc{V: links.Version, Machines: map[string]*links.Machine{}}
+	for i, id := range []string{"api1", "web1", "cli1", "dup1", "dup2", "raw1", "gone1", "app1", "bad1"} {
+		doc.Machines[id] = &links.Machine{Addr: netip.AddrFrom4([4]byte{198, 18, 0, byte(i + 1)}), Ports: ports[id]}
+	}
+	return doc
+}
+
+func withHostsLinkPort(a *App) {
+	old := a.Getenv
+	a.Getenv = func(k string) string {
+		if k == "HIBD_LINK_PORT" {
+			return "5444"
+		}
+		return old(k)
+	}
+}
+
+func namedGuests(t *testing.T, guests map[string]*namedGuest) *fake.Engine {
+	t.Helper()
+	return fake.New(fake.WithExec(func(ctx context.Context, m engine.Machine, token string, req engine.ExecRequest) (engine.ExecResult, error) {
+		g, ok := guests[m.ID]
+		if !ok {
+			t.Errorf("setup ran %+v in %s", req, m.ID)
+			return engine.ExecResult{ExitCode: 127}, nil
+		}
+		return g.exec(ctx, m, token, req)
+	}))
+}
+
+func TestSetupDeliveryNamesPublishedMachinesInEtcHosts(t *testing.T) {
+	ctx := t.Context()
+	guests := map[string]*namedGuest{}
+	for _, id := range []string{"api1", "web1", "cli1", "dup1", "dup2"} {
+		guests[id] = newNamedGuest(namedUserHosts)
+	}
+	e := namedGuests(t, guests)
+	now := time.Now()
+	for id, m := range map[string]struct {
+		name  string
+		state engine.State
+	}{"api1": {"api", engine.Running}, "web1": {"web", engine.Paused}, "cli1": {"cli", engine.Running},
+		"dup1": {"dup", engine.Running}, "dup2": {"dup", engine.Paused}} {
+		e.Add(engine.Machine{ID: id, State: m.state, StartedAt: now, Metadata: map[string]string{"hib.name": m.name}})
+	}
+	e.Add(engine.Machine{ID: "raw1", State: engine.Paused, StartedAt: now})
+	a, _, _ := newApp(t, e)
+	withSecretConfig(t, a)
+	withHostsLinkPort(a)
+	// cli1 has an address but nothing published, raw1 isn't hibd's, gone1 is gone, and the
+	// two dups share a name.
+	store := &hostsLinks{doc: published(map[string][]int{"api1": {8080}, "web1": {3000, 3001}, "dup1": {80}, "dup2": {80},
+		"raw1": {80}, "gone1": {80}})}
+	d := newTestDelivery(t, a, e)
+	d.links = store
+	d.look(ctx)
+	want := namedUserHosts +
+		"# BEGIN hibernaut machines: hibd manages this block and replaces edits\n" +
+		"198.18.0.1 api.hib\n" +
+		"198.18.0.2 web.hib\n" +
+		"# END hibernaut machines\n"
+	for _, id := range []string{"api1", "cli1", "dup1"} {
+		if got := guests[id].hostsFile(); got != want {
+			t.Errorf("%s's /etc/hosts = %q, want %q", id, got, want)
+		}
+	}
+	for _, id := range []string{"web1", "dup2"} {
+		if n := guests[id].touches(); n != 0 {
+			t.Errorf("setup ran %d commands in paused %s", n, id)
+		}
+	}
+
+	store.set(published(map[string][]int{"api1": {8080}, "web1": {3000, 3001}, "cli1": {9000}}), nil)
+	d.look(ctx)
+	want = namedUserHosts +
+		"# BEGIN hibernaut machines: hibd manages this block and replaces edits\n" +
+		"198.18.0.1 api.hib\n" +
+		"198.18.0.3 cli.hib\n" +
+		"198.18.0.2 web.hib\n" +
+		"# END hibernaut machines\n"
+	for _, id := range []string{"api1", "cli1", "dup1"} {
+		if got := guests[id].hostsFile(); got != want {
+			t.Errorf("after cli published its first port, %s's /etc/hosts = %q, want %q", id, got, want)
+		}
+	}
+
+	touches := func() int {
+		n := 0
+		for _, g := range guests {
+			n += g.touches()
+		}
+		return n
+	}
+	before := touches()
+	store.set(published(map[string][]int{"api1": {8080, 8081}, "web1": {3000, 3001}, "cli1": {9000}}), nil)
+	d.look(ctx)
+	if n := touches() - before; n != 0 {
+		t.Errorf("a port change that leaves the names alone ran %d commands", n)
+	}
+
+	store.set(published(nil), nil)
+	d.look(ctx)
+	for _, id := range []string{"api1", "cli1", "dup1"} {
+		if got := guests[id].hostsFile(); got != namedUserHosts {
+			t.Errorf("after the last port went, %s's /etc/hosts = %q, want %q", id, got, namedUserHosts)
+		}
+	}
+}
+
+func TestSetupDeliveryLeavesEtcHostsAloneWithLinksOff(t *testing.T) {
+	stale := namedUserHosts + "# BEGIN hibernaut machines: hibd manages this block and replaces edits\n" +
+		"198.18.0.8 app.hib\n# END hibernaut machines\n"
+	for _, off := range []string{"port 0", "store off"} {
+		t.Run(off, func(t *testing.T) {
+			guest := newNamedGuest(stale)
+			e := namedGuests(t, map[string]*namedGuest{"app1": guest})
+			e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now(), Metadata: map[string]string{"hib.name": "app"}})
+			a, _, _ := newApp(t, e)
+			withSecretConfig(t, a)
+			saveTestProfile(t, a, "The Octocat")
+			store := &hostsLinks{doc: published(nil)}
+			if off == "store off" {
+				withHostsLinkPort(a)
+				store.err = links.ErrLinksOff
+			}
+			d := newTestDelivery(t, a, e)
+			d.links = store
+			d.look(t.Context())
+			if guest.identity() == nil {
+				t.Fatal("the rest of the setup was not delivered")
+			}
+			if guest.hostsTouches() != 0 || guest.hostsFile() != stale {
+				t.Errorf("with links off, setup touched /etc/hosts: %q", guest.hostsFile())
+			}
+		})
+	}
+}
+
+func TestSetupDeliveryWarnsWhenItCantNameMachines(t *testing.T) {
+	ctx := t.Context()
+	guests := map[string]*namedGuest{
+		"app1": newNamedGuest(namedUserHosts),
+		"bad1": newNamedGuest(namedUserHosts + "# END hibernaut machines\n"),
+	}
+	e := namedGuests(t, guests)
+	for id, name := range map[string]string{"app1": "app", "bad1": "bad"} {
+		e.Add(engine.Machine{ID: id, State: engine.Running, StartedAt: time.Now(), Metadata: map[string]string{"hib.name": name}})
+	}
+	a, _, _ := newApp(t, e)
+	withSecretConfig(t, a)
+	withHostsLinkPort(a)
+	secret := storeTestSecret(t, a, "github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890")
+	saveTestProfile(t, a, "The Octocat")
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	d := newSetupDelivery(e, cfg, a.codexStore(cfg, nil), func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	store := &hostsLinks{err: errors.New("test: links.json unreadable")}
+	d.links = store
+	d.look(ctx)
+	d.look(ctx)
+	if want := []string{"building the hosts block: test: links.json unreadable"}; !slices.Equal(logs, want) {
+		t.Errorf("logs = %q, want %q once", logs, want)
+	}
+	for id, g := range guests {
+		if !strings.Contains(g.envString(), secret.Placeholder) || g.identity() == nil {
+			t.Errorf("%s didn't get the rest of the setup", id)
+		}
+		if g.hostsTouches() != 0 {
+			t.Errorf("%s's /etc/hosts was touched without links.json", id)
+		}
+	}
+
+	logs = nil
+	store.set(published(map[string][]int{"app1": {8080}}), nil)
+	d.look(ctx)
+	d.look(ctx)
+	if got := guests["app1"].hostsFile(); !strings.HasSuffix(got, "198.18.0.8 app.hib\n# END hibernaut machines\n") {
+		t.Errorf("app's /etc/hosts = %q, want the block, though bad's doesn't take it", got)
+	}
+	if len(logs) != 1 || !strings.HasPrefix(logs[0], "updating bad: ") || !strings.Contains(logs[0], hostsblock.ErrUnterminated.Error()) {
+		t.Errorf("logs = %q, want bad's unterminated block once", logs)
+	}
+
+	logs = nil
+	store.set(links.Doc{}, errors.New("test: links.json unreadable"))
+	d.look(ctx)
+	if len(logs) != 1 || !strings.HasPrefix(logs[0], "building the hosts block: ") {
+		t.Errorf("logs = %q, want the failure again once it came back", logs)
 	}
 }

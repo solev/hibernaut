@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -124,12 +125,6 @@ func PrintFork(w io.Writer, origin string, copies []Machine) {
 
 // PrintSecrets writes a terminal-safe metadata table. Empty fields show as "-".
 func PrintSecrets(w io.Writer, secrets []Secret) {
-	field := func(s string) string {
-		if s == "" {
-			return "-"
-		}
-		return termsafe.Line(s)
-	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tENV\tSITES\tPLACEHOLDER")
 	for _, s := range secrets {
@@ -137,6 +132,91 @@ func PrintSecrets(w io.Writer, secrets []Secret) {
 			field(strings.Join(s.Sites, ",")), field(s.Placeholder))
 	}
 	tw.Flush()
+}
+
+// PrintPorts writes hib port ls's table, terminal-safe. Empty fields show as "-". OPEN is how
+// many links use a machine's ports now, or "-" when hibd proxy didn't count one of them.
+func PrintPorts(w io.Writer, all []Ports) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tHOST\tIP\tPORTS\tOPEN")
+	for _, p := range all {
+		nums := make([]string, len(p.Published))
+		total, counted := 0, true
+		for i, pp := range p.Published {
+			nums[i] = strconv.Itoa(pp.Port)
+			if pp.Open == nil {
+				counted = false
+			} else {
+				total += *pp.Open
+			}
+		}
+		open := "-"
+		if counted {
+			open = strconv.Itoa(total)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", field(p.Machine), field(p.Machine+".hib"), field(p.Addr),
+			strings.Join(nums, ","), open)
+	}
+	tw.Flush()
+}
+
+// PrintLinkEntries writes the link log as a terminal-safe table. Empty fields show as "-".
+// when gives the TIME column from an entry's Time. A nil when shows Time as it is. MACHINE is
+// the machine that made the link, and BYTES what it sent and received, which only a link's
+// close carries.
+func PrintLinkEntries(w io.Writer, entries []LinkEntry, when func(string) string) {
+	if when == nil {
+		when = func(s string) string { return s }
+	}
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tMACHINE\tTO\tPORT\tRESULT\tWOKE\tBYTES")
+	for _, e := range entries {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", field(when(e.Time)), field(e.From), field(e.To),
+			linkPort(e), field(linkResult(e)), linkWoke(e), linkBytes(e))
+	}
+	tw.Flush()
+}
+
+// linkResult is what became of a link: "open", "closed after 1h" or "refused: not published",
+// with why it was refused or cut short and how many refusals the line stands for.
+func linkResult(e LinkEntry) string {
+	result := e.Event
+	if e.Event == "close" {
+		result = "closed"
+		if e.SecondsOpen > 0 {
+			result += " after " + FormatIdle(&e.SecondsOpen)
+		}
+	}
+	if e.Reason != "" {
+		result += ": " + e.Reason
+	}
+	if e.Count > 1 {
+		result += fmt.Sprintf(" (%d times)", e.Count)
+	}
+	return result
+}
+
+// linkPort is the target's port, or - on a line with none.
+func linkPort(e LinkEntry) string {
+	if e.Port == 0 {
+		return "-"
+	}
+	return strconv.Itoa(e.Port)
+}
+
+func linkWoke(e LinkEntry) string {
+	if e.Woke {
+		return "yes"
+	}
+	return "-"
+}
+
+// linkBytes is what the calling machine sent and received, which a link's close carries.
+func linkBytes(e LinkEntry) string {
+	if e.Event != "close" {
+		return "-"
+	}
+	return fmt.Sprintf("%d sent, %d received", e.BytesIn, e.BytesOut)
 }
 
 // PrintStatus writes the host's health for people, terminal-safe, one line per field. host is
@@ -216,4 +296,12 @@ func oneLine(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// field is s escaped to stay in its cell, or "-" when it is empty.
+func field(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return termsafe.Line(s)
 }

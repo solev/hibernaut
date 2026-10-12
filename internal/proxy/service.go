@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/egress"
+	"github.com/solev/hibernaut/internal/egress/hook"
 )
 
 // Rule owns the redirect and its periodic repair.
@@ -28,6 +29,7 @@ type Service struct {
 
 // Serve installs the redirect, repairs it every five seconds and serves until ctx ends.
 // On every exit it stops repairs, removes the redirect, stops serving and closes Audit.
+// A stray hibernaut rule (hook.ErrStrayRule) is logged through Logf and is never its error.
 func (s *Service) Serve(ctx context.Context, l net.Listener) (result error) {
 	serveCtx, stopServing := context.WithCancel(context.WithoutCancel(ctx))
 	keepCtx, stopKeeping := context.WithCancel(ctx)
@@ -40,7 +42,11 @@ func (s *Service) Serve(ctx context.Context, l net.Listener) (result error) {
 		removeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		err := s.Rule.Remove(removeCtx)
 		cancel()
-		if err != nil {
+		if errors.Is(err, hook.ErrStrayRule) {
+			if s.Logf != nil {
+				s.Logf("removing proxy hook: %v", err)
+			}
+		} else if err != nil {
 			result = errors.Join(result, fmt.Errorf("removing proxy hook: %w", err))
 		}
 		stopServing()
@@ -53,7 +59,12 @@ func (s *Service) Serve(ctx context.Context, l net.Listener) (result error) {
 		}
 		result = errors.Join(result, s.Audit.Close())
 	}()
-	if _, err := s.Rule.Ensure(ctx); err != nil {
+	if _, err := s.Rule.Ensure(ctx); errors.Is(err, hook.ErrStrayRule) {
+		// The hook is in place around a rule iptables would not delete, which is only a warning.
+		if s.Logf != nil {
+			s.Logf("installing proxy hook: %v", err)
+		}
+	} else if err != nil {
 		return fmt.Errorf("installing proxy hook: %w", err)
 	}
 	kept = make(chan error, 1)

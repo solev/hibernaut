@@ -1,4 +1,5 @@
-// Package slots maps an intercepted E2B slot connection back to its sandbox.
+// Package slots maps an intercepted E2B slot connection back to its sandbox, and a sandbox to
+// its slot.
 package slots
 
 import (
@@ -47,6 +48,68 @@ func (f Finder) Sandbox(src, local netip.Addr) (string, error) {
 	}
 	return id, nil
 }
+
+// Slot returns the E2B slot that runs sandbox id. It globs sbx-<id>-* under Cgroups, reads
+// cgroup.procs, reads each PID's /proc/<pid>/ns/net inode and finds the /run/netns/ns-N with
+// that inode: the walk sandboxForNetns does, in the other direction.
+func (f Finder) Slot(id string) (int, error) {
+	if id == "" || strings.ContainsAny(id, `*?[\/`) {
+		return 0, fmt.Errorf("slots: %q is not a sandbox ID", id)
+	}
+	netns, err := f.sandboxNetns(id)
+	if err != nil {
+		return 0, err
+	}
+	if len(netns) == 0 {
+		return 0, fmt.Errorf("slots: sandbox %s has no running process", id)
+	}
+
+	root := f.netnsRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, fmt.Errorf("slots: reading %s: %w", root, err)
+	}
+	var found []int
+	for _, entry := range entries {
+		n, ok := strings.CutPrefix(entry.Name(), "ns-")
+		if !ok {
+			continue
+		}
+		slot, err := strconv.Atoi(n)
+		if err != nil || slot <= 0 || slot > maxSlot {
+			continue
+		}
+		ino, err := inode(filepath.Join(root, entry.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("slots: reading %s: %w", filepath.Join(root, entry.Name()), err)
+		}
+		if netns[ino] {
+			found = append(found, slot)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return 0, fmt.Errorf("slots: no slot network namespace holds sandbox %s", id)
+	case 1:
+		return found[0], nil
+	default:
+		return 0, fmt.Errorf("slots: sandbox %s is in more than one slot: %v", id, found)
+	}
+}
+
+// Addr returns the host address of a slot, the inverse of slotFromSource.
+func Addr(slot int) (netip.Addr, error) {
+	if slot <= 0 || slot > maxSlot {
+		return netip.Addr{}, fmt.Errorf("slots: %d is not a sandbox slot", slot)
+	}
+	return netip.AddrFrom4([4]byte{10, 11, byte(slot >> 8), byte(slot)}), nil
+}
+
+// maxSlot is the highest slot 10.11.0.0/16 can address.
+const maxSlot = 1<<16 - 1
 
 func (f Finder) procRoot() string {
 	if f.Proc == "" {
@@ -144,24 +207,68 @@ func (f Finder) sandboxForNetns(netns uint64) (string, error) {
 	return "", fmt.Errorf("no sandbox cgroup has a process in netns inode %d", netns)
 }
 
+// sandboxNetns returns the network namespace inodes of every process in id's run cgroups.
+func (f Finder) sandboxNetns(id string) (map[uint64]bool, error) {
+	dirs, err := filepath.Glob(filepath.Join(f.cgroupsRoot(), "sbx-"+id+"-*"))
+	if err != nil {
+		return nil, err
+	}
+	netns := map[uint64]bool{}
+	for _, dir := range dirs {
+		if got, ok := sandboxID(dir); !ok || got != id {
+			continue
+		}
+		pids, err := os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, pid := range strings.Fields(string(pids)) {
+			ino, ok, err := f.pidNetns(pid)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				netns[ino] = true
+			}
+		}
+	}
+	return netns, nil
+}
+
 func (f Finder) pidInNetns(pid string, want uint64) (bool, error) {
+	got, ok, err := f.pidNetns(pid)
+	if err != nil {
+		return false, err
+	}
+	return ok && got == want, nil
+}
+
+// pidNetns returns the inode of pid's network namespace. It reports false for a link it cannot
+// parse, which belongs to no slot.
+func (f Finder) pidNetns(pid string) (uint64, bool, error) {
 	if _, err := strconv.Atoi(pid); err != nil {
-		return false, fmt.Errorf("bad pid %q", pid)
+		return 0, false, fmt.Errorf("bad pid %q", pid)
 	}
 	path := filepath.Join(f.procRoot(), pid, "ns", "net")
 	target, err := os.Readlink(path)
 	if err == nil {
 		got, ok := parseNetnsLink(target)
-		return ok && got == want, nil
+		return got, ok, nil
 	}
 	if !errors.Is(err, fs.ErrInvalid) {
-		return false, err
+		return 0, false, err
 	}
 	got, err := inode(path)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
-	return got == want, nil
+	return got, true, nil
 }
 
 func parseNetnsLink(target string) (uint64, bool) {
