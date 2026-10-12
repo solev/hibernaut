@@ -1,23 +1,12 @@
 package systemd
 
 import (
-	"os"
 	"slices"
-	"strings"
 	"testing"
 )
 
 func TestPauseAllStopsBeforeTheProxyWithoutRequiringIt(t *testing.T) {
-	data, err := os.ReadFile("hibd-pause-all.service")
-	if err != nil {
-		t.Fatal(err)
-	}
-	deps := map[string][]string{}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if key, value, ok := strings.Cut(line, "="); ok {
-			deps[key] = append(deps[key], strings.Fields(value)...)
-		}
-	}
+	deps := settings(t, "hibd-pause-all.service")
 	if !slices.Contains(deps["After"], "hibd-proxy.service") {
 		t.Error("pause-all must be ordered after hibd-proxy, so it pauses while the proxy still answers close")
 	}
@@ -25,5 +14,17 @@ func TestPauseAllStopsBeforeTheProxyWithoutRequiringIt(t *testing.T) {
 		if slices.Contains(deps[key], "hibd-proxy.service") {
 			t.Errorf("pause-all must still run without the proxy, but %s= names it", key)
 		}
+	}
+}
+
+func TestPauseAllStartsWithTheOrchestrator(t *testing.T) {
+	deps := settings(t, "hibd-pause-all.service")
+	if !slices.Contains(deps["WantedBy"], "multi-user.target") {
+		t.Error("pause-all must start at boot, or nothing pauses the machines at the next shutdown")
+	}
+	// Its stop leaves the quiescing marker, and only its start removes it.
+	if !slices.Contains(deps["WantedBy"], "e2b-orchestrator.service") {
+		t.Error("starting the orchestrator by hand must start pause-all too, or the quiescing marker " +
+			"it left stays and hib new and links refuse until a reboot")
 	}
 }

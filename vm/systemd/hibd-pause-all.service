@@ -1,7 +1,8 @@
 # It's ordered after E2B, so it stops first: on any clean shutdown, and, through Requires=,
 # whenever someone stops or restarts the orchestrator. It's ordered after hibd-proxy too, so at
 # shutdown it pauses while the proxy still answers close, but it doesn't require the proxy: it
-# still runs on a host whose proxy isn't running.
+# still runs on a host whose proxy isn't running. Its stop leaves the quiescing marker and its
+# start removes it, so the orchestrator wants it too: starting E2B again by hand starts it.
 [Unit]
 Description=Pause every Hibernaut machine before E2B stops
 Requires=e2b-orchestrator.service
@@ -15,4 +16,4 @@ ExecStop=/usr/local/bin/hibd pause-all --timeout 4m
 TimeoutStopSec=5min
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target e2b-orchestrator.service
