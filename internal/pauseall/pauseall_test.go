@@ -220,6 +220,58 @@ func TestGivesUpWhenListNeverWorks(t *testing.T) {
 	}
 }
 
+// Run waits out RetryDelay before it tries again, after a failed list or a failed pause.
+func TestWaitsOutTheRetryDelay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// failing is an engine that fails one way and calls tried on every attempt.
+		failing func(tried func()) engine.Engine
+	}{
+		{name: "after a failed list", failing: func(tried func()) engine.Engine {
+			return &raceEngine{Engine: fake.New(), listFailures: -1, onList: func(int) { tried() }}
+		}},
+		{name: "after a failed pause", failing: func(tried func()) engine.Engine {
+			e := fake.New(fake.WithPauseHook(func(context.Context, string) error {
+				tried()
+				return errors.New("node busy, please retry")
+			}))
+			add(e, "stuck", engine.Running)
+			return e
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempts := make(chan struct{}, 2)
+			e := tc.failing(func() {
+				select {
+				case attempts <- struct{}{}:
+				default:
+				}
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ran := make(chan error, 1)
+			go func() {
+				_, err := pauseall.Run(ctx, e, pauseall.Options{RetryDelay: time.Hour})
+				ran <- err
+			}()
+			select {
+			case <-attempts:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Run never tried")
+			}
+			select {
+			case <-attempts:
+				t.Error("Run tried again well within its hour-long RetryDelay")
+			case <-time.After(300 * time.Millisecond):
+			}
+			cancel()
+			if err := <-ran; !errors.Is(err, context.Canceled) {
+				t.Errorf("Run = %v, want %v", err, context.Canceled)
+			}
+		})
+	}
+}
+
 func TestConcurrencyLimit(t *testing.T) {
 	var mu sync.Mutex
 	inFlight, maxInFlight := 0, 0
