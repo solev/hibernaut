@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -454,7 +455,7 @@ func (s *Store) retiredRecords(f *vault.File, now time.Time) ([]retiredRecord, e
 	}
 	slices.SortFunc(out, func(a, b retiredRecord) int {
 		if a.dropped != b.dropped {
-			return intCompare(a.dropped, b.dropped)
+			return cmp.Compare(a.dropped, b.dropped)
 		}
 		if a.ordinal != b.ordinal {
 			return a.ordinal - b.ordinal
@@ -462,13 +463,6 @@ func (s *Store) retiredRecords(f *vault.File, now time.Time) ([]retiredRecord, e
 		return strings.Compare(a.Name, b.Name)
 	})
 	return out, nil
-}
-
-func intCompare(a, b int64) int {
-	if a < b {
-		return -1
-	}
-	return 1
 }
 
 func (s *Store) retire(old, next Tokens, now time.Time) error {

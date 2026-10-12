@@ -236,3 +236,46 @@ func TestRetirementBoundsValuesAndUsesUniqueNames(t *testing.T) {
 		t.Fatal("retired names in the same second must be made unique")
 	}
 }
+
+// Each login replaces the last one's three values a second after it. Past 100 retired values,
+// retirement drops the ones replaced earliest.
+func TestRetirementDropsTheEarliestReplacedValuesFirst(t *testing.T) {
+	start := time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC)
+	_, cfg := newStore(t, start)
+	var logins []codex.Tokens
+	for i := range 36 {
+		now := start.Add(time.Duration(i) * time.Second)
+		cfg.Now = func() time.Time { return now }
+		tokens := codextest.Tokens("account", "person@example.com", "plus", now, now.Add(time.Hour))
+		if _, err := codex.NewStore(cfg).CommitLogin(context.Background(), tokens); err != nil {
+			t.Fatal(err)
+		}
+		logins = append(logins, tokens)
+	}
+	old, err := codex.NewStore(cfg).Retired()
+	if err != nil || len(old) != 100 {
+		t.Fatalf("Retired = %d values, %v; want 100", len(old), err)
+	}
+	kept := map[string]bool{}
+	for _, v := range old {
+		kept[v.Value] = true
+	}
+	for i, tokens := range logins[:35] {
+		n := 0
+		for _, value := range []string{tokens.AccessToken, tokens.IDToken, tokens.RefreshToken} {
+			if kept[value] {
+				n++
+			}
+		}
+		want := 3
+		switch i {
+		case 0:
+			want = 0
+		case 1:
+			want = 1
+		}
+		if n != want {
+			t.Errorf("kept %d of login %d's values, want %d", n, i, want)
+		}
+	}
+}
