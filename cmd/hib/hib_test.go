@@ -116,6 +116,7 @@ func newHost(t *testing.T) *host {
 			"HIBD_CA_CERT":         caCert,
 			"HIBD_QUIESCING":       filepath.Join(state, "quiescing"),
 			"HIBD_LINK_LOG":        filepath.Join(state, "links.jsonl"),
+			"HIBD_LINK_PORT":       "0",
 		},
 	}
 	h.engine = fake.New(

@@ -218,9 +218,8 @@ const (
 	MaxFoldsPerSource = 64
 )
 
-// Port is the default port the listener serves on. It is not the default value of the setting:
-// HIBD_LINK_PORT defaults to 0, which means links are off, and it stays 0 until the slice that
-// turns links on changes it.
+// Port is the port the link listener serves on unless HIBD_LINK_PORT names another, or 0 to turn
+// links off.
 const Port = 5444
 
 // IsReserved reports whether p may never be published.

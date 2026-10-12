@@ -256,7 +256,7 @@ func TestLoadConfigReadsTheLinkPortOneWay(t *testing.T) {
 		wantOn bool
 		bad    bool
 	}{
-		{"", false, false},
+		{"", true, false},
 		{"0", false, false},
 		{"5444", true, false},
 		{" 5444 ", true, false},

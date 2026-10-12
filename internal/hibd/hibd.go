@@ -122,7 +122,7 @@ Environment variables of the same names override the file:
   HIBD_AGENTS           programs that keep a machine busy while they run, space-separated;
                         default codex copilot claude
   HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
-  HIBD_LINK_PORT        port for links between machines, default 0, which is off
+  HIBD_LINK_PORT        port for links between machines, default 5444, or 0 to turn them off
   HIBD_LINK_LOG         link log, default /var/log/hibernaut/links.jsonl
 `
 
@@ -1653,8 +1653,8 @@ type config struct {
 	caCert         string
 	caKey          string
 	proxyPort      string
-	// linkPort is HIBD_LINK_PORT. It defaults to 0, which means links between machines are
-	// off. It stays 0 until the slice that wires the two listeners together turns it on.
+	// linkPort is HIBD_LINK_PORT, the port hibd proxy serves links between machines on. It
+	// defaults to 5444, and 0 turns links off.
 	linkPort int
 	// linkLog is HIBD_LINK_LOG, the link log's path.
 	linkLog string
@@ -1704,7 +1704,7 @@ func loadSettings(getenv func(string) string) (config, error) {
 	if home := getenv("HOME"); home != "" {
 		keys = filepath.Join(home, ".ssh", "authorized_keys")
 	}
-	linkPort, err := parseLinkPort(get("HIBD_LINK_PORT", "0"))
+	linkPort, err := parseLinkPort(get("HIBD_LINK_PORT", strconv.Itoa(links.Port)))
 	if err != nil {
 		return config{}, err
 	}
