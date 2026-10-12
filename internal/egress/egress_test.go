@@ -632,6 +632,67 @@ func TestWebSocketReleasesConnectionAfterClose(t *testing.T) {
 	}
 }
 
+func TestUpgradesUseHTTP1WhenSiteOffersHTTP2(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") == "" {
+			_, _ = io.WriteString(w, r.Proto)
+			return
+		}
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Upgrade", r.Header.Get("Upgrade"))
+		w.WriteHeader(http.StatusSwitchingProtocols)
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := rw.ReadString('\n')
+		_, _ = io.WriteString(conn, r.Proto+" "+line)
+	}))
+	defer fx.close()
+	client := fx.client(false)
+	for _, tc := range []struct {
+		name, connection, upgrade string
+		status                    int
+		want                      string
+	}{
+		{"kubectl exec", "Upgrade", "SPDY/3.1", http.StatusSwitchingProtocols, "HTTP/1.1 ping\n"},
+		{"docker attach in a token list", "keep-alive ,  UPGRADE", "tcp", http.StatusSwitchingProtocols, "HTTP/1.1 ping\n"},
+		{"a longer token is no upgrade", "upgradex", "SPDY/3.1", http.StatusOK, "HTTP/2.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, fx.url("/attach"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Connection", tc.connection)
+			req.Header.Set("Upgrade", tc.upgrade)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.status)
+			}
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				conn, ok := resp.Body.(io.Writer)
+				if !ok {
+					t.Fatal("upgraded connection is not writable")
+				}
+				if _, err := io.WriteString(conn, "ping\n"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := io.ReadAll(resp.Body)
+			if err != nil || string(got) != tc.want {
+				t.Fatalf("read %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestInvalidUpstreamCertificateRefusedBeforeRequest(t *testing.T) {
 	t.Parallel()
 	var upstreamCalls atomic.Int32
