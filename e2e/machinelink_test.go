@@ -982,8 +982,9 @@ func (f *linkFixture) rmCloses(t *testing.T) {
 }
 
 // portRMDuringWake lands port rm while a link waits for its target to wake. When it lands is
-// a guess at how long the wake takes, adjusted after each try: an open link means it came too
-// late, and a refusal for an unpublished port too early.
+// a guess at how long the wake takes: an open link means it came too late, and a refusal for an
+// unpublished port too early. The guess halves or doubles until it has been both, and then
+// splits the difference.
 func (f *linkFixture) portRMDuringWake(t *testing.T) {
 	ctx := f.ctx
 	republish := func(t *testing.T, ctx context.Context) {
@@ -996,7 +997,8 @@ func (f *linkFixture) portRMDuringWake(t *testing.T) {
 		defer cancel()
 		republish(t, ctx)
 	})
-	delay, step := 1500*time.Millisecond, 400*time.Millisecond
+	delay := 1500 * time.Millisecond
+	var early, late time.Duration
 	for attempt := 1; attempt <= 6; attempt++ {
 		republish(t, ctx)
 		linkPause(t, ctx, f.web)
@@ -1023,14 +1025,22 @@ func (f *linkFixture) portRMDuringWake(t *testing.T) {
 			return
 		case end.Event == "open" || strings.HasPrefix(got, "reply: "):
 			t.Logf("try %d: port rm %v after the ask came after the link opened", attempt, delay)
-			delay -= step
+			late = delay
 		case end.Reason == links.ErrNotPublished.Error():
 			t.Logf("try %d: port rm %v after the ask came before the link was admitted", attempt, delay)
-			delay += step
+			early = delay
 		default:
 			t.Logf("try %d: port rm %v after the ask, the link log has %+v and the ask %q", attempt, delay, end, got)
+			continue
 		}
-		delay = max(delay, 100*time.Millisecond)
+		switch {
+		case early > 0 && late > 0:
+			delay = (early + late) / 2
+		case late > 0:
+			delay = max(delay/2, 50*time.Millisecond)
+		default:
+			delay *= 2
+		}
 	}
 	t.Skip("port rm didn't land inside a wake in 6 tries, so this run can't say whether it cuts the waiting link")
 }
