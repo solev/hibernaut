@@ -177,6 +177,79 @@ func TestReleaseKeepsTheRateHistory(t *testing.T) {
 	})
 }
 
+// A link gives its caps back when it is released or when its admission fails, so links that
+// are gone never hold a cap full. Releasing a link twice gives them back once.
+func TestReleaseAndAFailedAdmitGiveBackTheCaps(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		sources, targets int
+		// each is how many links every source opens to every target. It fills one cap and leaves
+		// the others room, so only that cap refuses s0's next link to t0.
+		each int
+	}{
+		{name: "per source", sources: 1, targets: 2, each: links.MaxPerSource / 2},
+		{name: "per target", sources: 2, targets: 1, each: links.MaxPerTarget / 2},
+		{name: "host", sources: 16, targets: 16, each: links.MaxLinks / (16 * 16)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newEnv(t)
+			var held []links.Admission
+			t.Cleanup(func() {
+				for _, ad := range held {
+					v.a.Release(ad)
+				}
+			})
+			for s := range tc.sources {
+				v.source(fmt.Sprint("s", s))
+			}
+			for d := range tc.targets {
+				v.target(fmt.Sprint("t", d), engine.Running, 8080)
+			}
+			for s := range tc.sources {
+				for d := range tc.targets {
+					for range tc.each {
+						ad, err := v.admit(fmt.Sprint("s", s), fmt.Sprint("t", d), 8080)
+						if err != nil {
+							t.Fatalf("filling the cap after %d links: %v", len(held), err)
+						}
+						held = append(held, ad)
+					}
+				}
+			}
+			next := func() (links.Admission, error) { return v.admit("s0", "t0", 8080) }
+			if ad, err := next(); !errors.Is(err, links.ErrTooManyLinks) {
+				v.a.Release(ad)
+				t.Fatalf("admitting with the cap full = %v, want %v", err, links.ErrTooManyLinks)
+			}
+
+			v.a.Release(held[0])
+			v.a.Release(held[0])
+			ad, err := next()
+			if err != nil {
+				t.Fatalf("admitting after a release = %v, want the link admitted", err)
+			}
+			held = append(held, ad)
+			if ad, err := next(); !errors.Is(err, links.ErrTooManyLinks) {
+				v.a.Release(ad)
+				t.Fatalf("admitting after a second release of the same link = %v, want %v", err, links.ErrTooManyLinks)
+			}
+
+			v.a.Release(ad)
+			gone, cancel := context.WithCancel(context.Background())
+			cancel()
+			if ad, err := v.admitCtx(gone, "s0", "t0", 8080); !errors.Is(err, context.Canceled) {
+				v.a.Release(ad)
+				t.Fatalf("admitting for a connection that has gone = %v, want %v", err, context.Canceled)
+			}
+			ad, err = next()
+			if err != nil {
+				t.Fatalf("admitting after a failed admit = %v, want the link admitted", err)
+			}
+			held = append(held, ad)
+		})
+	}
+}
+
 // The target's gate is open before the listener dials: Admit fills it from the Keeper for the
 // run the wake started, and holds the woken target to the source's lease.
 func TestAdmitFillsTheTargetGateAfterAWake(t *testing.T) {

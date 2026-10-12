@@ -380,11 +380,16 @@ var sourceGate = links.Gate{Addr: netip.MustParseAddr("10.11.0.200"), Token: 200
 
 // admit admits a link the way the listener does, from the source's current run.
 func (v *env) admit(source, target string, port int) (links.Admission, error) {
+	return v.admitCtx(context.Background(), source, target, port)
+}
+
+// admitCtx is admit for a connection the listener holds while ctx lasts.
+func (v *env) admitCtx(ctx context.Context, source, target string, port int) (links.Admission, error) {
 	run, err := v.runs.Current(source)
 	if err != nil {
 		return links.Admission{}, err
 	}
-	return v.a.Admit(context.Background(), links.AdmitRequest{
+	return v.a.Admit(ctx, links.AdmitRequest{
 		Source: source, SourceRun: run, SourceGate: sourceGate, Target: target, Port: port,
 	})
 }
