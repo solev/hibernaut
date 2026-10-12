@@ -318,6 +318,22 @@ func TestPutRetriesPlaceholdersThatCollideWithValues(t *testing.T) {
 	}
 }
 
+func TestPutRefusesWhenEveryPlaceholderHoldsAnotherValue(t *testing.T) {
+	key := newKey(t)
+	var f vault.File
+	if _, err := f.Put(key, "deploy", "DEPLOY_TOKEN", []string{"deploy.example.com"}, "acmecorpdeploy"); err != nil {
+		t.Fatal(err)
+	}
+	// Placeholders keep the prefix acmecorpdeploy_, so every one holds the first secret's value.
+	_, err := f.Put(key, "api", "API_TOKEN", []string{"api.example.com"}, "acmecorpdeploy_Q7f2Lk9mZx4Pw8Rt5Yn3Hb6V")
+	if err == nil || !strings.Contains(err.Error(), "could not make a placeholder that does not overlap existing values") {
+		t.Fatalf("Put error = %v, want a refusal", err)
+	}
+	if got := f.Secrets(); len(got) != 1 || got[0].Name != "deploy" {
+		t.Fatalf("after the refusal, Secrets = %#v", got)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	key := newKey(t)
 	for _, tc := range []struct {
