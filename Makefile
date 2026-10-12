@@ -39,29 +39,30 @@ test-host:
 	go test -tags host -exec sudo -run '^TestHost' ./internal/statefile/
 	go test -tags host -exec sudo -run '^TestGuard' ./internal/linkguard/
 
-# Cross-compiles the host tests, runs them on the Azure host and removes the binaries. The host
-# gets nftables and conntrack first if it lacks them, for the linkguard tests.
+# Cross-compiles the host tests, runs them on the Azure host and removes the binaries. Each runs
+# from its package's directory, as go test runs it, so the repo files it reads are where it looks.
+# The host gets nftables and conntrack first if it lacks them, for the linkguard tests.
 test-host-remote:
 	@set -e; \
 	dir=$$(mktemp -d -t hibernaut-host-test.XXXXXX); \
 	remote=/tmp/hibernaut-host-test-$$$$; \
 	trap 'rm -rf "$$dir"' EXIT; \
-	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/hook.test" ./internal/egress/hook; \
-	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/machines.test" ./internal/machines; \
-	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/cleanup.test" ./internal/cleanup; \
-	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/statefile.test" ./internal/statefile; \
-	GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/linkguard.test" ./internal/linkguard; \
+	for pkg in internal/egress/hook internal/machines internal/cleanup internal/statefile internal/linkguard; do \
+		GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/$$pkg/" "./$$pkg"; \
+	done; \
+	mkdir -p "$$dir/vm/e2b"; \
+	cp vm/e2b/sandbox-firewall.nft "$$dir/vm/e2b/"; \
 	azure/start.sh || { echo "Azure host is not reachable. Run azure/start.sh and retry." >&2; exit 1; }; \
 	target=$$(bash -c 'source azure/common.sh; printf "%s@%s" "$$VM_USER" "$$(vm_ip)"'); \
 	scp -r "$$dir" "$$target:$$remote"; \
 	azure/ssh.sh "{ command -v nft && command -v conntrack; } >/dev/null || \
 		{ sudo apt-get update -qq && sudo apt-get install -y -qq nftables conntrack; } || { rm -rf $$remote; exit 1; }; \
-		status=0; sudo $$remote/hook.test -test.v || status=1; \
-		sudo $$remote/machines.test -test.v -test.run '^TestHost' || status=1; \
-		sudo $$remote/cleanup.test -test.v -test.run '^TestHost' || status=1; \
-		sudo $$remote/statefile.test -test.v -test.run '^TestHost' || status=1; \
-		sudo $$remote/linkguard.test -test.v -test.run '^TestGuard' || status=1; \
-		rm -rf $$remote; exit \$$status"
+		status=0; cd $$remote/internal/egress/hook && sudo ./hook.test -test.v || status=1; \
+		cd $$remote/internal/machines && sudo ./machines.test -test.v -test.run '^TestHost' || status=1; \
+		cd $$remote/internal/cleanup && sudo ./cleanup.test -test.v -test.run '^TestHost' || status=1; \
+		cd $$remote/internal/statefile && sudo ./statefile.test -test.v -test.run '^TestHost' || status=1; \
+		cd $$remote/internal/linkguard && sudo ./linkguard.test -test.v -test.run '^TestGuard' || status=1; \
+		cd /; rm -rf $$remote; exit \$$status"
 
 generate:
 	go generate ./...
