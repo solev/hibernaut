@@ -660,18 +660,36 @@ func TestDeviceLoginForgetsAFailureAfterAnAnswer(t *testing.T) {
 }
 
 func TestDeviceLoginDoesntRetryTheCodeRequest(t *testing.T) {
-	for name, a := range map[string]answer{
-		"500":                    {status: http.StatusInternalServerError},
-		"503":                    {status: http.StatusServiceUnavailable, body: codeReply(nil)},
-		"429":                    {status: http.StatusTooManyRequests},
-		"a closed connection":    {drop: true},
-		"a 404 without an error": {status: http.StatusNotFound, body: "Not Found"},
+	for name, tc := range map[string]struct {
+		answer answer
+		want   string
+	}{
+		"500": {
+			answer: answer{status: http.StatusInternalServerError},
+			want:   "GitHub answered 500 Internal Server Error",
+		},
+		"503": {
+			answer: answer{status: http.StatusServiceUnavailable, body: codeReply(nil)},
+			want:   "GitHub answered 503 Service Unavailable",
+		},
+		"429": {
+			answer: answer{status: http.StatusTooManyRequests},
+			want:   "GitHub answered 429 Too Many Requests",
+		},
+		"a closed connection": {
+			answer: answer{drop: true},
+			want:   "can't reach GitHub: ",
+		},
+		"a 404 without an error": {
+			answer: answer{status: http.StatusNotFound, body: "Not Found"},
+			want:   "GitHub answered 404 Not Found",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := newOAuth(t, a)
+			s := newOAuth(t, tc.answer)
 			r := s.run()
-			if r.err == nil {
-				t.Fatal("Login succeeded, want an error")
+			if r.err == nil || !strings.HasPrefix(r.err.Error(), tc.want) {
+				t.Fatalf("Login error = %v, want one starting %q", r.err, tc.want)
 			}
 			checkNoPrompt(t, s, r)
 		})
