@@ -385,7 +385,7 @@ func (l *link) markOpen() error {
 	l.opened = l.p.cfg.Now()
 	adm := l.adm
 	l.mu.Unlock()
-	l.p.write(l.entry("open", nil, adm.Woke))
+	l.p.write(l.entry(audit.LinkOpen, nil, adm.Woke))
 	return nil
 }
 
@@ -512,13 +512,13 @@ func (l *link) finish() {
 		l.p.cfg.Admitter.Release(adm)
 	}
 	if open {
-		l.p.write(l.entry("close", reason, false))
+		l.p.write(l.entry(audit.LinkClose, reason, false))
 		return
 	}
 	if reason == nil {
 		reason = links.ErrLinksOff
 	}
-	l.p.write(l.entry("refused", reason, false))
+	l.p.write(l.entry(audit.LinkRefused, reason, false))
 }
 
 // stillRunning reports whether run is still id's current run. A failure to tell counts as no,
@@ -572,7 +572,7 @@ func (l *link) admission() links.Admission {
 	return l.adm
 }
 
-func (l *link) entry(event string, reason error, woke bool) audit.LinkEntry {
+func (l *link) entry(event audit.LinkEvent, reason error, woke bool) audit.LinkEntry {
 	l.mu.Lock()
 	target, port, opened := l.target, l.port, l.opened
 	l.mu.Unlock()
@@ -593,7 +593,7 @@ func (l *link) entry(event string, reason error, woke bool) audit.LinkEntry {
 	if reason != nil {
 		e.Reason = reason.Error()
 	}
-	if event == "close" {
+	if event == audit.LinkClose {
 		e.BytesIn = l.in.Load()
 		e.BytesOut = l.out.Load()
 		e.SecondsOpen = int64(now.Sub(opened) / time.Second)
@@ -605,7 +605,7 @@ func (l *link) entry(event string, reason error, woke bool) audit.LinkEntry {
 func (p *Proxy) refused(peer Peer, target string, reason error) {
 	p.write(audit.LinkEntry{
 		Time:   p.cfg.Now().UTC(),
-		Event:  "refused",
+		Event:  audit.LinkRefused,
 		From:   name(peer.Source),
 		FromID: peer.Source,
 		To:     name(target),

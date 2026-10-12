@@ -464,10 +464,10 @@ func TestLogLinksShowsLinksByMachineName(t *testing.T) {
 	api, web := machineID(t, h, "api"), machineID(t, h, "web")
 	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
 	writeLinkLog(t, h,
-		audit.LinkEntry{Time: at, Event: "open", From: web, FromID: web, To: api, ToID: api, Port: 8080, Woke: true},
-		audit.LinkEntry{Time: at.Add(time.Hour), Event: "close", From: web, FromID: web, To: api, ToID: api, Port: 8080,
+		audit.LinkEntry{Time: at, Event: audit.LinkOpen, From: web, FromID: web, To: api, ToID: api, Port: 8080, Woke: true},
+		audit.LinkEntry{Time: at.Add(time.Hour), Event: audit.LinkClose, From: web, FromID: web, To: api, ToID: api, Port: 8080,
 			Reason: "revoked", BytesIn: 10, BytesOut: 20, SecondsOpen: 3600},
-		audit.LinkEntry{Time: at.Add(2 * time.Hour), Event: "refused", From: "?", To: "db\x1b]0;owned\x07", ToID: "db1", Port: 22,
+		audit.LinkEntry{Time: at.Add(2 * time.Hour), Event: audit.LinkRefused, From: "?", To: "db\x1b]0;owned\x07", ToID: "db1", Port: 22,
 			Reason: "not published", Count: 7},
 	)
 	if code := c.hib("log", "--links", "--n", "5"); code != 0 {
@@ -513,7 +513,7 @@ func TestLogLinksShowsNoPortAsADash(t *testing.T) {
 	h, c, _ := portHost(t)
 	web := machineID(t, h, "web")
 	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
-	writeLinkLog(t, h, audit.LinkEntry{Time: at, Event: "refused", From: web, FromID: web, To: "?", Reason: "rate limited", Count: 936})
+	writeLinkLog(t, h, audit.LinkEntry{Time: at, Event: audit.LinkRefused, From: web, FromID: web, To: "?", Reason: "rate limited", Count: 936})
 	if code := c.hib("log", "--links"); code != 0 {
 		t.Fatalf("hib log --links exit %d: %s", code, c.errOut)
 	}

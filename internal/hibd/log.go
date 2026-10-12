@@ -140,7 +140,7 @@ func apiLinkEntries(entries []audit.LinkEntry, names map[string]string) []hibapi
 	for i, e := range entries {
 		out[i] = hibapi.LinkEntry{
 			Time:        e.Time.UTC().Format(time.RFC3339),
-			Event:       e.Event,
+			Event:       string(e.Event),
 			From:        named(e.From, e.FromID),
 			To:          named(e.To, e.ToID),
 			Port:        e.Port,

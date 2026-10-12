@@ -152,7 +152,7 @@ func TestEveryRefusalClosesWithoutAByte(t *testing.T) {
 			_, _ = io.WriteString(c, "GET / HTTP/1.0\r\n\r\n")
 			expectNothing(t, c)
 
-			e := h.log.wait(t, "refused")
+			e := h.log.wait(t, audit.LinkRefused)
 			if e.Reason != tt.want.Error() {
 				t.Errorf("refused with %q, want %q", e.Reason, tt.want)
 			}
@@ -201,8 +201,8 @@ func TestLinkCarriesBytesAndLogsOpenAndClose(t *testing.T) {
 	c := h.link(h.peer())
 	roundTrip(t, c, "hello")
 
-	open := h.log.wait(t, "open")
-	want := audit.LinkEntry{Time: h.clock.Now(), Event: "open", From: "src", FromID: "src", To: "tgt", ToID: "tgt", Port: 8080, Woke: true}
+	open := h.log.wait(t, audit.LinkOpen)
+	want := audit.LinkEntry{Time: h.clock.Now(), Event: audit.LinkOpen, From: "src", FromID: "src", To: "tgt", ToID: "tgt", Port: 8080, Woke: true}
 	if open != want {
 		t.Errorf("open = %+v, want %+v", open, want)
 	}
@@ -218,9 +218,9 @@ func TestLinkCarriesBytesAndLogsOpenAndClose(t *testing.T) {
 	if rest, err := io.ReadAll(c); err != nil || len(rest) != 0 {
 		t.Fatalf("after the half-close read %q, %v; want a clean EOF", rest, err)
 	}
-	closed := h.log.wait(t, "close")
+	closed := h.log.wait(t, audit.LinkClose)
 	want = audit.LinkEntry{
-		Time: h.clock.Now(), Event: "close", From: "src", FromID: "src", To: "tgt", ToID: "tgt", Port: 8080,
+		Time: h.clock.Now(), Event: audit.LinkClose, From: "src", FromID: "src", To: "tgt", ToID: "tgt", Port: 8080,
 		BytesIn: 9, BytesOut: 9, SecondsOpen: 3,
 	}
 	if closed != want {
@@ -250,7 +250,7 @@ func TestHalfCloseFromTheSource(t *testing.T) {
 	if err != nil || string(got) != "got request" {
 		t.Fatalf("read %q, %v; want the reply after our half-close and then EOF", got, err)
 	}
-	if e := h.log.wait(t, "close"); e.Reason != "" || e.BytesIn != 7 || e.BytesOut != 11 {
+	if e := h.log.wait(t, audit.LinkClose); e.Reason != "" || e.BytesIn != 7 || e.BytesOut != 11 {
 		t.Errorf("close = %+v, want no reason, 7 in and 11 out", e)
 	}
 }
@@ -276,7 +276,7 @@ func TestHalfCloseFromTheTarget(t *testing.T) {
 		t.Fatalf("write after the target's half-close: %v", err)
 	}
 	_ = c.(*net.TCPConn).CloseWrite()
-	if e := h.log.wait(t, "close"); e.Reason != "" || e.BytesIn != 10 || e.BytesOut != 6 {
+	if e := h.log.wait(t, audit.LinkClose); e.Reason != "" || e.BytesIn != 10 || e.BytesOut != 6 {
 		t.Errorf("close = %+v, want no reason, 10 in and 6 out", e)
 	}
 }
@@ -284,7 +284,7 @@ func TestHalfCloseFromTheTarget(t *testing.T) {
 func TestRenewOnlyOnPayload(t *testing.T) {
 	h := start(t)
 	c := h.connect(h.peer())
-	h.log.wait(t, "open")
+	h.log.wait(t, audit.LinkOpen)
 	h.clock.advance(time.Minute)
 	if got := h.admitter.renewed(); len(got) != 0 {
 		t.Fatalf("a silent link renewed %v", got)
@@ -429,7 +429,7 @@ func TestAborts(t *testing.T) {
 			tt.abort(h)
 			expectReset(t, c)
 			expectReset(t, target)
-			e := h.log.wait(t, "close")
+			e := h.log.wait(t, audit.LinkClose)
 			if e.Reason != tt.want.Error() {
 				t.Errorf("closed with %q, want %q", e.Reason, tt.want)
 			}
@@ -476,7 +476,7 @@ func TestResumeOnAnotherSlotReachesTheNewSlot(t *testing.T) {
 
 	second := h.connect(h.peer())
 	expectGreeting(t, second, "B")
-	if e := h.log.wait(t, "close"); e.Reason != links.ErrRunEnded.Error() {
+	if e := h.log.wait(t, audit.LinkClose); e.Reason != links.ErrRunEnded.Error() {
 		t.Errorf("first link closed with %q, want %q", e.Reason, links.ErrRunEnded)
 	}
 }
@@ -498,14 +498,14 @@ func TestUnreadableStateRefusesNewLinksAndAbortsOpenOnes(t *testing.T) {
 
 	refused := h.connect(h.peer())
 	expectNothing(t, refused)
-	if e := h.log.wait(t, "refused"); e.Reason != links.ErrStateUnreadable.Error() {
+	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrStateUnreadable.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrStateUnreadable)
 	}
 	roundTrip(t, open, "still")
 
 	h.world.retireAll()
 	expectReset(t, open)
-	if e := h.log.wait(t, "close"); e.Reason != links.ErrStateUnreadable.Error() {
+	if e := h.log.wait(t, audit.LinkClose); e.Reason != links.ErrStateUnreadable.Error() {
 		t.Errorf("closed with %q, want %q", e.Reason, links.ErrStateUnreadable)
 	}
 }
@@ -522,7 +522,7 @@ func TestPerSourceCap(t *testing.T) {
 
 	over := h.connect(h.peer())
 	expectNothing(t, over)
-	if e := h.log.wait(t, "refused"); e.Reason != links.ErrTooManyLinks.Error() {
+	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrTooManyLinks.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrTooManyLinks)
 	}
 	for _, c := range conns {
@@ -551,7 +551,7 @@ func TestHostCapStopsAccepting(t *testing.T) {
 	}
 	_ = first.Close()
 	roundTrip(t, waiting, "accepted")
-	if e := h.log.all(); len(e) > 0 && e[len(e)-1].Event == "refused" {
+	if e := h.log.all(); len(e) > 0 && e[len(e)-1].Event == audit.LinkRefused {
 		t.Errorf("the connection held in the backlog was refused: %+v", e[len(e)-1])
 	}
 }
@@ -563,10 +563,10 @@ func TestAcceptRatePerSource(t *testing.T) {
 	for range links.AcceptBurst {
 		expectNothing(t, h.connect(unpublished))
 	}
-	h.log.waitN(t, "refused", links.AcceptBurst)
+	h.log.waitN(t, audit.LinkRefused, links.AcceptBurst)
 
 	expectNothing(t, h.connect(h.peer()))
-	if e := h.log.waitN(t, "refused", links.AcceptBurst+1)[links.AcceptBurst]; e.Reason != links.ErrRateLimited.Error() {
+	if e := h.log.waitN(t, audit.LinkRefused, links.AcceptBurst+1)[links.AcceptBurst]; e.Reason != links.ErrRateLimited.Error() {
 		t.Fatalf("connection past the burst refused with %q, want %q", e.Reason, links.ErrRateLimited)
 	}
 	if n := h.dialer.count(); n != 0 {
@@ -593,7 +593,7 @@ func TestAbortPortsLeavesOtherPortsOpen(t *testing.T) {
 	if got := h.p.Stat().Ports; !reflect.DeepEqual(got, map[links.Open]int{{Target: "tgt", Port: 5432}: 1}) {
 		t.Errorf("Stat ports = %v, want only 5432", got)
 	}
-	if e := h.log.wait(t, "close"); e.Port != 8080 || e.Reason != links.ErrRevoked.Error() {
+	if e := h.log.wait(t, audit.LinkClose); e.Port != 8080 || e.Reason != links.ErrRevoked.Error() {
 		t.Errorf("close = %+v, want 8080 revoked", e)
 	}
 }
@@ -614,7 +614,7 @@ func TestAbortMachineClosesBothEndsLinks(t *testing.T) {
 	if got := h.p.Stat(); len(got.Ports) != 0 || len(got.Machines) != 0 {
 		t.Errorf("Stat = %+v, want empty", got)
 	}
-	for _, e := range h.log.waitN(t, "close", 2) {
+	for _, e := range h.log.waitN(t, audit.LinkClose, 2) {
 		if e.Reason != links.ErrFenced.Error() {
 			t.Errorf("closed with %q, want %q", e.Reason, links.ErrFenced)
 		}
@@ -642,7 +642,7 @@ func TestAbortMachineReachesALinkStillWaking(t *testing.T) {
 		t.Fatalf("AbortMachine = %d, %v; want 0 links that were open, nil", n, err)
 	}
 	expectNothing(t, c)
-	if e := h.log.wait(t, "refused"); e.Reason != links.ErrPausedByHand.Error() {
+	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrPausedByHand.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrPausedByHand)
 	}
 	if n := h.dialer.count(); n != 0 {
@@ -689,7 +689,7 @@ func TestNotServingHoldsNothing(t *testing.T) {
 			t.Errorf("Serve = %v, want context.Canceled", err)
 		}
 		expectReset(t, c)
-		if e := h.log.wait(t, "close"); e.Reason != links.ErrLinksOff.Error() {
+		if e := h.log.wait(t, audit.LinkClose); e.Reason != links.ErrLinksOff.Error() {
 			t.Errorf("closed with %q at shutdown, want %q", e.Reason, links.ErrLinksOff)
 		}
 		if granted, released := h.admitter.counts(); granted != released {
@@ -737,7 +737,7 @@ func TestIdenticalRefusalsShareAFoldKey(t *testing.T) {
 	peer.Dst = netip.AddrPortFrom(tgtAddr, 9090)
 	expectNothing(t, h.connect(peer))
 	expectNothing(t, h.connect(peer))
-	got := h.log.waitN(t, "refused", 2)
+	got := h.log.waitN(t, audit.LinkRefused, 2)
 	type foldKey struct {
 		from, to, reason string
 		port             int
@@ -815,7 +815,7 @@ func TestLogfIsQuietWhenTheLinkLogNamesTheError(t *testing.T) {
 	h.serve()
 	expectNothing(t, h.connectAs(h.peer(), links.ErrUnmarked))
 	expectNothing(t, h.connect(h.peer()))
-	h.log.waitN(t, "refused", 2)
+	h.log.waitN(t, audit.LinkRefused, 2)
 	if got := h.lines.all(); len(got) != 0 {
 		t.Errorf("Logf lines = %q, want none", got)
 	}
@@ -828,7 +828,7 @@ func TestNilLogfIsSilent(t *testing.T) {
 	h.serve()
 	expectNothing(t, h.connectAs(Peer{}, errors.New("not on a veth")))
 	expectNothing(t, h.connect(h.peer()))
-	if e := h.log.wait(t, "refused"); e.Reason != links.ErrDialFailed.Error() {
+	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrDialFailed.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrDialFailed)
 	}
 }

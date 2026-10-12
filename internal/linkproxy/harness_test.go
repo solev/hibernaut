@@ -661,13 +661,13 @@ func (r *recorder) all() []audit.LinkEntry {
 }
 
 // wait returns the first entry with event, waiting up to 5 s for it.
-func (r *recorder) wait(t *testing.T, event string) audit.LinkEntry {
+func (r *recorder) wait(t *testing.T, event audit.LinkEvent) audit.LinkEntry {
 	t.Helper()
 	return r.waitN(t, event, 1)[0]
 }
 
 // waitN returns the first n entries with event, waiting up to 5 s for them.
-func (r *recorder) waitN(t *testing.T, event string, n int) []audit.LinkEntry {
+func (r *recorder) waitN(t *testing.T, event audit.LinkEvent, n int) []audit.LinkEntry {
 	t.Helper()
 	var found []audit.LinkEntry
 	eventually(t, fmt.Sprintf("%d %q lines", n, event), func() bool {

@@ -21,10 +21,10 @@ const (
 type LinkEntry struct {
 	// Time is when the event happened, UTC.
 	Time time.Time `json:"time"`
-	// Event is "open", "close" or "refused". There are two lines per link, not one: a line
-	// written only at close cannot answer why a machine is awake and costing money right now,
-	// which is exactly the question an hour-old link raises.
-	Event string `json:"event"`
+	// Event is LinkOpen, LinkClose or LinkRefused. There are two lines per link, not one: a
+	// line written only at close cannot answer why a machine is awake and costing money right
+	// now, which is exactly the question an hour-old link raises.
+	Event LinkEvent `json:"event"`
 	// From and To are machine names, or sandbox IDs when a name is unknown. An endpoint that
 	// cannot be resolved at all is "?" with its ID still set.
 	From   string `json:"from"`
@@ -46,6 +46,18 @@ type LinkEntry struct {
 	BytesOut    int64 `json:"bytesOut,omitempty"`
 	SecondsOpen int64 `json:"secondsOpen,omitempty"`
 }
+
+// LinkEvent is what a link log line records.
+type LinkEvent string
+
+const (
+	// LinkOpen means a link is about to carry its first byte.
+	LinkOpen LinkEvent = "open"
+	// LinkClose means an open link has ended.
+	LinkClose LinkEvent = "close"
+	// LinkRefused means a connection has ended before carrying a byte.
+	LinkRefused LinkEvent = "refused"
+)
 
 // LinkReadResult is the entries read from a link log and the corrupt lines skipped.
 type LinkReadResult struct {
@@ -125,7 +137,7 @@ func (l *LinkLog) Write(e LinkEntry) error {
 		return errors.New("link log is closed")
 	}
 	e = cleanLinkEntry(e)
-	if e.Event != "refused" {
+	if e.Event != LinkRefused {
 		return l.out.write(e)
 	}
 	key := foldKey{from: e.FromID, to: e.ToID, port: e.Port, reason: e.Reason}
@@ -214,7 +226,7 @@ func cleanLinkEntry(e LinkEntry) LinkEntry {
 		e.Time = time.Now()
 	}
 	e.Time = e.Time.UTC()
-	e.Event = cleanString(e.Event, maxEventBytes)
+	e.Event = LinkEvent(cleanString(string(e.Event), maxEventBytes))
 	e.From = cleanString(e.From, maxMachineBytes)
 	e.FromID = cleanString(e.FromID, maxMachineBytes)
 	e.To = cleanString(e.To, maxMachineBytes)

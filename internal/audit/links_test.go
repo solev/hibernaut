@@ -36,7 +36,7 @@ func readLinks(t *testing.T, path string) []audit.LinkEntry {
 }
 
 func refusal(port int, reason error) audit.LinkEntry {
-	return audit.LinkEntry{Event: "refused", From: "web", FromID: "web1", To: "api", ToID: "api1", Port: port, Reason: reason.Error()}
+	return audit.LinkEntry{Event: audit.LinkRefused, From: "web", FromID: "web1", To: "api", ToID: "api1", Port: port, Reason: reason.Error()}
 }
 
 // A link is two lines, one when it opens and one when it ends, so a link that has been open for
@@ -45,13 +45,13 @@ func TestLinkOpenClosePair(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "links.jsonl")
 	l := openLinks(t, path, 1<<20)
 	opened := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
-	if err := l.Write(audit.LinkEntry{Time: opened, Event: "open", From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 8080, Woke: true}); err != nil {
+	if err := l.Write(audit.LinkEntry{Time: opened, Event: audit.LinkOpen, From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 8080, Woke: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLinks(t, path); len(got) != 1 || got[0].Event != "open" || !got[0].Woke {
+	if got := readLinks(t, path); len(got) != 1 || got[0].Event != audit.LinkOpen || !got[0].Woke {
 		t.Fatalf("after open = %+v, want the open line written at once", got)
 	}
-	if err := l.Write(audit.LinkEntry{Time: opened.Add(time.Hour), Event: "close", From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 8080, BytesIn: 10, BytesOut: 20, SecondsOpen: 3600}); err != nil {
+	if err := l.Write(audit.LinkEntry{Time: opened.Add(time.Hour), Event: audit.LinkClose, From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 8080, BytesIn: 10, BytesOut: 20, SecondsOpen: 3600}); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Close(); err != nil {
@@ -61,10 +61,10 @@ func TestLinkOpenClosePair(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("entries = %+v, want open and close", got)
 	}
-	if c := got[1]; c.Event != "close" || c.BytesIn != 10 || c.BytesOut != 20 || c.SecondsOpen != 3600 || !c.Time.Equal(opened.Add(time.Hour)) {
+	if c := got[1]; c.Event != audit.LinkClose || c.BytesIn != 10 || c.BytesOut != 20 || c.SecondsOpen != 3600 || !c.Time.Equal(opened.Add(time.Hour)) {
 		t.Errorf("close = %+v", c)
 	}
-	if err := l.Write(audit.LinkEntry{Event: "open"}); err == nil {
+	if err := l.Write(audit.LinkEntry{Event: audit.LinkOpen}); err == nil {
 		t.Error("Write after Close = nil, want an error")
 	}
 }
@@ -86,11 +86,11 @@ func TestLinkRefusalsFold(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := l.Write(audit.LinkEntry{Event: "open", FromID: "web1", ToID: "api1", Port: 8080}); err != nil {
+		if err := l.Write(audit.LinkEntry{Event: audit.LinkOpen, FromID: "web1", ToID: "api1", Port: 8080}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := readLinks(t, path); len(got) != 2 || got[0].Event != "open" || got[1].Event != "open" {
+	if got := readLinks(t, path); len(got) != 2 || got[0].Event != audit.LinkOpen || got[1].Event != audit.LinkOpen {
 		t.Fatalf("before Close = %+v, want only the two opens", got)
 	}
 	if err := l.Close(); err != nil {
@@ -98,7 +98,7 @@ func TestLinkRefusalsFold(t *testing.T) {
 	}
 	counts := map[string]int{}
 	for _, e := range readLinks(t, path)[2:] {
-		if e.Event != "refused" {
+		if e.Event != audit.LinkRefused {
 			t.Errorf("unexpected %+v", e)
 		}
 		counts[fmt.Sprintf("%s %d", e.Reason, e.Port)] = e.Count
@@ -202,7 +202,7 @@ func TestLinkRefusalsFromOneSourceAreCapped(t *testing.T) {
 				t.Errorf("%s has lines for ports %v, want the first %d", id, ports[id], links.MaxFoldsPerSource)
 			}
 		}
-		want := audit.LinkEntry{Event: "refused", From: "web1", FromID: "web1", To: "?", Reason: "not published",
+		want := audit.LinkEntry{Event: audit.LinkRefused, From: "web1", FromID: "web1", To: "?", Reason: "not published",
 			Count: 1000 - links.MaxFoldsPerSource}
 		if len(overflow) != 1 || overflow[0] != want {
 			t.Errorf("overflow lines = %+v, want only %+v", overflow, want)
@@ -252,7 +252,7 @@ func TestLinkLogRotates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "links.jsonl")
 	l := openLinks(t, path, 300)
 	for i := range 6 {
-		if err := l.Write(audit.LinkEntry{Event: "open", From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 8000 + i}); err != nil {
+		if err := l.Write(audit.LinkEntry{Event: audit.LinkOpen, From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 8000 + i}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -297,7 +297,7 @@ func TestNilLinkLogDrops(t *testing.T) {
 func TestLinkEntryCleaned(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "links.jsonl")
 	l := openLinks(t, path, 1<<20)
-	if err := l.Write(audit.LinkEntry{Event: "open", From: "we\x1b[2Jb", To: strings.Repeat("a", 100), Count: 7}); err != nil {
+	if err := l.Write(audit.LinkEntry{Event: audit.LinkOpen, From: "we\x1b[2Jb", To: strings.Repeat("a", 100), Count: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Close(); err != nil {

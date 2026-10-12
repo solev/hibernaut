@@ -59,12 +59,12 @@ func linkLogApp(t *testing.T, lines ...audit.LinkEntry) (*App, *bytes.Buffer, *b
 func listenerLines() []audit.LinkEntry {
 	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
 	return []audit.LinkEntry{
-		{Time: at, Event: "open", From: "web1", FromID: "web1", To: "api1", ToID: "api1", Port: 8080, Woke: true},
-		{Time: at.Add(time.Hour), Event: "close", From: "web1", FromID: "web1", To: "api1", ToID: "api1", Port: 8080,
+		{Time: at, Event: audit.LinkOpen, From: "web1", FromID: "web1", To: "api1", ToID: "api1", Port: 8080, Woke: true},
+		{Time: at.Add(time.Hour), Event: audit.LinkClose, From: "web1", FromID: "web1", To: "api1", ToID: "api1", Port: 8080,
 			Reason: "revoked", BytesIn: 10, BytesOut: 20, SecondsOpen: 3600},
-		{Time: at.Add(2 * time.Hour), Event: "refused", From: "raw1", FromID: "raw1", To: "gone\x1b1", ToID: "gone\x1b1", Port: 80,
+		{Time: at.Add(2 * time.Hour), Event: audit.LinkRefused, From: "raw1", FromID: "raw1", To: "gone\x1b1", ToID: "gone\x1b1", Port: 80,
 			Reason: "not published", Count: 7},
-		{Time: at.Add(3 * time.Hour), Event: "refused", From: "?", To: "web1", ToID: "web1", Port: 22, Reason: "not published", Count: 1},
+		{Time: at.Add(3 * time.Hour), Event: audit.LinkRefused, From: "?", To: "web1", ToID: "web1", Port: 22, Reason: "not published", Count: 1},
 	}
 }
 
@@ -119,7 +119,7 @@ func TestLogLinksPrintsATable(t *testing.T) {
 // beyond MaxFoldsPerSource fold into. The table shows - for their port, and JSON keeps 0.
 func TestLogLinksShowsNoPortAsADash(t *testing.T) {
 	at := time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC)
-	a, out, errOut := linkLogApp(t, audit.LinkEntry{Time: at, Event: "refused", From: "web1", FromID: "web1", To: "?",
+	a, out, errOut := linkLogApp(t, audit.LinkEntry{Time: at, Event: audit.LinkRefused, From: "web1", FromID: "web1", To: "?",
 		Reason: "rate limited", Count: 936})
 	if code := a.Run(t.Context(), []string{"log", "-links"}); code != 0 {
 		t.Fatalf("log -links = %d; stderr %s", code, errOut)
