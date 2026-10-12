@@ -2,6 +2,7 @@ package linkadmit
 
 import (
 	"context"
+	"time"
 
 	"github.com/solev/hibernaut/internal/linkctl"
 	"github.com/solev/hibernaut/internal/room"
@@ -9,6 +10,13 @@ import (
 
 // RunBackstop is how often the run watcher re-reads its cgroups without an event.
 const RunBackstop = runBackstop
+
+// NewPollNotifier returns the wait and close of the notifier the run watcher uses without
+// inotify, which wakes only every interval.
+func NewPollNotifier(every time.Duration) (wait, stop func()) {
+	p := newPollNotifier(every)
+	return p.wait, p.close
+}
 
 // SetReadRoom replaces what wakes read the host's room with. Call it before admitting.
 func SetReadRoom(a *Admitter, f func() (room.Host, error)) { a.readRoom = f }

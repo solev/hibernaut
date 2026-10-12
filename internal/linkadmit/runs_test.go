@@ -176,3 +176,29 @@ func TestLiveListsOnlyPopulatedRuns(t *testing.T) {
 		t.Error("Current(Bad/ID) = nil error")
 	}
 }
+
+// The watch loop's poll notifier waits out its interval, so the loop does not spin, and stops
+// waiting once it is closed.
+func TestPollNotifierWaitsForItsIntervalOrClose(t *testing.T) {
+	wait, stop := linkadmit.NewPollNotifier(time.Hour)
+	waited := func() <-chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			wait()
+			close(done)
+		}()
+		return done
+	}
+	open := waited()
+	if closedWithin(open, 300*time.Millisecond) {
+		t.Fatal("wait returned well within its hour")
+	}
+	stop()
+	if !closedWithin(open, 5*time.Second) {
+		t.Fatal("wait went on after close")
+	}
+	stop()
+	if !closedWithin(waited(), 5*time.Second) {
+		t.Error("wait on a closed notifier did not return")
+	}
+}
