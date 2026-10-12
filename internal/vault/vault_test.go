@@ -159,6 +159,7 @@ func TestCompatible(t *testing.T) {
 		{name: "underscore without prefix", placeholder: "hib_ABCDEFGHIJKLMNOP", value: "X00_0000000000000000", want: true},
 		{name: "leading underscore without prefix", placeholder: "_ABC-DEFGHIJKLMNOP", value: "_00X-0000000000000000", want: true},
 		{name: "body separator after generic prefix", placeholder: "a-hib-ABCDEFGHIJKLMNOP", value: "a-000-0X00000000000000", want: true},
+		{name: "known prefix never takes the generic rule", placeholder: "sk-proj-hib" + strings.Repeat("A", 40), value: "sk-ABCD-" + strings.Repeat("b", 40)},
 		{name: "jwt same public claims", placeholder: jwtA, value: jwtA[:len(jwtA)-10] + strings.Repeat("c", 10), want: true},
 		{name: "jwt changed public claims", placeholder: jwtA, value: jwtB},
 		{name: "jwt versus opaque", placeholder: jwtA, value: "token-" + strings.Repeat("b", 40)},
