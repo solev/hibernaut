@@ -8,3 +8,7 @@ import "golang.org/x/sys/unix"
 func unscaled(fd uintptr) error {
 	return unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_NOOPT, 1)
 }
+
+// tcpKeepIdle is the TCP option that holds how long a connection idles before its first
+// keepalive probe.
+const tcpKeepIdle = unix.TCP_KEEPALIVE
