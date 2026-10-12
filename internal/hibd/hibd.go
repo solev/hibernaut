@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -996,14 +997,16 @@ func (a *App) cleanLocked(ctx, listingCtx context.Context, cfg config, e engine.
 	return h.CleanWithListing(ctx, listingCtx, now, dryRun, logf)
 }
 
-// linkLeftovers is what cleanup may prune once E2B has been listed: the names in the activity
-// clock's directory and, with links on, the machines links.json has entries for, and the
-// fences there that have been up for links.FenceStale or longer.
+// linkLeftovers is what cleanup may prune once E2B has been listed. With links on or off, as the
+// files outlive turning links off, that is the names in the activity clock's directory and the
+// machines with a fence lock file. With links on it is also the machines links.json has entries
+// for and the fences there that have been up for links.FenceStale or longer.
 type linkLeftovers struct {
-	activity []string
-	entries  []string
-	stale    []staleFence
-	err      error
+	activity   []string
+	fenceLocks []string
+	entries    []string
+	stale      []staleFence
+	err        error
 }
 
 type staleFence struct {
@@ -1018,6 +1021,11 @@ func (a *App) readLinkLeftovers(cfg config, now time.Time) linkLeftovers {
 		errs = append(errs, fmt.Errorf("reading the activity clock: %w", err))
 	} else {
 		left.activity = names
+	}
+	if ids, err := readFenceLocks(cfg.stateDir); err != nil {
+		errs = append(errs, fmt.Errorf("reading the fence locks: %w", err))
+	} else {
+		left.fenceLocks = ids
 	}
 	if cfg.linksConfiguredOn() {
 		doc, err := a.linkPartsFor(cfg).store.Read()
@@ -1065,10 +1073,42 @@ func readActivityNames(stateDir string) ([]string, error) {
 	return names, nil
 }
 
-// pruneLinkLeftovers removes the activity files and, with links on, the link entries of machines
-// E2B has forgotten, and the temporary files a crashed activity update left. Removing one an
-// update is still using only loses that update, which errs toward less activity. With links on
-// it also settles the stale fences. It asks E2B about each machine once.
+// readFenceLocks lists the machines with a fence lock file in the state directory. Only a regular
+// file named links.FenceName for an ID counts, so cleanup neither follows nor removes a symlink
+// named like one.
+func readFenceLocks(stateDir string) ([]string, error) {
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	prefix, suffix, _ := strings.Cut(links.FenceName, "%s")
+	var ids []string
+	for _, entry := range entries {
+		name := entry.Name()
+		id := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+		if id != "" && name == fmt.Sprintf(links.FenceName, id) && entry.Type().IsRegular() {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
+// pruneLinkLeftovers removes what machines E2B has forgotten left behind: their activity files,
+// their fence lock files and, with links on, their link entries. It also removes the temporary
+// files a crashed activity update left. Removing one an update is still using only loses that
+// update, which errs toward less activity. With links on it also settles the stale fences. It
+// asks E2B about each machine once.
 func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engine, left linkLeftovers, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
 	type got struct {
 		m   engine.Machine
@@ -1100,6 +1140,9 @@ func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engin
 	if len(gone) > 0 {
 		errs = append(errs, a.dropLinkEntries(ctx, cfg, gone, dryRun, logf))
 	}
+	if len(left.fenceLocks) > 0 {
+		errs = append(errs, pruneFenceLocks(cfg.stateDir, left.fenceLocks, forgotten, dryRun, logf))
+	}
 	return errors.Join(errs...)
 }
 
@@ -1107,41 +1150,40 @@ func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engin
 // reports the ones it has forgotten. Missing from one listing isn't enough: the listing reads
 // running and paused machines page by page, and a machine E2B pauses meanwhile can fall between
 // them. A machine E2B still has, in any state, is kept, and so is one it can't be asked about,
-// with an error.
+// with an error naming everything of it that is kept.
 func confirmForgotten(get func(id string) (engine.Machine, error), left linkLeftovers, listed map[string]bool) (map[string]bool, error) {
-	entries, clocks := map[string]bool{}, map[string]bool{}
-	var candidates []string
-	for _, id := range left.entries {
+	missed := map[string][]string{}
+	miss := func(id, what string) {
 		if !listed[id] {
-			entries[id] = true
-			candidates = append(candidates, id)
+			missed[id] = append(missed[id], what)
 		}
+	}
+	for _, id := range left.entries {
+		miss(id, "link entry")
 	}
 	for _, name := range left.activity {
-		if !strings.HasPrefix(name, ".") && !listed[name] {
-			clocks[name] = true
-			candidates = append(candidates, name)
+		if !strings.HasPrefix(name, ".") {
+			miss(name, "activity clock")
 		}
 	}
-	slices.Sort(candidates)
-	candidates = slices.Compact(candidates)
+	for _, id := range left.fenceLocks {
+		miss(id, "fence lock")
+	}
 	forgotten := map[string]bool{}
 	var errs []error
-	for _, id := range candidates {
+	for _, id := range slices.Sorted(maps.Keys(missed)) {
 		_, err := get(id)
 		switch {
 		case err == nil:
 		case errors.Is(err, engine.ErrNotFound):
 			forgotten[id] = true
 		default:
-			what := "the activity clock"
-			switch {
-			case entries[id] && clocks[id]:
-				what = "the link entry and activity clock"
-			case entries[id]:
-				what = "the link entry"
+			kept := missed[id]
+			what := kept[len(kept)-1]
+			if len(kept) > 1 {
+				what = strings.Join(kept[:len(kept)-1], ", ") + " and " + what
 			}
-			errs = append(errs, fmt.Errorf("kept %s of %s: couldn't confirm E2B has forgotten it: %w", what, id, err))
+			errs = append(errs, fmt.Errorf("kept the %s of %s: couldn't confirm E2B has forgotten it: %w", what, id, err))
 		}
 	}
 	return forgotten, errors.Join(errs...)
@@ -1281,6 +1323,47 @@ func pruneActivity(stateDir string, names []string, forgotten map[string]bool, d
 			continue
 		}
 		logf("removed %s", what)
+	}
+	return errors.Join(errs...)
+}
+
+// pruneFenceLocks removes the fence lock files of the machines in ids that E2B has forgotten. It
+// removes each only while holding it, so one an operation holds is left to that operation. It
+// removes through the state directory as a root, as pruneActivity does.
+func pruneFenceLocks(stateDir string, ids []string, forgotten map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
+	state, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return fmt.Errorf("pruning the fence locks: %w", err)
+	}
+	defer state.Close()
+	var errs []error
+	for _, id := range ids {
+		if !forgotten[id] {
+			continue
+		}
+		if dryRun {
+			logf("would remove the fence lock of %s, which E2B has forgotten", id)
+			continue
+		}
+		name := fmt.Sprintf(links.FenceName, id)
+		unlock, ok, err := statefile.TryLock(stateDir, name, "fence")
+		if err != nil {
+			errs = append(errs, fmt.Errorf("kept the fence lock of %s: couldn't take it: %w", id, err))
+			continue
+		}
+		if !ok {
+			logf("left the fence lock of %s: an operation is holding it now", id)
+			continue
+		}
+		err = state.Remove(name)
+		unlock()
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			errs = append(errs, fmt.Errorf("kept the fence lock of %s: couldn't remove it: %w", id, err))
+		default:
+			logf("removed the fence lock of %s, which E2B has forgotten", id)
+		}
 	}
 	return errors.Join(errs...)
 }

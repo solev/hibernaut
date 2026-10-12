@@ -1230,6 +1230,9 @@ for any of these. So:
     clears its own, and reads `links.json` back to confirm. A take-over that times out means an
     operation is fencing the machine right now, so the fence is left to it. `cleanup -n` only says
     what it would clear.
+  - **The lock files outlive their fences**, one per machine ever fenced. `hibd cleanup` removes
+    those of machines E2B has forgotten, with links on or off. It removes each one while holding
+    it, so one an operation holds is left to that operation, with a log line.
   - **A machine still pausing reads as running.** E2B reports only `running` and `paused`
     (`internal/engine/e2b/e2bapi/e2bapi.gen.go:165-166`), so cleanup can't tell a machine whose
     pause is still in flight from one that never paused, and it clears the fence either way. That is

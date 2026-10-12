@@ -644,6 +644,7 @@ func (g *getEngine) Get(ctx context.Context, id string) (engine.Machine, error) 
 
 func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 	unavailable := errors.New("e2b: 503 service unavailable")
+	unconfirmed := "couldn't confirm E2B has forgotten it: " + unavailable.Error()
 	for _, tc := range []struct {
 		name     string
 		on       bool
@@ -653,18 +654,21 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 	}{
 		{
 			name: "links on", on: true,
-			wantGets: []string{"flaky1", "gone1", "gone2", "gone4", "moving1"},
-			wantErr:  "kept the link entry and activity clock of flaky1: couldn't confirm E2B has forgotten it: " + unavailable.Error(),
+			wantGets: []string{"flaky1", "flaky2", "gone1", "gone2", "gone4", "gone5", "moving1"},
+			wantErr: "kept the link entry, activity clock and fence lock of flaky1: " + unconfirmed + "\n" +
+				"kept the fence lock of flaky2: " + unconfirmed,
 		},
 		{
 			name: "links on, dry run", on: true, dryRun: true,
-			wantGets: []string{"flaky1", "gone1", "gone2", "gone4", "moving1"},
-			wantErr:  "kept the link entry and activity clock of flaky1: couldn't confirm E2B has forgotten it: " + unavailable.Error(),
+			wantGets: []string{"flaky1", "flaky2", "gone1", "gone2", "gone4", "gone5", "moving1"},
+			wantErr: "kept the link entry, activity clock and fence lock of flaky1: " + unconfirmed + "\n" +
+				"kept the fence lock of flaky2: " + unconfirmed,
 		},
 		{
 			name:     "links off",
-			wantGets: []string{"flaky1", "gone1", "gone2", "moving1"},
-			wantErr:  "kept the activity clock of flaky1: couldn't confirm E2B has forgotten it: " + unavailable.Error(),
+			wantGets: []string{"flaky1", "flaky2", "gone1", "gone2", "gone5", "moving1"},
+			wantErr: "kept the activity clock and fence lock of flaky1: " + unconfirmed + "\n" +
+				"kept the fence lock of flaky2: " + unconfirmed,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -674,7 +678,7 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 			e := &getEngine{
 				Engine:   fe,
 				unlisted: map[string]engine.Machine{"moving1": {ID: "moving1", State: engine.Paused}},
-				getErr:   map[string]error{"flaky1": unavailable},
+				getErr:   map[string]error{"flaky1": unavailable, "flaky2": unavailable},
 			}
 			f := &fakeLinks{doc: links.Doc{
 				Machines: map[string]*links.Machine{
@@ -702,12 +706,31 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 			if err := os.WriteFile(stateFile, []byte(`{"v":1}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			// Every machine ever fenced has a lock file, and gone5 has nothing else. The one with no
+			// ID belongs to no machine, and gone6's is a symlink to a file that isn't a lock.
+			allLocks := []string{"", "flaky1", "flaky2", "gone1", "gone5", "gone6", "live1", "live2", "moving1"}
+			decoy := filepath.Join(cfg.stateDir, "decoy")
+			if err := os.WriteFile(decoy, []byte("not a lock"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range allLocks {
+				lock := filepath.Join(cfg.stateDir, fmt.Sprintf(links.FenceName, id))
+				var err error
+				if id == "gone6" {
+					err = os.Symlink("decoy", lock)
+				} else {
+					err = os.WriteFile(lock, nil, 0o600)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			var logs []string
 			err := a.clean(t.Context(), t.Context(), cfg, e, time.Now(), tc.dryRun, false, func(format string, args ...any) {
 				logs = append(logs, fmt.Sprintf(format, args...))
 			})
-			if err == nil || !errors.Is(err, unavailable) || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("cleanup = %v, want it to say %q", err, tc.wantErr)
+			if err == nil || !errors.Is(err, unavailable) || err.Error() != tc.wantErr {
+				t.Errorf("cleanup = %v, want it to say only %q", err, tc.wantErr)
 			}
 			if got := slices.Sorted(slices.Values(e.gets)); !slices.Equal(got, tc.wantGets) {
 				t.Errorf("Get asked about %q, want each unlisted machine once: %q", got, tc.wantGets)
@@ -719,6 +742,25 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 			}
 			if got := dirEntries(t, activity); !slices.Equal(got, wantFiles) {
 				t.Errorf("activity = %q, want %q", got, wantFiles)
+			}
+			wantLocks := allLocks
+			if !tc.dryRun {
+				wantLocks = []string{"", "flaky1", "flaky2", "gone6", "live1", "live2", "moving1"}
+			}
+			var gotLocks []string
+			for _, id := range allLocks {
+				if _, err := os.Lstat(filepath.Join(cfg.stateDir, fmt.Sprintf(links.FenceName, id))); err == nil {
+					gotLocks = append(gotLocks, id)
+				}
+			}
+			if !slices.Equal(gotLocks, wantLocks) {
+				t.Errorf("fence locks = %q, want %q", gotLocks, wantLocks)
+			}
+			if target, err := os.Readlink(filepath.Join(cfg.stateDir, fmt.Sprintf(links.FenceName, "gone6"))); err != nil || target != "decoy" {
+				t.Errorf("the symlink named like gone6's fence lock reads %q, %v, want it left as it was", target, err)
+			}
+			if data, err := os.ReadFile(decoy); err != nil || string(data) != "not a lock" {
+				t.Errorf("the symlink's target = %q, %v, want it untouched", data, err)
 			}
 			wantEntries := []string{"flaky1", "gone1", "gone4", "live1", "live2", "moving1"}
 			if tc.on && !tc.dryRun {
@@ -746,6 +788,8 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 				verb + " the activity clock of gone1, which E2B has forgotten",
 				verb + " the activity clock of gone2, which E2B has forgotten",
 				verb + " .touch-gone3",
+				verb + " the fence lock of gone1, which E2B has forgotten",
+				verb + " the fence lock of gone5, which E2B has forgotten",
 			}
 			if tc.on {
 				drop := "dropped"
@@ -759,7 +803,7 @@ func TestCleanupPrunesForgottenMachinesOutsideTheLock(t *testing.T) {
 					t.Errorf("logs lack %q:\n%s", w, text)
 				}
 			}
-			for _, kept := range []string{"live1", "live2", "moving1", "flaky1"} {
+			for _, kept := range []string{"live1", "live2", "moving1", "flaky1", "flaky2", "gone6"} {
 				if strings.Contains(text, kept) {
 					t.Errorf("logs mention %s, which cleanup keeps:\n%s", kept, text)
 				}
@@ -782,8 +826,10 @@ func TestCleanupSettlesStaleFences(t *testing.T) {
 		off, dryRun  bool
 		wantFence    bool
 		wantEntry    bool
+		wantLockGone bool
 		wantGets     []string
 		wantEvents   []string
+		// wantLog is matched whole, so its lines have to be logged in that order.
 		wantLog      string
 		wantErr      string
 		wantQuietLog bool
@@ -820,8 +866,15 @@ func TestCleanupSettlesStaleFences(t *testing.T) {
 		},
 		{
 			name: "orphaned on a forgotten machine", id: "gone1", since: stale,
+			wantGets: []string{"gone1"}, wantLockGone: true,
+			wantLog: "dropped the link entry of gone1, which E2B has forgotten\n" +
+				"removed the fence lock of gone1, which E2B has forgotten",
+		},
+		{
+			name: "live owner on a forgotten machine", id: "gone1", since: young, ownerLive: true,
 			wantGets: []string{"gone1"},
-			wantLog:  "dropped the link entry of gone1, which E2B has forgotten",
+			wantLog: "dropped the link entry of gone1, which E2B has forgotten\n" +
+				"left the fence lock of gone1: an operation is holding it now",
 		},
 		{
 			name: "links off", id: "paused1", since: stale, off: true,
@@ -844,15 +897,20 @@ func TestCleanupSettlesStaleFences(t *testing.T) {
 				},
 			}}}
 			a, cfg := cleanupApp(t, fe, f, !tc.off)
-			if tc.ownerLive {
+			switch {
+			case tc.ownerLive:
 				unlock, ok, err := tryLock(cfg.stateDir, owner, "fence")
 				if err != nil || !ok {
 					t.Fatalf("holding the fence's owner lock = %t, %v", ok, err)
 				}
 				t.Cleanup(unlock)
-			}
-			if tc.ownerBroken {
+			case tc.ownerBroken:
 				if err := os.Mkdir(filepath.Join(cfg.stateDir, owner), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				// The operation that raised the fence made its lock file, which outlives it.
+				if err := os.WriteFile(filepath.Join(cfg.stateDir, owner), nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -895,6 +953,10 @@ func TestCleanupSettlesStaleFences(t *testing.T) {
 			}
 			if tc.off && len(f.log()) != 0 {
 				t.Errorf("links off reached the link state: %q", f.log())
+			}
+			_, lerr := os.Lstat(filepath.Join(cfg.stateDir, owner))
+			if gone := errors.Is(lerr, os.ErrNotExist); gone != tc.wantLockGone {
+				t.Errorf("fence lock removed = %t (%v), want %t", gone, lerr, tc.wantLockGone)
 			}
 			if tc.wantLog != "" && !strings.Contains(text, tc.wantLog) {
 				t.Errorf("logs lack %q:\n%s", tc.wantLog, text)
