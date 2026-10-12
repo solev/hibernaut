@@ -28,15 +28,17 @@ func TestPinnedCodexReadsPlaceholderLogin(t *testing.T) {
 	}
 	home := t.TempDir()
 	env := []string{"HOME=" + home, "CODEX_HOME=" + home, "PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
-	run := func(args ...string) ([]byte, error) {
+	run := func(output func(*exec.Cmd) ([]byte, error), args ...string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = env
 		cmd.Dir = home
-		return cmd.CombinedOutput()
+		return output(cmd)
 	}
-	version, err := run("--version")
+	// The version is stdout alone. The pinned Codex warns on stderr when CODEX_HOME is under /tmp,
+	// where t.TempDir is on Linux.
+	version, err := run((*exec.Cmd).Output, "--version")
 	if err != nil || strings.TrimSpace(string(version)) != "codex-cli "+codex.Version {
 		if require || os.Getenv("HIB_CODEX") != "" {
 			t.Fatal("HIB_CODEX must be the pinned Codex release")
@@ -62,7 +64,7 @@ func TestPinnedCodexReadsPlaceholderLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The pinned CLI's run_login_status loads file auth locally. It does not contact OpenAI.
-	out, err := run("login", "status", "-c", `cli_auth_credentials_store="file"`)
+	out, err := run((*exec.Cmd).CombinedOutput, "login", "status", "-c", `cli_auth_credentials_store="file"`)
 	if err != nil || !bytes.Contains(out, []byte("Logged in using ChatGPT")) {
 		t.Fatal("pinned Codex did not recognize the placeholder ChatGPT login")
 	}
