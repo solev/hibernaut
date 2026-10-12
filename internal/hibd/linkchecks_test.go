@@ -89,3 +89,12 @@ func TestRunCheckReportsWhatTheCommandSaid(t *testing.T) {
 		t.Fatalf("runCheck = %q, %v", out, err)
 	}
 }
+
+func TestRunCheckHidesTheNotifySocket(t *testing.T) {
+	t.Setenv("NOTIFY_SOCKET", "/run/systemd/notify")
+	t.Setenv("HIBD_CHECK_KEPT", "yes")
+	out, err := runCheck(t.Context(), "sh", "-c", `printf '%s %s' "${NOTIFY_SOCKET-unset}" "$HIBD_CHECK_KEPT"`)
+	if err != nil || string(out) != "unset yes" {
+		t.Fatalf("runCheck = %q, %v, want %q", out, err, "unset yes")
+	}
+}

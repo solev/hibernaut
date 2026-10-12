@@ -3016,3 +3016,10 @@ Superseded statements are marked inline.
   `Admitter.Release`'s comment, the contract's and two places in this file said it gave back a
   wake's room, which the wake gives back itself when it ends. They say so now (`40147a9`), and the
   round-6 entry's sentence is marked superseded.
+- 2026-10-12: The deploy after Done showed systemd logging, at every start of `hibd-proxy`, that it
+  refused a notification from a process other than the main one. It came from `systemctl show`,
+  which the startup check runs to read the orchestrator's `IPAddressDeny`. `systemctl` writes to the
+  socket `NOTIFY_SOCKET` names when it inherits the variable, and `nft` and `iptables` don't.
+  `runCheck` now leaves `NOTIFY_SOCKET` out of its commands' environment, which
+  `TestRunCheckHidesTheNotifySocket` checks. It was only noise: the watchdog's pings come from the
+  main process, and the proxy never restarted.

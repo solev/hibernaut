@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -59,6 +60,11 @@ func runCheck(ctx context.Context, name string, args ...string) ([]byte, error) 
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	// systemctl writes to systemd's notification socket when it inherits one, and systemd logs
+	// each write as refused, because only hibd proxy's own process may notify.
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return strings.HasPrefix(kv, "NOTIFY_SOCKET=")
+	})
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
