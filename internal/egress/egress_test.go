@@ -708,8 +708,9 @@ func (c *dialedConn) Close() error {
 }
 
 // The proxy keeps the site connection that carried a request for the next one until the client's
-// connection ends. Then it closes it, whether or not the client upgraded in between.
-func TestEndedConnectionClosesItsIdleSiteConnection(t *testing.T) {
+// connection ends. Then it closes it, whether or not the client upgraded in between. That end is
+// normal, so the proxy logs nothing about it.
+func TestEndedConnectionClosesItsIdleSiteConnectionAndLogsNothing(t *testing.T) {
 	t.Parallel()
 	echo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Upgrade") == "" {
@@ -737,7 +738,14 @@ func TestEndedConnectionClosesItsIdleSiteConnection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dialed := make(chan *dialedConn, 8)
+			var mu sync.Mutex
+			var logs []string
 			record := func(s *Server) {
+				s.Logf = func(format string, args ...any) {
+					mu.Lock()
+					defer mu.Unlock()
+					logs = append(logs, fmt.Sprintf(format, args...))
+				}
 				dial := s.Dial
 				s.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
 					conn, err := dial(ctx, network, addr)
@@ -798,6 +806,13 @@ func TestEndedConnectionClosesItsIdleSiteConnection(t *testing.T) {
 			case <-site.closed:
 			case <-time.After(10 * time.Second):
 				t.Fatal("the proxy kept the site connection open after the client's closed")
+			}
+			// The proxy closes the site connection only after it is done with the client's, so
+			// anything it logs about that has been logged by now.
+			mu.Lock()
+			defer mu.Unlock()
+			if len(logs) != 0 {
+				t.Errorf("the proxy logged %q when the client's connection ended", logs)
 			}
 		})
 	}

@@ -266,7 +266,10 @@ func (s *Server) terminate(ctx context.Context, client net.Conn, dst netip.AddrP
 			hijacked.Store(true)
 		}
 	}
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+	err = server.Serve(listener)
+	// Serve returns net.ErrClosed from the listener once the connection has ended.
+	ended := errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)
+	if err != nil && !ended && ctx.Err() == nil {
 		s.logf("egress terminated connection %s: %v", sni, err)
 	}
 }
