@@ -71,13 +71,8 @@ func (l *listenLog) get() []string {
 // the link port whatever linkListen returns.
 func linksOn(t *testing.T, a *App, env map[string]string, egress net.Listener, guard links.Guard, linkListen func() (net.Listener, error), checks ...linkCheck) (string, *listenLog) {
 	t.Helper()
-	dir, err := os.MkdirTemp(".", "s")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
 	state := env["HIBD_STATE_DIR"]
-	socket := filepath.Join(dir, "l.sock")
+	socket := filepath.Join(shortDir(t), "l.sock")
 	env["HIBD_LINK_PORT"] = "5444"
 	env["HIBD_CGROUPS"] = filepath.Join(state, "cgroups")
 	env["HIBD_LINK_LOG"] = filepath.Join(state, "log", "links.jsonl")
@@ -480,12 +475,7 @@ func TestProxyStartsLinksOnceTheChecksPass(t *testing.T) {
 func TestProxyWithLinksOffHasNoLinksSide(t *testing.T) {
 	rule := newFakeHook()
 	a, env, listener, listen := proxyApp(t, rule)
-	dir, err := os.MkdirTemp(".", "s")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	env["HIBD_LINK_SOCKET"] = filepath.Join(dir, "l.sock")
+	env["HIBD_LINK_SOCKET"] = filepath.Join(shortDir(t), "l.sock")
 	saved := proxyLinkHost
 	t.Cleanup(func() { proxyLinkHost = saved })
 	proxyLinkHost = linkHost{

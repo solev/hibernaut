@@ -14,12 +14,7 @@ import (
 // ping every 10 ms.
 func listenNotify(t *testing.T) (*net.UnixConn, map[string]string) {
 	t.Helper()
-	dir, err := os.MkdirTemp(".", "w")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	path := filepath.Join(dir, "n.sock")
+	path := filepath.Join(shortDir(t), "n.sock")
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 	if err != nil {
 		t.Fatal(err)

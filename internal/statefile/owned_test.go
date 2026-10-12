@@ -5,20 +5,27 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
 // asRoot is a Dir that takes root's branches while running as the test's user, recording what
-// it gives away. The chown is to the test's own user, so it succeeds.
+// it gives away. The chown is to the directory's owner, which is the test's own user, so it
+// succeeds.
 func asRoot(t *testing.T, dir string) (Dir, *[]string) {
 	t.Helper()
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := fi.Sys().(*syscall.Stat_t)
 	var given []string
 	return Dir{
 		Path: dir,
 		EUID: func() int { return 0 },
 		Chown: func(f *os.File, uid, gid int) error {
-			if uid != os.Geteuid() || gid != os.Getegid() {
-				t.Errorf("chown %s to %d:%d, want the directory owner %d:%d", f.Name(), uid, gid, os.Geteuid(), os.Getegid())
+			if uid != int(st.Uid) || gid != int(st.Gid) {
+				t.Errorf("chown %s to %d:%d, want the directory owner %d:%d", f.Name(), uid, gid, st.Uid, st.Gid)
 			}
 			given = append(given, filepath.Base(f.Name()))
 			return f.Chown(uid, gid)

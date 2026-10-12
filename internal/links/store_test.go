@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,14 +25,19 @@ func testStore(t *testing.T) *store {
 // file it gives to the state directory's owner.
 func asRoot(t *testing.T, dir string) (statefile.Dir, *[]string) {
 	t.Helper()
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := fi.Sys().(*syscall.Stat_t)
 	var mu sync.Mutex
 	var given []string
 	return statefile.Dir{
 		Path: dir,
 		EUID: func() int { return 0 },
 		Chown: func(f *os.File, uid, gid int) error {
-			if uid != os.Geteuid() || gid != os.Getegid() {
-				t.Errorf("chown %s to %d:%d, want the directory owner", f.Name(), uid, gid)
+			if uid != int(st.Uid) || gid != int(st.Gid) {
+				t.Errorf("chown %s to %d:%d, want the directory owner %d:%d", f.Name(), uid, gid, st.Uid, st.Gid)
 			}
 			mu.Lock()
 			given = append(given, filepath.Base(f.Name()))

@@ -23,11 +23,11 @@ import (
 	"github.com/solev/hibernaut/internal/links"
 )
 
-// socketPath returns a socket path short enough for macOS's 104 bytes, in a directory the test
-// removes.
+// socketPath returns a socket path short enough for macOS's 104 bytes, in a directory under /tmp
+// that the test removes.
 func socketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(".", "s")
+	dir, err := os.MkdirTemp("/tmp", "linkadmit")
 	if err != nil {
 		t.Fatal(err)
 	}
