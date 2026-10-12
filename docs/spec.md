@@ -177,7 +177,10 @@ git clone https://github.com/solev/private-repo
     for a newline. A reflected Basic password can retain at most four leading bits, not its final
     bytes. These limits concern base64 only. Raw and escaped matches replace the whole value.
   - Replacements may change length after rotation. The proxy removes response `Content-Length`
-    so HTTP/1.1 and HTTP/2 framing stay valid.
+    so HTTP/1.1 and HTTP/2 framing stay valid. Base64 framing does not survive every renewal yet.
+    A renewed value whose length differs from its kept placeholder's by other than a multiple of
+    three comes back undecodable in base64 copies. So does a URL-safe copy when the kept
+    placeholder holds a `~` that the renewed value lacks. The real value never shows in either.
   - The proxy strips client `Accept-Encoding` and lets its upstream transport request and decode
     gzip. Any non-identity `Content-Encoding` left after transport decoding fails closed with 502.
     This includes gzip on Range requests and encodings such as br, zstd, and deflate.
