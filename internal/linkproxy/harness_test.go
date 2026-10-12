@@ -575,13 +575,15 @@ type fakeDialer struct {
 	err    error
 	// before runs before each dial.
 	before func(links.Admission)
-	dials  int
+	// control is the dialer's Control, which sees each socket before it connects.
+	control func(network, address string, c syscall.RawConn) error
+	dials   int
 }
 
 func (d *fakeDialer) Dial(ctx context.Context, a links.Admission) (net.Conn, error) {
 	d.mu.Lock()
 	d.dials++
-	before, err := d.before, d.err
+	before, control, err := d.before, d.control, d.err
 	addr, ok := d.routes[netip.AddrPortFrom(a.TargetGate.Addr, uint16(a.Port))]
 	d.mu.Unlock()
 	if before != nil {
@@ -593,7 +595,7 @@ func (d *fakeDialer) Dial(ctx context.Context, a links.Admission) (net.Conn, err
 	if !ok {
 		return nil, fmt.Errorf("fake dialer: nothing at %s:%d", a.TargetGate.Addr, a.Port)
 	}
-	var nd net.Dialer
+	nd := net.Dialer{Control: control}
 	return nd.DialContext(ctx, "tcp", addr)
 }
 
