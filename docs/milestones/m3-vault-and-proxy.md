@@ -70,10 +70,11 @@ stay untouched. Request bodies stream without buffering, regardless of type or l
 Every intercepted response is scrubbed against all vault values in headers, trailers, and bodies,
 including binary bodies. Matches cover raw, JSON-escaped, URL query-escaped, and base64 forms.
 Base64 uses the leak scanner's shared alignment-invariant core and also covers final partial groups
-and padding. Embedded values can retain at most eight boundary bits. A value at the end, such as a
-Basic password, can retain at most four leading bits. Patterns shorter than eight base64 characters
-are skipped. Line-wrapped base64 is not matched. Response `Content-Length` is removed because
-rotation can change replacement length.
+and padding. Embedded values can retain at most eight boundary bits. A value's last character is
+swapped exactly at the end of data and wherever the bits it holds from the next byte are zero, as
+they are for a newline. A value at the end, such as a Basic password, can retain at most four
+leading bits. Patterns shorter than eight base64 characters are skipped. Line-wrapped base64 is
+not matched. Response `Content-Length` is removed because rotation can change replacement length.
 The proxy strips client `Accept-Encoding` before forwarding, so the transport can request and decode
 gzip. Any non-identity response encoding left after transport decoding fails closed with 502.
 The proxy talks HTTP/2 to sites that offer it. It uses HTTP/1.1 for WebSocket upgrades. If audit

@@ -171,10 +171,11 @@ git clone https://github.com/solev/private-repo
   placeholder's encoded form.
   - Base64 matches need at least eight invariant characters. Shorter base64 forms are not scrubbed,
     so tiny patterns do not corrupt unrelated content. Mixed boundary characters can retain at
-    most eight bits of an embedded value. End-of-data patterns include the final partial group
-    and padding. A reflected Basic
-    password can retain at most four leading bits, not its final bytes. These limits concern
-    base64 only. Raw and escaped matches replace the whole value.
+    most eight bits of an embedded value, four at each end. Patterns for a value's ending include
+    the final partial group and padding. They swap the value's last character exactly at the end
+    of data and wherever the bits that character holds from the next byte are zero, as they are
+    for a newline. A reflected Basic password can retain at most four leading bits, not its final
+    bytes. These limits concern base64 only. Raw and escaped matches replace the whole value.
   - Replacements may change length after rotation. The proxy removes response `Content-Length`
     so HTTP/1.1 and HTTP/2 framing stay valid.
   - The proxy strips client `Accept-Encoding` and lets its upstream transport request and decode

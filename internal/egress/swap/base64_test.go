@@ -56,6 +56,56 @@ func TestScrubBase64AtEveryAlignmentAndEnding(t *testing.T) {
 	}
 }
 
+func TestScrubBase64SwapsTheLastCharacterOfAValueExactly(t *testing.T) {
+	value, placeholder := "sk-real-0123456789abcdefg", "sk-hib0-aaaaaaaaaaaaaaaaZ"
+	sw := newSwapper(t, []swap.Secret{{
+		Name: "token", Value: value, Placeholder: placeholder, Sites: []string{"example.com"},
+	}})
+	// In each case the value ends partway through a base64 group, so its last character also
+	// holds the leading bits of the next byte. Those are zero here, as in the placeholder's last
+	// character, so swapping that character leaves none of the value.
+	for _, tc := range []struct {
+		name          string
+		enc           *base64.Encoding
+		before, after string
+		// bits is how many of the value's bits its last character holds.
+		bits int
+	}{
+		{"env file", base64.StdEncoding, "TOKEN=", "\nDEBUG=1\n", 2},
+		{"env file", base64.StdEncoding, "A=1\nTOKEN=", "\nDEBUG=1\n", 4},
+		{"jwt payload", base64.RawURLEncoding, `{"token":"`, `","n":1}`, 4},
+	} {
+		t.Run(fmt.Sprintf("%s/%d bits", tc.name, tc.bits), func(t *testing.T) {
+			if bits := (len(tc.before) + len(value)) % 3 * 2; bits != tc.bits {
+				t.Fatalf("the value's last character holds %d of its bits, want %d", bits, tc.bits)
+			}
+			in := tc.enc.EncodeToString([]byte(tc.before + value + tc.after))
+			header := http.Header{"X-Echo": {in}}
+			sw.ScrubHeader(header)
+			body, err := io.ReadAll(sw.ScrubBody(io.NopCloser(strings.NewReader(in))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// One byte per read puts a read boundary inside the value's ending and right after it.
+			streamed, err := io.ReadAll(sw.ScrubBody(oneByteReadCloser{r: strings.NewReader(in)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tc.before + placeholder + tc.after
+			for _, got := range []struct{ name, scrubbed string }{
+				{"header", header.Get("X-Echo")},
+				{"body", string(body)},
+				{"body read a byte at a time", string(streamed)},
+			} {
+				decoded, err := tc.enc.DecodeString(got.scrubbed)
+				if err != nil || string(decoded) != want {
+					t.Errorf("decoded %s = %q, %v, want %q", got.name, decoded, err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestScrubBase64RotatedLengths(t *testing.T) {
 	for _, tc := range []struct{ value, placeholder, in, want string }{
 		{"long-real-value", "old-placeholder-long", "dXNlcjpsb25nLXJlYWwtdmFsdWU=", "dXNlcjpvbGQtcGxhY2Vob2xkZXItbG9uZw=="},

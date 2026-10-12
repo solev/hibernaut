@@ -301,10 +301,6 @@ func scanScrub(out, in []byte, eof bool, first [256][]pattern) ([]byte, int) {
 			if !bytes.HasPrefix(in[i:], p.from) {
 				continue
 			}
-			next := i + len(p.from)
-			if p.terminal && next < len(in) && base64Byte(in[next]) {
-				continue
-			}
 			if len(p.from) > len(match.from) || len(p.from) == len(match.from) && p.terminal {
 				match = p
 			}
@@ -328,16 +324,8 @@ func possibleLongerMatch(rest []byte, matched int, patterns []pattern) bool {
 		if len(p.from) > len(rest) && len(p.from) > matched && bytes.HasPrefix(p.from, rest) {
 			return true
 		}
-		if p.terminal && len(p.from) == len(rest) && bytes.Equal(p.from, rest) {
-			return true
-		}
 	}
 	return false
-}
-
-func base64Byte(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
-		b == '+' || b == '/' || b == '-' || b == '_' || b == '='
 }
 
 func scrubPatterns(secrets []compiledSecret) []pattern {
