@@ -30,6 +30,8 @@ type portGuest struct {
 	tcp     string
 	checks  int
 	hosts   map[string]string
+	// hostsFails is the ID of a machine whose /etc/hosts can't be written.
+	hostsFails string
 }
 
 func (g *portGuest) exec(_ context.Context, m engine.Machine, _ string, req engine.ExecRequest) (engine.ExecResult, error) {
@@ -44,6 +46,9 @@ func (g *portGuest) exec(_ context.Context, m engine.Machine, _ string, req engi
 	case req.Cmd == "cat":
 		return engine.ExecResult{}, nil
 	case req.Cmd == "sh" && len(req.Args) == 5 && req.Args[2] == "hibd-hosts":
+		if m.ID == g.hostsFails {
+			return engine.ExecResult{ExitCode: 1, Stderr: []byte("sh: can't create /etc/hosts: Read-only file system")}, nil
+		}
 		next, err := base64.StdEncoding.DecodeString(req.Args[4])
 		if err != nil {
 			return engine.ExecResult{ExitCode: 1}, nil
@@ -169,6 +174,31 @@ func TestPortAdd(t *testing.T) {
 	want := `{"v":1,"ports":[{"machine":"web","addr":"198.18.0.2","published":[{"port":3000,"open":null}]}]}` + "\n"
 	if out.String() != want {
 		t.Errorf("stdout %s, want %s", out, want)
+	}
+}
+
+// TestPortAddWarnsWhenAMachineCantBeUpdated: delivery is not promised, so a machine whose
+// /etc/hosts can't be written is a warning after the port is saved, and the others are updated.
+func TestPortAddWarnsWhenAMachineCantBeUpdated(t *testing.T) {
+	e, a, g, _, out, errOut := portApp(t)
+	g.mu.Lock()
+	g.hostsFails = mustID(t, e, "web")
+	g.mu.Unlock()
+	if code := run(t, a, out, errOut, "port", "add", "api", "8080"); code != 0 {
+		t.Fatalf("exit %d: %s; a machine that can't be updated is a warning", code, errOut)
+	}
+	if got, want := out.String(), "api:8080 is published to your machines as api.hib:8080\n"; got != want {
+		t.Errorf("stdout %q, want %q", got, want)
+	}
+	want := `warning: published ports saved, but updating web failed: writing /etc/hosts exited 1: "sh: can't create /etc/hosts: Read-only file system"` + "\n"
+	if got := errOut.String(); got != want {
+		t.Errorf("stderr %q, want %q", got, want)
+	}
+	if m := linkDoc(t, a).Machines[mustID(t, e, "api")]; m == nil || !slices.Equal(m.Ports, []int{8080}) {
+		t.Errorf("links.json has %+v, want api's 8080 saved", m)
+	}
+	if got := g.hostsOf(mustID(t, e, "api")); !strings.Contains(got, links.First.String()+" api.hib\n") {
+		t.Errorf("api's /etc/hosts = %q, want it to name api.hib", got)
 	}
 }
 
