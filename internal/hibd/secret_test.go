@@ -326,3 +326,97 @@ func TestSecretAddAndRmRefuseCodexNames(t *testing.T) {
 		t.Errorf("vault = %+v, want codex-access kept", s)
 	}
 }
+
+func TestSecretRmRemovesTheSecretAndPushesTheSetup(t *testing.T) {
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n"), hostKey: newKey(t)}
+	e := fake.New(fake.WithExec(guest.exec))
+	e.Add(engine.Machine{ID: "app1", State: engine.Running, StartedAt: time.Now(),
+		Metadata: map[string]string{"hib.name": "app", "hib.image": "dev"}})
+	a, out, errOut := newApp(t, e)
+	withSecretConfig(t, a)
+	var kept *hibapi.Secret
+	for _, add := range [][]string{
+		{"github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890"},
+		{"openai", "OPENAI_API_KEY", "api.openai.com", "sk-proj-realSecretValue1234567890"},
+	} {
+		a.Stdin = strings.NewReader(add[3])
+		code, r, err := runJSON(t, a, out, "secret", "add", add[0], "-env", add[1], "-bind", add[2], "-json")
+		if code != 0 || err != nil || r.Secret == nil {
+			t.Fatalf("secret add %s exit %d, response %#v, err %v, stderr %s", add[0], code, r, err, errOut)
+		}
+		kept = r.Secret
+	}
+	if !strings.Contains(guest.envString(), "GH_TOKEN=") {
+		t.Fatalf("machine environment before rm = %q, want GH_TOKEN", guest.envString())
+	}
+	state := a.Getenv("HIBD_STATE_DIR")
+	before, err := readPushMark(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := a.Run(t.Context(), []string{"secret", "rm", "github"}); code != 0 || out.Len() != 0 || errOut.Len() != 0 {
+		t.Fatalf("secret rm github: exit %d, stdout %q, stderr %q; want 0 and no output", code, out, errOut)
+	}
+	if s := loadVault(t, a); len(s) != 1 || s[0].Name != "openai" {
+		t.Errorf("vault = %+v, want only openai", s)
+	}
+	if env := guest.envString(); strings.Contains(env, "GH_TOKEN") || !strings.Contains(env, "OPENAI_API_KEY="+kept.Placeholder+"\n") {
+		t.Errorf("machine environment after rm = %q, want openai's placeholder and no GH_TOKEN", env)
+	}
+	if after, err := readPushMark(state); err != nil || after == "" || after == before {
+		t.Errorf("push mark %q before rm and %q, %v after it, want a new one", before, after, err)
+	}
+}
+
+func TestSecretRmJSON(t *testing.T) {
+	a, out, _ := newApp(t, fake.New())
+	withSecretConfig(t, a)
+	storeTestSecret(t, a, "github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890")
+	if code, _, err := runJSON(t, a, out, "secret", "rm", "github", "-json"); code != 0 || err != nil {
+		t.Fatalf("secret rm github -json: exit %d, %v; want 0 and a reply", code, err)
+	}
+	if s := loadVault(t, a); len(s) != 0 {
+		t.Errorf("vault = %+v, want it empty", s)
+	}
+	code, _, err := runJSON(t, a, out, "secret", "rm", "github", "-json")
+	if remote, ok := errors.AsType[*hibapi.RemoteError](err); code != 1 || !ok || remote.Msg != "no secret github" {
+		t.Errorf("secret rm github -json again: exit %d, %v; want 1 and no secret github", code, err)
+	}
+}
+
+func TestSecretRmRefusesAMissingSecret(t *testing.T) {
+	a, out, errOut := newApp(t, fake.New())
+	withSecretConfig(t, a)
+	storeTestSecret(t, a, "github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890")
+	code := a.Run(t.Context(), []string{"secret", "rm", "openai"})
+	if want := "hibd secret rm: no secret openai\n"; code != 1 || out.Len() != 0 || errOut.String() != want {
+		t.Errorf("secret rm openai: exit %d, stdout %q, stderr %q; want 1 and %q", code, out, errOut, want)
+	}
+	if s := loadVault(t, a); len(s) != 1 || s[0].Name != "github" {
+		t.Errorf("vault = %+v, want github kept", s)
+	}
+}
+
+func TestSecretRmUsageErrors(t *testing.T) {
+	a, _, errOut := newApp(t, fake.New())
+	withSecretConfig(t, a)
+	storeTestSecret(t, a, "github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890")
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "usage: hibd secret rm NAME [-json]\n"},
+		{[]string{"github", "openai"}, "usage: hibd secret rm NAME [-json]\n"},
+		{[]string{"github", "-bogus"}, "flag provided but not defined: -bogus"},
+	} {
+		errOut.Reset()
+		if code := a.Run(t.Context(), append([]string{"secret", "rm"}, tc.args...)); code != 2 || !strings.Contains(errOut.String(), tc.want) {
+			t.Errorf("secret rm %q: exit %d, stderr %q; want 2 and %q", tc.args, code, errOut, tc.want)
+		}
+	}
+	if s := loadVault(t, a); len(s) != 1 || s[0].Name != "github" {
+		t.Errorf("vault = %+v, want github kept", s)
+	}
+}
