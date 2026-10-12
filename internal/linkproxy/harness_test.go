@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -161,10 +162,35 @@ func (h *harness) connectAs(peer Peer, err error) net.Conn {
 	if dialErr != nil {
 		h.t.Fatal(dialErr)
 	}
+	h.identifyAs(c, peer, err)
+	return c
+}
+
+// identifyAs makes Identify answer c with peer and err.
+func (h *harness) identifyAs(c net.Conn, peer Peer, err error) {
 	h.t.Cleanup(func() { _ = c.Close() })
 	_ = c.SetDeadline(time.Now().Add(patience))
 	h.ingress.add(c.LocalAddr().(*net.TCPAddr).Port, identity{peer: peer, err: err})
-	return c
+}
+
+// refused connects as peer, which Identify answers with err, sends a request and expects the
+// listener to close the connection without writing a byte.
+//
+// A refusal closes with SO_LINGER 0, which sends a reset. Go reads SO_ERROR once a
+// non-blocking connect's socket is writable, so a reset that lands first fails the dial with
+// ECONNRESET. That dial received nothing, which is all a refusal promises, so it passes.
+func (h *harness) refused(peer Peer, err error) {
+	h.t.Helper()
+	c, dialErr := net.Dial("tcp", h.addr)
+	if errors.Is(dialErr, syscall.ECONNRESET) {
+		return
+	}
+	if dialErr != nil {
+		h.t.Fatal(dialErr)
+	}
+	h.identifyAs(c, peer, err)
+	_, _ = io.WriteString(c, "GET / HTTP/1.0\r\n\r\n")
+	expectNothing(h.t, c)
 }
 
 // link opens a connection as peer and waits for it to carry an echo, so it is open.

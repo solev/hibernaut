@@ -148,9 +148,7 @@ func TestEveryRefusalClosesWithoutAByte(t *testing.T) {
 			if tt.peer != nil {
 				tt.peer(&peer)
 			}
-			c := h.connectAs(peer, tt.err)
-			_, _ = io.WriteString(c, "GET / HTTP/1.0\r\n\r\n")
-			expectNothing(t, c)
+			h.refused(peer, tt.err)
 
 			e := h.log.wait(t, audit.LinkRefused)
 			if e.Reason != tt.want.Error() {
@@ -187,8 +185,7 @@ func admitErr(err error) func(h *harness) {
 
 func TestConnectionNotFromAMachineIsClosedSilently(t *testing.T) {
 	h := start(t)
-	c := h.connectAs(Peer{}, errors.New("hook: local address 10.0.0.4 belongs to interface eth0, not veth-*"))
-	expectNothing(t, c)
+	h.refused(Peer{}, errors.New("hook: local address 10.0.0.4 belongs to interface eth0, not veth-*"))
 	eventually(t, "the handler to return", func() bool { return h.p.active.Load() == 0 })
 	if got := h.log.all(); len(got) != 0 {
 		t.Errorf("log = %+v, want nothing", got)
@@ -496,8 +493,7 @@ func TestUnreadableStateRefusesNewLinksAndAbortsOpenOnes(t *testing.T) {
 	open := h.link(h.peer())
 	h.doc.setErr(errors.New("unknown version 9"))
 
-	refused := h.connect(h.peer())
-	expectNothing(t, refused)
+	h.refused(h.peer(), nil)
 	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrStateUnreadable.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrStateUnreadable)
 	}
@@ -520,8 +516,7 @@ func TestPerSourceCap(t *testing.T) {
 		conns[i] = h.link(h.peer())
 	}
 
-	over := h.connect(h.peer())
-	expectNothing(t, over)
+	h.refused(h.peer(), nil)
 	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrTooManyLinks.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrTooManyLinks)
 	}
@@ -561,11 +556,11 @@ func TestAcceptRatePerSource(t *testing.T) {
 	unpublished := h.peer()
 	unpublished.Dst = netip.AddrPortFrom(tgtAddr, 9090)
 	for range links.AcceptBurst {
-		expectNothing(t, h.connect(unpublished))
+		h.refused(unpublished, nil)
 	}
 	h.log.waitN(t, audit.LinkRefused, links.AcceptBurst)
 
-	expectNothing(t, h.connect(h.peer()))
+	h.refused(h.peer(), nil)
 	if e := h.log.waitN(t, audit.LinkRefused, links.AcceptBurst+1)[links.AcceptBurst]; e.Reason != links.ErrRateLimited.Error() {
 		t.Fatalf("connection past the burst refused with %q, want %q", e.Reason, links.ErrRateLimited)
 	}
@@ -735,8 +730,8 @@ func TestIdenticalRefusalsShareAFoldKey(t *testing.T) {
 	h := start(t)
 	peer := h.peer()
 	peer.Dst = netip.AddrPortFrom(tgtAddr, 9090)
-	expectNothing(t, h.connect(peer))
-	expectNothing(t, h.connect(peer))
+	h.refused(peer, nil)
+	h.refused(peer, nil)
 	got := h.log.waitN(t, audit.LinkRefused, 2)
 	type foldKey struct {
 		from, to, reason string
@@ -793,7 +788,7 @@ func TestLogfNamesTheErrorBehindARefusal(t *testing.T) {
 			if tt.peer != nil {
 				tt.peer(&peer)
 			}
-			refuse := func() { expectNothing(t, h.connectAs(peer, tt.identify)) }
+			refuse := func() { h.refused(peer, tt.identify) }
 
 			refuse()
 			refuse()
@@ -813,8 +808,8 @@ func TestLogfIsQuietWhenTheLinkLogNamesTheError(t *testing.T) {
 	h := newHarness(t)
 	h.admitter.set(func(a *fakeAdmitter) { a.err = fmt.Errorf("linkadmit: %w", links.ErrPausedByHand) })
 	h.serve()
-	expectNothing(t, h.connectAs(h.peer(), links.ErrUnmarked))
-	expectNothing(t, h.connect(h.peer()))
+	h.refused(h.peer(), links.ErrUnmarked)
+	h.refused(h.peer(), nil)
 	h.log.waitN(t, audit.LinkRefused, 2)
 	if got := h.lines.all(); len(got) != 0 {
 		t.Errorf("Logf lines = %q, want none", got)
@@ -826,8 +821,8 @@ func TestNilLogfIsSilent(t *testing.T) {
 	h.p.cfg.Logf = nil
 	h.dialer.set(func(d *fakeDialer) { d.err = syscall.EHOSTUNREACH })
 	h.serve()
-	expectNothing(t, h.connectAs(Peer{}, errors.New("not on a veth")))
-	expectNothing(t, h.connect(h.peer()))
+	h.refused(Peer{}, errors.New("not on a veth"))
+	h.refused(h.peer(), nil)
 	if e := h.log.wait(t, audit.LinkRefused); e.Reason != links.ErrDialFailed.Error() {
 		t.Errorf("refused with %q, want %q", e.Reason, links.ErrDialFailed)
 	}
