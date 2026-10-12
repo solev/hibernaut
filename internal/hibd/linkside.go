@@ -25,11 +25,11 @@ import (
 )
 
 // linkHost is what the links side of hibd proxy takes from the host. Tests replace
-// proxyLinkHost.
+// proxyLinkHost. The control socket's path is a setting, HIBD_LINK_SOCKET, because every other
+// hibd command dials it too.
 type linkHost struct {
 	guard  func() links.Guard
 	tokens func() links.Tokens
-	socket string
 	// checks are the protections links need besides the guard. Links stay off until all of them
 	// pass.
 	checks []linkCheck
@@ -47,7 +47,6 @@ type linkCheck struct {
 var proxyLinkHost = linkHost{
 	guard:  func() links.Guard { return linkguard.New() },
 	tokens: func() links.Tokens { return linkguard.NewTokens() },
-	socket: links.CtlSocket,
 	checks: []linkCheck{
 		{name: "the sandbox firewall", run: checkSandboxFirewall},
 		{name: "the orchestrator's IPAddressDeny", run: checkOrchestratorDeny},
@@ -103,7 +102,7 @@ func (a *App) newLinkSide(setup proxySetup, logf func(format string, args ...any
 	admitter, err := linkadmit.New(linkadmit.Config{
 		Engine: setup.engine, Runs: runs, Keeper: keeper, Dropper: guard, Resolver: resolver,
 		Store: store, Clock: clock, Room: a.linkRoom(setup.engine), Quiescing: quiescing,
-		Socket: host.socket,
+		Socket: cfg.linkSocket,
 	})
 	if err != nil {
 		return nil, err
@@ -120,7 +119,7 @@ func (a *App) newLinkSide(setup proxySetup, logf func(format string, args ...any
 		return nil, err
 	}
 	admitter.SetCloser(listener)
-	ctl, err := linkctl.Dial(host.socket)
+	ctl, err := linkctl.Dial(cfg.linkSocket)
 	if err != nil {
 		_ = linkLog.Close()
 		return nil, err

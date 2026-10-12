@@ -180,7 +180,7 @@ func runCleanupProcess(t *testing.T, role string) {
 	env := map[string]string{
 		"HIBD_CONFIG": filepath.Join(state, "none.env"), "HIBD_STATE_DIR": state,
 		"HIBD_E2B_STORAGE": os.Getenv("HIB_TEST_STORAGE"), "HIBD_TRIM": "off",
-		"E2B_API_KEY": "test",
+		"HIBD_E2B_CACHE": filepath.Join(state, "e2b-cache"), "E2B_API_KEY": "test",
 	}
 	a := App{
 		Stdout: os.Stdout, Stderr: os.Stderr, Getenv: func(k string) string { return env[k] },

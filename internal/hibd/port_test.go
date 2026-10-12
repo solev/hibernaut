@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/linkctl"
 	"github.com/solev/hibernaut/internal/links"
 )
 
@@ -118,11 +121,111 @@ func portApp(t *testing.T) (*fake.Engine, *App, *portGuest, *fakeController, *by
 	}
 	ctl := &fakeController{}
 	old := newController
-	newController = func() (links.Controller, error) { return ctl, nil }
+	newController = func(string) (links.Controller, error) { return ctl, nil }
 	t.Cleanup(func() { newController = old })
 	out.Reset()
 	errOut.Reset()
 	return e, a, g, ctl, out, errOut
+}
+
+// ctlServer is a link control socket that records each call and answers it with reply.
+type ctlServer struct {
+	mu    sync.Mutex
+	calls []string
+	reply linkctl.Response
+}
+
+// serveCtl serves s on a socket in a short directory until t ends, and returns the socket's
+// path.
+func serveCtl(t *testing.T, s *ctlServer) string {
+	t.Helper()
+	socket := filepath.Join(shortDir(t), "l.sock")
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go s.answer(conn)
+		}
+	}()
+	return socket
+}
+
+func (s *ctlServer) answer(conn net.Conn) {
+	defer conn.Close()
+	var req linkctl.Request
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		return
+	}
+	call := req.Op
+	if req.ID != "" {
+		call += " " + req.ID
+	}
+	if len(req.Ports) > 0 {
+		call += fmt.Sprint(" ", req.Ports)
+	}
+	s.mu.Lock()
+	s.calls = append(s.calls, call)
+	reply := s.reply
+	s.mu.Unlock()
+	_ = json.NewEncoder(conn).Encode(reply)
+}
+
+func (s *ctlServer) answerWith(reply linkctl.Response) {
+	s.mu.Lock()
+	s.reply = reply
+	s.mu.Unlock()
+}
+
+func (s *ctlServer) called() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.calls)
+}
+
+// hibd's port commands, pause and rm reach hibd proxy at HIBD_LINK_SOCKET.
+func TestLinkCommandsDialHIBDLinkSocket(t *testing.T) {
+	g := &portGuest{hostKey: newKey(t)}
+	e := newEngine(g.hostKey, fake.WithExec(g.exec))
+	a, out, errOut := newApp(t, e)
+	ctl := &ctlServer{}
+	socket := serveCtl(t, ctl)
+	get := a.Getenv
+	a.Getenv = func(k string) string {
+		switch k {
+		case "HIBD_LINK_PORT":
+			return "5444"
+		case "HIBD_LINK_SOCKET":
+			return socket
+		}
+		return get(k)
+	}
+	for _, args := range [][]string{{"new", "api"}, {"new", "web"}, {"port", "add", "api", "8080"}} {
+		if code := run(t, a, out, errOut, args...); code != 0 {
+			t.Fatalf("%s: exit %d: %s", strings.Join(args, " "), code, errOut)
+		}
+	}
+	api, web := mustID(t, e, "api"), mustID(t, e, "web")
+	ctl.answerWith(linkctl.Response{Ports: []linkctl.OpenPort{{Target: api, Port: 8080, Open: 2}}})
+	if code := run(t, a, out, errOut, "port", "ls", "-json"); code != 0 || !strings.Contains(out.String(), `{"port":8080,"open":2}`) {
+		t.Errorf("port ls: exit %d, stdout %s, stderr %q, want 2 links open on api:8080", code, out, errOut)
+	}
+	ctl.answerWith(linkctl.Response{})
+	for _, args := range [][]string{{"port", "rm", "api", "8080"}, {"pause", "api"}, {"rm", "web"}} {
+		if code := run(t, a, out, errOut, args...); code != 0 {
+			t.Errorf("%s: exit %d: %s", strings.Join(args, " "), code, errOut)
+		}
+	}
+	want := []string{"stat", "revoke " + api + " [8080]", "close " + api, "close " + web}
+	if got := ctl.called(); !slices.Equal(got, want) {
+		t.Errorf("hibd proxy was asked %q, want %q", got, want)
+	}
 }
 
 func run(t *testing.T, a *App, out, errOut *bytes.Buffer, args ...string) int {

@@ -110,7 +110,7 @@ func TestPortAddAndLs(t *testing.T) {
 	if code := c.hib("port", "ls"); code != 0 {
 		t.Fatalf("exit %d: %s", code, c.errOut)
 	}
-	// This build's control socket is a stub that never answers, so nothing is counted.
+	// There is no control socket at HIBD_LINK_SOCKET, so nothing is counted.
 	want = "" +
 		"NAME  HOST     IP          PORTS           OPEN\n" +
 		"api   api.hib  198.18.0.1  5432,6379,8080  -\n" +
@@ -193,7 +193,7 @@ func TestPortRm(t *testing.T) {
 	if code := c.hib("port", "add", "api", "8080", "6379"); code != 0 {
 		t.Fatalf("exit %d: %s", code, c.errOut)
 	}
-	// This build's control socket is a stub that never answers, so hibd can't confirm.
+	// There is no control socket at HIBD_LINK_SOCKET, so hibd can't confirm.
 	if code := c.hib("port", "rm", "api", "6379"); code != 1 {
 		t.Errorf("exit %d, want 1", code)
 	}

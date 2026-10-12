@@ -77,17 +77,17 @@ func linksOn(t *testing.T, a *App, env map[string]string, egress net.Listener, g
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	state := env["HIBD_STATE_DIR"]
+	socket := filepath.Join(dir, "l.sock")
 	env["HIBD_LINK_PORT"] = "5444"
 	env["HIBD_CGROUPS"] = filepath.Join(state, "cgroups")
 	env["HIBD_LINK_LOG"] = filepath.Join(state, "log", "links.jsonl")
 	env["HIBD_QUIESCING"] = filepath.Join(state, "quiescing")
-	socket := filepath.Join(dir, "l.sock")
+	env["HIBD_LINK_SOCKET"] = socket
 	saved := proxyLinkHost
 	t.Cleanup(func() { proxyLinkHost = saved })
 	proxyLinkHost = linkHost{
 		guard:   func() links.Guard { return guard },
 		tokens:  func() links.Tokens { return new(fakeTokens) },
-		socket:  socket,
 		checks:  checks,
 		recheck: 20 * time.Millisecond,
 	}
@@ -230,18 +230,22 @@ func socketMode(path string) (fs.FileMode, error) {
 	return fi.Mode(), nil
 }
 
-// The proxy serves its control socket where hibd's pause, rm and port commands dial it, in the
-// directory the tmpfiles entry makes and hibd-proxy.service may write.
-func TestProxyServesTheControlSocketWhereHibdDialsIt(t *testing.T) {
-	ctl, err := linkctl.Dial("")
+// hibd proxy serves its control socket at HIBD_LINK_SOCKET, where hibd's pause, rm and port
+// commands dial it. By default it is in the directory the tmpfiles entry makes and
+// hibd-proxy.service may write.
+func TestHIBDLinkSocketPlacesTheControlSocket(t *testing.T) {
+	env := map[string]string{"HIBD_CONFIG": filepath.Join(t.TempDir(), "absent.env")}
+	getenv := func(k string) string { return env[k] }
+	cfg, err := loadSettings(getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proxyLinkHost.socket != ctl.Path() {
-		t.Errorf("hibd proxy serves its control socket at %s, but hibd dials %s", proxyLinkHost.socket, ctl.Path())
+	if cfg.linkSocket != links.CtlSocket || filepath.Dir(cfg.linkSocket) != links.RunDir {
+		t.Errorf("the control socket is %s by default, want %s in %s", cfg.linkSocket, links.CtlSocket, links.RunDir)
 	}
-	if dir := filepath.Dir(proxyLinkHost.socket); dir != links.RunDir {
-		t.Errorf("the control socket is in %s, want %s", dir, links.RunDir)
+	env["HIBD_LINK_SOCKET"] = "/srv/links.sock"
+	if cfg, err := loadSettings(getenv); err != nil || cfg.linkSocket != "/srv/links.sock" {
+		t.Errorf("with HIBD_LINK_SOCKET set, the control socket is %q, %v, want /srv/links.sock", cfg.linkSocket, err)
 	}
 }
 
@@ -475,18 +479,18 @@ func TestProxyStartsLinksOnceTheChecksPass(t *testing.T) {
 
 func TestProxyWithLinksOffHasNoLinksSide(t *testing.T) {
 	rule := newFakeHook()
-	a, _, listener, listen := proxyApp(t, rule)
+	a, env, listener, listen := proxyApp(t, rule)
 	dir, err := os.MkdirTemp(".", "s")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
+	env["HIBD_LINK_SOCKET"] = filepath.Join(dir, "l.sock")
 	saved := proxyLinkHost
 	t.Cleanup(func() { proxyLinkHost = saved })
 	proxyLinkHost = linkHost{
 		guard:  func() links.Guard { t.Error("links off built a guard"); return &fakeGuard{} },
 		tokens: func() links.Tokens { return new(fakeTokens) },
-		socket: filepath.Join(dir, "l.sock"),
 	}
 	stop := runProxyCmd(t, a)
 	select {
@@ -495,7 +499,7 @@ func TestProxyWithLinksOffHasNoLinksSide(t *testing.T) {
 		t.Fatal("proxy did not keep the hook")
 	}
 	assertServes(t, listener.Addr().String())
-	if _, err := os.Lstat(proxyLinkHost.socket); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(env["HIBD_LINK_SOCKET"]); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("links off made a control socket: %v", err)
 	}
 	if code := stop(); code != 0 {

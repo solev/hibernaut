@@ -20,8 +20,8 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-// newController reaches hibd proxy's control socket. Tests replace it.
-var newController = func() (links.Controller, error) { return linkctl.Dial("") }
+// newController reaches hibd proxy's control socket at socket. Tests replace it.
+var newController = func(socket string) (links.Controller, error) { return linkctl.Dial(socket) }
 
 // listenCheckTimeout bounds the advisory check of what a newly published port is bound to.
 const listenCheckTimeout = 5 * time.Second
@@ -112,7 +112,7 @@ func (a *App) portChange(ctx context.Context, args []string, publishing bool) in
 	})
 	var revoked error
 	if !publishing && (err == nil || errors.Is(err, links.ErrNotFound)) {
-		revoked = revoke(ctx, em.ID, ports)
+		revoked = revoke(ctx, cfg.linkSocket, em.ID, ports)
 	}
 	if err != nil {
 		return a.fail(*asJSON, cmd, portRefusal(err, name, noop, have, adding))
@@ -185,7 +185,7 @@ func (a *App) portLS(ctx context.Context, args []string) int {
 	slices.SortFunc(found, func(x, y published) int { return strings.Compare(x.name, y.name) })
 	var stats *links.Stats
 	if len(found) > 0 {
-		s, err := openLinks(ctx)
+		s, err := openLinks(ctx, cfg.linkSocket)
 		if err != nil {
 			a.warnf("hibd proxy didn't say how many links are open: %v", err)
 		} else {
@@ -270,8 +270,8 @@ func (a *App) notePorts(name string, noop []int, publishing bool) {
 
 // revoke asks hibd proxy to close the links already using ports, and to cancel the ones
 // waiting on a wake or a dial. hib port rm only reports success once it has answered.
-func revoke(ctx context.Context, id string, ports []int) error {
-	ctl, err := newController()
+func revoke(ctx context.Context, socket, id string, ports []int) error {
+	ctl, err := newController(socket)
 	if err != nil {
 		return err
 	}
@@ -281,8 +281,8 @@ func revoke(ctx context.Context, id string, ports []int) error {
 	return err
 }
 
-func openLinks(ctx context.Context) (links.Stats, error) {
-	ctl, err := newController()
+func openLinks(ctx context.Context, socket string) (links.Stats, error) {
+	ctl, err := newController(socket)
 	if err != nil {
 		return links.Stats{}, err
 	}

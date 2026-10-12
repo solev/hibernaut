@@ -112,10 +112,12 @@ func newHost(t *testing.T) *host {
 			"E2B_API_KEY":          "test",
 			"E2B_HEALTH_URLS":      health.URL,
 			"HIBD_STATE_DIR":       state,
+			"HIBD_AUDIT_LOG":       filepath.Join(state, "audit.jsonl"),
 			"HIBD_AUTHORIZED_KEYS": keys,
 			"HIBD_CA_CERT":         caCert,
 			"HIBD_QUIESCING":       filepath.Join(state, "quiescing"),
 			"HIBD_LINK_LOG":        filepath.Join(state, "links.jsonl"),
+			"HIBD_LINK_SOCKET":     filepath.Join(state, "links.sock"),
 			"HIBD_LINK_PORT":       "0",
 		},
 	}

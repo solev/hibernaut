@@ -48,7 +48,10 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 		"HIBD_AUTHORIZED_KEYS": keys,
 		"HIBD_QUIESCING":       filepath.Join(t.TempDir(), "quiescing"),
 		"HIBD_CA_CERT":         filepath.Join(state, "ca.crt"),
+		"HIBD_CGROUPS":         filepath.Join(state, "cgroups"),
+		"HIBD_E2B_CACHE":       filepath.Join(state, "e2b-cache"),
 		"HIBD_LINK_PORT":       "0",
+		"HIBD_LINK_SOCKET":     filepath.Join(state, "links.sock"),
 	}
 	if err := os.WriteFile(env["HIBD_CA_CERT"], testCAPEM(t), 0o644); err != nil {
 		t.Fatal(err)
@@ -65,6 +68,18 @@ func newApp(t *testing.T, e engine.Engine) (*App, *bytes.Buffer, *bytes.Buffer) 
 			return nil
 		},
 	}, &out, &errOut
+}
+
+// shortDir is a directory for unix sockets, removed when t ends. It is under /tmp because macOS
+// caps a socket's path at 104 bytes, which a path in t.TempDir can exceed.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "hibd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
 var (
@@ -977,6 +992,37 @@ func TestCleanupFails(t *testing.T) {
 	}
 	if code := a.Run(t.Context(), []string{"cleanup", "now"}); code != 2 {
 		t.Errorf("with an argument: exit %d, want 2", code)
+	}
+}
+
+// hibd cleanup reads E2B's layer cache at HIBD_E2B_CACHE, and deletes nothing when an entry there
+// names no build.
+func TestCleanupReadsTheLayerCacheAtHIBDE2BCache(t *testing.T) {
+	a, _, errOut := newApp(t, fake.New())
+	a.Clean = nil
+	a.Query = func(context.Context, string) ([][]string, error) { return nil, nil }
+	cache, storage := t.TempDir(), t.TempDir()
+	index := filepath.Join(cache, "scope", "index")
+	if err := os.MkdirAll(index, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(index, strings.Repeat("0b", 32)), []byte(`{"template":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	getenv := a.Getenv
+	a.Getenv = func(k string) string {
+		switch k {
+		case "HIBD_E2B_CACHE":
+			return cache
+		case "HIBD_E2B_STORAGE":
+			return storage
+		case "HIBD_TRIM":
+			return "off"
+		}
+		return getenv(k)
+	}
+	if code := a.Run(t.Context(), []string{"cleanup"}); code != 1 || !strings.Contains(errOut.String(), "names no build") {
+		t.Errorf("exit %d, stderr %q, want cleanup to refuse the layer cache at HIBD_E2B_CACHE", code, errOut)
 	}
 }
 

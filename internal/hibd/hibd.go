@@ -111,6 +111,7 @@ Environment variables of the same names override the file:
   HIBD_VAULT            default $HIBD_STATE_DIR/vault.json
   HIBD_VAULT_KEY        default /etc/hibernaut/vault.key
   HIBD_E2B_STORAGE      E2B snapshot storage, default /var/lib/e2b/local-template-storage
+  HIBD_E2B_CACHE        E2B's layer cache, default /var/lib/e2b/local-build-cache
   HIBD_TRIM             snapshot trimming: off, e2e or all, default e2e
   HIBD_AUDIT_LOG        default /var/log/hibernaut/audit.jsonl
   HIBD_AUTHORIZED_KEYS  keys that may log in to new machines, default ~/.ssh/authorized_keys
@@ -125,6 +126,7 @@ Environment variables of the same names override the file:
   HIBD_CGROUPS          where E2B keeps its machines' cgroups, default /sys/fs/cgroup/e2b
   HIBD_LINK_PORT        port for links between machines, default 5444, or 0 to turn them off
   HIBD_LINK_LOG         link log, default /var/log/hibernaut/links.jsonl
+  HIBD_LINK_SOCKET      link control socket, default /run/hibernaut/links.sock
 `
 
 const (
@@ -541,7 +543,7 @@ func (p linkParts) closeLinks(ctx context.Context, cfg config, id, name, rerun s
 	ctl := p.ctl
 	var closeErr error
 	if ctl == nil {
-		c, err := linkctl.Dial("")
+		c, err := linkctl.Dial(cfg.linkSocket)
 		if err != nil {
 			closeErr = err
 		} else {
@@ -981,7 +983,7 @@ func (a *App) cleanLocked(ctx, listingCtx context.Context, cfg config, e engine.
 	}
 	m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir})
 	h := cleanup.Host{
-		Storage: cfg.e2bStorage, Cache: cleanup.CacheDir, Query: query, Engine: e,
+		Storage: cfg.e2bStorage, Cache: cfg.e2bCache, Query: query, Engine: e,
 		TrimScope: cfg.trimScope, OpenTrim: a.OpenTrim, Timeout: a.Timeout,
 		ReadGuard: func(ctx context.Context) (func(), error) {
 			return a.lockCleanupRead(ctx, m, !sweep, logf)
@@ -1727,6 +1729,7 @@ type config struct {
 	vaultPath      string
 	vaultKeyPath   string
 	e2bStorage     string
+	e2bCache       string
 	trimScope      string
 	auditLogPath   string
 	authorizedKeys string
@@ -1741,6 +1744,9 @@ type config struct {
 	linkPort int
 	// linkLog is HIBD_LINK_LOG, the link log's path.
 	linkLog string
+	// linkSocket is HIBD_LINK_SOCKET, the path of the control socket hibd proxy serves and
+	// every other hibd command dials.
+	linkSocket string
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -1802,6 +1808,7 @@ func loadSettings(getenv func(string) string) (config, error) {
 		vaultPath:      get("HIBD_VAULT", ""),
 		vaultKeyPath:   get("HIBD_VAULT_KEY", "/etc/hibernaut/vault.key"),
 		e2bStorage:     get("HIBD_E2B_STORAGE", cleanup.StorageDir),
+		e2bCache:       get("HIBD_E2B_CACHE", cleanup.CacheDir),
 		trimScope:      get("HIBD_TRIM", "e2e"),
 		auditLogPath:   get("HIBD_AUDIT_LOG", "/var/log/hibernaut/audit.jsonl"),
 		authorizedKeys: get("HIBD_AUTHORIZED_KEYS", keys),
@@ -1813,6 +1820,7 @@ func loadSettings(getenv func(string) string) (config, error) {
 		proxyPort:      get("HIBD_PROXY_PORT", "5443"),
 		linkPort:       linkPort,
 		linkLog:        get("HIBD_LINK_LOG", links.LogPath),
+		linkSocket:     get("HIBD_LINK_SOCKET", links.CtlSocket),
 	}
 	if cfg.vaultPath == "" {
 		cfg.vaultPath = filepath.Join(cfg.stateDir, "vault.json")

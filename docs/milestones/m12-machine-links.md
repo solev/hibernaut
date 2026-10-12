@@ -1371,6 +1371,7 @@ quiescing works today, both of which M12 has to fix for this to hold:
 | E2B's slot return delay, which the guard has to beat | 3 s | `links.SlotReturnDelay`, E2B's `pool.go:25` |
 | Run sweep, the backstop | 5 s | `links.SweepEvery` |
 | Proxy watchdog, recovery only | 30 s | `WatchdogSec` in `hibd-proxy.service` |
+| Control socket | `/run/hibernaut/links.sock` by default, `HIBD_LINK_SOCKET` | `links.CtlSocket`, `hibd.go` |
 | Control socket reply | 7 s | `links.CtlTimeout` |
 | Idle link timeout | none, TCP keepalive 30 s | `links.Keepalive` |
 | Link log | `/var/log/hibernaut/links.jsonl`, 10 MiB, one rotation | `HIBD_LINK_LOG` |
@@ -1414,8 +1415,8 @@ number moves, it moves here first.
 
 Every name in the table's third column is in
 [`internal/links/const.go`](../../internal/links/const.go), with the reason for its value next to
-it, except the three that belong to systemd and to `hibd`'s own flags. `HIBD_LINK_PORT` and
-`HIBD_LINK_LOG` join the list in `hibd`'s usage text.
+it, except the three that belong to systemd and to `hibd`'s own flags. `HIBD_LINK_PORT`,
+`HIBD_LINK_LOG` and `HIBD_LINK_SOCKET` join the list in `hibd`'s usage text.
 
 ### Audit
 
