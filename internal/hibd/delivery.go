@@ -1,12 +1,17 @@
 package hibd
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
@@ -15,6 +20,7 @@ import (
 	"github.com/solev/hibernaut/internal/hostsblock"
 	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
+	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
@@ -58,7 +64,11 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 			fmt.Fprintf(a.Stderr, "warning: %s, but %s failed: %s\n", done, termsafe.String(doing), termsafe.String(err.Error()))
 		}
 	}
+	// Marking before and after the writes makes hibd daemon write every machine again, whether
+	// this push finishes, is cut short or overlaps one of its passes.
+	marked := markPush(cfg.stateDir)
 	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), links.NewStore(cfg.stateDir), a.engine, nil, warn)
+	warn("telling hibd daemon about the update", cmp.Or(markPush(cfg.stateDir), marked))
 }
 
 func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore links.Store, open func() (engine.Engine, error), written map[string]delivered, report func(string, error)) bool {
@@ -192,6 +202,8 @@ type setupDelivery struct {
 	looking  chan struct{}
 	written  map[string]delivered
 	problems map[string]string
+	// mark is the push mark the last pass began with.
+	mark string
 }
 
 type delivered struct {
@@ -221,6 +233,13 @@ func (d *setupDelivery) look(ctx context.Context) {
 		reported[doing] = true
 		d.report(doing, err)
 	}
+	mark, err := readPushMark(d.cfg.stateDir)
+	report("reading the push mark", err)
+	if err != nil || mark != d.mark {
+		// A push wrote machines since the last pass began, or may have.
+		clear(d.written)
+		d.mark = mark
+	}
 	if !updateSetup(ctx, d.cfg, d.codex, d.links, func() (engine.Engine, error) { return d.engine, nil }, d.written, report) {
 		return
 	}
@@ -244,4 +263,51 @@ func (d *setupDelivery) report(doing string, err error) {
 	if err != nil {
 		d.logf("%s: %v", doing, err)
 	}
+}
+
+// pushMark is a file in the state directory that every push replaces with a new value. hibd
+// daemon skips a machine that holds what the daemon last wrote there. A push writes machines
+// behind the daemon's back, so when the mark has changed since the daemon's last pass, the
+// daemon writes every machine again.
+const pushMark = "setup-pushed"
+
+func markPush(stateDir string) error {
+	d := statefile.Dir{Path: stateDir}
+	root, owner, err := d.Root()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	f, err := d.PublishOwned(root, pushMark, []byte(rand.Text()+"\n"), owner, true)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// readPushMark reads the mark in stateDir, or "" when no push has left one. The value is only
+// compared, but it is still read without following a link or waiting on a pipe.
+func readPushMark(stateDir string) (string, error) {
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	f, err := root.OpenFile(pushMark, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("%s isn't a regular file", pushMark)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 64))
+	return string(data), err
 }

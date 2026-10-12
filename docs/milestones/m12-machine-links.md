@@ -429,7 +429,7 @@ links. It does nothing to a connection that is already open or to one sitting in
   rejected*).
 
 **Delivery is not promised** (D10). `pushSetup` returns without having reached every machine:
-`internal/hibd/delivery.go:52-75` skips the whole push while the host is quiescing, gives the batch
+`internal/hibd/delivery.go:58-85` skips the whole push while the host is quiescing, gives the batch
 30 s and only warns on failure. `port add` therefore **commits the file, pushes and warns if the
 push failed**, and the daemon's next pass retries. The message never claims the name resolves yet:
 
@@ -496,7 +496,7 @@ web   web.hib  198.18.0.2  3000        0
   (`cmd/hib/secret.go:96`).
 - **Warnings and the fork hint reach the CLI as text, not as structure.** `hibd` writes them to
   **stderr**, `hib` passes stderr through and `--json` leaves them out of the document entirely.
-  This is what `hibd`'s `warn` already does (`internal/hibd/delivery.go:56-60`). No new field
+  This is what `hibd`'s `warn` already does (`internal/hibd/delivery.go:62-66`). No new field
   carries advice.
 
 **Two places meet [M11](m11-bot-faces.md)**, which landed first (`fc1f7b5`):
@@ -524,14 +524,14 @@ The hosts block rides `setupDelivery`, the same path that already writes the env
 identity and Codex's login file: on create, after a resume and whenever the content changes. **It is
 best-effort, and the design doesn't pretend otherwise.** `pushSetup` skips every machine while the
 host is quiescing, gives the batch 30 s and only warns when a machine doesn't take it
-(`internal/hibd/delivery.go:52-75`). The daemon's next pass, every 15 s by default, retries.
+(`internal/hibd/delivery.go:58-85`). The daemon's next pass, every 15 s by default, retries.
 `hib port add` and `hib port rm` push at once rather than waiting for it. So: a port is published
 the moment `links.json` is written, and the **name** follows when delivery succeeds. Nothing in the
 design waits on a name resolving.
 
 **The messages say only what is true.** `hib port add` reports that the port is *published*, not
 that the machine is *reachable*, and a delivery failure names the machine that missed it and the
-reason without naming a time. `delivery.go:52-75` guarantees neither reachability nor a deadline (it
+reason without naming a time. `delivery.go:58-85` guarantees neither reachability nor a deadline (it
 skips quiescing machines entirely and only warns on failure), so neither is promised.
 
 ```
@@ -583,8 +583,15 @@ func WriteHosts(ctx context.Context, e engine.Engine, id string, block []byte) e
   `Setup.Hash` gains the field and its version string goes to `"hibernaut machine setup v2"`, so
   every machine is rewritten once after the upgrade.
 - The block is **the same for every machine**: the full list of machines with published ports,
-  the reader included. So one hash covers the host, and `setupDelivery`'s existing cache works
-  unchanged. A machine with no published ports still gets the block, because it may be a client.
+  the reader included. So one hash covers the host. A machine with no published ports still gets
+  the block, because it may be a client.
+- **Every push replaces a mark.** `setupDelivery` skips a machine that holds what the daemon last
+  wrote there, and a push writes machines behind its back. So `pushSetup` replaces `setup-pushed`
+  in the state directory with a new value before its writes and again after them, and a pass that
+  finds the mark changed, or can't read it, writes every machine again. The mark before covers a
+  push that is cut short, and the one after a push that overlaps a pass. Without it `hib rm`, which
+  doesn't push, would leave its machine's line wherever a push had written it: the block would be
+  back to what the daemon last wrote, so the pass would skip the machine.
 - Lines outside the markers are left alone. The block never contains `localhost`, `127.0.0.1`,
   `::1` or the machine's own hostname, and every name in it ends in `.hib`.
 - When no machine has a published port the block is empty, `Render` returns nil and `Merge`
@@ -1784,8 +1791,9 @@ is what holds when neither of them runs.
   prints the hint.
 - `hib rm`: the entry goes, the address is burned and open links close. `rm` pushes nothing, so the
   machine's line leaves the other machines' hosts blocks on the daemon's next delivery pass, about
-  15 s later. Until then a stale line points at an address that is never handed out again, which
-  is refused (item 11).
+  15 s later, including the machines a push wrote it into (the push mark, *Delivering /etc/hosts*).
+  Until then a stale line points at an address that is never handed out again, which is refused
+  (item 11).
 - A host reboot: running machines are gone anyway. `links.json` survives, and addresses with it.
 - A `hibd proxy` restart: `ExecStopPost` runs `hibd proxy -unhook`, which removes the jump and the
   chain, so links fail closed while it's down. Open links die with the process, and the control
@@ -2288,7 +2296,7 @@ The default is the commit that turns links on, and it cannot be anywhere else.
 - [x] `hibd new` and `hibd fork` deliver the hosts block with the rest of the setup, so a new
       machine has its names from the start rather than from the daemon's next pass. `loadSetup` has
       no engine to map IDs to names, so the block is built from `links.json` and the machine list
-      the way `updateSetup` builds it (`hostsBlock`, `internal/hibd/delivery.go:116`), and only with
+      the way `updateSetup` builds it (`hostsBlock`, `internal/hibd/delivery.go:126`), and only with
       links on (`internal/hibd/newhosts.go`). When it can't be built, they warn and start the
       machine without the names. `internal/machines/scriptlock_test.go` lists the hosts script next
       to the env script.
@@ -2944,3 +2952,16 @@ Superseded statements are marked inline.
   sweep's `verdict`. `reserve`'s five return values. The overlap between `recheck` and `ctxReason`
   in `linkproxy`. One type for sandbox IDs. Typed names for the link log's events. The `vm/systemd`
   tests that pin lines of the unit files.
+- 2026-10-12: `make e2e` on the host found one bug, and it is fixed. **A push left the daemon's
+  record stale.** `setupDelivery` remembers what it last wrote into each machine and skips a
+  machine whose setup hashes the same. `pushSetup` writes machines without touching that record, so
+  after `hib port add` pushed a block naming a new machine and `hib rm` removed the machine, the
+  daemon found the block back to what it had last written itself and skipped every machine, and
+  the removed machine's line stayed. `hib rm closes the links and removes the entry` waited a
+  minute for the line to go and failed. Every push now replaces a mark in the state directory,
+  `setup-pushed`, before and after its writes, and a pass that finds the mark changed, or can't
+  read it, writes every machine again (*Delivering /etc/hosts*). That costs one write of every
+  running machine after each push. `TestSetupDeliveryWritesAgainAfterAPush` fails without the fix.
+  `TestPushSetupMarksBeforeAndAfterItsWrites`, `TestPushSetupWarnsOnceWhenItCantMark` and
+  `TestSetupDeliveryWritesEveryPassWhileTheMarkIsUnreadable` cover the two marks, the warning and a
+  mark the daemon can't read.
