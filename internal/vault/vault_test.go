@@ -420,9 +420,10 @@ func TestKeyFileChecksAndRedaction(t *testing.T) {
 	if _, err := vault.LoadKey(path); err != nil {
 		t.Fatal(err)
 	}
-	for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
-		if got := fmt.Sprintf(format, key); strings.Contains(got, "000102") || strings.Contains(got, "hib") || got == "" {
-			t.Fatalf("fmt.Sprintf(%q, key) = %q, want redacted", format, got)
+	// %d and %t reach only Format. Without it fmt prints the key's bytes.
+	for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d", "%t"} {
+		if got := fmt.Sprintf(format, key); got != "[redacted vault key]" {
+			t.Fatalf("fmt.Sprintf(%q, key) = %q, want the redacted marker", format, got)
 		}
 	}
 	if data, err := json.Marshal(key); err == nil {
