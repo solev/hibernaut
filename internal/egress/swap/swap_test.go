@@ -462,6 +462,25 @@ func TestScrubBodyWaitsForLongestMatchAcrossBoundary(t *testing.T) {
 	}
 }
 
+type closeCountingSource struct {
+	io.Reader
+	closes int
+	err    error
+}
+
+func (s *closeCountingSource) Close() error {
+	s.closes++
+	return s.err
+}
+
+func TestScrubBodyClosesItsSource(t *testing.T) {
+	sw := newSwapper(t, testSecrets())
+	src := &closeCountingSource{Reader: strings.NewReader("body"), err: errors.New("source close failed")}
+	if err := sw.ScrubBody(src).Close(); !errors.Is(err, src.err) || src.closes != 1 {
+		t.Errorf("Close = %v after %d closes of the source, want the source's error after one", err, src.closes)
+	}
+}
+
 type oneByteReadCloser struct{ r *strings.Reader }
 
 func (r oneByteReadCloser) Read(p []byte) (int, error) {

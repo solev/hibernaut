@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,6 +165,48 @@ func TestEveryBoundResponseScrubsHeadersBinaryBodyAndTrailers(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type closeCountingBody struct {
+	io.Reader
+	closes int
+	err    error
+}
+
+func (b *closeCountingBody) Close() error {
+	b.closes++
+	return b.err
+}
+
+func TestTrailerScrubBodyClosesTheResponseAndScrubsOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		readAll bool
+	}{
+		{"closed before the end", false},
+		{"read to the end and closed", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			closeErr := errors.New("upstream close failed")
+			upstream := &closeCountingBody{Reader: strings.NewReader("response body"), err: closeErr}
+			var scrubs int
+			body := &trailerScrubBody{ReadCloser: upstream, scrub: func() { scrubs++ }}
+			if tc.readAll {
+				if data, err := io.ReadAll(body); err != nil || string(data) != "response body" || scrubs != 1 {
+					t.Fatalf("ReadAll = %q, %v after %d scrubs, want the body after one", data, err, scrubs)
+				}
+			} else if n, err := body.Read(make([]byte, 4)); n != 4 || err != nil || scrubs != 0 {
+				t.Fatalf("Read = %d, %v after %d scrubs, want 4 bytes and no scrub yet", n, err, scrubs)
+			}
+			if err := body.Close(); !errors.Is(err, closeErr) {
+				t.Errorf("Close = %v, want the upstream's %v", err, closeErr)
+			}
+			if upstream.closes != 1 || scrubs != 1 {
+				t.Errorf("Close closed the upstream body %d times and scrubbed %d times, want once each", upstream.closes, scrubs)
+			}
+		})
 	}
 }
 
