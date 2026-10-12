@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/solev/hibernaut/images"
@@ -42,6 +43,9 @@ type fakeLinks struct {
 	dropErr   error
 	// onLock runs as Update or Fence starts, where the real store takes a lock.
 	onLock func()
+	// fenceHeld makes Fence wait until its ctx ends, as the real store does while another
+	// operation holds the machine's fence lock.
+	fenceHeld bool
 }
 
 func (f *fakeLinks) parts() linkParts {
@@ -117,11 +121,15 @@ func (f *fakeLinks) Update(_ context.Context, update func(*links.Doc) error) err
 	return err
 }
 
-func (f *fakeLinks) Fence(_ context.Context, id, why string) (func(), error) {
+func (f *fakeLinks) Fence(ctx context.Context, id, why string) (func(), error) {
 	if f.onLock != nil {
 		f.onLock()
 	}
 	f.event("fence %s %s", id, why)
+	if f.fenceHeld {
+		<-ctx.Done()
+		return func() {}, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fenceErr != nil {
@@ -896,4 +904,56 @@ func TestCleanupSettlesStaleFences(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCleanupLeavesAFenceAnOperationHolds: an operation that fenced the machine after cleanup found
+// the old fence orphaned holds the fence lock, so the take-over times out after fenceClearTimeout
+// and cleanup leaves the fence to that operation, without an error.
+func TestCleanupLeavesAFenceAnOperationHolds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+		fe := fake.New()
+		fe.Add(engine.Machine{ID: "paused1", State: engine.Paused})
+		e := &getEngine{Engine: fe, getErr: map[string]error{}}
+		f := &fakeLinks{fenceHeld: true, doc: links.Doc{Machines: map[string]*links.Machine{
+			"paused1": {
+				Addr:  netip.MustParseAddr("10.11.0.2"),
+				Ports: []int{80},
+				Fence: &links.Fence{
+					Since: now.Add(-links.FenceStale - time.Minute),
+					Why:   "save",
+					Owner: fmt.Sprintf(links.FenceName, "paused1"),
+				},
+			},
+		}}}
+		a, cfg := cleanupApp(t, fe, f, true)
+		before := cloneDoc(f.doc)
+		var logs []string
+		start := time.Now()
+		err := a.clean(t.Context(), t.Context(), cfg, e, now, false, false, func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		})
+		text := strings.Join(logs, "\n")
+		if err != nil {
+			t.Errorf("cleanup = %v; logs:\n%s", err, text)
+		}
+		if waited := time.Since(start); waited != fenceClearTimeout {
+			t.Errorf("cleanup waited %v for the fence, want %v", waited, fenceClearTimeout)
+		}
+		if want := "left the fence on paused1: an operation is fencing it now"; !strings.Contains(text, want) {
+			t.Errorf("logs lack %q:\n%s", want, text)
+		}
+		var fenceEvents []string
+		for _, ev := range f.log() {
+			if strings.HasPrefix(ev, "fence ") || strings.HasPrefix(ev, "release ") {
+				fenceEvents = append(fenceEvents, ev)
+			}
+		}
+		if want := []string{"fence paused1 clearing a fence its owner left"}; !slices.Equal(fenceEvents, want) {
+			t.Errorf("fence events = %q, want %q", fenceEvents, want)
+		}
+		if !reflect.DeepEqual(f.doc, before) {
+			t.Errorf("link state = %+v, want it as it was: %+v", f.doc, before)
+		}
+	})
 }
