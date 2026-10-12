@@ -101,22 +101,6 @@ func OpenLinks(path string, maxBytes int64) (*LinkLog, error) {
 	return &LinkLog{out: out, folds: map[foldKey]*fold{}, perSource: map[string]int{}}, nil
 }
 
-// Path is where the log is being written.
-func (l *LinkLog) Path() string {
-	if l == nil {
-		return ""
-	}
-	return l.out.path
-}
-
-// MaxBytes is the size the log rotates at, keeping one older file.
-func (l *LinkLog) MaxBytes() int64 {
-	if l == nil {
-		return 0
-	}
-	return l.out.maxBytes
-}
-
 // Write appends one JSON line for e and flushes it before returning, as the secret log does.
 //
 // A refusal identical to one already written in the last FoldWindow, by source, target, port and

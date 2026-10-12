@@ -69,6 +69,31 @@ func TestLinkOpenClosePair(t *testing.T) {
 	}
 }
 
+// A closed link log refuses every write, a refusal included, rather than fold one it could never
+// write. Closing it again is fine.
+func TestClosedLinkLogRefusesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "links.jsonl")
+	l := openLinks(t, path, 1<<20)
+	if err := l.Write(refusal(8080, links.ErrNoRoom)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opened := audit.LinkEntry{Event: audit.LinkOpen, From: "web", FromID: "web1", To: "api", ToID: "api1", Port: 9090}
+	for _, e := range []audit.LinkEntry{opened, refusal(9090, links.ErrNoRoom)} {
+		if err := l.Write(e); err == nil || err.Error() != "link log is closed" {
+			t.Errorf("Write(%s) after Close = %v, want the log closed", e.Event, err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Errorf("a second Close = %v, want nil", err)
+	}
+	if got := readLinks(t, path); len(got) != 1 || got[0].Event != audit.LinkRefused || got[0].Port != 8080 {
+		t.Errorf("entries = %+v, want only the refusal the first Close wrote", got)
+	}
+}
+
 // A retry loop hitting the same refusal writes one line per window, not one per try. A different
 // port is a different refusal, and opens are never folded into anything.
 func TestLinkRefusalsFold(t *testing.T) {
@@ -288,9 +313,6 @@ func TestNilLinkLogDrops(t *testing.T) {
 	}
 	if err := l.Close(); err != nil {
 		t.Errorf("Close = %v", err)
-	}
-	if l.Path() != "" || l.MaxBytes() != 0 {
-		t.Errorf("Path, MaxBytes = %q, %d", l.Path(), l.MaxBytes())
 	}
 }
 

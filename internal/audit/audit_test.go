@@ -62,6 +62,31 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	}
 }
 
+// A closed log refuses writes and leaves the file as it was. Closing it again is fine.
+func TestClosedLogRefusesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	log := openLog(t, path, 1<<20)
+	if err := log.Write(entry("web", "/before")); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Write(entry("web", "/after")); err == nil || err.Error() != "audit log is closed" {
+		t.Errorf("Write after Close = %v, want the log closed", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Errorf("a second Close = %v, want nil", err)
+	}
+	got, err := audit.Read(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []audit.Entry{entry("web", "/before")}; got.Corrupt != 0 || !reflect.DeepEqual(got.Entries, want) {
+		t.Errorf("Read = %#v, want only the entry written before Close", got)
+	}
+}
+
 func TestRotationReadsOldAndCurrent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	log := openLog(t, path, 320)
