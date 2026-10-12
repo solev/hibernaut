@@ -1037,6 +1037,15 @@ func (f *linkFixture) portRMDuringWake(t *testing.T) {
 
 func (f *linkFixture) guardRemoved(t *testing.T) {
 	ctx := f.ctx
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		// A proxy that didn't put the guard back serves no links until it restarts.
+		cmd := "sudo -n nft list table inet " + links.GuardTable + " >/dev/null || sudo -n systemctl restart hibd-proxy"
+		if _, err := vm.ssh(ctx, cmd); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
+	})
 	hold := linkHold(t, ctx, f.client, false, f.api.host(), 8080, 600, 5)
 	linkHoldOpen(t, ctx, f.client, false, hold, "api hello")
 	since := linkHostNow(t, ctx)
