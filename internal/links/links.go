@@ -108,8 +108,9 @@ type Admitter interface {
 	// target then pauses on its own idle timeout. Renew never cuts a link, and link bytes
 	// never feed the clock.
 	Renew(a Admission, payload int64)
-	// Release gives back the room and the caps. It is idempotent, and the listener calls it in
-	// a defer so a panic in the copy loop cannot leak a reservation.
+	// Release gives back the caps. A wake gives back its room when it ends, not here. It is
+	// idempotent, and the listener calls it in a defer so a panic in the copy loop cannot leak a
+	// reservation.
 	Release(a Admission)
 }
 

@@ -1370,8 +1370,8 @@ quiescing works today, both of which M12 has to fix for this to hold:
 not, because the egress proxy has none: `internal/egress/egress.go:105-117` is a bare `Accept` loop
 that starts a goroutine per connection with no limit anywhere. `linkproxy` counts every live link in
 the admitter, under the same mutex as the room check, and refuses past the cap. Per-source and
-per-target counts are decremented by the same `Release` that gives back the room reservation, in one
-`defer`, so a panic in the copy loop can't leak a slot.
+per-target counts are decremented by `Release`, in one `defer`, so a panic in the copy loop can't
+leak a slot. The room a wake holds goes back when the wake ends, not at `Release`.
 
 **How the caps are counted.** A link occupies a slot from the moment the admitter **reserves** it,
 which is under the mutex and before the wake begins, until `Release`. The wake happens with the
@@ -2044,8 +2044,8 @@ Owns `internal/linkadmit/` (new), `internal/machines/wake.go` (new),
       Coalescing per sandbox ID. `Admission.Ctx` is cancelled by an unpublish, a fence, a pause, a
       removal or a run ending, and never by the lease. After any wake `Admit` asks `Keeper.Gate` for
       the target's run and fills `TargetGate`, so the gate is open before the listener dials.
-      `Release` gives back the room and the caps only, and keeps the rate history of a successful
-      wake.
+      `Release` gives back the caps only, and keeps the rate history of a successful wake. A wake
+      holds its room until it ends.
 - [ ] The close fallback: when the listener does not acknowledge a `close` within
       `LinkCloseGrace`, the admitter finds the machine's address with `Resolver.Addr` and drops its
       gates with the `Dropper`.

@@ -350,8 +350,9 @@ func admOf(ad links.Admission) *adm {
 	return p
 }
 
-// Release gives back the room and the caps. It keeps the rate history of a successful wake, so
-// a link opened and closed in a loop cannot wake a machine every second.
+// Release gives back the caps. A wake gives back its room when it ends, not here. Release keeps
+// the rate history of a successful wake, so a link opened and closed in a loop cannot wake a
+// machine every second.
 func (a *Admitter) Release(ad links.Admission) {
 	p := admOf(ad)
 	if p == nil {
