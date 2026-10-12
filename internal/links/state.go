@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -204,7 +202,7 @@ func (d *Doc) Publish(id string, ports []int) (noop []int, err error) {
 		return nil, err
 	}
 	if len(want) == 0 {
-		return noop, fmt.Errorf("%s: %w", portList(noop), ErrAlreadyPublished)
+		return noop, ErrAlreadyPublished
 	}
 	have := 0
 	if m := d.Machines[id]; m != nil {
@@ -235,7 +233,7 @@ func (d *Doc) Unpublish(id string, ports []int) (noop []int, err error) {
 		return nil, err
 	}
 	if len(want) == 0 {
-		return noop, fmt.Errorf("%s: %w", portList(noop), ErrNotFound)
+		return noop, ErrNotFound
 	}
 	m := d.Machines[id]
 	for _, p := range want {
@@ -278,12 +276,4 @@ func (d *Doc) plan(id string, ports []int, publishing bool) (want, noop []int, e
 		want = append(want, p)
 	}
 	return want, noop, nil
-}
-
-func portList(ports []int) string {
-	parts := make([]string, len(ports))
-	for i, p := range ports {
-		parts[i] = strconv.Itoa(p)
-	}
-	return strings.Join(parts, ", ")
 }
