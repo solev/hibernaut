@@ -30,6 +30,17 @@ func TestSettledBotsReadOpenOrShut(t *testing.T) {
 	}
 }
 
+func TestSettledBotsAreDrawnWhole(t *testing.T) {
+	for state := Asleep; state <= Hibernate; state++ {
+		im := New(state, 1).Draw(40, 40, dark)
+		for _, p := range []image.Point{{20, 10}, {20, 34}} {
+			if got := im.NRGBAAt(p.X, p.Y); got != ink {
+				t.Errorf("a settled %v bot is %v at %v, want the body ink %v from its top to its bottom", state, got, p, ink)
+			}
+		}
+	}
+}
+
 func TestIdleBotBlinks(t *testing.T) {
 	b := New(Idle, 1)
 	var shut, opened bool
