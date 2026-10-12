@@ -5,7 +5,7 @@ SHELL_SCRIPTS := azure/*.sh vm/*.sh $(filter-out %.go,$(wildcard vm/lib/*)) vm/i
 	images/dev/packages images/dev/configure images/dev/start images/dev/ready images/dev/machine-init \
 	images/dev/hib-term.sh images/dev/trust-ca images/dev/tools
 
-.PHONY: build build-linux lint test test-host test-host-remote generate deploy up down e2e e2e-slow
+.PHONY: build build-linux lint test test-host test-host-remote test-linux-remote generate deploy up down e2e e2e-slow
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -71,6 +71,20 @@ test-host-remote:
 			-test.run '^(TestHost|TestRunWatcher|TestTheControlSocketAcrossProcesses)' || status=1; \
 		cd $$remote/internal/linkproxy && ./linkproxy.test -test.v -test.run '^TestAbort' || status=1; \
 		cd /; rm -rf $$remote; exit \$$status"
+
+# Runs every package's unit tests on the Azure host as its ordinary user, under that user's umask
+# and with the pinned Codex. The working tree's tracked files go to a fresh directory there, which
+# is removed afterwards.
+test-linux-remote:
+	@set -e; \
+	azure/start.sh || { echo "Azure host is not reachable. Run azure/start.sh and retry." >&2; exit 1; }; \
+	target=$$(bash -c 'source azure/common.sh; printf "%s@%s" "$$VM_USER" "$$(vm_ip)"'); \
+	remote=$$(ssh "$$target" mktemp -d /tmp/hibernaut-linux-test.XXXXXX); \
+	trap 'ssh "$$target" "rm -rf $$remote"' EXIT; \
+	git ls-files -z | xargs -0 sh -c 'for f; do [ ! -e "$$f" ] || printf "%s\0" "$$f"; done' sh | \
+		COPYFILE_DISABLE=1 tar --no-xattrs --null -T - -czf - | ssh "$$target" "tar -xzf - -C $$remote"; \
+	ssh "$$target" "cd $$remote && GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
+		HIB_CODEX=/usr/local/bin/codex HIB_REQUIRE_CODEX=1 /usr/local/go/bin/go test -race ./..."
 
 generate:
 	go generate ./...

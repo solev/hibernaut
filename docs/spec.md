@@ -806,7 +806,8 @@ using a root-only key file (later: Azure Key Vault through the VM's managed iden
 **Commands:** `make test` (unit + integration), `make test-host` (Linux, sudo, and from M12 `nft`
 and `conntrack`), `make e2e`, `make e2e-slow`. CI runs `make lint test` and checks generated code
 on every push; `test-host` joins CI in M3, with the first host test. CI is parked for now: GitHub
-Actions is off for the repo (see the README).
+Actions is off for the repo (see the README). `make test-linux-remote` runs every package's unit
+tests on the host as its ordinary user, with the pinned Codex.
 
 ## 9. Open questions and spikes
 
