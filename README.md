@@ -1,170 +1,54 @@
-# Hibernaut
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/svg/hibernaut-lockup-light.svg">
+    <img src="docs/brand/svg/hibernaut-lockup-dark.svg" width="360" alt="Hibernaut">
+  </picture>
+</p>
 
-**Self-hosted, hardware-isolated sandboxes that sleep between missions.**
+<p align="center">
+  Give every coding agent its own computer, on your own server.
+  <br><br>
+  <a href="docs/overview.md">Overview</a>
+  ·
+  <a href="#quick-start">Quick start</a>
+  ·
+  <a href="#using-machines-hib">Using hib</a>
+  ·
+  <a href="docs/spec.md">Design</a>
+</p>
 
-Hibernaut is an experiment: run our own [boxd.sh](https://boxd.sh)-style "computers on demand" — tiny
-virtual machines that start in milliseconds, can be frozen mid-work and resumed later with
-everything intact.
+## About
 
-It runs [E2B's open-source infrastructure](https://github.com/e2b-dev/infra) (Firecracker microVMs)
-on a single Azure VM, plus scripts that switch that VM off whenever nobody is using it.
+Hibernaut gives you named Linux machines on a server you run. Each machine is a Firecracker
+microVM with its own kernel, and you log in to it with plain `ssh`. When nobody uses a machine,
+it pauses with its memory and files, and the next login resumes it where it left off, running
+processes included. GitHub, Codex and the GitHub Copilot CLI work in every machine, while the real
+credentials stay on the server.
 
-[The overview](docs/overview.md) explains Hibernaut on one page, without the development details
-below. Share it with a person or an AI agent who is new to it.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/bot/states-lamplight.png">
+    <img src="docs/brand/bot/states-paper.png" alt="The bot's faces: asleep, wake, idle, listening, thinking, working, happy, fork and hibernate">
+  </picture>
+</p>
 
----
+<p align="center">
+  <em>hib shows what each machine is doing as the bot's face.</em>
+</p>
 
-## TL;DR
-
-- One Azure VM (`e2b-test`, 4 vCPU / 16 GB) runs E2B.
-- E2B starts **Firecracker microVMs** ("sandboxes") inside it.
-- Each sandbox is a real VM with its own kernel. It is **not** a container.
-- Sandboxes can be **paused** (memory + disk snapshot) and **resumed** later.
-- The Azure VM **deallocates itself** after 30 idle minutes, and every night at 20:00 UTC.
-- Running sandboxes are **paused before the VM stops**, so they survive reboots and deallocations
-  with their files and processes (tested end to end).
-- Setup is scripted: `make up` starts everything, `make down` stops paying.
-- **Secrets stay on the host.** Machines hold look-alike placeholders. The host's proxy swaps in
-  the real value only on HTTPS calls to the sites a secret is bound to.
-- **GitHub is connected once.** `hib connect github` gives every machine your GitHub
-  login: `git clone`, `git push` and `gh` work, with only a placeholder inside.
-- **So are AI tools.** `hib connect codex` logs Codex in with your ChatGPT plan, and Copilot uses
-  the GitHub connection. Both work in every machine, with only placeholders inside.
-- **Set-up machines can be saved and copied.** `hib image save` keeps a machine as an image, and
-  `hib fork` copies it. Files, packages and running processes come along, and each copy gets its
-  own name and host key.
-- **Where it's going:** the [v1 spec](docs/spec.md) plans named machines you `ssh` into, with
-  GitHub and AI tools connected once and no real credentials inside machines. All its milestones
-  are done: M0 (foundations), M1 (machines), M2 (idle and wake), M3 (vault and egress proxy),
-  M4 (GitHub), M5 (AI tools), M6 (golden images and fork), M7 (GitHub device flow), M8 (machine
-  sizes), M9 (snapshot compaction) and M10 (CLI friendliness). Progress and what's left:
-  [docs/milestones](docs/milestones/README.md). After v1: [the goals](docs/goals.md).
-
-## Measured on this setup
-
-`examples/try.py` running against the VM (warm; the first run after boot is slower):
-
-| Operation                        | Time         |
-| -------------------------------- | ------------ |
-| Create sandbox                   | ~260–280 ms  |
-| Run a command inside it          | ~50 ms       |
-| Pause (snapshot memory + disk)   | ~0.2–1.1 s   |
-| Resume (file written before pause is still there) | ~340–380 ms |
-| Kill                             | ~35 ms       |
-
-Each sandbox runs Debian 12 on guest kernel 6.1 with 2 vCPUs and ~512 MB RAM (the `base` template).
-The first create after a cold VM boot takes ~1.5 s.
-
-Across host restarts (`make e2e-slow`), a running sandbox was paused on the way down and resumed
-in ~1 s after a reboot, and ~3 s after the nightly deallocate and a cold start.
-
----
-
-## Why this exists
-
-1. **boxd.sh** sells "composable computers": microVMs that you can create, fork, snapshot and
-   hibernate in milliseconds, for developers and AI agents.
-2. We wanted to learn **how that works under the hood**, rather than just use it.
-3. E2B builds the same kind of product and open-sourced the whole stack (Apache-2.0), so the
-   quickest way to learn was to **run it ourselves** and poke at it.
-4. Hibernaut is that experiment, packaged so it can be rebuilt from scratch.
-
-## How it works (in layers)
-
-```
-Your Mac
-  │  ssh (key-only)
-  ▼
-Azure VM  e2b-test  (Ubuntu 24.04, D4s_v5, nested virtualization → /dev/kvm)
-  │
-  ├── E2B control plane        (systemd units e2b-*, started on boot)
-  │     api            :3000   create / list / kill sandboxes, API keys, templates
-  │     orchestrator   :5008   actually boots Firecracker VMs, handles snapshots
-  │     client-proxy   :3002   routes traffic into sandboxes
-  │     infra (docker)         Postgres, ClickHouse, Redis, Grafana/observability
-  │
-  ├── Hibernaut host pieces
-  │     hibd                   pause-all, ls (through E2B's API)
-  │     hibd daemon            unit hibd: keeps busy machines running; idle ones pause
-  │     hibd proxy             unit hibd-proxy: swaps bound secrets into machines' HTTPS calls
-  │     hibd-pause-all         guard unit: pauses every sandbox whenever E2B stops
-  │     idle / nightly timers  quiesce (pause all, stop E2B), then deallocate
-  │
-  └── Firecracker microVMs  ("sandboxes")
-        own Linux kernel · own filesystem · envd agent inside (runs commands, files)
+```console
+$ hib new agent
+$ ssh agent.hib
+user@agent:~$ git clone https://github.com/you/app && cd app
+user@agent:~/app$ codex
 ```
 
-**The "save game" trick.** Pausing a sandbox writes its RAM and disk to files. Resuming loads the
-snapshot back and maps memory **lazily**: pages are fetched only when the VM touches them
-(`userfaultfd`). This is why resume takes milliseconds rather than seconds.
-
-**The disk trick.** Sandboxes don't get a full disk copy. They share a read-only template image
-and write changes to a copy-on-write layer, exposed through NBD block devices.
-
-## Project layout
-
-```
-cmd/hib/                   Laptop CLI: machines, images, secrets, connections, status, the audit log
-cmd/hibd/                  Host tool and daemon, which hib runs over SSH (code in internal/hibd/)
-internal/engine/           The Engine interface; e2b/ (real), fake/ (in memory), enginetest/ (the
-                           contract both must pass)
-internal/machines/         Makes machines from images, finds them by name, reaches their SSH
-internal/busy/, room/      Keeps busy machines running. Says whether one more machine fits.
-internal/pauseall/         Pauses every running sandbox, within a time limit
-internal/cleanup/          Deletes the E2B snapshot builds nothing needs, and trims old ones
-internal/snapheader/       Reads E2B's snapshot headers strictly, for trimming
-internal/vault/, envblock/ Sealed secrets and placeholders. The placeholder block in machines.
-internal/egress/           The HTTPS proxy; hook/ (iptables, real destination), swap/ (swap, scrub)
-internal/ca/, audit/       The Hibernaut CA. The audit log of every swap.
-internal/github/           Checks a GitHub token with GET /user. The connected account, github.json.
-internal/codex/            The Codex login: its profile, refreshing, machines' login file, and the
-                           token endpoint the proxy answers Codex's refreshes with
-internal/slots/            Finds the machine an intercepted connection comes from
-internal/leakscan/         Searches machine and image snapshots for real secret values
-images/                    Image recipes. dev/ is the dev image's steps, and dev/versions pins
-                           Codex and the Copilot CLI.
-e2e/                       End-to-end tests against the real VM (build tag e2e)
-third_party/e2b/           E2B's API spec and envd proto at the pinned commit; clients are
-                           generated from them
-Makefile                   build, lint, test, generate, deploy, up, down, e2e, e2e-slow
-.github/workflows/ci.yml   CI, parked: lint, test, and a check that generated code is current
-
-azure/                     Runs on your Mac (needs az CLI + ssh)
-  common.sh                Shared settings: RG, VM name, size, region, user. Env vars override.
-  create-vm.sh             One-time: create RG, VM, identity, custom role, auto-shutdown, host setup
-  up.sh                    Start VM → deploy → install E2B if needed → start E2B → wait until healthy
-  deploy.sh                Build hibd, sync vm/, examples/ and Codex's pins, install the host pieces
-  start.sh                 Start the VM and wait for SSH; starts nothing else
-  down.sh                  Pause every sandbox, stop E2B, deallocate (billing for compute stops)
-  ssh.sh                   SSH to the VM; extra args are passed through
-  target.sh, state.sh      Print the VM's user@ip, or its power state
-
-vm/                        Runs on the VM (synced to ~/hibernaut/vm)
-  setup-host.sh            Root host setup: sshd, hibd, the CA, proxy, Codex, quiesce, guard, timers
-  install-codex.sh         Installs the pinned Codex package, which hibd logs in with. CI uses it.
-  install-e2b.sh           Installs E2B and its dependencies; --if-needed skips an installed version
-  wait-e2b.sh              Waits until E2B is healthy; --start starts it first
-  lib/quiesce              Pause every sandbox, stop E2B, flush to disk. Runs before any deallocate.
-  lib/deallocate-self      Deallocates this VM through its managed identity
-  lib/e2b.sh               E2B's units and health checks, shared by the scripts above
-  lib/e2b-infra-ready      Waits until E2B's databases accept connections
-  systemd/                 E2B's units, hibd, the proxy, the pause-all guard, the nightly timer
-  idle-deallocate/         Script + systemd service/timer + config for auto-deallocation
-  e2b/, hibd/              Settings for E2B's orchestrator and for hibd
-  sshd/00-hardening.conf   No root login, no passwords, keys only
-  sshd/00-keepalive.conf   Keeps sessions through a laptop's short sleep
-
-examples/
-  try.py                   Create → run → pause → resume → kill, with timings
-
-docs/
-  overview.md              One page to share: what Hibernaut does, how it works, its limits
-  spec.md                  v1 plan: machines, SSH, credential swap, testing, open spikes
-  milestones/              M0–M10: tasks, tests and status for each milestone
-  goals.md                 After v1: traction in the AI community, then a launch, in order
-  ideas.md                 The detail behind the goals, and ideas no goal has taken yet
-  research/                Cited research behind the spec (E2B internals, agent/GitHub auth)
-```
+| Measured                                                           | Result                |
+| ------------------------------------------------------------------ | --------------------- |
+| Wake a paused machine with `ssh`                                   | 0.6–0.7 s             |
+| First `ssh` into a new machine                                     | 0.9–1.5 s             |
+| Wake a machine after a host reboot                                 | about 1 s             |
+| One machine's snapshots after 10 pauses, before and after trimming | 3.9 GiB, then 553 MiB |
 
 ## Quick start
 
@@ -185,7 +69,7 @@ Everyday use is `make up` → play → `make down` (or just walk away and let it
 over plain `ssh`:
 
 ```bash
-hib init --host azureuser@20.91.197.185 --azure-group rg-e2b-test --azure-vm e2b-test
+hib init --host azureuser@203.0.113.7 --azure-group rg-hib --azure-vm hib
 hib image build dev        # build the dev image in every size, as E2B templates
 hib new app                # create a machine named app
 hib new tiny --size small  # a small one (or medium, the default, or large)
@@ -724,6 +608,10 @@ nothing runs on push. Run `make lint test` before you push. To turn it back on:
 `gh api -X PUT repos/solev/hibernaut/actions/permissions -F enabled=true -f allowed_actions=all`.
 
 ## Costs and auto-off
+
+Pausing idle machines is the design. Switching the host VM off is not: it only saves costs for
+now. A real host stays on, like any server, so don't shape features around auto-off or count it
+as a gap when comparing Hibernaut with other products.
 
 | Thing                           | Cost                                  |
 | ------------------------------- | ------------------------------------- |
