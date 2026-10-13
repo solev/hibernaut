@@ -111,8 +111,9 @@ host key. The machine user is `user`, with passwordless sudo.
 `copilot`, `claude`) runs in it, even one waiting on an LLM. Once it has been idle for its idle
 time, 15 minutes unless `--idle` says otherwise, it pauses with its memory and files. `hib ls`
 shows when each machine pauses. `ssh app.hib` or `hib exec` wakes it in under a second, where it
-left off. Nothing else wakes it. After 30 minutes with no machine running and no one connected,
-the VM deallocates itself, and every night at 20:00 UTC it pauses every machine and deallocates
+left off, and so does a link to one of its [published ports](#ports-between-machines-hib-port).
+Nothing else wakes it. After 30 minutes with no machine running and no one connected, the VM
+deallocates itself, and every night at 20:00 UTC it pauses every machine and deallocates
 regardless (see [Costs and auto-off](#costs-and-auto-off)). `make down` does that now.
 
 **About three machines run at once.** Running machines share the VM's memory pool of 6.25 GiB.

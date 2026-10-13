@@ -59,9 +59,6 @@ command table its `hib port` commands go in.
 - Snapshot compaction (M9) trims old snapshots but keeps their directories, one a pause. Merge a
   machine's chain into one build so those stop adding up too. E2B's own options
   (`memfile-diff-dedup`, `guest-pause-reclaim` and `collapse-envd-heap`) are untried.
-- The unit tests assume a umask of 022. Under the host's 002, `t.TempDir()` is group-writable and
-  hibd refuses it as a state directory, so tests in `internal/hibd` and `internal/machines` fail
-  on Linux. Set the umask in their `TestMain`, or tighten the directories they make.
 - Encode the constraints the comment cleanup deleted, which no test or type holds yet: the
   functions that need a lock held (the fake engine's `resume` and `lookup`, hibd's Codex login
   lock, a test's `setGit`), a checked type for hib's remote arguments, a test that retiring a
