@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -211,4 +212,38 @@ func TestWakeOnSSH(t *testing.T) {
 			return counter(t, ctx, id) > after
 		})
 	})
+}
+
+// TestSSHAsE2BStarts checks that ssh NAME.hib reaches a paused machine while E2B is starting and
+// still turns every machine down, which lasts up to a minute. hibd tries the resume again until
+// E2B takes it.
+func TestSSHAsE2BStarts(t *testing.T) {
+	if os.Getenv("HIB_E2E_SLOW") == "" {
+		t.Skip("restarts E2B; run make e2e-slow")
+	}
+	ctx := testContext(t, 15*time.Minute)
+	if vm.engine == nil {
+		if err := vm.openTunnel(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := newHibMachine(t, ctx)
+	sshMachine(t, ctx, name, "echo kept > marker")
+	hib(t, ctx, "pause", name)
+
+	mustSSH(t, ctx, "sudo systemctl restart e2b-orchestrator")
+	start := time.Now()
+	probe, err := vm.engine.Create(ctx, engine.CreateOptions{Template: template, Timeout: time.Minute, Metadata: labels})
+	if err == nil {
+		vm.engine.Kill(ctx, probe.ID)
+		t.Fatal("E2B placed a machine as soon as it restarted, so ssh had no refusals to wait out")
+	}
+	if !errors.Is(err, engine.ErrNotPlaced) && !errors.Is(err, engine.ErrStartFailed) {
+		t.Fatalf("Create as E2B restarts = %v, want E2B to turn it down for now", err)
+	}
+	t.Logf("E2B turned a machine down as it restarted: %v", err)
+	if got := sshMachine(t, ctx, name, "cat marker"); strings.TrimSpace(got) != "kept" {
+		t.Errorf("marker = %q, want %q", strings.TrimSpace(got), "kept")
+	}
+	t.Logf("ssh connected %v after E2B restarted", time.Since(start).Round(time.Second))
 }

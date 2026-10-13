@@ -110,5 +110,6 @@ e2e: up
 # busy machine running past an hour, which adds about 65. TestTrim adds its pauses, at most the
 # rest of the hour, two restarts, two saves and a fork. TestMachineToMachineSlow waits out idle
 # timeouts and link leases, which adds about 60, and checking links across the reboot a few more.
+# TestSSHAsE2BStarts restarts E2B and connects as it starts, which adds about a minute.
 e2e-slow: up
 	HIB_E2E_SLOW=1 go test -tags e2e -count=1 -v -timeout 270m ./e2e/...
