@@ -77,3 +77,12 @@ command table its `hib port` commands go in.
   then: it resets them only when a machine stops. `hibd` now runs setup again (M6), so find the
   cause or report it upstream with the logs. `hibd` doesn't log a rerun yet, so look for cuts in
   the orchestrator's log. A cut may also show there as "ReverseProxy read error during body copy".
+- For up to a minute after E2B starts, it turns machines down, and only the SSH bridge tries
+  again. A link's wake, `hib new` and the resumes in an image save or a fork fail at the first
+  refusal. The bridge's retries print nothing, so `ssh` can sit silent for that minute.
+  `hibd ready`, which `hib` waits on after starting the host, checks only E2B's health endpoints,
+  not that E2B places machines.
+- `ENVD_TIMEOUT=60s` (`34905c9`) has no regression test. `test`, a 2 GiB machine in use for days,
+  took 13 to 32 s to resume the first time after E2B started, past envd's default 10 s. A new
+  2 GiB machine with 1600 MB of its memory filled took about 2.5 s. Find what makes a first
+  resume slow, and test that.

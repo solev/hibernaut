@@ -436,15 +436,16 @@ E2B does the pausing. `hibd` decides what counts as busy, and does the waking.
 - **Wake:**
   - SSH to a paused machine (`ssh NAME.hib`, `hib exec`) wakes it: the bridge in `hibd` resumes
     it (`POST /v2/sandboxes/{id}/connect`) before connecting through E2B's proxy.
-  - For up to a minute after E2B starts, it turns resumes down. Until its API next checks on the
-    orchestrator, which it does every 20 s, a start can fail (`500 … sandbox creation failed`).
-    Then there's no compatible node, then not enough capacity (`503`). The bridge tries again every
-    2 s until E2B takes the machine or its 3 minutes to connect run out, and stops at once if the
-    host has no room for it. It gives up once the machine has been failing to start for 30 s.
   - From M12, a connection from another of your machines to a port you published wakes it the
     same way, unless a person paused it by hand (Links between machines).
   - Other traffic doesn't: E2B's proxy answers `502 The sandbox was not found`.
   - Waking a machine over SSH takes ~0.6 s.
+  - For up to a minute after E2B starts, it turns resumes down. Until its API next checks on the
+    orchestrator, which it does every 20 s, a start can fail (`500 … sandbox creation failed`).
+    Then there's no compatible node, then not enough capacity (`503`). The bridge tries again every
+    2 s until E2B takes the machine or its 3 minutes to connect run out, and stops at once if the
+    host has no room for it. It gives up once the machine has been failing to start for 30 s. A
+    link doesn't wait: its connection fails at the first refusal, and the next one tries again.
 - **The host:**
   - Running machines live in RAM and die with the host.
   - Paused machines survive: they live in Postgres and in snapshot files on disk. M0 tested this
