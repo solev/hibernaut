@@ -2,6 +2,7 @@ package e2b_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -44,8 +45,28 @@ type fakeE2B struct {
 	offsets    []string
 	redirectTo string
 	envd       http.Handler
+	// refusals are what the next connects answer, one each, before connects resume machines
+	// again.
+	refusals []refusal
 
 	maxMessage atomic.Int64
+}
+
+type refusal struct {
+	status int
+	body   map[string]any
+}
+
+// refuseConnect makes the next connect answer status with E2B's error body. An empty
+// errorCode leaves error_code out.
+func (f *fakeE2B) refuseConnect(status int, errorCode, message string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body := map[string]any{"code": status, "message": message}
+	if errorCode != "" {
+		body["error_code"] = errorCode
+	}
+	f.refusals = append(f.refusals, refusal{status, body})
 }
 
 func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
@@ -174,6 +195,12 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 
 	case len(parts) == 4 && parts[0] == "v2" && parts[3] == "connect":
+		if len(f.refusals) > 0 {
+			r := f.refusals[0]
+			f.refusals = f.refusals[1:]
+			writeJSON(w, r.status, r.body)
+			return
+		}
 		sb, ok := f.sandboxes[parts[2]]
 		if !ok {
 			notFound(parts[2])
@@ -428,6 +455,48 @@ func TestErrorMapping(t *testing.T) {
 		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/connect") && strings.Contains(r.URL.Path, "aaaa") {
 			t.Errorf("a call on the paused machine resumed it: %s %s", r.Method, r.URL.Path)
 		}
+	}
+}
+
+// TestPlacementRefusals checks that a resume E2B turns down for now says so with
+// engine.ErrNotPlaced, and one E2B tried and failed with engine.ErrStartFailed, for Resume and
+// for the resume DialWebSocket does. The error keeps E2B's status and message. Other refusals
+// wrap neither.
+func TestPlacementRefusals(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "paused", nil)
+	cases := []struct {
+		status    int
+		errorCode string
+		message   string
+		want      error
+	}{
+		{503, "sandbox_capacity_unavailable", "Failed to place sandbox: not enough capacity for the requested resources right now, please retry shortly", engine.ErrNotPlaced},
+		{503, "sandbox_no_compatible_node", "Failed to place sandbox: no compatible node for this template's requirements", engine.ErrNotPlaced},
+		{504, "sandbox_placement_timeout", "Failed to place sandbox: placement timed out after 3 attempt(s), please retry", engine.ErrNotPlaced},
+		{500, "sandbox_create_failed", "Failed to place sandbox: sandbox creation failed on 1 node(s), please retry; if the problem persists, contact us", engine.ErrStartFailed},
+		{503, "sandbox_feature_unsupported", "Failed to place sandbox: no available orchestrator at version 0.2.0 or above for a feature the request asked for", nil},
+		{500, "internal_server_error", "Failed to place sandbox", nil},
+		{503, "", "Failed to place sandbox: not enough capacity for the requested resources right now, please retry shortly", nil},
+	}
+	for _, c := range cases {
+		t.Run(cmp.Or(c.errorCode, "no error code"), func(t *testing.T) {
+			f.refuseConnect(c.status, c.errorCode, c.message)
+			f.refuseConnect(c.status, c.errorCode, c.message)
+			for op, err := range map[string]error{
+				"Resume":        errOf(e.Resume(t.Context(), "aaaaaaaaaaaaaaaaaaaa", time.Minute)),
+				"DialWebSocket": errOf(e.DialWebSocket(t.Context(), "aaaaaaaaaaaaaaaaaaaa", 8081, time.Minute)),
+			} {
+				for _, sentinel := range []error{engine.ErrNotPlaced, engine.ErrStartFailed} {
+					if got := errors.Is(err, sentinel); got != (sentinel == c.want) {
+						t.Errorf("%s = %v, which wraps %v: %t, want %t", op, err, sentinel, got, !got)
+					}
+				}
+				if want := fmt.Sprintf("E2B returned %d: %s", c.status, c.message); err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("%s = %v, want it to say %q", op, err, want)
+				}
+			}
+		})
 	}
 }
 

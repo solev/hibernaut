@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net"
@@ -539,7 +540,7 @@ func (refusing) Create(context.Context, engine.CreateOptions) (engine.Machine, e
 }
 
 func (refusing) DialWebSocket(context.Context, string, int, time.Duration) (net.Conn, error) {
-	return nil, errors.New("dial: resume: " + placeErr)
+	return nil, fmt.Errorf("dial: resume: %s: %w", placeErr, engine.ErrStartFailed)
 }
 
 func TestHostFullAfterTheCheck(t *testing.T) {

@@ -409,12 +409,17 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	}
 	key, err := m.readPin(em.ID)
 	if errors.Is(err, fs.ErrNotExist) {
-		key, err = m.repin(ctx, em.ID, idle)
+		key, err = m.repin(ctx, name, em, idle)
 	}
 	if err != nil {
 		return fail(fmt.Errorf("%q: %w", name, err))
 	}
-	conn, err := m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
+	var conn net.Conn
+	err = m.retryResume(ctx, name, em.MemoryMB, func(ctx context.Context) error {
+		var err error
+		conn, err = m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
+		return err
+	})
 	if err != nil {
 		return fail(fmt.Errorf("connecting to %q: %w", name, err))
 	}
@@ -535,18 +540,22 @@ func (m *Manager) refused(ctx context.Context, name string, memoryMB int, sugges
 	return err
 }
 
-func (m *Manager) repin(ctx context.Context, id string, idle time.Duration) (ssh.PublicKey, error) {
+func (m *Manager) repin(ctx context.Context, name string, em engine.Machine, idle time.Duration) (ssh.PublicKey, error) {
 	keys, err := m.authorizedKeys()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := m.e.Resume(ctx, id, timeoutFor(idle)); err != nil {
+	err = m.retryResume(ctx, name, em.MemoryMB, func(ctx context.Context) error {
+		_, err := m.e.Resume(ctx, em.ID, timeoutFor(idle))
+		return err
+	})
+	if err != nil {
 		return nil, err
 	}
 	var key ssh.PublicKey
 	err = m.retryCut(ctx, func(ctx context.Context) error {
 		var err error
-		key, err = m.initMachine(ctx, id, keys)
+		key, err = m.initMachine(ctx, em.ID, keys)
 		return err
 	})
 	return key, err

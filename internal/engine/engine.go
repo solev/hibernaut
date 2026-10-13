@@ -224,4 +224,11 @@ var (
 	// The command may not have run, may have run in whole or in part, and may still be running.
 	// Retry only commands that are safe to run twice, even at the same time.
 	ErrConnectionLost = errors.New("connection lost before the command finished")
+	// ErrNotPlaced means the engine turned a start or resume down for now, without trying it: it
+	// had no room for the machine, or wasn't ready to take machines yet, as for a while after it
+	// starts. A later try may work.
+	ErrNotPlaced = errors.New("engine can't place the machine right now")
+	// ErrStartFailed means the engine tried to start or resume the machine, and it didn't come
+	// up. Another try may work.
+	ErrStartFailed = errors.New("machine failed to start")
 )

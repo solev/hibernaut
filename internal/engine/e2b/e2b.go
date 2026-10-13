@@ -533,7 +533,31 @@ func apiError(op, id string, status int, body []byte) error {
 	case http.StatusConflict:
 		return fmt.Errorf("%s: %s: %w", subject, msg, engine.ErrNotRunning)
 	}
-	return fmt.Errorf("%s: E2B returned %d: %s", subject, status, msg)
+	err := fmt.Errorf("%s: E2B returned %d: %s", subject, status, msg)
+	if placement := placementError(body); placement != nil {
+		return fmt.Errorf("%w: %w", err, placement)
+	}
+	return err
+}
+
+// placementError returns the engine error for the error_code E2B gives when it doesn't place a
+// machine it was asked to start or resume, or nil for any other answer. E2B's codes are in its
+// packages/api/internal/orchestrator/placement_errors.go. For a while after E2B's orchestrator
+// starts, E2B answers sandbox_no_compatible_node and sandbox_capacity_unavailable until it knows
+// the host again. sandbox_create_failed is a start or resume that failed, such as one where envd
+// didn't answer in time, or one E2B sent to its orchestrator before noticing it had restarted.
+func placementError(body []byte) error {
+	var apiErr e2bapi.Error
+	if json.Unmarshal(body, &apiErr) != nil || apiErr.ErrorCode == nil {
+		return nil
+	}
+	switch *apiErr.ErrorCode {
+	case "sandbox_capacity_unavailable", "sandbox_no_compatible_node", "sandbox_placement_timeout":
+		return engine.ErrNotPlaced
+	case "sandbox_create_failed":
+		return engine.ErrStartFailed
+	}
+	return nil
 }
 
 func apiMessage(body []byte) string {

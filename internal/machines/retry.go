@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/room"
 )
 
 // retryCut runs run again while its error wraps engine.ErrConnectionLost, up to 3 tries with
@@ -26,6 +27,43 @@ func (m *Manager) retryCut(ctx context.Context, run func(context.Context) error)
 		}
 		if werr := m.waitCut(ctx, time.Duration(attempt)*time.Second); werr != nil {
 			return fmt.Errorf("%w. Stopped retrying: %w", err, werr)
+		}
+	}
+}
+
+// startFailedFor is how long retryResume keeps trying a machine that failed to start. E2B's API
+// learns that an orchestrator restarted at its next node sync, every 20 s, and until then it
+// fails every start there.
+const startFailedFor = 30 * time.Second
+
+// retryResume runs resume, which resumes the paused machine called name, again every 2 s while
+// the engine turns it down for now, until ctx ends, and while the machine fails to start, for
+// startFailedFor after the first time. It stops once the host has no room left for the
+// machine's memoryMB.
+func (m *Manager) retryResume(ctx context.Context, name string, memoryMB int, resume func(context.Context) error) error {
+	var failedAt time.Time
+	for attempt := 1; ; attempt++ {
+		err := resume(ctx)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, engine.ErrStartFailed):
+			if failedAt.IsZero() {
+				failedAt = m.now()
+			} else if m.now().Sub(failedAt) >= startFailedFor {
+				return fmt.Errorf("%w (tried %d times)", err, attempt)
+			}
+		case !errors.Is(err, engine.ErrNotPlaced):
+			if attempt == 1 {
+				return err
+			}
+			return fmt.Errorf("%w (tried %d times)", err, attempt)
+		}
+		if rerr := m.checkRoom(ctx, name, memoryMB, false); errors.Is(rerr, room.ErrFull) {
+			return rerr
+		}
+		if werr := m.waitCut(ctx, 2*time.Second); werr != nil {
+			return fmt.Errorf("%w (tried %d times). Stopped retrying: %w", err, attempt, werr)
 		}
 	}
 }
