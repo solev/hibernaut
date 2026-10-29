@@ -26,7 +26,7 @@ test:
 	go test -race ./...
 
 # Tests that need root on a Linux host, and a few that need Linux. Every hook test runs under sudo.
-# Of the machines, cleanup and statefile tests, only those named TestHost do, because the rest
+# Of the machines, cleanup, statefile and taskstore tests, only those named TestHost do. The rest
 # expect an ordinary user. Of the linkguard tests, only the TestGuard ones do, and they need ip,
 # iptables, nft and conntrack. Of the linkadmit tests, the TestHost one and the run watcher's and
 # control socket's do, to meet real cgroups, inotify and Unix sockets. The linkproxy abort tests
@@ -40,6 +40,7 @@ test-host:
 	go test -tags host -exec sudo -run '^TestHost' ./internal/machines/
 	go test -tags host -exec sudo -run '^TestHost' ./internal/cleanup/
 	go test -tags host -exec sudo -run '^TestHost' ./internal/statefile/
+	go test -tags host -exec sudo -run '^TestHost' ./internal/tasks/internal/taskstore/
 	go test -tags host -exec sudo -run '^TestGuard' ./internal/linkguard/
 	go test -tags host -exec sudo -run '^(TestHost|TestRunWatcher|TestTheControlSocketAcrossProcesses)' ./internal/linkadmit/
 	go test -run '^TestAbort' ./internal/linkproxy/
@@ -52,7 +53,7 @@ test-host-remote:
 	dir=$$(mktemp -d -t hibernaut-host-test.XXXXXX); \
 	remote=/tmp/hibernaut-host-test-$$$$; \
 	trap 'rm -rf "$$dir"' EXIT; \
-	for pkg in internal/egress/hook internal/machines internal/cleanup internal/statefile internal/linkguard internal/linkadmit internal/linkproxy; do \
+	for pkg in internal/egress/hook internal/machines internal/cleanup internal/statefile internal/tasks/internal/taskstore internal/linkguard internal/linkadmit internal/linkproxy; do \
 		GOOS=linux GOARCH=amd64 go test -c -tags host -o "$$dir/$$pkg/" "./$$pkg"; \
 	done; \
 	mkdir -p "$$dir/vm/e2b"; \
@@ -66,6 +67,7 @@ test-host-remote:
 		cd $$remote/internal/machines && sudo ./machines.test -test.v -test.run '^TestHost' || status=1; \
 		cd $$remote/internal/cleanup && sudo ./cleanup.test -test.v -test.run '^TestHost' || status=1; \
 		cd $$remote/internal/statefile && sudo ./statefile.test -test.v -test.run '^TestHost' || status=1; \
+		cd $$remote/internal/tasks/internal/taskstore && sudo ./taskstore.test -test.v -test.run '^TestHost' || status=1; \
 		cd $$remote/internal/linkguard && sudo ./linkguard.test -test.v -test.run '^TestGuard' || status=1; \
 		cd $$remote/internal/linkadmit && sudo ./linkadmit.test -test.v \
 			-test.run '^(TestHost|TestRunWatcher|TestTheControlSocketAcrossProcesses)' || status=1; \
