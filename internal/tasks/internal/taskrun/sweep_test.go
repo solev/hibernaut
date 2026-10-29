@@ -217,6 +217,16 @@ func TestExecBoundarySweep(t *testing.T) {
 				t.Fatal("clean scenario failed: " + sweepResult(clean, trace.id, 40))
 			}
 			skipped := 0
+			finishExitLook := -1
+			for i, call := range trace.calls {
+				if call.name == "look-finish" && call.step == task.StepFinish {
+					finishExitLook = i
+				}
+			}
+			if finishExitLook < 0 {
+				t.Fatal("clean trace never observed finish's exit")
+			}
+			held, live := 0, 0
 			for i, call := range trace.calls {
 				t.Logf("trace %02d %s exists=%v step=%s", i+1, call.name, call.exists, call.step)
 				if !call.exists {
@@ -230,6 +240,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						ctx := context.Background()
 						injected, restarted, woke, released := false, false, false, false
 						hostFreeze := false
+						var access task.Access
 						var injectedAt int
 						heldPolls := 0
 						var stopStarts []int
@@ -242,39 +253,55 @@ func TestExecBoundarySweep(t *testing.T) {
 							return nil
 						})
 						s.before = func(got sweepCall, n int) {
-							if injected && strings.HasPrefix(event, "engine-pause") &&
-								(got.name == "resume" || got.name == "thaw") &&
-								!hostFreeze && !woke && !released {
-								t.Error("hibd tried to resume an engine-paused machine without user intent")
-							}
-							if injected || n != i+1 {
-								return
-							}
-							injected = true
-							if got.name != call.name {
-								t.Errorf("trace changed at %d: got %s, want %s", n, got.name, call.name)
-							}
-							mid := h.machineID(s.id)
-							switch event {
-							case "host-pause", "host-pause-restart":
-								if err := h.owner.Pause(ctx, mid); err != nil &&
-									!errors.Is(err, engine.ErrNotRunning) {
-									t.Error(err)
+							if !injected && n == i+1 {
+								injected = true
+								if !slices.Equal(s.calls, trace.calls[:n]) {
+									t.Errorf("trace prefix changed at %d: got %+v, want %+v",
+										n, s.calls, trace.calls[:n])
 								}
-								if event == "host-pause-restart" {
-									h.stopSup()
+								mid := h.machineID(s.id)
+								switch event {
+								case "host-pause", "host-pause-restart":
+									if err := h.owner.Pause(ctx, mid); err != nil &&
+										!errors.Is(err, engine.ErrNotRunning) {
+										t.Error(err)
+									}
+									if event == "host-pause-restart" {
+										h.stopSup()
+									}
+								case "engine-pause-wake", "engine-pause-rescue", "engine-pause-rm":
+									r := h.run(s.id)
+									hostFreeze = r.Frozen()
+									if err := h.sim.Pause(ctx, mid); err != nil &&
+										!errors.Is(err, engine.ErrNotRunning) {
+										t.Error(err)
+									}
+									r.Machine = task.MachinePaused
+									access = task.AccessOf(r, h.clock.Now())
+									if !hostFreeze && !call.step.WrapUp() {
+										// AccessOf holds only a live stage, as defined by LiveStage.
+										switch access {
+										case task.AccessHeld:
+											held++
+										case task.AccessLive:
+											live++
+										default:
+											t.Errorf("unexpected engine-pause access %s", access)
+										}
+										t.Logf("engine-pause access=%s", access)
+									}
+								case "cancel":
+									h.request(s.id, task.RequestCancel)
+								case "deadline":
+									deadline, _ := h.run(s.id).Deadline()
+									h.clock.Advance(deadline.Sub(h.clock.Now()))
 								}
-							case "engine-pause-wake", "engine-pause-rescue", "engine-pause-rm":
-								hostFreeze = h.run(s.id).Frozen()
-								if err := h.sim.Pause(ctx, mid); err != nil &&
-									!errors.Is(err, engine.ErrNotRunning) {
-									t.Error(err)
+							}
+							if got.name == "resume" {
+								r := h.run(s.id)
+								if err := task.AccessOf(r, h.clock.Now()).Allows(task.OpWake); err != nil {
+									t.Errorf("hibd attempted a resume AccessOf refuses: %v", err)
 								}
-							case "cancel":
-								h.request(s.id, task.RequestCancel)
-							case "deadline":
-								deadline, _ := h.run(s.id).Deadline()
-								h.clock.Advance(deadline.Sub(h.clock.Now()))
 							}
 						}
 						startSweep(t, h, s)
@@ -293,7 +320,7 @@ func TestExecBoundarySweep(t *testing.T) {
 								restarted = true
 							}
 							if injected && strings.HasPrefix(event, "engine-pause") &&
-								!hostFreeze && !call.step.WrapUp() {
+								access == task.AccessHeld && !call.step.WrapUp() {
 								r := h.run(s.id)
 								if !woke && event == "engine-pause-wake" {
 									// An external user wake is distinct from hibd's guarded automatic resume.
@@ -333,8 +360,16 @@ func TestExecBoundarySweep(t *testing.T) {
 						switch event {
 						case "cancel":
 							want = task.Cancelled
-						case "deadline", "engine-pause-rescue", "engine-pause-rm":
+						case "deadline":
 							want = task.TimedOut
+						case "engine-pause-rescue", "engine-pause-rm":
+							if access == task.AccessHeld {
+								want = task.TimedOut
+							}
+						}
+						// Steps ends the main line at finish's exit, before non-interruptible wrap-up.
+						if i == finishExitLook && (event == "cancel" || event == "deadline") {
+							want = task.Succeeded
 						}
 						if strings.HasPrefix(event, "engine-pause") && hostFreeze {
 							want = task.Succeeded
@@ -361,7 +396,8 @@ func TestExecBoundarySweep(t *testing.T) {
 								t.Errorf("stage %s starts=%d, want 1; %s", stage, starts, sweepResult(h, s.id, passes))
 							}
 						}
-						if event == "engine-pause-wake" && !hostFreeze && !call.step.WrapUp() && !woke {
+						if event == "engine-pause-wake" && access == task.AccessHeld &&
+							!call.step.WrapUp() && !woke {
 							t.Error("run ended without the external user wake")
 						}
 						h.checkLog(s.id)
@@ -369,6 +405,7 @@ func TestExecBoundarySweep(t *testing.T) {
 				}
 			}
 			t.Logf("skipped %d calls before the machine existed", skipped)
+			t.Logf("unfrozen main-line engine pauses: held=%d live=%d", held, live)
 		})
 	}
 	t.Logf("swept %d injected cases", cases)
