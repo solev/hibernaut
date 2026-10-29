@@ -108,7 +108,7 @@ type Logs interface {
 	// Size is how many bytes of stage s's output the host has.
 	Size(r task.RunID, s task.Stage) (int64, error)
 	// Append adds data at offset, which must be Size, or it fails with ErrStale. It syncs before
-	// it returns. ErrLogFull means the data would exceed MaxLogBytes across the run's stages.
+	// it returns. ErrLogFull means the run's stages together would exceed task.MaxLogBytes.
 	Append(r task.RunID, s task.Stage, offset int64, data []byte) error
 	// Open reads stage s's output from offset, for hib task logs.
 	Open(r task.RunID, s task.Stage, offset int64) (io.ReadCloser, error)

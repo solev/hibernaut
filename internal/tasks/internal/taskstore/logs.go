@@ -59,7 +59,6 @@ func (l FileLogs) Append(r task.RunID, s task.Stage, offset int64, data []byte) 
 		return err
 	}
 	defer lock.Close()
-	// One directory lock makes the size fence and cap atomic across stages and processes.
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}

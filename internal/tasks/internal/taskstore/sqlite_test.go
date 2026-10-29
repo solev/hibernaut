@@ -81,8 +81,6 @@ func TestSQLiteRefusesLinkedSidecars(t *testing.T) {
 	}
 }
 
-// Open checks existing files before SQLite can discard a stale WAL. It checks files SQLite
-// creates after the schema transaction too.
 func TestOpenRefusesSymlinks(t *testing.T) {
 	for _, name := range []string{taskstore.DB, taskstore.DB + "-wal", taskstore.DB + "-shm"} {
 		t.Run(name, func(t *testing.T) {
