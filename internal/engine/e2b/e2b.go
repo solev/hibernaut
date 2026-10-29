@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -320,6 +321,25 @@ func (e *Engine) Upload(ctx context.Context, id, user string, files []engine.Fil
 	return nil
 }
 
+type uploadSource struct {
+	io.ReadCloser
+	closing atomic.Bool
+	readErr error
+}
+
+func (s *uploadSource) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && !s.closing.Load() {
+		s.readErr = err
+	}
+	return n, err
+}
+
+func (s *uploadSource) Close() error {
+	s.closing.Store(true)
+	return s.ReadCloser.Close()
+}
+
 func (e *Engine) uploadFile(ctx context.Context, id, user, token string, file engine.File) error {
 	u, err := url.Parse(strings.TrimRight(e.sandboxURL, "/") + "/files")
 	if err != nil {
@@ -338,10 +358,11 @@ func (e *Engine) uploadFile(ctx context.Context, id, user, token string, file en
 	req.Header.Set("E2b-Sandbox-Port", strconv.Itoa(envdPort))
 	req.Header.Set("X-Access-Token", token)
 
-	src, err := file.Open()
+	source, err := file.Open()
 	if err != nil {
 		return err
 	}
+	src := &uploadSource{ReadCloser: source}
 	closeSource := sync.OnceValue(src.Close)
 	stop := context.AfterFunc(ctx, func() {
 		_ = reader.CloseWithError(ctx.Err())
@@ -361,19 +382,21 @@ func (e *Engine) uploadFile(ctx context.Context, id, user, token string, file en
 		done <- err
 	}()
 	resp, requestErr := e.guestHC.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	_ = reader.Close()
 	closeErr := closeSource()
 	streamErr := <-done
 	if ctx.Err() != nil {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
 		return ctx.Err()
+	}
+	if sourceErr := errors.Join(src.readErr, closeErr); sourceErr != nil {
+		return sourceErr
 	}
 	if requestErr != nil {
 		return fmt.Errorf("%w: %w", engine.ErrConnectionLost, errors.Join(requestErr, streamErr))
 	}
-	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return fmt.Errorf("%w: %w", engine.ErrConnectionLost, err)
@@ -389,7 +412,7 @@ func (e *Engine) uploadFile(ctx context.Context, id, user, token string, file en
 	if streamErr != nil {
 		return fmt.Errorf("%w: %w", engine.ErrConnectionLost, streamErr)
 	}
-	return closeErr
+	return nil
 }
 
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
