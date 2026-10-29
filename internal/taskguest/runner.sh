@@ -78,6 +78,11 @@ freezer() {
 	done
 }
 
+kill_stage() {
+	systemctl kill --kill-whom=all --signal=SIGKILL "$1"
+	freezer 0
+}
+
 # log RUN STAGE OFFSET MAX: at most MAX bytes of the stage's output from OFFSET, base64 on one
 # line, after a line with the log's size. MAX keeps every reply far below Exec's 8 MiB.
 log() {
@@ -121,7 +126,7 @@ finish() {
 	die "finish is not implemented"
 }
 
-[ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify|freeze|thaw ..."
+[ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify|freeze|thaw|kill ..."
 cmd=$1
 shift
 case $cmd in
@@ -132,5 +137,6 @@ log) log "$@" ;;
 verify) verify "$@" ;;
 freeze) freezer 1 ;;
 thaw) freezer 0 ;;
+kill) kill_stage "$@" ;;
 *) die "unknown subcommand $cmd" ;;
 esac

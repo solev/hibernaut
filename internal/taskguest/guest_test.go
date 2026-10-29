@@ -124,6 +124,12 @@ show)
 	fi
 	;;
 freeze|thaw) echo 'Failed to connect to bus' >&2; exit 1 ;;
+kill)
+	[ "$2" = --kill-whom=all ] && [ "$3" = --signal=SIGKILL ] || exit 3
+	[ ! -f "$CGROOT/kill-fails" ] || exit 4
+	[ "$(cat "$CGROOT/hib.slice/hib-task.slice/cgroup.freeze")" = 1 ] || exit 5
+	echo killed >"$CGROOT/killed"
+	;;
 *) echo "unexpected systemctl $*" >&2; exit 1 ;;
 esac
 `)
@@ -136,6 +142,37 @@ if [ ! -f "$CGROOT/stuck" ]; then
 fi
 `)
 	return g
+}
+
+func TestKillThawsOnlyAfterSIGKILL(t *testing.T) {
+	g := newShellGuest(t)
+	cg := filepath.Join(g.cgroup, "hib.slice", Slice)
+	writeTestFile(t, filepath.Join(cg, "cgroup.freeze"), "1\n")
+	writeTestFile(t, filepath.Join(cg, "cgroup.events"), "frozen 1\n")
+	id := task.RunID{Task: "t-abcdefgh", N: 1}
+	argv := Kill(id, task.StageCommand)
+	out, code := g.run(t, argv)
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, out)
+	}
+	killed, err := os.ReadFile(filepath.Join(g.cgroup, "killed"))
+	if err != nil || string(killed) != "killed\n" {
+		t.Fatalf("stage was not killed before thaw: %q, %v", killed, err)
+	}
+	events, err := os.ReadFile(filepath.Join(cg, "cgroup.events"))
+	if err != nil || string(events) != "populated 1\nfrozen 0\n" {
+		t.Fatalf("kill left ExecStopPost frozen: %q, %v", events, err)
+	}
+	writeTestFile(t, filepath.Join(cg, "cgroup.freeze"), "1\n")
+	writeTestFile(t, filepath.Join(cg, "cgroup.events"), "frozen 1\n")
+	writeTestFile(t, filepath.Join(g.cgroup, "kill-fails"), "")
+	if out, code := g.run(t, argv); code == 0 {
+		t.Fatalf("kill hid a failed SIGKILL: %s", out)
+	}
+	freeze, err := os.ReadFile(filepath.Join(cg, "cgroup.freeze"))
+	if err != nil || string(freeze) != "1\n" {
+		t.Fatalf("a failed kill thawed the stage: %q, %v", freeze, err)
+	}
 }
 
 func (g shellGuest) run(t *testing.T, argv []string) (string, int) {

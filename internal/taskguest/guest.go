@@ -146,8 +146,8 @@ func Freeze() []string { return control("freeze") }
 // Thaw lets the stage units run again.
 func Thaw() []string { return control("thaw") }
 
-func control(cmd string) []string {
-	return []string{"sh", "-c", string(Runner), "runner", cmd}
+func control(cmd string, args ...string) []string {
+	return append([]string{"sh", "-c", string(Runner), "runner", cmd}, args...)
 }
 
 // Stop asks stage s's unit to end: TERM, then KILL after task.StopGrace, as its unit says.
@@ -158,7 +158,7 @@ func Stop(r task.RunID, s task.Stage) []string {
 // Kill ends stage s's unit at once with KILL, frozen or not, for rescue and for a frozen stage
 // past its deadline.
 func Kill(r task.RunID, s task.Stage) []string {
-	return []string{"systemctl", "kill", "--kill-whom=all", "--signal=SIGKILL", Unit(r, s)}
+	return control("kill", Unit(r, s))
 }
 
 // ReadLog reads at most max bytes of stage s's output from offset. The host's copy of the log

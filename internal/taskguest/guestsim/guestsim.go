@@ -217,13 +217,20 @@ func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.S
 			g.frozen = len(g.units) > 0
 		case "thaw":
 			g.frozen = false
+		case "kill":
+			u := g.units[argv[5]]
+			if u == nil || !u.active {
+				return engine.ExecResult{ExitCode: 1, Stderr: []byte("Unit is not running.")}
+			}
+			g.frozen = false
+			g.exit(u, task.ExitRecord{Result: "signal", Code: "killed", Status: -1})
 		default:
 			return engine.ExecResult{ExitCode: 2, Stderr: []byte("guestsim: unknown control")}
 		}
 		return ok("")
-	case argv[0] == "systemctl" && (argv[1] == "stop" || argv[1] == "kill"):
+	case argv[0] == "systemctl" && argv[1] == "stop":
 		u := g.units[argv[len(argv)-1]]
-		if u != nil && u.active && (argv[1] == "kill" || !g.frozen) {
+		if u != nil && u.active && !g.frozen {
 			g.exit(u, task.ExitRecord{Result: "signal", Code: "killed", Status: -1})
 		}
 		return ok("")
