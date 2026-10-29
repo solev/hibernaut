@@ -28,6 +28,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
@@ -110,6 +111,8 @@ type Config struct {
 	// when it left the machine as it was without running op. Default: op runs unfenced, which
 	// is right only while links are off.
 	Fenced func(ctx context.Context, id, name, why string, op func(context.Context) error) error
+	// TaskLimits are task admission's settings beside room. The zero value is the defaults.
+	TaskLimits TaskLimits
 }
 
 // Manager manages machines. Its methods may be called concurrently, also from other
@@ -130,6 +133,7 @@ type Manager struct {
 	activity  links.Clock
 	fence     func(ctx context.Context, id, why string) (release func(), err error)
 	fenced    func(ctx context.Context, id, name, why string, op func(context.Context) error) error
+	taskLim   TaskLimits
 }
 
 // New returns a Manager. It doesn't touch the state directory until a method needs it.
@@ -163,6 +167,7 @@ func New(cfg Config) *Manager {
 		activity: activity,
 		fence:    cfg.Fence,
 		fenced:   cfg.Fenced,
+		taskLim:  cfg.TaskLimits,
 	}
 }
 
@@ -216,6 +221,9 @@ func (m *Manager) Create(ctx context.Context, name, image string, idle time.Dura
 func (m *Manager) CreateSize(ctx context.Context, name, image string, size images.Size, idle time.Duration) (hibapi.Machine, error) {
 	if err := hibapi.CheckName(name); err != nil {
 		return hibapi.Machine{}, err
+	}
+	if _, err := task.ParseID(name); err == nil {
+		return hibapi.Machine{}, fmt.Errorf("%w: %s", ErrTaskName, name)
 	}
 	plan, err := m.planMachine(ctx, image, size)
 	if err != nil {
@@ -459,6 +467,8 @@ func (m *Manager) heartbeat(ctx context.Context, id string, done chan<- struct{}
 }
 
 func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int, suggestSizes bool) error {
+	// TODO: return an unlock for RoomLock, taken before roomNow, and have CreateSize, Wake and
+	// Dial's resume hold it until their E2B call returns, as CreateTask and ResumeTask do.
 	ems, h, err := m.roomNow(ctx)
 	if err != nil {
 		return err

@@ -172,6 +172,8 @@ type Response struct {
 	Ports []Ports `json:"ports,omitzero"`
 	// Links are link log entries, from log --links.
 	Links []LinkEntry `json:"links,omitzero"`
+	// TaskReply is what task commands reply. Its fields are inline.
+	TaskReply
 }
 
 // Ports is what one machine publishes.

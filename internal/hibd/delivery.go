@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,6 +22,8 @@ import (
 	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/statefile"
+	"github.com/solev/hibernaut/internal/task"
+	"github.com/solev/hibernaut/internal/tasks"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
@@ -67,11 +70,16 @@ func (a *App) pushSetup(ctx context.Context, cfg config, done string) {
 	// Marking before and after the writes makes hibd daemon write every machine again, whether
 	// this push finishes, is cut short or overlaps one of its passes.
 	marked := markPush(cfg.stateDir)
-	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), links.NewStore(cfg.stateDir), a.engine, nil, warn)
+	ts := a.tasks(cfg)
+	defer ts.Close()
+	updateSetup(ctx, cfg, a.codexStore(cfg, a.warnf), links.NewStore(cfg.stateDir), a.engine, ts, nil, warn)
 	warn("telling hibd daemon about the update", cmp.Or(markPush(cfg.stateDir), marked))
 }
 
-func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore links.Store, open func() (engine.Engine, error), written map[string]delivered, report func(string, error)) bool {
+// updateSetup writes the machine setup into every running machine with a name, except a task
+// machine whose run holds it: ts.Check refuses that, and a nil ts skips nothing. The run's
+// machine gets the setup again once the run ends, since written drops what it skips.
+func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore links.Store, open func() (engine.Engine, error), ts *tasks.Tasks, written map[string]delivered, report func(string, error)) bool {
 	setup, err := loadSetup(cfg, store)
 	if err != nil {
 		report("loading the machine setup", err)
@@ -106,6 +114,11 @@ func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore 
 			}
 		}
 		ms = running
+	}
+	if ts != nil {
+		ms = slices.DeleteFunc(ms, func(m engine.Machine) bool {
+			return ts.Check(ctx, m, task.OpSetup) != nil
+		})
 	}
 	hash := setup.Hash()
 	stale, running := setupTargets(ms, hash, written)
@@ -194,10 +207,12 @@ func writeSetups(ctx context.Context, e engine.Engine, setup machines.Setup, ms 
 }
 
 type setupDelivery struct {
-	engine   engine.Engine
-	cfg      config
-	codex    *codex.Store
-	links    links.Store
+	engine engine.Engine
+	cfg    config
+	codex  *codex.Store
+	links  links.Store
+	// tasks skips the task machines runs hold. hibd daemon sets it, and nil skips nothing.
+	tasks    *tasks.Tasks
 	logf     func(format string, args ...any)
 	looking  chan struct{}
 	written  map[string]delivered
@@ -240,7 +255,7 @@ func (d *setupDelivery) look(ctx context.Context) {
 		clear(d.written)
 		d.mark = mark
 	}
-	if !updateSetup(ctx, d.cfg, d.codex, d.links, func() (engine.Engine, error) { return d.engine, nil }, d.written, report) {
+	if !updateSetup(ctx, d.cfg, d.codex, d.links, func() (engine.Engine, error) { return d.engine, nil }, d.tasks, d.written, report) {
 		return
 	}
 	for key := range d.problems {

@@ -1,0 +1,172 @@
+package hibapi
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/solev/hibernaut/internal/task"
+)
+
+// FeatureTasks means hibd has the task command group. hibd sends it once the group's handlers
+// are implemented, not before.
+const FeatureTasks = "tasks"
+
+// ErrorCode says what kind of failure a Response's Error is, so hib can decide without reading
+// the text. Task commands set it, other commands leave it empty.
+type ErrorCode string
+
+const (
+	// CodeConflict means the request ID was used for a different request. Never retry.
+	CodeConflict ErrorCode = "CONFLICT"
+	// CodeQueueFull means too many runs wait already. Retry later.
+	CodeQueueFull ErrorCode = "QUEUE_FULL"
+	// CodeNoTask means no task has the ID.
+	CodeNoTask ErrorCode = "NO_TASK"
+	// CodeRunLive means the task has a run that hasn't ended, so no follow-up may start.
+	CodeRunLive ErrorCode = "RUN_LIVE"
+	// CodeNotLive means the task has no live run to cancel or rescue.
+	CodeNotLive ErrorCode = "NOT_LIVE"
+	// CodeBadRequest means the request didn't parse. Never retry.
+	CodeBadRequest ErrorCode = "BAD_REQUEST"
+	// CodeBusy means tasks.db stayed locked past its busy timeout. Retry with the same ID.
+	CodeBusy ErrorCode = "BUSY"
+)
+
+// Retryable reports whether the same request may be sent again with the same request ID.
+func (c ErrorCode) Retryable() bool { return c == CodeQueueFull || c == CodeBusy }
+
+// TaskReply is what every task command adds to a Response: the request ID it answered, and the
+// task or the tasks. The fields are on Response through embedding, so a task reply is still one
+// JSON object.
+type TaskReply struct {
+	// RequestID is the ID the request carried, echoed so a retry can be matched.
+	RequestID string `json:"requestId,omitempty"`
+	// Code is set with Error on a task command's failure.
+	Code      ErrorCode `json:"errorCode,omitempty"`
+	Retryable bool      `json:"retryable,omitempty"`
+	Task      *Task     `json:"task,omitempty"`
+	Tasks     []Task    `json:"tasks,omitzero"`
+	// TaskLog is a range of a run's stage log, from task logs.
+	TaskLog *TaskLog `json:"taskLog,omitempty"`
+}
+
+// TaskStart is the one JSON line hib task start and hib task run send on stdin. The bytes of
+// each file follow it on stdin, in order, Size bytes each, the prompt first. hibd checks it into
+// a task.Submission before anything is saved.
+type TaskStart struct {
+	RequestID string `json:"requestId"`
+	// Task is the task a follow-up runs on, or empty for a new task.
+	Task    task.ID    `json:"task,omitempty"`
+	Repo    string     `json:"repo,omitempty"`
+	Branch  string     `json:"branch,omitempty"`
+	Recipe  string     `json:"recipe,omitempty"`
+	Command []string   `json:"command,omitempty"`
+	Prompt  *TaskFile  `json:"prompt,omitempty"`
+	Files   []TaskFile `json:"files,omitzero"`
+	Image   string     `json:"image,omitempty"`
+	Size    string     `json:"size,omitempty"`
+	// TimeoutSeconds is 0 for task.DefaultTimeout.
+	TimeoutSeconds int64        `json:"timeoutSeconds,omitempty"`
+	Publish        task.Publish `json:"publish,omitempty"`
+}
+
+// TaskFile names one input that follows on stdin.
+type TaskFile struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// Task is a task as task ls and task show report it. The task package defines every enum it
+// carries, so a phase, outcome, step or stage that task doesn't know can't be sent.
+type Task struct {
+	ID      task.ID   `json:"id"`
+	Repo    string    `json:"repo,omitempty"`
+	Created time.Time `json:"created"`
+	// Machine is the task machine's state: running, paused, or gone. Empty before its first
+	// machine.
+	Machine string `json:"machine,omitempty"`
+	// Runs are oldest first. task ls sends only the latest.
+	Runs []TaskRun `json:"runs"`
+}
+
+// TaskRun is one run. Exactly one of Phase and Outcome is set.
+type TaskRun struct {
+	N       int          `json:"n"`
+	Phase   task.Phase   `json:"phase,omitempty"`
+	Outcome task.Outcome `json:"outcome,omitempty"`
+	// Stage is the stage the run is in, or the one that failed.
+	Stage task.Stage `json:"stage,omitempty"`
+	// Step is the step of the run's last checkpoint, for show.
+	Step task.Step `json:"step,omitempty"`
+	// Held says why a paused run waits for rescue or rm.
+	Held        string            `json:"held,omitempty"`
+	Detail      string            `json:"detail,omitempty"`
+	Command     []string          `json:"command"`
+	Submitted   time.Time         `json:"submitted"`
+	Deadline    *time.Time        `json:"deadline,omitempty"`
+	Publication *task.Publication `json:"publication,omitempty"`
+}
+
+// TaskLog is a range of one stage's log as the host copied it. Data is base64 in JSON.
+type TaskLog struct {
+	Run    string     `json:"run"`
+	Stage  task.Stage `json:"stage"`
+	Offset int64      `json:"offset"`
+	Data   []byte     `json:"data"`
+	// Next is the offset to ask for next. Done is true once the stage has exited and Next is
+	// the end of its copied log.
+	Next int64 `json:"next"`
+	Done bool  `json:"done,omitempty"`
+}
+
+// RunOf is the wire form of run r as daemon sees it.
+func RunOf(r task.Run, daemon task.Instance) TaskRun {
+	st := r.Status(daemon)
+	out := TaskRun{N: r.ID.N, Phase: st.Phase, Outcome: st.Outcome, Stage: st.Stage,
+		Held: st.Held, Detail: st.Detail, Command: r.Spec.Command, Submitted: r.Submitted,
+		Publication: r.Publication()}
+	if c, ok := r.Last(); ok {
+		out.Step = c.Step()
+	}
+	if d, ok := r.Deadline(); ok {
+		out.Deadline = &d
+	}
+	return out
+}
+
+// Check parses what hib received into known values: every enum must be one task defines.
+func (r TaskRun) Check() error {
+	switch {
+	case (r.Phase == "") == (r.Outcome == ""):
+		return errors.New("a run needs exactly one of phase and outcome")
+	case r.Phase != "" && !slices.Contains(task.Phases(), r.Phase):
+		return fmt.Errorf("unknown phase %q", r.Phase)
+	case r.Outcome != "" && !slices.Contains(task.Outcomes(), r.Outcome):
+		return fmt.Errorf("unknown outcome %q", r.Outcome)
+	case r.Stage != "" && !slices.Contains(task.Stages(), r.Stage):
+		return fmt.Errorf("unknown stage %q", r.Stage)
+	case r.Step != "" && !r.Step.Valid():
+		return fmt.Errorf("unknown step %q", r.Step)
+	}
+	return nil
+}
+
+// CodeOf maps a task error to its code. Errors it doesn't know get no code.
+func CodeOf(err error) ErrorCode {
+	for _, c := range []struct {
+		err  error
+		code ErrorCode
+	}{
+		{task.ErrConflict, CodeConflict},
+		{task.ErrQueueFull, CodeQueueFull},
+		{task.ErrNoTask, CodeNoTask},
+		{task.ErrRunLive, CodeRunLive},
+	} {
+		if errors.Is(err, c.err) {
+			return c.code
+		}
+	}
+	return ""
+}

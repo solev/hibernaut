@@ -2,6 +2,7 @@ package machines_test
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/task"
 )
 
 func TestFork(t *testing.T) {
@@ -119,6 +121,42 @@ func TestForkRejectsBeforeTouchingOrigin(t *testing.T) {
 			}
 			if tmpls, _ := v.e.SavedTemplates(t.Context()); len(tmpls) != 0 {
 				t.Errorf("templates saved despite preflight failure: %+v", tmpls)
+			}
+		})
+	}
+}
+
+// A task's machine is never copied, whatever its run is doing, so the refusal needs only the
+// label and comes before the save pauses or resumes anything.
+func TestNoCopyOfATaskMachine(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "running", true: "paused"}[paused], func(t *testing.T) {
+			v := newEnv(t)
+			web := v.create(t, "web")
+			if paused {
+				if err := v.m.Pause(t.Context(), "web"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const tid = "t-abcdefgh"
+			em := v.get(t, web.ID)
+			em.Metadata = maps.Clone(em.Metadata)
+			em.Metadata["hib.name"] = tid
+			em.Metadata[task.Label] = tid
+			v.e.Add(em)
+			m := imageManager(v, nil)
+			made, err := m.Fork(t.Context(), tid, 1)
+			if !errors.Is(err, task.ErrNoCopy) || len(made) != 0 {
+				t.Errorf("Fork = %+v, %v, want task.ErrNoCopy", made, err)
+			}
+			if _, err := m.SaveImage(t.Context(), tid, "myimg"); !errors.Is(err, task.ErrNoCopy) {
+				t.Errorf("SaveImage = %v, want task.ErrNoCopy", err)
+			}
+			if got := v.get(t, web.ID); got.State != em.State || got.StartedAt != em.StartedAt {
+				t.Errorf("task machine changed from %s at %v to %+v", em.State, em.StartedAt, got)
+			}
+			if tmpls, _ := v.e.SavedTemplates(t.Context()); len(tmpls) != 0 {
+				t.Errorf("templates saved from a task machine: %+v", tmpls)
 			}
 		})
 	}

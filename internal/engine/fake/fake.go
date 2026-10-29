@@ -356,6 +356,11 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 	}, nil
 }
 
+// Upload is not implemented by the fake. Tests that need it wrap the fake with guestsim.
+func (e *Engine) Upload(ctx context.Context, id, user string, files []engine.File) error {
+	return errors.New("fake: Upload is not implemented (wrap with guestsim)")
+}
+
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
 	if err := ctx.Err(); err != nil {
 		return engine.ExecResult{}, err

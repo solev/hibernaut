@@ -1,0 +1,15 @@
+flowchart TD
+    none(["no machine yet"])
+    live["live"]
+    held["held"]
+    overdue["overdue"]
+    kept["kept"]
+    removed(["removed"])
+    none -->|the first run gets its grant| live
+    live -->|E2B pauses it without the freeze| held
+    live -->|the deadline passes while the host has it paused| overdue
+    live -->|the run ends, or a follow-up finds no room| kept
+    held -->|rescue, or rm ends the stage| live
+    overdue -->|the daemon records the stop| live
+    kept -->|a follow-up gets its grant| live
+    kept -->|hib task rm, or 7 days on| removed

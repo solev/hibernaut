@@ -19,6 +19,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/leakscan/leakscantest"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/vault"
 )
 
@@ -154,6 +155,28 @@ func TestLeakscanMachinePausesRunningMachineAndScansVault(t *testing.T) {
 	}
 	if stdout := out.String(); !strings.Contains(stdout, "github raw memory 4") || strings.Contains(stdout, value) || strings.Contains(errOut.String(), value) {
 		t.Fatalf("stdout/stderr leaked or missed hit:\nstdout=%q\nstderr=%q", stdout, errOut.String())
+	}
+}
+
+// Scanning a task machine pauses it by hand, so it asks the task rules first and refuses one its
+// run holds, or one tasks.db can't say about.
+func TestLeakscanMachineRefusesATaskMachine(t *testing.T) {
+	const tid = "t-abcdefgh"
+	e := fake.New()
+	e.Add(engine.Machine{ID: "sandbox123", State: engine.Running,
+		Metadata: map[string]string{"hib.name": tid, "hib.image": "dev", task.Label: tid}})
+	a, out, errOut, cfg := newLeakscanApp(t, e)
+	writeLeakBuild(t, cfg.e2bStorage, leakBuildA, []byte("clean memory"), []byte("clean disk"))
+	writeVault(t, cfg.vaultPath, cfg.vaultKeyPath, "github", "secret-value-123456789")
+	a.Query = oneBuildQuery(leakBuildA)
+
+	code := a.Run(t.Context(), []string{"leakscan", tid})
+	if want := "refused to pause task machine " + tid; code == 0 ||
+		!strings.Contains(errOut.String(), want) {
+		t.Fatalf("code = %d, stdout %q, stderr %q; want a failure with %q", code, out, errOut, want)
+	}
+	if got, err := e.Get(t.Context(), "sandbox123"); err != nil || got.State != engine.Running {
+		t.Fatalf("task machine after leakscan = %+v, %v; want it running", got, err)
 	}
 }
 

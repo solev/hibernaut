@@ -17,7 +17,8 @@ const MaxCopies = 10
 // Fork makes count copies of machine, from 1 to MaxCopies, named MACHINE-k with the lowest free
 // k. Each copy gets a fresh host key, Config.Setup, and machine's idle time and image. Fork
 // stops at the first copy it can't make, and returns the copies made with the error. machine
-// is saved as SaveImage saves, and left running or paused as it was.
+// is saved as SaveImage saves, and left running or paused as it was. A task's machine is
+// refused with task.ErrNoCopy before anything touches it.
 // A failed save can take about 90 s longer while hibd removes what E2B left. The state lock stays
 // held during that wait, so Create, Pause and Remove wait behind it. Dial and List don't take it.
 func (m *Manager) Fork(ctx context.Context, machine string, count int) ([]hibapi.Machine, error) {
@@ -37,6 +38,9 @@ func (m *Manager) Fork(ctx context.Context, machine string, count int) ([]hibapi
 	defer unlock()
 	em, err := m.lookup(ctx, machine)
 	if err != nil {
+		return nil, err
+	}
+	if err := refuseTaskCopy(em); err != nil {
 		return nil, err
 	}
 	names, err := m.copyNames(ctx, machine, count)

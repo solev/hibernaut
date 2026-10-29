@@ -58,6 +58,10 @@ type Config struct {
 	// HIBD_STATE_DIR. Empty keeps it in memory only. The watcher records into it when Activity
 	// is nil.
 	StateDir string
+	// Exempt reports a running machine the watcher must neither renew nor record: a task
+	// machine its run holds. The run's deadline sets its timeout, and an agent working there
+	// must not let its links hold other machines awake. Default: none.
+	Exempt func(engine.Machine) bool
 }
 
 // Watcher keeps busy machines running. Its methods must not be called concurrently.
@@ -68,6 +72,7 @@ type Watcher struct {
 	now      func() time.Time
 	logf     func(format string, args ...any)
 	activity func(id string, at time.Time)
+	exempt   func(engine.Machine) bool
 	seen     map[string]*seen
 }
 
@@ -108,6 +113,7 @@ func New(cfg Config) (*Watcher, error) {
 		now:      cfg.Now,
 		logf:     cfg.Logf,
 		activity: cfg.Activity,
+		exempt:   cfg.Exempt,
 		seen:     map[string]*seen{},
 	}
 	if w.activity == nil && cfg.StateDir != "" {
@@ -121,6 +127,9 @@ func New(cfg Config) (*Watcher, error) {
 	}
 	if w.logf == nil {
 		w.logf = func(string, ...any) {}
+	}
+	if w.exempt == nil {
+		w.exempt = func(engine.Machine) bool { return false }
 	}
 	return w, nil
 }
@@ -142,7 +151,7 @@ func (w *Watcher) Tick(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, m := range ms {
 		idle, ok := machines.Idle(m)
-		if !ok || m.State != engine.Running || running[m.ID] {
+		if !ok || m.State != engine.Running || running[m.ID] || w.exempt(m) {
 			continue
 		}
 		running[m.ID] = true
