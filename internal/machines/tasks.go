@@ -175,8 +175,8 @@ func (m *Manager) findTask(ctx context.Context, r task.Run) (engine.Machine, boo
 }
 
 // RoomLock serializes admission from the room reading through one create or resume call.
-// CreateSize, CreateTask, ResumeTask, Wake and Dial hold it, as do save and fork's origin
-// resumes and each fork copy's create. SaveTemplate checks its plan under the lock but releases
+// CreateSize, CreateTask, ResumeTask, Wake and Dial's resumes hold it, as do save and fork's origin
+// resumes and each fork copy's create. saveCopy checks its plan under the lock but releases
 // it before the call, so wakes don't wait behind a save. It nests inside hibd.lock and any
 // machine fence, outside the task machine lock. A holder never takes a fence. Setup, cleanup
 // and retry waits hold no RoomLock.
