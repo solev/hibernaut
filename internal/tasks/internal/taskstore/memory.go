@@ -32,16 +32,8 @@ type Memory struct {
 }
 
 type memTask struct {
-	t    task.Task
-	runs []*memRun
-}
-
-type memRun struct {
-	id        task.RunID
-	spec      task.Spec
-	actor     task.Actor
-	submitted time.Time
-	log       []task.Checkpoint
+	record taskRecord
+	runs   []runRow
 }
 
 type memReceipt struct {
@@ -65,7 +57,7 @@ func (m *Memory) FailAppends(f func(task.Checkpoint) error) {
 
 func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error) {
 	staged := map[task.Hash][]byte{}
-	sub.Spec.Inputs = slices.Clone(sub.Spec.Inputs)
+	sub.Spec = cloneSpec(sub.Spec)
 	for i, f := range sub.Spec.Inputs {
 		if err := task.CheckInputName(f.Name); err != nil {
 			return task.Receipt{}, err
@@ -100,7 +92,7 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 	var t *memTask
 	if sub.Task != "" {
 		t = m.tasks[sub.Task]
-		if t == nil || t.t.Removal != nil {
+		if t == nil || t.record.removal != nil {
 			return task.Receipt{}, task.ErrNoTask
 		}
 		if _, live := m.view(t).Live(); live {
@@ -111,11 +103,13 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		if err != nil {
 			return task.Receipt{}, err
 		}
-		t = &memTask{t: task.Task{ID: id, Actor: sub.Actor, Created: sub.At}}
+		t = &memTask{record: taskRecord{id: id, actor: sub.Actor, created: sub.At}}
 		m.tasks[id] = t
 	}
-	run := &memRun{id: task.RunID{Task: t.t.ID, N: len(t.runs) + 1}, spec: sub.Spec,
-		actor: sub.Actor, submitted: sub.At}
+	actor := sub.Actor
+	actor.Owner = ""
+	run := runRow{id: task.RunID{Task: t.record.id, N: len(t.runs) + 1}, spec: sub.Spec,
+		actor: actor, submitted: sub.At}
 	t.runs = append(t.runs, run)
 	for h, b := range staged {
 		m.blobs[h] = b
@@ -154,7 +148,9 @@ func (m *Memory) Request(ctx context.Context, q NewRequest) (task.Request, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if id, ok := m.reqIDs[q.RequestID]; ok && q.RequestID != "" {
-		return m.requests[id-1], nil
+		r := m.requests[id-1]
+		r.Actor.Owner = m.tasks[r.Task].record.actor.Owner
+		return r, nil
 	}
 	t := m.tasks[q.Task]
 	if t == nil {
@@ -167,11 +163,12 @@ func (m *Memory) Request(ctx context.Context, q NewRequest) (task.Request, error
 		return task.Request{}, ErrNotLive
 	}
 	r := task.Request{ID: int64(len(m.requests) + 1), Task: q.Task, Run: n, Kind: q.Kind,
-		At: q.At, Actor: q.Actor}
+		At: q.At, Actor: task.Actor{Name: q.Actor.Name, Source: q.Actor.Source}}
 	m.requests = append(m.requests, r)
 	if q.RequestID != "" {
 		m.reqIDs[q.RequestID] = r.ID
 	}
+	r.Actor.Owner = t.record.actor.Owner
 	return r, nil
 }
 
@@ -190,7 +187,7 @@ func (m *Memory) Tasks(ctx context.Context) ([]task.Task, error) {
 	defer m.mu.Unlock()
 	var out []task.Task
 	for _, t := range m.tasks {
-		if t.t.Removal == nil || t.t.Removal.Done.IsZero() {
+		if t.record.removal == nil || t.record.removal.Done.IsZero() {
 			out = append(out, m.view(t))
 		}
 	}
@@ -237,7 +234,7 @@ func (m *Memory) Append(ctx context.Context, c task.Checkpoint) error {
 	if t == nil || c.Run.N < 1 || c.Run.N > len(t.runs) {
 		return ErrNoRun
 	}
-	r := t.runs[c.Run.N-1]
+	r := &t.runs[c.Run.N-1]
 	if c.Seq <= len(r.log) && c.Seq >= 1 {
 		if sameCheckpoint(r.log[c.Seq-1], c) {
 			return nil
@@ -274,8 +271,8 @@ func (m *Memory) Retire(ctx context.Context, id task.ID, r task.Removal) error {
 	if t == nil {
 		return task.ErrNoTask
 	}
-	if t.t.Removal == nil || !r.Done.IsZero() {
-		t.t.Removal = &r
+	if t.record.removal == nil || !r.Done.IsZero() {
+		t.record.removal = &r
 	}
 	return nil
 }
@@ -305,35 +302,17 @@ func (m *Memory) Blob(h task.Hash) (io.ReadCloser, error) {
 
 func (m *Memory) Close() error { return nil }
 
-// view merges a task's rows into the domain view, as SQLite's reads do.
 func (m *Memory) view(t *memTask) task.Task {
-	out := t.t
-	if t.t.Removal != nil {
-		r := *t.t.Removal
-		out.Removal = &r
-	}
-	var latest task.Freeze
-	if f := m.freezes[t.t.ID]; len(f) > 0 {
-		latest = f[len(f)-1]
-	}
-	kept := ""
-	for _, r := range t.runs {
-		run := task.Run{ID: r.id, Spec: r.spec, Actor: r.actor, Submitted: r.submitted,
-			Log: slices.Clone(r.log), Freeze: latest, Kept: kept}
-		for _, q := range m.requests {
-			if q.Task == t.t.ID && q.Run == r.id.N {
-				run.Requests = append(run.Requests, q)
-			}
-		}
-		kept = run.MachineID()
-		out.Runs = append(out.Runs, run)
+	rows := taskRows{record: t.record, runs: t.runs}
+	if f := m.freezes[t.record.id]; len(f) > 0 {
+		rows.freeze = f[len(f)-1]
 	}
 	for _, q := range m.requests {
-		if q.Task == t.t.ID {
-			out.Requests = append(out.Requests, q)
+		if q.Task == t.record.id {
+			rows.requests = append(rows.requests, q)
 		}
 	}
-	return out
+	return taskView(rows)
 }
 
 func logKey(r task.RunID, s task.Stage) string { return r.String() + "/" + string(s) }
