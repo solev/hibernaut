@@ -49,9 +49,33 @@ look() {
 	run=$1 stage=$2 unit=$3
 	if [ -d "$run/$stage.started" ]; then echo marker=yes; else echo marker=no; fi
 	if [ -f "$run/$stage.exit" ]; then sed 's/^/exit./' "$run/$stage.exit"; fi
-	systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p FreezerState \
-		2>/dev/null || true
+	properties=$(systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p ControlGroup)
+	printf '%s\n' "$properties"
+	group=$(printf '%s\n' "$properties" | sed -n 's/^ControlGroup=//p')
+	if [ -n "$group" ] && [ -d "/sys/fs/cgroup$group" ]; then
+		sed -n 's/^frozen /frozen=/p' "/sys/fs/cgroup$group/cgroup.events"
+	fi
 	if [ -r "$run/$stage.log" ]; then echo "log=$(wc -c <"$run/$stage.log" | tr -d ' ')"; fi
+}
+
+slice_cgroup() {
+	group=$(systemctl show hib-task.slice -p ControlGroup --value)
+	if [ -n "$group" ] && [ -d "/sys/fs/cgroup$group" ]; then
+		printf '/sys/fs/cgroup%s\n' "$group"
+	fi
+}
+
+freezer() {
+	want=$1
+	cgroup=$(slice_cgroup)
+	[ -n "$cgroup" ] || return 0
+	printf '%s\n' "$want" >"$cgroup/cgroup.freeze"
+	polls=0
+	until grep -qx "frozen $want" "$cgroup/cgroup.events"; do
+		[ "$polls" -lt 50 ] || die "hib-task.slice did not reach frozen $want"
+		sleep 0.1
+		polls=$((polls + 1))
+	done
 }
 
 # log RUN STAGE OFFSET MAX: at most MAX bytes of the stage's output from OFFSET, base64 on one
@@ -97,7 +121,7 @@ finish() {
 	die "finish is not implemented"
 }
 
-[ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify ..."
+[ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify|freeze|thaw ..."
 cmd=$1
 shift
 case $cmd in
@@ -106,5 +130,7 @@ exit) record_exit "$@" ;;
 look) look "$@" ;;
 log) log "$@" ;;
 verify) verify "$@" ;;
+freeze) freezer 1 ;;
+thaw) freezer 0 ;;
 *) die "unknown subcommand $cmd" ;;
 esac

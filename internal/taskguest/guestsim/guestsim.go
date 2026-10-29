@@ -211,11 +211,15 @@ func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.S
 	switch {
 	case argv[0] == "systemd-run":
 		return g.launch(argv, now, script)
-	case argv[0] == "systemctl" && argv[1] == "freeze":
-		g.frozen = true
-		return ok("")
-	case argv[0] == "systemctl" && argv[1] == "thaw":
-		g.frozen = false
+	case argv[0] == "sh" && len(argv) > 4 && argv[1] == "-c" && argv[2] == string(taskguest.Runner):
+		switch argv[4] {
+		case "freeze":
+			g.frozen = len(g.units) > 0
+		case "thaw":
+			g.frozen = false
+		default:
+			return engine.ExecResult{ExitCode: 2, Stderr: []byte("guestsim: unknown control")}
+		}
 		return ok("")
 	case argv[0] == "systemctl" && (argv[1] == "stop" || argv[1] == "kill"):
 		u := g.units[argv[len(argv)-1]]
@@ -309,15 +313,14 @@ func (g *guest) look(dir string, st task.Stage, name string) engine.ExecResult {
 	}
 	switch {
 	case u != nil && u.active:
-		freezer := "running"
+		frozen := 0
 		if g.frozen {
-			freezer = "frozen-by-parent"
+			frozen = 1
 		}
 		fmt.Fprintf(&out, "LoadState=loaded\nActiveState=active\nSubState=running\n"+
-			"FreezerState=%s\n", freezer)
+			"frozen=%d\n", frozen)
 	default:
-		fmt.Fprintf(&out, "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"+
-			"FreezerState=running\n")
+		fmt.Fprintf(&out, "LoadState=not-found\nActiveState=inactive\nSubState=dead\n")
 	}
 	if b, found := g.files[path.Join(dir, string(st)+".log")]; found {
 		fmt.Fprintf(&out, "log=%d\n", len(b))
