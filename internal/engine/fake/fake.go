@@ -30,7 +30,7 @@ const DefaultTimeout = 300 * time.Second
 // DefaultMemoryMB is the RAM of the machines Create makes: E2B's default.
 const DefaultMemoryMB = 512
 
-// DefaultCPUs is how many CPUs every machine has: E2B's default.
+// DefaultCPUs is E2B's default CPU count.
 const DefaultCPUs = 2
 
 // ExecFunc runs a command for Exec. It's called only for running machines. home is the
@@ -152,13 +152,15 @@ func New(opts ...Option) *Engine {
 	return e
 }
 
-// Add inserts a machine as is, with DefaultCPUs, for tests that need a given starting state.
+// Add inserts a machine as is, defaulting zero CPUs to DefaultCPUs.
 func (e *Engine) Add(m engine.Machine) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m.Metadata = maps.Clone(m.Metadata)
-	m.CPUs = DefaultCPUs
-	e.machines[m.ID] = &machine{Machine: m, cpus: DefaultCPUs, hasSnapshot: m.State == engine.Paused}
+	if m.CPUs == 0 {
+		m.CPUs = DefaultCPUs
+	}
+	e.machines[m.ID] = &machine{Machine: m, cpus: m.CPUs, hasSnapshot: m.State == engine.Paused}
 }
 
 func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.Machine, error) {
