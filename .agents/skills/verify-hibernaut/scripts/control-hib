@@ -188,7 +188,7 @@ mine_or_dev() {
 }
 
 cmd_launch() {
-  local deploy=1 id target images built prev
+  local deploy=1 id target images built prev status
   case "${1:-}" in
     --no-deploy) deploy=0 ;;
     "") ;;
@@ -239,8 +239,9 @@ cmd_launch() {
 
   EXPECTED_HIBD_VERSION=$VERSION
   if ((!deploy)); then
-    EXPECTED_HIBD_VERSION=$(hib_json status | hibd_version) ||
-      die "hibd version is unreadable. Run control-hib cleanup"
+    status=$(hib_json status) || true
+    EXPECTED_HIBD_VERSION=$(hibd_version <<<"$status") ||
+      die "hibd version is unreadable: $(jq -r '.error // .host.detail // "no answer"' <<<"$status"). Run control-hib cleanup"
   fi
   printf 'EXPECTED_HIBD_VERSION=%q\n' "$EXPECTED_HIBD_VERSION" >>"$RUN/run.env"
 
