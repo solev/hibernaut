@@ -23,6 +23,14 @@ type placementEngine struct {
 	save   func(context.Context, string, string) (engine.TemplateInfo, error)
 	exec   func(context.Context, string, engine.ExecRequest) (engine.ExecResult, error)
 	list   func(context.Context, engine.ListOptions) ([]engine.Machine, error)
+	get    func(context.Context, string) (engine.Machine, error)
+}
+
+func (e *placementEngine) Get(ctx context.Context, id string) (engine.Machine, error) {
+	if e.get != nil {
+		return e.get(ctx, id)
+	}
+	return e.Engine.Get(ctx, id)
 }
 
 func (e *placementEngine) Create(ctx context.Context, o engine.CreateOptions) (engine.Machine, error) {
@@ -190,7 +198,7 @@ func TestFindTaskIdentity(t *testing.T) {
 					labelName: "t-aaaaaaaa", task.Label: tc.label,
 				}})
 			}
-			em, found, err := m.FindTask(t.Context(), "t-aaaaaaaa")
+			em, found, err := m.FindTask(t.Context(), placementRun("t-aaaaaaaa", "small"))
 			if found != tc.found || !errors.Is(err, tc.err) {
 				t.Fatalf("FindTask = %s, %v, %v", em.ID, found, err)
 			}
@@ -203,8 +211,14 @@ func TestFindTaskIdentity(t *testing.T) {
 
 func TestFindTaskRemovesOnlyFencedDuplicateIDs(t *testing.T) {
 	m, e := sharedStateManager(t)
-	for i, id := range []string{"oldest", "newer", "newest"} {
-		e.Add(engine.Machine{ID: id, StartedAt: time.Unix(int64(i), 0), Metadata: map[string]string{
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for i, id := range []string{"oldest", "newer", "newest", "ztied"} {
+		start := int64(i)
+		if id == "ztied" {
+			start = 0
+		}
+		e.Add(engine.Machine{ID: id, StartedAt: time.Unix(start, 0), Metadata: map[string]string{
 			labelName: "t-aaaaaaaa", task.Label: "t-aaaaaaaa",
 		}})
 	}
@@ -222,12 +236,12 @@ func TestFindTaskRemovesOnlyFencedDuplicateIDs(t *testing.T) {
 		killed = append(killed, id)
 		return e.Kill(ctx, id)
 	}}
-	em, found, err := m.FindTask(t.Context(), "t-aaaaaaaa")
+	em, found, err := m.FindTask(ctx, placementRun("t-aaaaaaaa", "small"))
 	if err != nil || !found || em.ID != "oldest" {
 		t.Fatalf("FindTask = %s, %v, %v, want oldest", em.ID, found, err)
 	}
 	slices.Sort(killed)
-	if !slices.Equal(killed, []string{"newer", "newest"}) {
+	if !slices.Equal(killed, []string{"newer", "newest", "ztied"}) {
 		t.Fatalf("removed %v, want only duplicate IDs", killed)
 	}
 }

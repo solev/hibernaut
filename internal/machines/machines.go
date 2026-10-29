@@ -109,7 +109,8 @@ type Config struct {
 	// machine they save until it is back in the state it started in. name is what messages call
 	// the machine and why is the fence's reason. Fenced returns op's error as it was, or its own
 	// when it left the machine as it was without running op. FindTask also uses it to remove
-	// crash duplicates by ID. Default: op runs unfenced, which is right only while links are off.
+	// unused task duplicates by ID, including during task removal. Default: op runs unfenced,
+	// which is right only while links are off.
 	Fenced func(ctx context.Context, id, name, why string, op func(context.Context) error) error
 	// TaskLimits are task admission's settings beside room. The zero value is the defaults.
 	TaskLimits TaskLimits
@@ -336,17 +337,21 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.e.Kill(ctx, em.ID); err != nil && !errors.Is(err, engine.ErrNotFound) {
+	return m.killCopy(ctx, em.ID)
+}
+
+// RemoveID kills exactly id and forgets its host key, even if the machine is already gone.
+// The caller holds id's fence when links are on.
+func (m *Manager) RemoveID(ctx context.Context, id string) error {
+	if err := m.checkState(); err != nil {
 		return err
 	}
-	path, err := m.pinPath(em.ID)
+	unlock, err := m.lock(ctx)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
+	defer unlock()
+	return m.killCopy(ctx, id)
 }
 
 // Pause pauses the machine called name. Pausing a paused machine does nothing.
@@ -402,7 +407,9 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 
 	if em.State != engine.Paused {
 		err := Renew(ctx, m.e, em, timeoutFor(idle), m.now())
-		if err != nil && !errors.Is(err, engine.ErrNotRunning) {
+		if errors.Is(err, engine.ErrNotRunning) {
+			em.State = engine.Paused
+		} else if err != nil {
 			return nil, fmt.Errorf("%q: %w", name, err)
 		}
 	}
@@ -417,7 +424,7 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		return fail(fmt.Errorf("%q: %w", name, err))
 	}
 	var conn net.Conn
-	err = m.retryResume(ctx, name, em.MemoryMB, func(ctx context.Context) error {
+	err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
 		var err error
 		conn, err = m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
 		return err
@@ -590,7 +597,7 @@ func (m *Manager) repin(ctx context.Context, name string, em engine.Machine, idl
 	if err != nil {
 		return nil, err
 	}
-	err = m.retryResume(ctx, name, em.MemoryMB, func(ctx context.Context) error {
+	err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
 		_, err := m.e.Resume(ctx, em.ID, timeoutFor(idle))
 		return err
 	})

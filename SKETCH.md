@@ -247,7 +247,7 @@ and its intent and result bodies.
 
 | Step | Phase | Intent records | Looks before acting | Result records |
 | --- | --- | --- | --- | --- |
-| machine | preparing | the grant | Find by name and label | sandbox ID, or refused |
+| machine | preparing | the grant | Find the run's machine | sandbox ID, or refused |
 | upload | preparing | upload began | nothing, Upload overwrites | hashes verified |
 | setup | running | stage began | `runner look` | launched, then exit |
 | command | running | stage began | `runner look` | launched, then exit |
@@ -577,10 +577,11 @@ waiting on anything else.
 flowchart TD
     CL["cleanup.lock"] --> HL["hibd.lock"]
     FE["links-fence-ID.lock"] -->|"pause and rm"| HL
-    HL -->|"save and fork, bounded to 30 s"| FE
-    HL -->|"CreateSize, CreateTask"| RL["room.lock"]
+    HL -->|"save, fork and duplicate removal, bounded to 30 s"| FE
+    HL -->|"CreateSize, CreateTask and fork copy creates"| RL["room.lock"]
+    HL -->|"links off, save plan check and save and fork origin resumes"| RL
     FE -->|"save and fork origin resumes and save plan check"| RL
-    RL -->|"Wake, Dial, ResumeTask through the Owner"| TM["task-machine-TASK.lock"]
+    RL -->|"Wake, Dial's resumes, ResumeTask through the Owner"| TM["task-machine-TASK.lock"]
     FE -->|"every fenced pause"| TM
     HL -->|"Manager.Pause"| TM
     TM -->|"freeze row"| DB["tasks.db write lock"]
@@ -600,7 +601,7 @@ is the task ID and the labels are a pure function of the run, so the intent row 
 restarted daemon what to look for. `makeMachine` checks `boundary`, then looks before it acts:
 
 ```go
-m, found, err := x.cfg.Machines.Find(ctx, x.id.Task) // by name, then the hib.task label
+m, found, err := x.cfg.Machines.Find(ctx, x.r) // the recorded ID, else name and hib.task label
 switch {
 case found && m.State == engine.Running: // adopt what a crashed daemon created
 case found:                              // resume through Machines.Resume and Owner's guard
@@ -614,8 +615,16 @@ machine by name and records `MachineResult{ID, Adopted: true}`. The result recor
 sandbox ID as a reference. E2B stays the catalog. A create still in flight at E2B when the
 daemon died is the remaining hole. The fix, still TODO: an intent another instance left open
 waits out E2B's create timeout before it looks, so the in-flight create has landed or failed.
-Once a result names a sandbox, work only ever happens on that ID, and the keep step removes any
-other machine with the task's label.
+`Run.MachineID()` identifies the machine from the run's result, else the previous run's `Kept`.
+`Find` reads it with `Engine.Get`, like `refresh`. A missing recorded machine returns not found,
+never a duplicate. With no record, it keeps the earliest `StartedAt`, then ID. That is discovery,
+not age. `StartedAt` moves on every resume. `Find` removes every unused named and labelled machine
+by ID through its fence. A machine with the task's name but not its label fails with `ErrNotTask`.
+`keep` passes the refreshed run through Pause or Remove. Pause acts on the machine `Find` keeps.
+Remove kills that ID under its `rm` fence, never through a second name lookup, and drops its pin.
+It then runs `Find` again with that ID recorded, removing late unused duplicates through their
+own fences. Success means the recorded machine and every listed task-named, labelled machine
+are gone. A new machine found without a recorded ID makes removal fail so a retry can remove it.
 
 ### 4. Exec hazards
 
@@ -669,17 +678,22 @@ properties and the `frozen` line of its `cgroup.events`. `taskguest.Seen.Verdict
 override.
 
 Atomicity comes from `machines.RoomLock` (`room.lock`), a short flock held from the room reading
-through one create or resume by `CreateSize`, `CreateTask`, `ResumeTask`, `Wake`, `Dial`, save
-and fork's origin resumes, and each fork copy's create. A one-shot `hibd new`, an ssh wake and
-the proxy's link wake cannot spend pages a task admission just counted, or the reverse. It is
-separate from `hibd.lock` so `Wake` and `Dial` do not wait behind a save. No holder takes a fence.
-The proxy's `pendingWakes` stay as coalescing within the proxy. Admission no longer depends on
-seeing them. `TaskFits` gives `Pick` its order from one reading, and `CreateTask` decides.
+through one create or resume by `CreateSize`, `CreateTask`, `ResumeTask`, `Wake`, Dial's resumes,
+save and fork's origin resumes, and each fork copy's create. The save's plan check also holds it.
+A successful running-machine ssh dial and repin take no room lock or room reading.
+A one-shot `hibd new`, an ssh wake and the proxy's link wake cannot spend pages a task admission
+just counted, or the reverse. The lock is separate from `hibd.lock` so `Wake` and `Dial` do not
+wait behind a save.
+No holder takes a fence. The proxy's `pendingWakes` stay as coalescing within the proxy. Admission
+no longer depends on seeing them. `TaskFits` gives `Pick` its order from one reading, and
+`CreateTask` decides.
 
-SaveTemplate checks its extra copy's plan under `room.lock` but runs outside it so wakes do not
-wait. An admission can consume that room before E2B starts the temporary copy. E2B can refuse
-the save; hibd reports the failure and attempts to restore the origin. No reservation spans the
-call or a crash. `Admit` charges a machine with unknown `CPUs` the default size's vCPUs.
+`saveCopy` checks its extra copy's plan under `room.lock`, then calls `SaveTemplate` outside it.
+Two gaps remain. An admission can consume the copy's room before E2B starts it, so E2B can refuse
+the save. hibd reports the failure and attempts to restore the origin. While the origin waits
+paused for its snapshot, another admission can take its room. Its resume then fails, nothing is
+saved, and the origin stays paused at a safe snapshot. No reservation spans the call or a crash.
+`Admit` charges a machine with unknown `CPUs` the default size's vCPUs.
 
 ### 6. The busy watcher
 

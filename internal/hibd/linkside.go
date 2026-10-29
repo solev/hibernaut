@@ -148,7 +148,7 @@ func openLinkLog(path string, logf func(format string, args ...any)) *audit.Link
 }
 
 // linkRoom reports the room for a link's wake of target, counted in default machines: how many
-// more may run with the owner's memory reserve held back, and how many waking target takes. A target
+// more may run with the memory reserve held back, and how many waking target takes. A target
 // whose size can't be read is refused, since it can't be charged.
 func (a *App) linkRoom(e engine.Engine) func(target string) (int, int, error) {
 	read := a.ReadRoom
