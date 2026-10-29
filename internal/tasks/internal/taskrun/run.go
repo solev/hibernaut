@@ -480,9 +480,9 @@ func lookAgain(err error) error {
 	return err
 }
 
-// collect copies what the host doesn't have of every stage's log, within task.MaxLogBytes, and
-// reads what finish published. A machine that is paused or gone gives what the host already
-// copied: collect never wakes one.
+// collect copies new bytes of launched stages without a StageExit, within task.MaxLogBytes,
+// and reads what finish published. An exited stage's host copy is final. A machine that is
+// paused or gone gives what the host already copied: collect never wakes one.
 func (x *executor) collect(ctx context.Context) error {
 	if x.done(task.StepCollect) {
 		return nil
@@ -506,8 +506,10 @@ func (x *executor) collect(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if err := x.copyLog(ctx, s, seen.LogSize); err != nil {
-				return err
+			if _, exited := x.exitOf(s); !exited {
+				if err := x.copyLog(ctx, s, seen.LogSize); err != nil {
+					return err
+				}
 			}
 			size = seen.LogSize
 		}
@@ -707,7 +709,7 @@ func (x *executor) copyLog(ctx context.Context, s task.Stage, size int64) error 
 		left := remaining - int64(len(data))
 		out, err := x.execOut(ctx, taskguest.ReadLog(x.id, s, have+int64(len(data)), left))
 		if err != nil {
-			readErr = lookAgain(err)
+			readErr = err
 			break
 		}
 		_, chunk, err := taskguest.ParseLog(out)
@@ -720,6 +722,7 @@ func (x *executor) copyLog(ctx context.Context, s task.Stage, size int64) error 
 			break
 		}
 		if len(chunk) == 0 {
+			readErr = fmt.Errorf("log %s of %s: empty chunk before reported size %d", s, x.id, size)
 			break
 		}
 		data = append(data, chunk...)
@@ -772,9 +775,10 @@ type Supervisor struct {
 	cfg  Config
 	life context.Context
 
-	mu   sync.Mutex
-	runs map[task.RunID]*handle
-	wg   sync.WaitGroup
+	mu       sync.Mutex
+	runs     map[task.RunID]*handle
+	removing map[task.ID]struct{}
+	wg       sync.WaitGroup
 }
 
 type handle struct {
@@ -787,17 +791,23 @@ type handle struct {
 
 // NewSupervisor returns a Supervisor whose workflows live as long as life.
 func NewSupervisor(life context.Context, cfg Config) *Supervisor {
-	return &Supervisor{cfg: cfg, life: life, runs: map[task.RunID]*handle{}}
+	return &Supervisor{cfg: cfg, life: life, runs: map[task.RunID]*handle{},
+		removing: map[task.ID]struct{}{}}
 }
 
 // Tick starts a workflow for each unfinished run that has none, nudges each whose run has a new
-// request and grants the next machine. The daemon calls it every Poll, and never while the host
-// is going to sleep.
+// request, starts task removals and grants the next machine. The daemon calls it every Poll,
+// and never while the host is going to sleep. Removal and grant errors are joined, so neither
+// prevents the other pass.
 //
 // At most one run holds the grant at a time, and the log says which: the run whose last
 // checkpoint is a machine intent. Nothing about the queue lives only in memory, so a restarted
 // daemon neither loses a grant nor gives two.
 func (s *Supervisor) Tick(ctx context.Context) error {
+	return errors.Join(s.remove(ctx), s.tickRuns(ctx))
+}
+
+func (s *Supervisor) tickRuns(ctx context.Context) error {
 	runs, err := s.cfg.Store.Unfinished(ctx)
 	if err != nil {
 		return err
@@ -826,8 +836,59 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 		return nil
 	}
 	return s.grant(ctx, runs, id)
-	// TODO: retention and rm of tasks with no live run: for each task.Retire(t, now), record
-	// the Removal, Machines.Remove, then record it done. An open removal is carried out again.
+}
+
+func (s *Supervisor) remove(ctx context.Context) error {
+	// TODO: retention waits for M16. SKETCH.md:998 asks whether the 7 days count from the
+	// last keep or the last ssh. Until then, only rm requests and open removals are read.
+	tasks, err := s.cfg.Store.Removing(ctx)
+	if err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		s.mu.Lock()
+		if _, active := s.removing[t.ID]; active {
+			s.mu.Unlock()
+			continue
+		}
+		s.removing[t.ID] = struct{}{}
+		s.wg.Go(func() {
+			defer func() {
+				s.mu.Lock()
+				delete(s.removing, t.ID)
+				s.mu.Unlock()
+			}()
+			if err := s.retire(t); err != nil && s.cfg.Logf != nil {
+				s.cfg.Logf("task %s removal: %v", t.ID, err)
+			}
+		})
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+func (s *Supervisor) retire(t task.Task) error {
+	var r task.Removal
+	if t.Removal != nil {
+		r = *t.Removal
+	} else {
+		var ok bool
+		r, ok = task.Retire(t, s.cfg.Clock.Now())
+		if !ok {
+			return nil
+		}
+		if err := s.cfg.Store.Retire(s.life, t.ID, r); err != nil {
+			return err
+		}
+	}
+	if err := s.cfg.Machines.Remove(s.life, t.Runs[len(t.Runs)-1]); err != nil {
+		return err
+	}
+	if err := context.Cause(s.life); err != nil {
+		return err
+	}
+	r.Done = s.cfg.Clock.Now()
+	return s.cfg.Store.Retire(s.life, t.ID, r)
 }
 
 // granted reports whether a run holds the grant: its machine intent is its last checkpoint.

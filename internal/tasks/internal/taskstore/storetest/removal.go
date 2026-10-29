@@ -17,14 +17,20 @@ func followUpAfterRemove(t *testing.T, s taskstore.Store) {
 	ctx := context.Background()
 	first := submit(t, s, "first", spec(), nil)
 	finish(t, s, first.Run, "sbx1")
+	earlier := task.Submission{RequestID: "earlier", Task: first.Run.Task, Spec: spec(),
+		Actor: alice, At: t0}
+	receipt, err := s.Submit(ctx, earlier, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(t, s, receipt.Run, "sbx1")
 	if _, err := s.Request(ctx, taskstore.NewRequest{RequestID: "rm", Task: first.Run.Task,
 		Kind: task.RequestRemove, Actor: alice, At: t0}); err != nil {
 		t.Fatal(err)
 	}
-	replay, err := s.Submit(ctx, task.Submission{RequestID: "first", Spec: spec(),
-		Actor: alice, At: t0}, nil)
-	if err != nil || replay != first {
-		t.Fatalf("receipt replay after rm = %v, %v, want %v", replay, err, first)
+	replay, err := s.Submit(ctx, earlier, nil)
+	if err != nil || replay != receipt {
+		t.Fatalf("receipt replay after rm = %v, %v, want %v", replay, err, receipt)
 	}
 	data := []byte("a new follow-up input")
 	_, err = s.Submit(ctx, task.Submission{RequestID: "follow", Task: first.Run.Task,
@@ -34,8 +40,8 @@ func followUpAfterRemove(t *testing.T, s taskstore.Store) {
 		t.Errorf("follow-up after rm = %v, want ErrNoTask", err)
 	}
 	got, err := s.Task(ctx, first.Run.Task)
-	if err != nil || len(got.Runs) != 1 {
-		t.Errorf("runs after refused follow-up = %d, %v, want 1", len(got.Runs), err)
+	if err != nil || len(got.Runs) != 2 {
+		t.Errorf("runs after refused follow-up = %d, %v, want 2", len(got.Runs), err)
 	}
 	if _, err := s.Receipt(ctx, "follow"); !errors.Is(err, taskstore.ErrNoReceipt) {
 		t.Errorf("receipt for refused follow-up = %v, want ErrNoReceipt", err)

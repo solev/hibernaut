@@ -234,10 +234,12 @@ The dominant access patterns, traced through that structure:
    `Tasks.Check` reads it from the machine its caller looked up. Only a task machine costs a
    `Store.Task` read.
 5. **Logs.** The host file's length is the cursor for copying and for `hib task logs -f`.
-6. **Retention.** `task.Retire(t, now)` reads the latest keep result's time.
+6. **Removal.** `Store.Removing` finds tasks with an rm request or an open removal, oldest
+   first. It builds merged views only for those tasks, not other tasks' runs or checkpoints.
+   The tick never scans `Store.Tasks`. Age-based retention waits for M16.
 
-Every pattern is served by the primary keys plus two indexes (`requests_task`, `inputs_hash`).
-Nothing needs a later cache.
+The primary keys and two indexes (`requests_task`, `inputs_hash`) serve the record reads.
+Removal discovery may scan tasks and requests, but never another task's runs or checkpoints.
 
 ### The step table is the state machine
 
@@ -416,6 +418,11 @@ nudge.
   stage runs. It refreshes the run and asks the pure `task.StopFor(run, now)` whether a cancel,
   the deadline, the queue limit or a lost machine is due. If one is, it records the
   `StopIntent` and the main line ends.
+- **Removal.** Every tick reads `Store.Removing`, even with a grant open or no fitting run.
+  One goroutine per task records removal begun, removes the last run's machine and records
+  done. It retries open removals after a failure or restart, without blocking grants or nudges.
+  No store or machine call holds the Supervisor's mutex. An rm refuses follow-ups immediately.
+  The store rejects a stale removal decision while a run is live.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
 - **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
@@ -633,8 +640,9 @@ under `/var/lib/hib-task/RUN`.
 - **Output over 8 MiB.** `runner look` prints a few lines. `runner log` prints at most
   `MaxLogChunk`, 1 MiB, from a byte offset. Collect stops at `MaxLogBytes`, 50 MiB, per run, summed
   over the stages in order. The executor's copy loop and `FileLogs.Append` both enforce the sum.
-  Collect counts kept bytes. `Dropped` counts excess bytes the guest reports while its machine runs.
-  It can understate when the machine is not running at collect.
+  An exited stage's host copy is final. Collect copies only launched stages without a `StageExit`.
+  It counts kept bytes and reports all uncopied guest bytes as `Dropped` while the machine runs.
+  `Dropped` can understate when the machine is not running at collect.
 - **Lost replies.** Launch is idempotent by unit name and by a start marker made with `mkdir`.
   A second start exits 75 without acting. The executor launches only when a look says
   `NotStarted`, ignores `ErrConnectionLost` and judges the launch by the next look, never the

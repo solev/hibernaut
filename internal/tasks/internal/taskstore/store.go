@@ -46,7 +46,7 @@ var (
 
 // NewRequest is a cancel, rescue or rm as a CLI one-shot asks for it.
 type NewRequest struct {
-	// RequestID makes the request safe to retry: the same ID returns the first row.
+	// RequestID makes the request safe to retry for the same task and kind.
 	RequestID string
 	Task      task.ID
 	Kind      task.RequestKind
