@@ -247,7 +247,7 @@ and its intent and result bodies.
 
 | Step | Phase | Intent records | Looks before acting | Result records |
 | --- | --- | --- | --- | --- |
-| machine | preparing | the grant | Find by name and label | sandbox ID, or refused |
+| machine | preparing | the grant | Find the run's machine | sandbox ID, or refused |
 | upload | preparing | upload began | nothing, Upload overwrites | hashes verified |
 | setup | running | stage began | `runner look` | launched, then exit |
 | command | running | stage began | `runner look` | launched, then exit |
@@ -600,7 +600,7 @@ is the task ID and the labels are a pure function of the run, so the intent row 
 restarted daemon what to look for. `makeMachine` checks `boundary`, then looks before it acts:
 
 ```go
-m, found, err := x.cfg.Machines.Find(ctx, x.id.Task) // by name, then the hib.task label
+m, found, err := x.cfg.Machines.Find(ctx, x.r) // the recorded ID, else name and hib.task label
 switch {
 case found && m.State == engine.Running: // adopt what a crashed daemon created
 case found:                              // resume through Machines.Resume and Owner's guard
@@ -614,8 +614,12 @@ machine by name and records `MachineResult{ID, Adopted: true}`. The result recor
 sandbox ID as a reference. E2B stays the catalog. A create still in flight at E2B when the
 daemon died is the remaining hole. The fix, still TODO: an intent another instance left open
 waits out E2B's create timeout before it looks, so the in-flight create has landed or failed.
-Once a result names a sandbox, work only ever happens on that ID, and the keep step removes any
-other machine with the task's label.
+`Run.MachineID()` is the identity: the run's machine result, else the previous run's `Kept`.
+`Find` reads it with `Engine.Get`, like `refresh`. A missing recorded machine returns not found,
+never a duplicate. With no record, it keeps the earliest `StartedAt`, then ID. That is discovery,
+not age: `StartedAt` moves on every resume. `Find` removes every unused named and labelled machine
+by ID through its fence. A machine with the task's name but not its label fails with `ErrNotTask`.
+`keep` passes the refreshed run through Pause or Remove, so neither can pick an unused duplicate.
 
 ### 4. Exec hazards
 

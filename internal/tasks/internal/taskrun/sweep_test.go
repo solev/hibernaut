@@ -38,7 +38,7 @@ func (s *sweepTrace) call(name string) {
 	if last, ok := r.Last(); ok {
 		step = last.Step()
 	}
-	_, exists, err := s.h.m.Find(context.Background(), s.id.Task)
+	_, exists, err := s.h.m.Find(context.Background(), r)
 	if err != nil {
 		s.h.t.Fatal(err)
 	}
@@ -101,9 +101,9 @@ func (m sweepMachines) Fits(ctx context.Context) (func(task.Run) error, error) {
 	return m.Machines.Fits(ctx)
 }
 
-func (m sweepMachines) Find(ctx context.Context, id task.ID) (engine.Machine, bool, error) {
+func (m sweepMachines) Find(ctx context.Context, r task.Run) (engine.Machine, bool, error) {
 	m.trace.call("find")
-	return m.Machines.Find(ctx, id)
+	return m.Machines.Find(ctx, r)
 }
 
 func (m sweepMachines) Create(ctx context.Context, r task.Run, timeout time.Duration) (engine.Machine, error) {
@@ -116,14 +116,14 @@ func (m sweepMachines) Resume(ctx context.Context, r task.Run, id string, timeou
 	return m.Machines.Resume(ctx, r, id, timeout)
 }
 
-func (m sweepMachines) Pause(ctx context.Context, id task.ID) error {
+func (m sweepMachines) Pause(ctx context.Context, r task.Run) error {
 	m.trace.call("pause")
-	return m.Machines.Pause(ctx, id)
+	return m.Machines.Pause(ctx, r)
 }
 
-func (m sweepMachines) Remove(ctx context.Context, id task.ID) error {
+func (m sweepMachines) Remove(ctx context.Context, r task.Run) error {
 	m.trace.call("remove")
-	return m.Machines.Remove(ctx, id)
+	return m.Machines.Remove(ctx, r)
 }
 
 type sweepAudit struct {

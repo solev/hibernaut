@@ -64,12 +64,13 @@ type Engine interface {
 type Machines interface {
 	// Fits returns the admission check on one reading of the host, for task.Pick.
 	Fits(ctx context.Context) (func(task.Run) error, error)
-	// Find returns the task's machine by name and label, or found false.
-	Find(ctx context.Context, id task.ID) (m engine.Machine, found bool, err error)
+	// Find keeps r.MachineID(), or discovers by name and label when none is recorded, and
+	// removes unused duplicates. A recorded machine that is gone returns found false.
+	Find(ctx context.Context, r task.Run) (m engine.Machine, found bool, err error)
 	Create(ctx context.Context, r task.Run, timeout time.Duration) (engine.Machine, error)
 	Resume(ctx context.Context, r task.Run, sandbox string, timeout time.Duration) (engine.Machine, error)
-	Pause(ctx context.Context, id task.ID) error
-	Remove(ctx context.Context, id task.ID) error
+	Pause(ctx context.Context, r task.Run) error
+	Remove(ctx context.Context, r task.Run) error
 }
 
 // Clock is the daemon's time. Tests share one fake clock with Manager and the fake engine.
@@ -196,7 +197,7 @@ func (x *executor) makeMachine(ctx context.Context) (task.Body, error) {
 		return nil, err
 	}
 	timeout := task.MachineTimeout(x.r, x.now())
-	m, found, err := x.cfg.Machines.Find(ctx, x.id.Task)
+	m, found, err := x.cfg.Machines.Find(ctx, x.r)
 	if err != nil {
 		return nil, err
 	}
@@ -556,12 +557,12 @@ func (x *executor) keep(ctx context.Context) error {
 	case x.r.MachineID() == "" || x.r.Machine == task.MachineGone:
 		res.Gone = true
 	case x.r.Removing():
-		if err := x.cfg.Machines.Remove(ctx, x.id.Task); err != nil {
+		if err := x.cfg.Machines.Remove(ctx, x.r); err != nil {
 			return err
 		}
 		res.Removed = true
 	case x.r.Machine == task.MachineRunning:
-		if err := x.cfg.Machines.Pause(ctx, x.id.Task); err != nil &&
+		if err := x.cfg.Machines.Pause(ctx, x.r); err != nil &&
 			!errors.Is(err, engine.ErrNotRunning) {
 			return err
 		}

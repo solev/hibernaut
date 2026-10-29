@@ -179,12 +179,43 @@ func (m *machines) Fits(ctx context.Context) (func(task.Run) error, error) {
 	}, err
 }
 
-func (m *machines) Find(ctx context.Context, id task.ID) (engine.Machine, bool, error) {
-	ms, err := m.h.sim.List(ctx, engine.ListOptions{Metadata: map[string]string{task.Label: string(id)}})
-	if err != nil || len(ms) == 0 {
+func (m *machines) Find(ctx context.Context, r task.Run) (engine.Machine, bool, error) {
+	name := string(r.ID.Task)
+	ms, err := m.h.sim.List(ctx, engine.ListOptions{
+		Metadata: map[string]string{task.Label: name, "hib.name": name},
+	})
+	if err != nil {
 		return engine.Machine{}, false, err
 	}
-	return ms[0], true, nil
+	var kept engine.Machine
+	found := false
+	if id := r.MachineID(); id != "" {
+		kept, err = m.h.sim.Get(ctx, id)
+		switch {
+		case errors.Is(err, engine.ErrNotFound):
+			kept = engine.Machine{}
+		case err != nil:
+			return engine.Machine{}, false, err
+		default:
+			found = true
+		}
+	} else if len(ms) > 0 {
+		slices.SortFunc(ms, func(a, b engine.Machine) int {
+			if n := a.StartedAt.Compare(b.StartedAt); n != 0 {
+				return n
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+		kept, found = ms[0], true
+	}
+	for _, duplicate := range ms {
+		if duplicate.ID != kept.ID {
+			if err := m.h.sim.Kill(ctx, duplicate.ID); err != nil {
+				return engine.Machine{}, false, err
+			}
+		}
+	}
+	return kept, found, nil
 }
 
 func (m *machines) Create(ctx context.Context, r task.Run, timeout time.Duration) (engine.Machine, error) {
@@ -206,16 +237,16 @@ func (m *machines) Resume(ctx context.Context, r task.Run, id string, timeout ti
 	return m.h.owner.Resume(ctx, id, timeout)
 }
 
-func (m *machines) Pause(ctx context.Context, id task.ID) error {
-	em, found, err := m.Find(ctx, id)
+func (m *machines) Pause(ctx context.Context, r task.Run) error {
+	em, found, err := m.Find(ctx, r)
 	if err != nil || !found {
 		return err
 	}
 	return m.h.owner.Pause(ctx, em.ID)
 }
 
-func (m *machines) Remove(ctx context.Context, id task.ID) error {
-	em, found, err := m.Find(ctx, id)
+func (m *machines) Remove(ctx context.Context, r task.Run) error {
+	em, found, err := m.Find(ctx, r)
 	if err != nil || !found {
 		return err
 	}
@@ -367,7 +398,7 @@ func (h *harness) run(id task.RunID) task.Run {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if m, found, _ := h.m.Find(context.Background(), id.Task); found {
+	if m, found, _ := h.m.Find(context.Background(), r); found {
 		r.Machine = task.MachineRunning
 		if m.State == engine.Paused {
 			r.Machine = task.MachinePaused
@@ -393,7 +424,7 @@ func (h *harness) launched(id task.RunID, s task.Stage) func() bool {
 
 func (h *harness) machineID(id task.RunID) string {
 	h.t.Helper()
-	m, found, err := h.m.Find(context.Background(), id.Task)
+	m, found, err := h.m.Find(context.Background(), task.Run{ID: id})
 	if err != nil || !found {
 		h.t.Fatalf("no machine for %s: %v", id, err)
 	}
@@ -898,7 +929,7 @@ func TestRemoveWhileRunning(t *testing.T) {
 	h.request(id, task.RequestRemove)
 	h.until(10, h.ended(id))
 	h.checkLog(id)
-	if _, found, _ := h.m.Find(context.Background(), id.Task); found {
+	if _, found, _ := h.m.Find(context.Background(), h.run(id)); found {
 		t.Fatal("the machine outlived hib task rm")
 	}
 }

@@ -109,19 +109,20 @@ func (m *Manager) TaskFits(ctx context.Context) (func(task.Run) error, error) {
 	}, nil
 }
 
-// FindTask returns the task's machine, found by name, which is the task ID. A machine with the
-// name but not the task's label fails with ErrNotTask. found is false when E2B has neither.
-func (m *Manager) FindTask(ctx context.Context, id task.ID) (em engine.Machine, found bool, err error) {
+// FindTask keeps the run's recorded machine, or discovers the earliest StartedAt then ID by
+// name and label when none is recorded. It removes unused duplicates through their fences.
+// A recorded machine that is gone returns found false. A wrong name or label fails with ErrNotTask.
+func (m *Manager) FindTask(ctx context.Context, r task.Run) (em engine.Machine, found bool, err error) {
 	unlock, err := m.lock(ctx)
 	if err != nil {
 		return engine.Machine{}, false, err
 	}
 	defer unlock()
-	return m.findTask(ctx, id)
+	return m.findTask(ctx, r)
 }
 
-func (m *Manager) findTask(ctx context.Context, id task.ID) (engine.Machine, bool, error) {
-	name := string(id)
+func (m *Manager) findTask(ctx context.Context, r task.Run) (engine.Machine, bool, error) {
+	name := string(r.ID.Task)
 	ems, err := m.e.List(ctx, engine.ListOptions{Metadata: map[string]string{labelName: name}})
 	if err != nil {
 		return engine.Machine{}, false, safeError(err)
@@ -132,16 +133,33 @@ func (m *Manager) findTask(ctx context.Context, id task.ID) (engine.Machine, boo
 			return engine.Machine{}, false, fmt.Errorf("%w: %s (%s)", ErrNotTask, name, em.ID)
 		}
 	}
-	if len(ems) == 0 {
-		return engine.Machine{}, false, nil
-	}
-	slices.SortFunc(ems, func(a, b engine.Machine) int {
-		if n := a.StartedAt.Compare(b.StartedAt); n != 0 {
-			return n
+	var kept engine.Machine
+	found := false
+	if id := r.MachineID(); id != "" {
+		kept, err = m.e.Get(ctx, id)
+		switch {
+		case errors.Is(err, engine.ErrNotFound):
+			kept = engine.Machine{}
+		case err != nil:
+			return engine.Machine{}, false, safeError(err)
+		case Name(kept) != name || kept.Metadata[task.Label] != name:
+			return engine.Machine{}, false, fmt.Errorf("%w: %s (%s)", ErrNotTask, name, kept.ID)
+		default:
+			found = true
 		}
-		return strings.Compare(a.ID, b.ID)
-	})
-	for _, duplicate := range ems[1:] {
+	} else if len(ems) > 0 {
+		slices.SortFunc(ems, func(a, b engine.Machine) int {
+			if n := a.StartedAt.Compare(b.StartedAt); n != 0 {
+				return n
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+		kept, found = ems[0], true
+	}
+	for _, duplicate := range ems {
+		if duplicate.ID == kept.ID {
+			continue
+		}
 		remove := func(ctx context.Context) error { return m.killCopy(ctx, duplicate.ID) }
 		var err error
 		if m.fenced != nil {
@@ -153,7 +171,7 @@ func (m *Manager) findTask(ctx context.Context, id task.ID) (engine.Machine, boo
 			return engine.Machine{}, false, fmt.Errorf("removing duplicate %s of %s: %w", duplicate.ID, name, err)
 		}
 	}
-	return ems[0], true, nil
+	return kept, found, nil
 }
 
 // RoomLock serializes admission from the room reading through one create or resume call.
@@ -185,7 +203,7 @@ func (m *Manager) CreateTask(ctx context.Context, r task.Run, timeout time.Durat
 		return engine.Machine{}, err
 	}
 	defer unlock()
-	if em, found, err := m.findTask(ctx, r.ID.Task); err != nil || found {
+	if em, found, err := m.findTask(ctx, r); err != nil || found {
 		return em, err
 	}
 	name := string(r.ID.Task)
