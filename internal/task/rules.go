@@ -143,6 +143,11 @@ func (t Task) Live() (Run, bool) {
 	return Run{}, false
 }
 
+// Removing reports whether an rm request has been made against the task.
+func (t Task) Removing() bool {
+	return slices.ContainsFunc(t.Requests, func(q Request) bool { return q.Kind == RequestRemove })
+}
+
 // Removal is the task's own two-checkpoint workflow: recorded before the machine is removed,
 // and Done after. Deleting a task is its lifecycle, not a run's outcome.
 type Removal struct {

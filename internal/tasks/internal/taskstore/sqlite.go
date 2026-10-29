@@ -366,7 +366,7 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		if err != nil {
 			return task.Receipt{}, err
 		}
-		if t.Removal != nil {
+		if t.Removal != nil || t.Removing() {
 			return task.Receipt{}, task.ErrNoTask
 		}
 		if _, live := t.Live(); live {
@@ -467,6 +467,9 @@ func (s *SQLite) Request(ctx context.Context, q NewRequest) (task.Request, error
 			WHERE r.request_id = ?`, q.RequestID).
 			Scan(&r.ID, &r.Task, &r.Run, &r.Kind, &at, &r.Actor.Name, &r.Actor.Source, &r.Actor.Owner)
 		if err == nil {
+			if r.Task != q.Task || r.Kind != q.Kind {
+				return task.Request{}, task.ErrConflict
+			}
 			r.At = time.UnixMilli(at).UTC()
 			return r, nil
 		}
@@ -477,6 +480,9 @@ func (s *SQLite) Request(ctx context.Context, q NewRequest) (task.Request, error
 	t, err := readTask(ctx, tx, q.Task)
 	if err != nil {
 		return task.Request{}, err
+	}
+	if t.Removal != nil {
+		return task.Request{}, task.ErrNoTask
 	}
 	n := 0
 	if live, ok := t.Live(); ok {
@@ -525,6 +531,15 @@ func (s *SQLite) Tasks(ctx context.Context) ([]task.Task, error) {
 	return readTasks(ctx, tx)
 }
 
+func (s *SQLite) Removing(ctx context.Context) ([]task.Task, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, busy(err)
+	}
+	defer tx.Rollback()
+	return readRemoving(ctx, tx)
+}
+
 func (s *SQLite) Run(ctx context.Context, id task.RunID) (task.Run, error) {
 	t, err := s.Task(ctx, id.Task)
 	if errors.Is(err, task.ErrNoTask) {
@@ -558,6 +573,11 @@ func (s *SQLite) Retire(ctx context.Context, id task.ID, r task.Removal) error {
 	}
 	if t.Removal != nil && r.Done.IsZero() {
 		return nil
+	}
+	if r.Done.IsZero() {
+		if _, live := t.Live(); live {
+			return task.ErrRunLive
+		}
 	}
 	var done any
 	if !r.Done.IsZero() {

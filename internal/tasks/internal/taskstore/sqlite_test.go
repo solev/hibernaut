@@ -209,6 +209,44 @@ func TestSQLiteReopen(t *testing.T) {
 	}
 }
 
+func TestRemovingDoesNotReadOtherRuns(t *testing.T) {
+	ctx := t.Context()
+	dir := statefile.Dir{Path: t.TempDir()}
+	s, err := taskstore.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var ids []task.ID
+	for _, name := range []string{"removing", "unrelated"} {
+		rec, err := s.Submit(ctx, task.Submission{RequestID: name, At: time.Now()}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, rec.Run.Task)
+	}
+	if _, err := s.Request(ctx, taskstore.NewRequest{Task: ids[0],
+		Kind: task.RequestRemove, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", filepath.Join(dir.Path, taskstore.DB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `UPDATE runs SET spec = 'invalid' WHERE task = ?`,
+		ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Task(ctx, ids[1]); err == nil {
+		t.Fatal("the unrelated task's run is still readable")
+	}
+	got, err := s.Removing(ctx)
+	if err != nil || len(got) != 1 || got[0].ID != ids[0] {
+		t.Fatalf("Removing beside an unreadable unrelated run = %v, %v", got, err)
+	}
+}
+
 func TestSQLiteSubmitCleansStaging(t *testing.T) {
 	ctx := context.Background()
 	dir := statefile.Dir{Path: t.TempDir()}

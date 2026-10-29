@@ -168,6 +168,40 @@ func readUnfinished(ctx context.Context, tx *sql.Tx) ([]task.Run, error) {
 	return out, nil
 }
 
+func readRemoving(ctx context.Context, tx *sql.Tx) ([]task.Task, error) {
+	rs, err := tx.QueryContext(ctx, `SELECT id FROM tasks t WHERE removed_at IS NULL
+		AND (removal_why IS NOT NULL OR EXISTS
+			(SELECT 1 FROM requests r WHERE r.task = t.id AND r.kind = ?))
+		ORDER BY created_at, id`, task.RequestRemove)
+	if err != nil {
+		return nil, busy(err)
+	}
+	defer rs.Close()
+	var ids []task.ID
+	for rs.Next() {
+		var id task.ID
+		if err := rs.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rs.Err(); err != nil {
+		return nil, busy(err)
+	}
+	if err := rs.Close(); err != nil {
+		return nil, err
+	}
+	var out []task.Task
+	for _, id := range ids {
+		t, err := readTask(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func readReceipt(ctx context.Context, tx *sql.Tx, requestID string) (task.Receipt, task.Hash, error) {
 	rec := task.Receipt{RequestID: requestID}
 	var digest []byte

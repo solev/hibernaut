@@ -36,6 +36,11 @@ func Run(t *testing.T, open func(t *testing.T) taskstore.Store) {
 		{"FreezeRows", freezeRows},
 		{"Unfinished", unfinished},
 		{"TasksAndRetire", tasksAndRetire},
+		{"FollowUpAfterRemove", followUpAfterRemove},
+		{"RetireLive", retireLive},
+		{"RequestsAfterRetire", requestsAfterRetire},
+		{"Removing", removing},
+		{"RequestIDConflict", requestIDConflict},
 		{"Daemon", daemon},
 		{"Missing", missing},
 		{"Views", views},
@@ -287,6 +292,7 @@ func tasksAndRetire(t *testing.T, s taskstore.Store) {
 		}
 		ids = append(ids, rec.Run.Task)
 	}
+	finish(t, s, task.RunID{Task: ids[1], N: 1}, "sbx1")
 	begun := task.Removal{Why: "requested", Request: 7, At: t0.Add(time.Hour)}
 	if err := s.Retire(ctx, ids[1], begun); err != nil {
 		t.Fatal(err)
