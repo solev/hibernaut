@@ -26,6 +26,8 @@ func Run(t *testing.T, open func(t *testing.T) taskstore.Store) {
 	}{
 		{"SubmitRetry", submitRetry},
 		{"SubmitInputs", submitInputs},
+		{"InputLimit", inputLimit},
+		{"InputLimitNew", inputLimitNew},
 		{"QueueFull", queueFull},
 		{"AppendOrder", appendOrder},
 		{"AppendRetry", appendRetry},

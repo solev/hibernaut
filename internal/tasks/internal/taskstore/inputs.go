@@ -18,6 +18,18 @@ type stagedInput struct {
 	hash task.Hash
 }
 
+type inputBudget int64
+
+func (b *inputBudget) take(sp task.Spec) error {
+	for _, f := range sp.Inputs {
+		if f.Size > int64(*b) {
+			return task.ErrInputFull
+		}
+		*b -= inputBudget(f.Size)
+	}
+	return nil
+}
+
 func stageInputs(d statefile.Dir, root *os.Root, owner statefile.Owner, sp *task.Spec,
 	inputs io.Reader) (staged []stagedInput, err error) {
 	defer func() {

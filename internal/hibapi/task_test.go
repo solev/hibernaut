@@ -2,6 +2,7 @@ package hibapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,9 @@ func TestTaskRunWire(t *testing.T) {
 }
 
 func TestCodes(t *testing.T) {
+	if c := hibapi.CodeOf(fmt.Errorf("submit: %w", task.ErrInputFull)); c != hibapi.CodeInputFull || c.Retryable() {
+		t.Errorf("input full is %q, retryable %v, want INPUT_FULL and false", c, c.Retryable())
+	}
 	if c := hibapi.CodeOf(task.ErrQueueFull); c != hibapi.CodeQueueFull || !c.Retryable() {
 		t.Errorf("queue full is %q, retryable %v", c, c.Retryable())
 	}

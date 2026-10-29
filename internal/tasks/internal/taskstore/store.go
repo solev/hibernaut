@@ -64,7 +64,8 @@ type Store interface {
 	//
 	// The same RequestID with the same digest returns the first receipt, with a different one
 	// task.ErrConflict. It fails with task.ErrQueueFull when task.MaxQueuedRuns runs are queued,
-	// and for a follow-up with task.ErrNoTask or task.ErrRunLive.
+	// task.ErrInputFull when the task's inputs across its runs would exceed task.MaxInputBytes,
+	// and for a follow-up with task.ErrNoTask or task.ErrRunLive. Receipt replays precede limits.
 	Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error)
 	// Receipt returns the answer a submission got, or ErrNoReceipt.
 	Receipt(ctx context.Context, requestID string) (task.Receipt, error)
