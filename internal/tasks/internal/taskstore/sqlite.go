@@ -2,6 +2,7 @@ package taskstore
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/url"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -157,6 +159,19 @@ func Open(ctx context.Context, dir statefile.Dir) (*SQLite, error) {
 	if err := privateFile(fi, owner); err != nil {
 		return nil, err
 	}
+	// SQLite can remove a stale WAL beside an empty database before trying to open it.
+	for _, name := range []string{DB + "-wal", DB + "-shm"} {
+		fi, err := root.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := privateFile(fi, owner); err != nil {
+			return nil, err
+		}
+	}
 	for _, name := range []string{Files, Files + "/staging", Files + "/blobs", Files + "/logs"} {
 		if err := dir.EnsureDirectory(root, owner, name); err != nil {
 			return nil, err
@@ -231,7 +246,7 @@ func (s *SQLite) Append(ctx context.Context, c task.Checkpoint) error {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints (task, n, seq, step, kind, at, by,
 		body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, c.Run.Task, c.Run.N, c.Seq, c.Step(), c.Kind(),
-		c.At.UnixMilli(), c.By, body); err != nil {
+		c.At.UnixMilli(), c.By, string(body)); err != nil {
 		return busy(err)
 	}
 	return busy(tx.Commit())
@@ -296,76 +311,278 @@ func busy(err error) error {
 // receipt, and renames the staged inputs into Files/blobs before it commits. A crash after the
 // renames and before the commit leaves blobs no row references, which cleanup removes.
 func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error) {
-	return task.Receipt{}, errors.New("taskstore: Submit is not implemented")
-	// TODO:
-	//   for each input: CheckInputName, copy Size bytes into an owned staging file while hashing,
-	//   fsync it, and fill sub.Spec.Inputs[i].Hash
-	//   digest := sub.Digest()
-	//   BEGIN IMMEDIATE
-	//     a receipt for sub.RequestID: same digest returns it, else task.ErrConflict
-	//     count Unfinished runs that are Queued, as task.Run derives it: refuse at MaxQueuedRuns
-	//     a follow-up: the task exists and isn't removed, and its last run has ended
-	//     a new task: task.NewID until the insert doesn't collide
-	//     INSERT tasks, runs, inputs, receipts
-	//     rename each staged file to Files/blobs/HASH, a no-op when the blob is there, fsync dir
-	//   COMMIT
+	sub.Spec = cloneSpec(sub.Spec)
+	sub.At = storedTime(sub.At)
+	root, owner, err := s.dir.Root()
+	if err != nil {
+		return task.Receipt{}, err
+	}
+	defer root.Close()
+	staged, err := stageInputs(s.dir, root, owner, &sub.Spec, inputs)
+	if err != nil {
+		return task.Receipt{}, err
+	}
+	defer func() {
+		for _, f := range staged {
+			root.Remove(f.name)
+		}
+	}()
+	digest := sub.Digest()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return task.Receipt{}, busy(err)
+	}
+	defer tx.Rollback()
+	if rec, old, err := readReceipt(ctx, tx, sub.RequestID); err == nil {
+		if old != digest {
+			return task.Receipt{}, task.ErrConflict
+		}
+		return rec, nil
+	} else if !errors.Is(err, ErrNoReceipt) {
+		return task.Receipt{}, err
+	}
+	runs, err := readUnfinished(ctx, tx)
+	if err != nil {
+		return task.Receipt{}, err
+	}
+	queued := 0
+	for _, r := range runs {
+		if r.Queued() {
+			queued++
+		}
+	}
+	if queued >= task.MaxQueuedRuns {
+		return task.Receipt{}, task.ErrQueueFull
+	}
+	id := task.RunID{Task: sub.Task, N: 1}
+	if sub.Task != "" {
+		t, err := readTask(ctx, tx, sub.Task)
+		if err != nil {
+			return task.Receipt{}, err
+		}
+		if t.Removal != nil {
+			return task.Receipt{}, task.ErrNoTask
+		}
+		if _, live := t.Live(); live {
+			return task.Receipt{}, task.ErrRunLive
+		}
+		id.N = len(t.Runs) + 1
+	} else {
+		for {
+			id.Task, err = task.NewID(rand.Reader)
+			if err != nil {
+				return task.Receipt{}, err
+			}
+			result, err := tx.ExecContext(ctx, `INSERT INTO tasks
+				(id, owner, actor, source, created_at) VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT (id) DO NOTHING`, id.Task, sub.Actor.Owner, sub.Actor.Name,
+				sub.Actor.Source, sub.At.UnixMilli())
+			if err != nil {
+				return task.Receipt{}, busy(err)
+			}
+			n, err := result.RowsAffected()
+			if err != nil {
+				return task.Receipt{}, err
+			}
+			if n == 1 {
+				break
+			}
+		}
+	}
+	raw, err := json.Marshal(sub.Spec)
+	if err != nil {
+		return task.Receipt{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs
+		(task, n, spec, actor, source, submitted_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id.Task, id.N, string(raw), sub.Actor.Name, sub.Actor.Source, sub.At.UnixMilli()); err != nil {
+		return task.Receipt{}, busy(err)
+	}
+	for i, f := range sub.Spec.Inputs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO inputs
+			(task, n, pos, name, size, hash) VALUES (?, ?, ?, ?, ?, ?)`,
+			id.Task, id.N, i, f.Name, f.Size, f.Hash[:]); err != nil {
+			return task.Receipt{}, busy(err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO receipts (request_id, digest, task, n, at)
+		VALUES (?, ?, ?, ?, ?)`, sub.RequestID, digest[:], id.Task, id.N,
+		sub.At.UnixMilli()); err != nil {
+		return task.Receipt{}, busy(err)
+	}
+	if err := publishInputs(root, owner, staged); err != nil {
+		return task.Receipt{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return task.Receipt{}, busy(err)
+	}
+	return task.Receipt{RequestID: sub.RequestID, Run: id, At: sub.At}, nil
 }
 
 // Unfinished reads every run with no keep result, oldest first, as merged views.
 func (s *SQLite) Unfinished(ctx context.Context) ([]task.Run, error) {
-	return nil, errors.New("taskstore: Unfinished is not implemented")
-	// TODO:
-	//   SELECT task, n FROM runs r WHERE NOT EXISTS (SELECT 1 FROM checkpoints c WHERE
-	//   c.task = r.task AND c.n = r.n AND c.step = 'keep' AND c.kind = 'result')
-	//   ORDER BY submitted_at, then view each in one read transaction
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, busy(err)
+	}
+	defer tx.Rollback()
+	return readUnfinished(ctx, tx)
 }
 
 func (s *SQLite) Receipt(ctx context.Context, requestID string) (task.Receipt, error) {
-	return task.Receipt{}, errors.New("taskstore: Receipt is not implemented")
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return task.Receipt{}, busy(err)
+	}
+	defer tx.Rollback()
+	rec, _, err := readReceipt(ctx, tx, requestID)
+	return rec, err
 }
 
 func (s *SQLite) Request(ctx context.Context, q NewRequest) (task.Request, error) {
-	return task.Request{}, errors.New("taskstore: Request is not implemented")
-	// TODO: refuse an invalid q.Kind, BEGIN IMMEDIATE, return the row for q.RequestID if there
-	// is one, find the task's live run as Task().Live derives it, ErrNotLive unless an rm,
-	// INSERT, COMMIT
+	if !q.Kind.Valid() {
+		return task.Request{}, fmt.Errorf("unknown request kind %q", q.Kind)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return task.Request{}, busy(err)
+	}
+	defer tx.Rollback()
+	if q.RequestID != "" {
+		var r task.Request
+		var at int64
+		err := tx.QueryRowContext(ctx, `SELECT r.id, r.task, r.n, r.kind, r.at,
+			r.actor, r.source, t.owner FROM requests r JOIN tasks t ON t.id = r.task
+			WHERE r.request_id = ?`, q.RequestID).
+			Scan(&r.ID, &r.Task, &r.Run, &r.Kind, &at, &r.Actor.Name, &r.Actor.Source, &r.Actor.Owner)
+		if err == nil {
+			r.At = time.UnixMilli(at).UTC()
+			return r, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return task.Request{}, busy(err)
+		}
+	}
+	t, err := readTask(ctx, tx, q.Task)
+	if err != nil {
+		return task.Request{}, err
+	}
+	n := 0
+	if live, ok := t.Live(); ok {
+		n = live.ID.N
+	} else if q.Kind != task.RequestRemove {
+		return task.Request{}, ErrNotLive
+	}
+	var requestID any
+	if q.RequestID != "" {
+		requestID = q.RequestID
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO requests
+		(request_id, task, n, kind, at, actor, source) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		requestID, q.Task, n, q.Kind, q.At.UnixMilli(), q.Actor.Name, q.Actor.Source)
+	if err != nil {
+		return task.Request{}, busy(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return task.Request{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return task.Request{}, busy(err)
+	}
+	actor := q.Actor
+	actor.Owner = t.Actor.Owner
+	return task.Request{ID: id, Task: q.Task, Run: n, Kind: q.Kind,
+		At: storedTime(q.At), Actor: actor}, nil
 }
 
 func (s *SQLite) Task(ctx context.Context, id task.ID) (task.Task, error) {
-	return task.Task{}, errors.New("taskstore: Task is not implemented")
-	// TODO: one read transaction over tasks, runs, inputs, checkpoints, requests and the latest
-	// freeze, merged the way Memory.view merges them
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return task.Task{}, busy(err)
+	}
+	defer tx.Rollback()
+	return readTask(ctx, tx, id)
 }
 
 func (s *SQLite) Tasks(ctx context.Context) ([]task.Task, error) {
-	return nil, errors.New("taskstore: Tasks is not implemented")
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, busy(err)
+	}
+	defer tx.Rollback()
+	return readTasks(ctx, tx)
 }
 
 func (s *SQLite) Run(ctx context.Context, id task.RunID) (task.Run, error) {
-	return task.Run{}, errors.New("taskstore: Run is not implemented")
+	t, err := s.Task(ctx, id.Task)
+	if errors.Is(err, task.ErrNoTask) {
+		return task.Run{}, ErrNoRun
+	}
+	if err != nil {
+		return task.Run{}, err
+	}
+	if id.N < 1 || id.N > len(t.Runs) {
+		return task.Run{}, ErrNoRun
+	}
+	return t.Runs[id.N-1], nil
 }
 
 func (s *SQLite) RecordFreeze(ctx context.Context, id task.ID, f task.Freeze) error {
-	return errors.New("taskstore: RecordFreeze is not implemented")
-	// TODO: INSERT INTO freezes SELECT ?, COALESCE(MAX(seq), 0) + 1, ... WHERE task = ?
+	_, err := s.db.ExecContext(ctx, `INSERT INTO freezes (task, seq, at, frozen, detail, by)
+		SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ? FROM freezes WHERE task = ?`,
+		id, f.At.UnixMilli(), f.Frozen, f.Detail, f.By, id)
+	return busy(err)
 }
 
 func (s *SQLite) Retire(ctx context.Context, id task.ID, r task.Removal) error {
-	return errors.New("taskstore: Retire is not implemented")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return busy(err)
+	}
+	defer tx.Rollback()
+	t, err := readTask(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if t.Removal != nil && r.Done.IsZero() {
+		return nil
+	}
+	var done any
+	if !r.Done.IsZero() {
+		done = r.Done.UnixMilli()
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE tasks SET removal_why = ?, removal_request = ?,
+		removal_at = ?, removed_at = ? WHERE id = ?`, r.Why, r.Request, r.At.UnixMilli(), done, id)
+	if err != nil {
+		return busy(err)
+	}
+	return busy(tx.Commit())
 }
 
 func (s *SQLite) StartDaemon(ctx context.Context, inst task.Instance, at time.Time) error {
-	return errors.New("taskstore: StartDaemon is not implemented")
-	// TODO: INSERT INTO daemon VALUES (1, ?, ?) ON CONFLICT (one) DO UPDATE
+	_, err := s.db.ExecContext(ctx, `INSERT INTO daemon (one, instance, started_at) VALUES (1, ?, ?)
+		ON CONFLICT (one) DO UPDATE SET instance = excluded.instance,
+		started_at = excluded.started_at`, inst, at.UnixMilli())
+	return busy(err)
 }
 
 func (s *SQLite) Daemon(ctx context.Context) (task.Instance, error) {
-	return "", errors.New("taskstore: Daemon is not implemented")
+	var inst task.Instance
+	err := s.db.QueryRowContext(ctx, `SELECT instance FROM daemon WHERE one = 1`).Scan(&inst)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return inst, busy(err)
 }
 
 func (s *SQLite) Blob(h task.Hash) (io.ReadCloser, error) {
-	return nil, errors.New("taskstore: Blob is not implemented")
-	// TODO: open Files/blobs/HASH through the state directory's os.Root, refusing symlinks
+	root, owner, err := s.dir.Root()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return openPrivate(root, owner, Files+"/blobs/"+h.String(), os.O_RDONLY)
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
