@@ -627,7 +627,8 @@ under `/var/lib/hib-task/RUN`.
 - **Output over 8 MiB.** `runner look` prints a few lines. `runner log` prints at most
   `MaxLogChunk`, 1 MiB, from a byte offset. Collect stops at `MaxLogBytes`, 50 MiB, per run, summed
   over the stages in order. The executor's copy loop and `FileLogs.Append` both enforce the sum.
-  Collect records how many bytes the run kept and how many it dropped.
+  Collect counts kept bytes. `Dropped` counts excess bytes the guest reports while its machine runs.
+  It can understate when the machine is not running at collect.
 - **Lost replies.** Launch is idempotent by unit name and by a start marker made with `mkdir`.
   A second start exits 75 without acting. The executor launches only when a look says
   `NotStarted`, ignores `ErrConnectionLost` and judges the launch by the next look, never the
