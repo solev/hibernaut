@@ -496,10 +496,11 @@ through a field.
 
 **Freeze before pause.** `Owner.Pause` reads the label. For a task machine it takes
 `task-machine-TASK.lock` and reads the machine again, since another process may have paused it
-meanwhile. If it is still running it runs `systemctl freeze hib-task.slice` and records a freeze row
-saying whether the freeze held, then pauses. A failed freeze still pauses. The row says unfrozen, so
-the run is held until a rescue, which is TASK.md's hung guest case. A lost row reads as the row
-before it, which never says frozen while the stage runs, so it too fails toward held. It covers:
+meanwhile. If it is still running it writes 1 to the slice's `cgroup.freeze`, waits for `frozen 1`
+in `cgroup.events` and records whether the freeze held, then pauses. A failed freeze still pauses.
+The row says unfrozen, so the run is held until a rescue, which is TASK.md's hung guest case.
+A lost row reads as the row before it, which never says frozen while the stage runs, so it too
+fails toward held. It covers:
 
 - `pauseOrRemove`, through `Manager.Pause` (`machines.go:356`), once `Tasks.Check` allows it
 - `pauseMachine`, so pause-all with links on and the leak scan (`hibd.go:506`)
@@ -517,10 +518,13 @@ stop. Covered paths:
 - link `Wake` in the proxy (`wake.go:48`)
 - the daemon's own `ResumeTask`
 
-A wake never thaws. Only the executor thaws, through `Owner.Thaw`, which records unfrozen
-before it thaws, so a freeze row never says frozen while the stage runs. Under the lock `Thaw`
-checks again that no stop is recorded or due and refuses with `ErrStopping` otherwise, so a
-deadline that passes between the executor's look and the thaw never lets the stage run.
+A wake never thaws. Before a launch or while a stage runs, only the executor thaws, through
+`Owner.Thaw`, which records unfrozen first. Under the lock `Thaw` checks again that no stop is
+recorded or due and refuses with `ErrStopping` otherwise. A deadline that passes between the
+executor's look and the thaw never lets the stage run. The one exception is `runner kill`, after
+a recorded stop. It sends SIGKILL before thawing so `ExecStopPost` can write the exit record,
+without letting the stage act. Its `StopResult` clears the live stage, so `AccessOf` and
+`DecidePaused` never act on the stale frozen row.
 
 **Pauses hibd doesn't make.** E2B's timeout and an orchestrator stop run no hibd code, so they
 write no freeze row. The latest row then says unfrozen and the run is held: `task show` says
@@ -633,8 +637,8 @@ under `/var/lib/hib-task/RUN`.
 - **Exec races a pause.** `ErrNotRunning` and `ErrConnectionLost` mean look again after a poll.
   Exec never wakes, and `collect` never resumes a paused or gone machine.
 
-`runner look` reports the marker, the exit record, the log size and `systemctl show` for the
-unit and the slice, including `FreezerState`. `taskguest.Seen.Verdict()` turns that into
+`runner look` reports the marker, the exit record, the log size, the unit's `systemctl show`
+properties and the `frozen` line of its `cgroup.events`. `taskguest.Seen.Verdict()` turns that into
 `NotStarted`, `Running`, `Exited` or `Vanished`.
 
 ### 5. Admission atomicity
@@ -803,8 +807,10 @@ promises, and these tests hold `runner.sh` to it.
      unit timed out 30 s later and no exit record was written. With the thaw the unit ended
      14 ms after the kill, and its exit record said `result=signal` and `status=KILL`.
    - Done. A stage launched into a frozen slice ran nothing until the thaw, while systemd called
-     it active. `Launch` now refuses a frozen or transitioning slice without thawing it. Only the
-     executor's guarded thaw permits another launch.
+     it active. `Launch` refuses a frozen or transitioning slice with the reserved `ExitFrozen`
+     code, without thawing it. The executor calls `Owner.Thaw` on that code and returns an error
+     to re-enter through the stop and deadline boundary before retrying the launch. `Owner.Thaw`
+     alone permits a pre-launch thaw, after its locked stop checks and unfrozen record.
 3. **A frozen unit across a memory pause.** The spike froze the slice, then ran `hib pause` and
    an ssh wake 30 s later. The slice still said `frozen 1`. Its counter held while a control
    counter outside the slice ran on, and it resumed on thaw.
