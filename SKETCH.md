@@ -155,7 +155,7 @@ func (x *executor) main(ctx context.Context) error {
 			return err
 		}
 	}
-	return x.ready(ctx)
+	return nil
 }
 ```
 
@@ -596,13 +596,13 @@ fails if the package imports engine, machines or anything that could make an out
 
 The intent comes first. The grant records `MachineIntent` before E2B is asked. The planned name
 is the task ID and the labels are a pure function of the run, so the intent row alone tells a
-restarted daemon what to look for. `makeMachine` then looks before it acts:
+restarted daemon what to look for. `makeMachine` checks `boundary`, then looks before it acts:
 
 ```go
 m, found, err := x.cfg.Machines.Find(ctx, x.id.Task) // by name, then the hib.task label
 switch {
 case found && m.State == engine.Running: // adopt what a crashed daemon created
-case found:                             // DecidePaused permits resume, or wait a poll
+case found:                              // resume through Machines.Resume and Owner's guard
 case x.r.Kept != "":                     // the kept machine is gone: lost
 default:                                 // create, under hibd.lock and room.lock
 }
@@ -640,10 +640,13 @@ under `/var/lib/hib-task/RUN`.
 - **Exec races a pause.** `ErrNotRunning` and `ErrConnectionLost` mean look again after a poll.
   Exec never wakes, and `collect` never resumes a paused or gone machine.
 - **Main-line readiness.** Every pass through `upload`, a stage launch or `await` checks
-  `boundary`. A paused machine goes through `DecidePaused`; a recorded freeze goes through
-  `Owner.Thaw` before exec. A held machine or a full room waits a poll without an error log.
-  A successful resume and thaw continue in the same pass. `upload` checks even with its intent
-  already recorded. The final main-line check precedes the non-interruptible wrap-up.
+  `boundary`. A paused machine with a live stage goes through `DecidePaused`. With no live
+  stage, `Machines.Resume` and Owner's guard apply `AccessOf`, which permits the daemon's wake.
+  A recorded freeze goes through `Owner.Thaw` before exec. A held machine or a full room waits
+  a poll without an error log. A successful resume and thaw continue in the same pass.
+  `upload` checks even with its intent already recorded. The main line returns after the last
+  stage, without another boundary that could turn its durable exit into an early stop.
+  Wrap-up cannot be interrupted.
 
 `runner look` reports the marker, the exit record, the log size, the unit's `systemctl show`
 properties and the `frozen` line of its `cgroup.events`. `taskguest.Seen.Verdict()` turns that into
@@ -816,9 +819,10 @@ promises, and these tests hold `runner.sh` to it.
      14 ms after the kill, and its exit record said `result=signal` and `status=KILL`.
    - Done. A stage launched into a frozen slice ran nothing until the thaw, while systemd called
      it active. `Launch` refuses a frozen or transitioning slice with the reserved `ExitFrozen`
-     code, without thawing it. Before exec the executor resolves a paused machine through
-     `DecidePaused` and a recorded freeze through `Owner.Thaw`. The refusal is the backstop for
-     a freeze not yet recorded. On that code the executor calls `Owner.Thaw` and re-enters
+     code, without thawing it. Before exec the executor asks `DecidePaused` only while a stage
+     is live. With no live stage, it resumes through `Machines.Resume` and Owner's `AccessOf`
+     guard. A recorded freeze thaws through `Owner.Thaw`. The refusal is the backstop for a
+     freeze not yet recorded. On that code the executor calls `Owner.Thaw` and re-enters
      through the stop and deadline boundary. Only `Owner.Thaw` permits a pre-launch thaw,
      after its locked stop checks and unfrozen record.
 3. **A frozen unit across a memory pause.** The spike froze the slice, then ran `hib pause` and
