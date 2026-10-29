@@ -45,6 +45,8 @@ type fakeE2B struct {
 	offsets    []string
 	redirectTo string
 	envd       http.Handler
+	uploads    []uploadedFile
+	fileRead   chan struct{}
 	// refusals are what the next connects answer, one each, before connects resume machines
 	// again.
 	refusals []refusal
@@ -55,6 +57,11 @@ type fakeE2B struct {
 type refusal struct {
 	status int
 	body   map[string]any
+}
+
+type uploadedFile struct {
+	path, user string
+	body       []byte
 }
 
 // refuseConnect makes the next connect answer status with E2B's error body. An empty
@@ -74,6 +81,7 @@ func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
 
 	envdMux := http.NewServeMux()
 	envdMux.Handle(processconnect.NewProcessHandler(&fakeEnvd{t: t}))
+	envdMux.HandleFunc("POST /files", f.serveFiles)
 	envdMux.HandleFunc("/", f.serveWebSocket)
 
 	envdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +296,344 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (f *fakeE2B) serveFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("E2b-Sandbox-Id") != "aaaaaaaaaaaaaaaaaaaa" ||
+		r.Header.Get("E2b-Sandbox-Port") != "49983" || r.Header.Get("X-Access-Token") != envdToken {
+		f.t.Error("upload has incorrect routing or access token headers")
+		http.Error(w, "bad headers", http.StatusForbidden)
+		return
+	}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		f.t.Error(err)
+		return
+	}
+	part, err := mr.NextPart()
+	if err != nil {
+		f.t.Error(err)
+		return
+	}
+	if part.FormName() != "file" || part.FileName() == "" {
+		f.t.Errorf("multipart part = %q, filename %q", part.FormName(), part.FileName())
+	}
+	first := make([]byte, 1)
+	n, err := part.Read(first)
+	if err != nil && err != io.EOF {
+		f.t.Error(err)
+		return
+	}
+	f.mu.Lock()
+	if f.fileRead != nil {
+		close(f.fileRead)
+		f.fileRead = nil
+	}
+	f.mu.Unlock()
+	body, err := io.ReadAll(part)
+	if err != nil {
+		f.t.Error(err)
+		return
+	}
+	if _, err := mr.NextPart(); err != io.EOF {
+		f.t.Errorf("next multipart part = %v, want EOF", err)
+	}
+	f.mu.Lock()
+	f.uploads = append(f.uploads, uploadedFile{
+		path: r.URL.Query().Get("path"), user: r.URL.Query().Get("username"),
+		body: append(first[:n], body...),
+	})
+	f.mu.Unlock()
+	writeJSON(w, http.StatusOK, []any{})
+}
+
+func TestUploadStreamsFilesAndReopensOnRetry(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	received := make(chan struct{})
+	f.fileRead = received
+	payload := strings.Repeat("streamed", 16<<10)
+	var opened, closed atomic.Int32
+	files := []engine.File{
+		{
+			Path: "/root/new folder/a&b?prompt.txt", Size: int64(len(payload)),
+			Open: func() (io.ReadCloser, error) {
+				attempt := opened.Add(1)
+				r, w := io.Pipe()
+				go func() {
+					_, err := io.WriteString(w, payload[:64<<10])
+					if err == nil && attempt == 1 {
+						select {
+						case <-received:
+						case <-ctx.Done():
+							err = errors.New("Upload buffered the file before envd read its first byte")
+						}
+					}
+					if err == nil {
+						_, err = io.WriteString(w, payload[64<<10:])
+					}
+					_ = w.CloseWithError(err)
+				}()
+				return &trackedUploadReader{ReadCloser: r, closed: &closed}, nil
+			},
+		},
+		{
+			Path: "/root/small", Size: 5,
+			Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("small")), nil },
+		},
+		{
+			Path: "/root/empty", Size: 0,
+			Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("")), nil },
+		},
+	}
+	for range 2 {
+		if err := e.Upload(ctx, "aaaaaaaaaaaaaaaaaaaa", "root", files); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opened.Load() != 2 || closed.Load() != 2 {
+		t.Errorf("Open called %d times, Close called %d times, want 2 each", opened.Load(), closed.Load())
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.uploads) != 6 {
+		t.Fatalf("uploads = %d, want 6", len(f.uploads))
+	}
+	for i, got := range f.uploads {
+		want := []string{payload, "small", ""}[i%3]
+		if got.path != files[i%3].Path || got.user != "root" || string(got.body) != want {
+			t.Errorf("upload %d path=%q user=%q bytes=%d, want path=%q root bytes=%d",
+				i, got.path, got.user, len(got.body), files[i%3].Path, len(want))
+		}
+	}
+}
+
+type trackedUploadReader struct {
+	io.ReadCloser
+	closed *atomic.Int32
+}
+
+func (r *trackedUploadReader) Close() error {
+	r.closed.Add(1)
+	return r.ReadCloser.Close()
+}
+
+func TestUploadLifecycleErrors(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "paused", nil)
+	files := []engine.File{{
+		Path: "/root/file", Size: 1,
+		Open: func() (io.ReadCloser, error) {
+			t.Error("Upload opened a file for a machine that is not running")
+			return io.NopCloser(strings.NewReader("x")), nil
+		},
+	}}
+	for id, want := range map[string]error{
+		"aaaaaaaaaaaaaaaaaaaa": engine.ErrNotRunning, "missing": engine.ErrNotFound,
+	} {
+		if err := e.Upload(t.Context(), id, "root", files); !errors.Is(err, want) {
+			t.Errorf("Upload(%s) = %v, want %v", id, err, want)
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.requests {
+		if r.Method != http.MethodGet {
+			t.Errorf("Upload changed machine state with %s %s", r.Method, r.URL)
+		}
+	}
+}
+
+func TestUploadConnectionCutAndRetry(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := make([]byte, 1024)
+		if _, err := io.ReadFull(r.Body, prefix); err != nil {
+			t.Error(err)
+		}
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.Close()
+	})
+	payload := strings.Repeat("x", 8<<20)
+	var opened, closed atomic.Int32
+	files := []engine.File{{
+		Path: "/root/file", Size: int64(len(payload)),
+		Open: func() (io.ReadCloser, error) {
+			opened.Add(1)
+			return &trackedUploadReader{ReadCloser: io.NopCloser(strings.NewReader(payload)), closed: &closed}, nil
+		},
+	}}
+	if err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", files); !errors.Is(err, engine.ErrConnectionLost) {
+		t.Fatalf("Upload cut mid-body = %v, want ErrConnectionLost", err)
+	}
+	f.mu.Lock()
+	f.envd = nil
+	f.mu.Unlock()
+	if err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", files); err != nil {
+		t.Fatal(err)
+	}
+	if opened.Load() != 2 || closed.Load() != 2 {
+		t.Errorf("Open called %d times, Close called %d times, want 2 each", opened.Load(), closed.Load())
+	}
+}
+
+func TestUploadRejectsHTTPFailuresAndRedirects(t *testing.T) {
+	for _, status := range []int{http.StatusFound, http.StatusForbidden, http.StatusRequestEntityTooLarge, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			f, e := newFakeE2B(t)
+			f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("Upload followed a redirect")
+			}))
+			defer target.Close()
+			f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Location", target.URL)
+				http.Error(w, "upload refused", status)
+			})
+			err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
+				Path: "/root/file", Size: 1,
+				Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("x")), nil },
+			}})
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprint(status)) {
+				t.Errorf("Upload = %v, want HTTP status %d", err, status)
+			}
+		})
+	}
+}
+
+func TestUploadSourceErrors(t *testing.T) {
+	for _, where := range []string{"open", "read", "close"} {
+		t.Run(where, func(t *testing.T) {
+			f, e := newFakeE2B(t)
+			f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+			f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusOK)
+			})
+			boom := errors.New("source " + where + " failed")
+			var closed atomic.Int32
+			err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
+				Path: "/root/file", Size: 1,
+				Open: func() (io.ReadCloser, error) {
+					if where == "open" {
+						return nil, boom
+					}
+					return &failingUploadReader{err: boom, where: where, closed: &closed}, nil
+				},
+			}})
+			if !errors.Is(err, boom) {
+				t.Errorf("Upload = %v, want %v", err, boom)
+			}
+			if where != "open" && closed.Load() != 1 {
+				t.Errorf("Close called %d times, want 1", closed.Load())
+			}
+		})
+	}
+}
+
+type failingUploadReader struct {
+	err    error
+	where  string
+	closed *atomic.Int32
+}
+
+func (r *failingUploadReader) Read([]byte) (int, error) {
+	if r.where == "read" {
+		return 0, r.err
+	}
+	return 0, io.EOF
+}
+
+func (r *failingUploadReader) Close() error {
+	r.closed.Add(1)
+	if r.where == "close" {
+		return r.err
+	}
+	return nil
+}
+
+func TestUploadMissingToken(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	delete(f.sandboxes["aaaaaaaaaaaaaaaaaaaa"], "envdAccessToken")
+	err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
+		Path: "/root/file",
+		Open: func() (io.ReadCloser, error) {
+			t.Error("Upload opened a file without an access token")
+			return io.NopCloser(strings.NewReader("")), nil
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "no envd access token") {
+		t.Errorf("Upload = %v, want a missing-token error", err)
+	}
+}
+
+func TestUploadResponseCut(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte("x"))
+	})
+	err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
+		Path: "/root/file", Size: 1,
+		Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("x")), nil },
+	}})
+	if !errors.Is(err, engine.ErrConnectionLost) {
+		t.Errorf("Upload with a cut response = %v, want ErrConnectionLost", err)
+	}
+}
+
+func TestUploadCancellationClosesSource(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.CopyN(io.Discard, r.Body, 1024); err != nil {
+			t.Error(err)
+		}
+		cancel()
+		_, _ = io.Copy(io.Discard, r.Body)
+	})
+	var closed atomic.Int32
+	r, w := io.Pipe()
+	defer w.Close()
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		_, _ = io.WriteString(w, strings.Repeat("x", 4096))
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- e.Upload(ctx, "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
+			Path: "/root/file", Size: 8192,
+			Open: func() (io.ReadCloser, error) {
+				return &trackedUploadReader{ReadCloser: r, closed: &closed}, nil
+			},
+		}})
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Upload = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled Upload did not close its blocked source")
+	}
+	<-sent
+	if closed.Load() != 1 {
+		t.Errorf("Close called %d times, want 1", closed.Load())
+	}
 }
 
 type fakeEnvd struct {
