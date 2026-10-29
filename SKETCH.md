@@ -760,9 +760,12 @@ calls in flight.
 `TestNoCopyOfATaskMachine`, `TestCheck`, `TestThawRefusesAStoppingRun` and `TestTimeoutFloor`.
 `internal/tasks/tasks_test.go` covers `TestOneDaemon` and `TestDaemonNeedsGuard`.
 
-**The store** has one contract, `storetest.Run`, run on `Memory` in every build and on SQLite in
-a temp directory under the `sqlite` tag (`TestSQLiteContract`, `TestOpenRefusesSymlinks`) until
-M13a adds the driver. `TestNoOutsideCalls` checks the package's imports.
+**The store** has one contract, `storetest.Run`, run on `Memory` and on SQLite in a temp directory
+(`TestMemoryContract`, `TestSQLiteContract`). `storetest.RunLogs` is the same for `MemoryLogs`
+and `FileLogs`. `TestOpenRefusesSymlinks`, `TestSQLiteRefusesLinkedSidecars` and
+`TestFileLogsRefuseSymlinks` check the files the store opens. `TestHostRootStoreStaysTheOwners`
+writes as root on a Linux host and checks every file stays the owner's. `TestNoOutsideCalls`
+checks the package's imports.
 
 **The stage protocol** runs `runner.sh` itself under `sh` in a temp directory, with no E2B and
 no systemd: `TestStageStartsOnce`, `TestExitRecordIsWrittenOnceByItsInvocation`,
@@ -770,31 +773,44 @@ no systemd: `TestStageStartsOnce`, `TestExitRecordIsWrittenOnceByItsInvocation`,
 `TestLaunchKeepsThePromptOutOfArgv` and `TestVerdict`. `guestsim` models what the protocol
 promises, and these tests hold `runner.sh` to it.
 
-### 10. Unverified platform facts
+### 10. Platform facts
 
-| Fact | Where the design depends on it | First spike |
+| Fact | Where the design depends on it | Spike |
 | --- | --- | --- |
-| envd `POST /files` | `Engine.Upload`, the upload step | upload, overwrite, `sha256sum` |
-| systemd PID 1, cgroup v2 freezer | launch, look, freeze, thaw | freeze a unit in a dev machine |
-| a frozen unit survives pause | `AccessOf`, `DecidePaused` | the same, across pause and resume |
-| modernc keeps no-follow and chown | `taskstore.Open` | root opens a user's tasks.db |
-| E2B settles an abandoned create | the duplicate sweep, question 3 | kill a client mid-create |
+| envd `POST /files` | `Engine.Upload`, the upload step | to run: upload, overwrite, `sha256sum` |
+| systemd PID 1, cgroup v2 freezer | launch, look, freeze, thaw | ran in M13a, four changes |
+| a frozen unit survives pause | `AccessOf`, `DecidePaused` | ran in M13a, holds |
+| modernc keeps no-follow and chown | `taskstore.Open` | ran in M13a, holds |
+| E2B settles an abandoned create | the duplicate sweep, question 3 | to run: kill a client |
 
 1. **envd `POST /files`.** The upload step assumes it writes as a given user, makes parent
    folders and replaces existing files. `runner verify` catches a partial or wrong write either
    way. Spike: upload a nested 50 MiB file and a small one as root, upload again over them and
    compare `sha256sum` in the machine.
-2. **systemd and the freezer.** Launch, look, freeze, thaw and kill all assume systemd is PID 1
-   with cgroup v2 in the dev image. Spike, the first to run: `systemd-run` a counter loop into
-   `hib-task.slice`, `systemctl freeze` the slice, read `FreezerState` of the slice and the unit
-   (this pins "frozen" against "frozen-by-parent" in `Seen.Frozen`), thaw it, then freeze and
-   `systemctl kill` it.
-3. **A frozen unit across a memory pause.** The freeze guarantee assumes the cgroup stays frozen
-   after E2B restores memory. Spike: the same counter, frozen, then pause and resume the machine
-   and check the counter didn't move and `FreezerState` still says frozen.
-4. **modernc keeps SQLite's file safety.** `Open` pre-creates only tasks.db and relies on SQLite
-   for -wal and -shm. Spike: the tagged tests with the driver, plus root opening a user-owned
-   tasks.db, checking the owners of -wal and -shm, and a symlinked -wal being refused.
+2. **systemd and the freezer.** The spike ran in a dev machine with systemd 255 and cgroup v2.
+   The dev image has no D-Bus, so `systemctl freeze` and `thaw` fail with "Failed to connect to
+   bus". `systemd-run` and `systemctl kill`, `stop` and `show` work as root over systemd's
+   private socket. Writing 1 to the slice's `cgroup.freeze` froze a counter at once and held
+   across `daemon-reload`, while systemd's `FreezerState` still said `running`. Four changes
+   follow, and they are M13b's first work.
+   - `Freeze` and `Thaw` write the slice's `cgroup.freeze` and wait, bounded, for its
+     `cgroup.events` to say `frozen 1` or `frozen 0`. The slice has no cgroup until a stage has
+     run since boot, and then there is nothing to freeze. `look` reports the `frozen` line of the
+     unit's `cgroup.events`, and `Seen.Frozen` reads it instead of `FreezerState`.
+   - `Launch` passes `--expand-environment=no`. Without it systemd rewrote `$$` and `${HIB_RUN}`
+     in the task's command.
+   - `Kill` thaws after it kills a frozen stage. A kill alone left `ExecStopPost` frozen, the
+     unit timed out 30 s later and no exit record was written. With the thaw the unit ended
+     14 ms after the kill, and its exit record said `result=signal` and `status=KILL`.
+   - A stage launched into a frozen slice ran nothing until the thaw, while systemd called it
+     active. Launch only into a thawed slice.
+3. **A frozen unit across a memory pause.** The spike froze the slice, then ran `hib pause` and
+   an ssh wake 30 s later. The slice still said `frozen 1`. Its counter held while a control
+   counter outside the slice ran on, and it resumed on thaw.
+4. **modernc keeps SQLite's file safety.** The spike ran with modernc.org/sqlite v1.61.0. `Open`
+   checks tasks.db, -wal and -shm itself before SQLite opens them and again after the schema.
+   `TestHostRootStoreStaysTheOwners` passed as root on the Azure host. Every file and directory
+   root made stayed the owner's, and a root-owned tasks.db and a linked -wal were refused.
 5. **E2B and an abandoned create.** The duplicate sweep in question 3 assumes a create whose
    client died either lands or fails within E2B's create timeout. Spike: start a create, kill
    the client, and list labeled machines until the timeout.
@@ -939,10 +955,18 @@ exits for free.
 - Is one `Engine.Get` per live run every 5 s acceptable E2B API load at the `MaxTasks` cap?
 - Should the 7-day keep count from the last run's keep, as `Retire` does, or from the last ssh?
 - Removing a task machine must also drop its link entry, as `pauseOrRemove` does (TODO).
-- The five platform facts in question 10 are risks until their spikes pass.
+- envd uploads and E2B's abandoned create, two of question 10's facts, stay risks until their
+  spikes run.
+- Should the dev image gain D-Bus, so systemd freezes the slice and reports it? That costs an
+  image rebuild and a daemon in every machine. The cgroup writes in question 10 need neither.
 
 ## Next implementation step
 
-M13a: add modernc.org/sqlite, implement `taskstore.Open`, the SQLite store and `FileLogs` until
-`TestSQLiteContract` and `TestOpenRefusesSymlinks` pass without the tag, with the modernc spike,
-while the systemd freezer spike runs in a dev machine.
+M13a is done. The SQLite store and `FileLogs` pass their contracts without a tag, and the
+freezer, pause and modernc spikes ran. M13b starts with question 10's four guest changes, each in
+`taskguest`, `runner.sh` and `guestsim` with a test that fails without it. Then comes the
+executor's log copy loop under the per-run cap. Each `FileLogs.Append` syncs the file and five
+directories, so the loop appends a poll's output at once, not line by line. Both stores' `Submit`
+must also refuse a follow-up once the task's inputs, summed over its runs, would pass
+`MaxInputBytes`. hibd checks one submission at a time, and the refusal needs a `task` error and
+a `hibapi` code.

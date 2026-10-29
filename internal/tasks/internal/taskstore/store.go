@@ -31,6 +31,8 @@ var (
 	// ErrStale means another writer appended to the run first. The caller's view is old, so it
 	// stops acting on the run.
 	ErrStale = errors.New("another writer appended to the run")
+	// ErrLogFull means appending would exceed the per-run output cap.
+	ErrLogFull = errors.New("the run log is full")
 	// ErrBusy means the database stayed locked past the busy timeout. hibd answers BUSY, which
 	// is retryable.
 	ErrBusy = errors.New("the task database is busy")
@@ -106,7 +108,7 @@ type Logs interface {
 	// Size is how many bytes of stage s's output the host has.
 	Size(r task.RunID, s task.Stage) (int64, error)
 	// Append adds data at offset, which must be Size, or it fails with ErrStale. It syncs before
-	// it returns.
+	// it returns. ErrLogFull means the run's stages together would exceed task.MaxLogBytes.
 	Append(r task.RunID, s task.Stage, offset int64, data []byte) error
 	// Open reads stage s's output from offset, for hib task logs.
 	Open(r task.RunID, s task.Stage, offset int64) (io.ReadCloser, error)
