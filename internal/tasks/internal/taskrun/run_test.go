@@ -702,10 +702,9 @@ func TestFrozenLaunchDoesNotThawStoppingRun(t *testing.T) {
 			h.clock.Advance(10 * time.Second)
 			ctx := context.Background()
 			mid := h.machineID(id)
-			if err := h.owner.Pause(ctx, mid); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := h.owner.Resume(ctx, mid, time.Hour); err != nil {
+			argv := taskguest.Freeze()
+			if _, err := h.sim.Exec(ctx, mid, engine.ExecRequest{Cmd: argv[0],
+				Args: argv[1:], User: "root"}); err != nil {
 				t.Fatal(err)
 			}
 			injected := false
@@ -724,18 +723,6 @@ func TestFrozenLaunchDoesNotThawStoppingRun(t *testing.T) {
 					h.clock.Advance(deadline.Sub(h.clock.Now()))
 				} else {
 					h.request(id, task.RequestCancel)
-					r, err = h.store.Run(ctx, id)
-					if err != nil {
-						t.Fatal(err)
-					}
-					stop, due := task.StopFor(r, h.clock.Now())
-					if !due {
-						t.Fatal("the cancel did not require a stop")
-					}
-					if err := h.store.Append(ctx, task.Checkpoint{Run: id, Seq: len(r.Log) + 1,
-						At: h.clock.Now(), By: "cancel", Body: &stop}); err != nil {
-						t.Fatal(err)
-					}
 				}
 				return false
 			}

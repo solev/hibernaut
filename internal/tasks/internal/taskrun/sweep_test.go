@@ -2,6 +2,7 @@ package taskrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/taskguest"
+	"github.com/solev/hibernaut/internal/taskguest/guestsim"
 )
 
 type sweepCall struct {
@@ -229,6 +231,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						injected, restarted, woke, released := false, false, false, false
 						hostFreeze := false
 						var injectedAt int
+						heldPolls := 0
 						var stopStarts []int
 						h.store.FailAppends(func(c task.Checkpoint) error {
 							if _, ok := c.Body.(*task.StopIntent); ok {
@@ -254,7 +257,8 @@ func TestExecBoundarySweep(t *testing.T) {
 							mid := h.machineID(s.id)
 							switch event {
 							case "host-pause", "host-pause-restart":
-								if err := h.owner.Pause(ctx, mid); err != nil {
+								if err := h.owner.Pause(ctx, mid); err != nil &&
+									!errors.Is(err, engine.ErrNotRunning) {
 									t.Error(err)
 								}
 								if event == "host-pause-restart" {
@@ -262,7 +266,8 @@ func TestExecBoundarySweep(t *testing.T) {
 								}
 							case "engine-pause-wake", "engine-pause-rescue", "engine-pause-rm":
 								hostFreeze = h.run(s.id).Frozen()
-								if err := h.sim.Pause(ctx, mid); err != nil {
+								if err := h.sim.Pause(ctx, mid); err != nil &&
+									!errors.Is(err, engine.ErrNotRunning) {
 									t.Error(err)
 								}
 							case "cancel":
@@ -301,12 +306,18 @@ func TestExecBoundarySweep(t *testing.T) {
 										deadline, _ := r.Deadline()
 										h.clock.Advance(deadline.Sub(h.clock.Now()))
 									} else if _, live := r.LiveStage(); live {
-										kind := task.RequestRescue
-										if event == "engine-pause-rm" {
-											kind = task.RequestRemove
+										if r.Ended() || r.Machine != task.MachinePaused || r.Frozen() {
+											t.Error("unfrozen live stage did not stay held at its stop")
 										}
-										h.request(s.id, kind)
-										released = true
+										heldPolls++
+										if heldPolls >= 3 {
+											kind := task.RequestRescue
+											if event == "engine-pause-rm" {
+												kind = task.RequestRemove
+											}
+											h.request(s.id, kind)
+											released = true
+										}
 									}
 								}
 							}
@@ -327,12 +338,14 @@ func TestExecBoundarySweep(t *testing.T) {
 						}
 						if strings.HasPrefix(event, "engine-pause") && hostFreeze {
 							want = task.Succeeded
+							t.Log("earlier host freeze retained; engine pause cannot erase it")
 						}
 						if call.step.WrapUp() {
 							// task.Steps makes wrap-up non-interruptible and collect never wakes.
-							want = outcome(r)
-							if want != task.Succeeded && want != task.NoChanges {
-								t.Errorf("wrap-up changed outcome to %s", want)
+							want = task.Succeeded
+							if call.step == task.StepCollect &&
+								(strings.HasPrefix(event, "host-pause") || strings.HasPrefix(event, "engine-pause")) {
+								want = task.NoChanges
 							}
 							t.Logf("wrap-up observation: %s", sweepResult(h, s.id, passes))
 						}
@@ -359,4 +372,117 @@ func TestExecBoundarySweep(t *testing.T) {
 		})
 	}
 	t.Logf("swept %d injected cases", cases)
+}
+
+func TestLaunchReadinessDoesNotPollOrLog(t *testing.T) {
+	for _, scenario := range []string{"follow-up", "host-pause"} {
+		t.Run(scenario, func(t *testing.T) {
+			h, trace := newSweep(t, scenario == "follow-up")
+			h.stop()
+			var logs []string
+			configure := h.configure
+			h.configure = func(cfg *Config) {
+				configure(cfg)
+				cfg.Logf = func(format string, args ...any) {
+					logs = append(logs, fmt.Sprintf(format, args...))
+				}
+			}
+			nextLaunch := h.clock.Now()
+			h.store.FailAppends(func(c task.Checkpoint) error {
+				switch c.Body.(type) {
+				case *task.StageIntent:
+					if !c.At.Equal(nextLaunch) {
+						t.Errorf("poll before %s intent: %s, want %s", c.Step(), c.At, nextLaunch)
+					}
+				case *task.StageExit:
+					nextLaunch = c.At
+				}
+				return nil
+			})
+			h.sim.Script = func(id task.RunID, stage task.Stage) guestsim.Behavior {
+				if now := h.clock.Now(); !now.Equal(nextLaunch) {
+					t.Errorf("poll before %s start: %s, want %s", stage, now, nextLaunch)
+				}
+				return script(3*time.Second, 0)(id, stage)
+			}
+			paused := false
+			trace.before = func(call sweepCall, _ int) {
+				last, _ := h.run(trace.id).Last()
+				if scenario == "host-pause" && !paused && call.name == "get" &&
+					last.Step() == task.StepSetup && last.Kind() == task.Exit {
+					paused = true
+					if err := h.owner.Pause(context.Background(), h.machineID(trace.id)); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			h.start()
+			startSweep(t, h, trace)
+			for pass := 0; pass < 30 && !h.ended(trace.id)(); pass++ {
+				h.clock.Advance(time.Second)
+				h.settle()
+			}
+			h.stop()
+			if !h.ended(trace.id)() || outcome(h.run(trace.id)) != task.Succeeded {
+				t.Fatal(sweepResult(h, trace.id, 30))
+			}
+			if len(logs) != 0 {
+				t.Errorf("supervisor logged: %s", strings.Join(logs, "\n"))
+			}
+			if scenario == "host-pause" && !paused {
+				t.Error("host pause was never injected")
+			}
+		})
+	}
+}
+
+func TestExecReadinessWaitsForRoom(t *testing.T) {
+	for _, at := range []string{"upload", "launch-setup"} {
+		t.Run(at, func(t *testing.T) {
+			h, trace := newSweep(t, false)
+			h.stop()
+			var logs []string
+			configure := h.configure
+			h.configure = func(cfg *Config) {
+				configure(cfg)
+				cfg.Logf = func(format string, args ...any) {
+					logs = append(logs, fmt.Sprintf(format, args...))
+				}
+			}
+			injected := false
+			trace.before = func(call sweepCall, _ int) {
+				if !injected && call.name == at {
+					injected = true
+					if err := h.owner.Pause(context.Background(), h.machineID(trace.id)); err != nil {
+						t.Error(err)
+					}
+					h.m.Room = 0
+				}
+			}
+			h.start()
+			startSweep(t, h, trace)
+			for range 3 {
+				h.clock.Advance(time.Second)
+				h.settle()
+			}
+			if !injected || h.ended(trace.id)() || h.run(trace.id).Machine != task.MachinePaused {
+				t.Fatal("run did not wait for room with its machine paused")
+			}
+			if n := h.sim.Starts(h.machineID(trace.id), trace.id, task.StageSetup); n != 0 {
+				t.Fatalf("setup started while no room was available: %d", n)
+			}
+			h.m.Room = 4
+			for pass := 0; pass < 30 && !h.ended(trace.id)(); pass++ {
+				h.clock.Advance(time.Second)
+				h.settle()
+			}
+			h.stop()
+			if !h.ended(trace.id)() || outcome(h.run(trace.id)) != task.Succeeded {
+				t.Fatal(sweepResult(h, trace.id, 30))
+			}
+			if len(logs) != 0 {
+				t.Errorf("supervisor logged while waiting for room: %s", strings.Join(logs, "\n"))
+			}
+		})
+	}
 }
