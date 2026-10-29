@@ -341,8 +341,8 @@ func (a *App) tasks(cfg config) *tasks.Tasks {
 }
 
 // taskMachines is Manager as tasks.Machines. Fits, Find, Create and Resume are Manager's task
-// methods. Pause and Remove fence the machine and close its links the way hibd pause and hibd rm
-// do, and e, the Owner, freezes before the pause.
+// methods. Pause fences the kept machine; Remove fences and kills every task machine by ID.
+// Both close links the way hibd pause and hibd rm do, and e, the Owner, freezes before the pause.
 type taskMachines struct {
 	a   *App
 	cfg config
@@ -383,14 +383,29 @@ func (t taskMachines) Pause(ctx context.Context, r task.Run) error {
 
 func (t taskMachines) Remove(ctx context.Context, r task.Run) error {
 	em, found, err := t.m.FindTask(ctx, r)
-	if err != nil || !found {
+	if err != nil {
 		return err
 	}
 	name := string(r.ID.Task)
-	return t.a.pauseFenced(ctx, t.cfg, em.ID, name, "rm", "rm "+name, func(ctx context.Context) error {
-		return t.m.Remove(ctx, name)
-	})
-	// TODO: drop em.ID's link entry as pauseOrRemove does, through one helper both call.
+	if !found {
+		em.ID = r.MachineID()
+	}
+	if em.ID != "" {
+		if err := t.a.pauseFenced(ctx, t.cfg, em.ID, name, "rm", "rm "+name, func(ctx context.Context) error {
+			return t.m.RemoveID(ctx, em.ID)
+		}); err != nil {
+			return fmt.Errorf("removing task machine %s (%s): %w", name, em.ID, err)
+		}
+		// TODO: drop em.ID's link entry as pauseOrRemove does, through one helper both call.
+	}
+	_, found, err = t.m.FindTask(ctx, task.Run{ID: r.ID, Kept: em.ID})
+	if err != nil {
+		return err
+	}
+	if found {
+		return fmt.Errorf("a machine for %s appeared during removal: try again", name)
+	}
+	return nil
 }
 
 var _ tasks.Machines = taskMachines{}

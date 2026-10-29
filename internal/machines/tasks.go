@@ -293,7 +293,3 @@ func (m *Manager) admitTask(ctx context.Context, name string, memoryMB, cpus int
 	}
 	return Admit(reading.host, reading.running, m.taskLim, name, memoryMB, cpus)
 }
-
-// Task keep and removal use hibd's fenced pause and Manager.Remove by name. FindTask removes
-// crash duplicates by ID through Config.Fenced while holding hibd.lock, before a name is safe
-// to use again. Manager has no PauseTask or RemoveTask.
