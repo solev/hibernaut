@@ -226,15 +226,29 @@ func (o *Owner) Resume(ctx context.Context, id string, timeout time.Duration) (e
 }
 
 // DialWebSocket refuses to wake a paused task machine the guard holds, since E2B's dial wakes
-// a paused machine itself. The proxy's link wake and hib ssh both dial through it.
+// a paused machine itself. Admitted SSH wakes dial through it. Running SSH uses
+// DialRunningWebSocket with the same task access guard.
 func (o *Owner) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
+	return o.dial(ctx, id, timeout, func(timeout time.Duration) (net.Conn, error) {
+		return o.inner.DialWebSocket(ctx, id, port, timeout)
+	})
+}
+
+// DialRunningWebSocket keeps SSH's task access guard without permitting a resume.
+func (o *Owner) DialRunningWebSocket(ctx context.Context, id string, port int) (net.Conn, error) {
+	return o.dial(ctx, id, 0, func(time.Duration) (net.Conn, error) {
+		return o.inner.DialRunningWebSocket(ctx, id, port)
+	})
+}
+
+func (o *Owner) dial(ctx context.Context, id string, timeout time.Duration, dial func(time.Duration) (net.Conn, error)) (net.Conn, error) {
 	m, err := o.inner.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	tid, ok := taskOf(m)
 	if !ok {
-		return o.inner.DialWebSocket(ctx, id, port, timeout)
+		return dial(timeout)
 	}
 	unlock, err := o.locks.WaitLock(ctx, LockName(tid), "dialing task machine "+string(tid))
 	if err != nil {
@@ -248,7 +262,7 @@ func (o *Owner) DialWebSocket(ctx context.Context, id string, port int, timeout 
 	if timeout, err = o.guard(ctx, tid, m, timeout); err != nil {
 		return nil, err
 	}
-	return o.inner.DialWebSocket(ctx, id, port, timeout)
+	return dial(timeout)
 }
 
 // SetTimeout never sets a task machine's timeout below its run's floor, whoever asks: an SSH

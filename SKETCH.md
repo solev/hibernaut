@@ -678,9 +678,14 @@ properties and the `frozen` line of its `cgroup.events`. `taskguest.Seen.Verdict
 override.
 
 Atomicity comes from `machines.RoomLock` (`room.lock`), a short flock held from the room reading
-through one create or resume by `CreateSize`, `CreateTask`, `ResumeTask`, `Wake`, Dial's resumes,
+through one placement attempt by `CreateSize`, `CreateTask`, `ResumeTask`, `Wake`, Dial's resumes,
 save and fork's origin resumes, and each fork copy's create. The save's plan check also holds it.
-A successful running-machine ssh dial and repin take no room lock or room reading.
+A running-machine ssh dial uses `DialRunningWebSocket`, which never resumes. Its traffic token
+survives bridge processes and host restarts in hibd's private state directory. A pause after
+Dial's read fails that call without resuming, then requires admission before a resumable retry.
+A missing token also requires admission. Running repin uses non-resuming Exec. Neither takes a
+room lock or room reading. A paused repin's Resume and dial share one admitted attempt, and its
+initialization runs after releasing the lock.
 A one-shot `hibd new`, an ssh wake and the proxy's link wake cannot spend pages a task admission
 just counted, or the reverse. The lock is separate from `hibd.lock` so `Wake` and `Dial` do not
 wait behind a save.

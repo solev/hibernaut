@@ -414,23 +414,62 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		}
 	}
 	fail := func(err error) (*Conn, error) {
+		if errors.Is(err, room.ErrFull) {
+			return nil, err
+		}
 		return nil, m.refused(ctx, name, em.MemoryMB, false, err)
 	}
 	key, err := m.readPin(em.ID)
-	if errors.Is(err, fs.ErrNotExist) {
-		key, err = m.repin(ctx, name, em, idle)
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fail(fmt.Errorf("%q: %w", name, err))
 	}
-	var conn net.Conn
-	err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
+	var keysForPin []byte
+	pin := func(ctx context.Context) error {
 		var err error
-		conn, err = m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
+		key, err = m.initMachine(ctx, em.ID, keysForPin)
 		return err
-	})
+	}
+	if key == nil {
+		keysForPin, err = m.authorizedKeys()
+		if err != nil {
+			return fail(fmt.Errorf("%q: %w", name, err))
+		}
+		if em.State != engine.Paused {
+			err = m.retryCut(ctx, pin)
+			if errors.Is(err, engine.ErrNotRunning) {
+				em.State = engine.Paused
+			} else if err != nil {
+				return fail(fmt.Errorf("%q: %w", name, err))
+			}
+		}
+	}
+	var conn net.Conn
+	if em.State != engine.Paused {
+		conn, err = m.e.DialRunningWebSocket(ctx, em.ID, images.SSHPort)
+		if errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrNoTrafficToken) {
+			em.State = engine.Paused
+		}
+	}
+	if em.State == engine.Paused {
+		err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
+			if key == nil {
+				if _, err := m.e.Resume(ctx, em.ID, timeoutFor(idle)); err != nil {
+					return err
+				}
+			}
+			var err error
+			conn, err = m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
+			return err
+		})
+	}
 	if err != nil {
 		return fail(fmt.Errorf("connecting to %q: %w", name, err))
+	}
+	if key == nil {
+		if err := m.retryCut(ctx, pin); err != nil {
+			conn.Close()
+			return fail(fmt.Errorf("%q: %w", name, err))
+		}
 	}
 	m.touch(em.ID)
 	bg := context.WithoutCancel(ctx)
@@ -590,27 +629,6 @@ func (m *Manager) resumeRoom(ctx context.Context, em engine.Machine, timeout tim
 		return engine.Machine{}, m.refused(ctx, Name(em), em.MemoryMB, false, err)
 	}
 	return resumed, nil
-}
-
-func (m *Manager) repin(ctx context.Context, name string, em engine.Machine, idle time.Duration) (ssh.PublicKey, error) {
-	keys, err := m.authorizedKeys()
-	if err != nil {
-		return nil, err
-	}
-	err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
-		_, err := m.e.Resume(ctx, em.ID, timeoutFor(idle))
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	var key ssh.PublicKey
-	err = m.retryCut(ctx, func(ctx context.Context) error {
-		var err error
-		key, err = m.initMachine(ctx, em.ID, keys)
-		return err
-	})
-	return key, err
 }
 
 func (m *Manager) keepalive(ctx context.Context, id string, idle time.Duration, done chan<- struct{}) {

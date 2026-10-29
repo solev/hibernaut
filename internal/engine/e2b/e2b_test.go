@@ -35,7 +35,8 @@ const (
 )
 
 type fakeE2B struct {
-	t *testing.T
+	t                *testing.T
+	apiURL, proxyURL string
 
 	mu         sync.Mutex
 	sandboxes  map[string]map[string]any
@@ -76,7 +77,7 @@ func (f *fakeE2B) refuseConnect(status int, errorCode, message string) {
 	f.refusals = append(f.refusals, refusal{status, body})
 }
 
-func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
+func newFakeE2B(t *testing.T, stateDir ...string) (*fakeE2B, *e2b.Engine) {
 	f := &fakeE2B{t: t, sandboxes: map[string]map[string]any{}, bodies: map[string]map[string]any{}}
 
 	envdMux := http.NewServeMux()
@@ -102,7 +103,12 @@ func newFakeE2B(t *testing.T) (*fakeE2B, *e2b.Engine) {
 	apiSrv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(apiSrv.Close)
 
-	eng, err := e2b.New(e2b.Config{APIURL: apiSrv.URL, SandboxURL: envdSrv.URL, APIKey: apiKey})
+	f.apiURL, f.proxyURL = apiSrv.URL, envdSrv.URL
+	cfg := e2b.Config{APIURL: apiSrv.URL, SandboxURL: envdSrv.URL, APIKey: apiKey}
+	if len(stateDir) != 0 {
+		cfg.StateDir = stateDir[0]
+	}
+	eng, err := e2b.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +162,7 @@ func (f *fakeE2B) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		f.addLocked(id, "running", md)
-		writeJSON(w, 201, map[string]any{"sandboxID": id, "templateID": "tmpl123", "clientID": "c", "envdVersion": "0.2.0"})
+		writeJSON(w, 201, map[string]any{"sandboxID": id, "templateID": "tmpl123", "clientID": "c", "envdVersion": "0.2.0", "trafficAccessToken": trafficToken})
 
 	case r.Method == "GET" && r.URL.Path == "/v2/sandboxes":
 		if r.URL.Query().Get("nextToken") == "" {

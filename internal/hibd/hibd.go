@@ -1759,6 +1759,7 @@ func (a *App) rawEngine() (engine.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.e2b.StateDir = cfg.stateDir
 	return e2b.New(cfg.e2b)
 }
 

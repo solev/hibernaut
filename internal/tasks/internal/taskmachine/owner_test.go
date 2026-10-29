@@ -20,11 +20,11 @@ import (
 	"github.com/solev/hibernaut/internal/tasks/internal/taskstore"
 )
 
-// guarded are the engine methods that pause, wake or extend a machine, which Owner must
+// guarded are the engine methods with lifecycle or SSH access guards, which Owner must
 // define itself. Every other method passes through. A new engine method fails this test until
 // someone decides which it is.
 var (
-	guarded     = []string{"DialWebSocket", "Pause", "Resume", "SaveTemplate", "SetTimeout"}
+	guarded     = []string{"DialRunningWebSocket", "DialWebSocket", "Pause", "Resume", "SaveTemplate", "SetTimeout"}
 	passThrough = []string{"BuildTemplate", "Create", "DeleteTemplate", "Exec", "Get", "Kill",
 		"List", "Metrics", "SavedTemplates", "Template", "Upload"}
 )
@@ -235,6 +235,37 @@ func TestWakeGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestRunningDialKeepsTaskAccessGuard(t *testing.T) {
+	for _, frozen := range []bool{false, true} {
+		t.Run(map[bool]string{false: "held", true: "past deadline"}[frozen], func(t *testing.T) {
+			f := newFixture(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			want := task.ErrHeld
+			if frozen {
+				if err := f.owner.Pause(ctx, f.tm); err != nil {
+					t.Fatal(err)
+				}
+				f.now = t0.Add(2 * time.Hour)
+				want = task.ErrPastDeadline
+			} else if err := f.sim.Pause(ctx, f.tm); err != nil {
+				t.Fatal(err)
+			}
+			c, err := f.owner.DialRunningWebSocket(ctx, f.tm, 22)
+			if c != nil {
+				c.Close()
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("non-resuming dial = %v, want %v", err, want)
+			}
+			m, err := f.sim.Get(ctx, f.tm)
+			if err != nil || m.State != engine.Paused {
+				t.Fatalf("refused dial left task machine %s, %v", m.State, err)
+			}
+		})
+	}
 }
 
 // TestNoCopyOfATaskMachine checks no save or fork copies a task machine, live or kept.

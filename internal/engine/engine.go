@@ -194,8 +194,13 @@ type Engine interface {
 	// DialWebSocket connects to the WebSocket server listening on port inside the machine and
 	// returns the connection as a byte stream carried in binary messages. It resumes a paused
 	// machine, and makes sure a running one runs for at least timeout more. ctx bounds only the
-	// dial: the connection lasts until it's closed.
+	// dial: the connection lasts until it's closed. Callers must admit this call even if their
+	// last state read said running.
 	DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error)
+	// DialRunningWebSocket carries the same byte stream but never resumes or changes a timeout.
+	// A paused machine returns ErrNotRunning. Without a stored traffic token it returns
+	// ErrNoTrafficToken. Callers must admit any fallback to DialWebSocket or Resume.
+	DialRunningWebSocket(ctx context.Context, id string, port int) (net.Conn, error)
 	// BuildTemplate builds spec, or rebuilds the template of that name, calling logs synchronously with each
 	// complete entry as it arrives. A nil callback ignores logs. Entries keep their full message,
 	// time, level and step. It drains finished builds' log pages before returning the template's
@@ -236,6 +241,8 @@ var (
 	ErrNoTemplate    = errors.New("template not found")
 	ErrCheckpoint    = errors.New("checkpoint failed")
 	ErrTemplateInUse = errors.New("template in use")
+	// ErrNoTrafficToken requires an admitted connect before a non-resuming dial is possible.
+	ErrNoTrafficToken = errors.New("no stored traffic token")
 	// ErrNoAnswer means a save request failed before an HTTP answer arrived.
 	ErrNoAnswer = errors.New("no answer to the save request")
 	// ErrConnectionLost means Exec's connection broke before the command's exit was reported.
