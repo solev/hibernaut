@@ -95,7 +95,7 @@ func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 		stdin = "file:" + path.Join(dir, "in", p.Name)
 	}
 	logFile := path.Join(dir, string(s)+".log")
-	argv := []string{"systemd-run",
+	argv := []string{"systemd-run", "--expand-environment=no",
 		"--unit=" + Unit(r.ID, s),
 		"--slice=" + Slice,
 		"--no-block", "--quiet",

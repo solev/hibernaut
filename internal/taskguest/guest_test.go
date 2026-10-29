@@ -167,6 +167,18 @@ func TestLaunchKeepsThePromptOutOfArgv(t *testing.T) {
 	}
 }
 
+func TestLaunchPreservesCommand(t *testing.T) {
+	r := task.Run{ID: task.RunID{Task: "t-abcdefgh", N: 2}, Spec: task.Spec{
+		Command: []string{"sh", "-c", `printf '%s\n' '$$|${HIB_RUN}'`}}}
+	argv := Launch(r, task.StageCommand, time.Hour)
+	if !slices.Contains(argv, "--expand-environment=no") {
+		t.Fatal("Launch lets systemd expand $$ and ${HIB_RUN}")
+	}
+	if !slices.Equal(argv[len(argv)-len(r.Spec.Command):], r.Spec.Command) {
+		t.Fatalf("Launch changed the command: %q", argv)
+	}
+}
+
 func TestVerdict(t *testing.T) {
 	exit := &task.ExitRecord{Result: "success"}
 	tests := []struct {
