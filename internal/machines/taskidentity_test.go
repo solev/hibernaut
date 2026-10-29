@@ -32,6 +32,11 @@ func TestFindTaskKeepsRecordedMachineAfterResume(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			r.Kept = kept.ID
+			if record == "result" {
+				r.Kept = "abandoned"
+				r.Log = []task.Checkpoint{{Body: &task.MachineResult{ID: kept.ID}}}
+			}
 			now = now.Add(time.Minute)
 			duplicate := engine.Machine{ID: "abandoned", State: engine.Paused,
 				StartedAt: now, Metadata: kept.Metadata}
@@ -42,11 +47,6 @@ func TestFindTaskKeepsRecordedMachineAfterResume(t *testing.T) {
 			now = now.Add(time.Minute)
 			if _, err := m.ResumeTask(ctx, r, kept.ID, time.Hour); err != nil {
 				t.Fatal(err)
-			}
-			r.Kept = kept.ID
-			if record == "result" {
-				r.Kept = duplicate.ID
-				r.Log = []task.Checkpoint{{Body: &task.MachineResult{ID: kept.ID}}}
 			}
 			var fenced []string
 			m.fenced = func(ctx context.Context, id, name, why string, op func(context.Context) error) error {
