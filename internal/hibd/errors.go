@@ -52,5 +52,5 @@ func usesE2B(cmd string) bool {
 		"ready", "cleanup", "leakscan", "pause-all", "status":
 		return true
 	}
-	return false
+	return taskUsesE2B(cmd)
 }

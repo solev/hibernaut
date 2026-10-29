@@ -19,7 +19,8 @@ import (
 // image. name follows hibapi.CheckName, and can't be a built-in image's or an existing saved
 // image's. So that a failed save costs machine at most what it did since the save began,
 // machine is paused, its snapshot confirmed with Config.Durable, and resumed before the save.
-// It's left running or paused as it was.
+// It's left running or paused as it was. A task's machine is refused with task.ErrNoCopy before
+// anything touches it.
 // A failed save can take about 90 s longer while hibd removes what E2B left. The state lock stays
 // held during that wait, so Create, Pause and Remove wait behind it. Dial and List don't take it.
 func (m *Manager) SaveImage(ctx context.Context, machine, name string) (hibapi.Image, error) {
@@ -46,6 +47,9 @@ func (m *Manager) SaveImage(ctx context.Context, machine, name string) (hibapi.I
 	}
 	em, err := m.lookup(ctx, machine)
 	if err != nil {
+		return hibapi.Image{}, err
+	}
+	if err := refuseTaskCopy(em); err != nil {
 		return hibapi.Image{}, err
 	}
 	running := 1

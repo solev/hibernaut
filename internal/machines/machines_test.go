@@ -292,6 +292,7 @@ func TestCreateRejects(t *testing.T) {
 		{"App", "dev", "bad name"},
 		{"../x", "dev", "bad name"},
 		{"", "dev", "bad name"},
+		{"t-aaaaaaaa", "dev", "kept for tasks"},
 		{"app", "nope", `no image "nope"`},
 		{"app", "", `no image ""`},
 	} {

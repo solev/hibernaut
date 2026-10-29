@@ -17,6 +17,7 @@ import (
 	"github.com/solev/hibernaut/internal/busy"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
+	"github.com/solev/hibernaut/internal/task"
 )
 
 var t0 = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -646,5 +647,32 @@ func TestCgroupCPU(t *testing.T) {
 		if got, err := cpu(id); err == nil {
 			t.Errorf("cpu(%q) = %v, want an error", id, got)
 		}
+	}
+}
+
+// A task machine's run deadline sets its timeout, and its agent's work must not count as
+// activity, or its links would hold other machines awake.
+func TestExemptMachinesLeftAlone(t *testing.T) {
+	v := newWorld(t)
+	act := &activity{at: map[string][]time.Time{}}
+	w, err := busy.New(busy.Config{Engine: v.e, CPU: v.readCPU, Now: v.Now, Logf: v.logf,
+		Activity: act.touch, Exempt: func(m engine.Machine) bool { return m.Metadata[task.Label] != "" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := v.machine("t-aaaaaaaa", "10m0s", time.Minute)
+	v.e.Add(engine.Machine{ID: id, State: engine.Running, StartedAt: v.Now(),
+		EndAt: v.Now().Add(time.Minute), Metadata: map[string]string{"hib.name": "t-aaaaaaaa",
+			"hib.idle": "10m0s", task.Label: "t-aaaaaaaa"}})
+	v.procs[id] = codex
+	end := v.endAt(id)
+	if err := w.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.endAt(id); !got.Equal(end) {
+		t.Errorf("EndAt = %v, want an exempt machine's timeout left at %v", got, end)
+	}
+	if got := act.seen(id); len(got) != 0 {
+		t.Errorf("an exempt machine's activity recorded at %v", got)
 	}
 }

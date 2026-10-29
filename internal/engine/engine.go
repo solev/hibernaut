@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"time"
 )
@@ -33,6 +34,11 @@ type Machine struct {
 	EndAt time.Time
 	// MemoryMB is the machine's RAM in MiB, which it holds while it runs.
 	MemoryMB int
+	// CPUs is the machine's vCPUs, which admission counts while it runs. 0 means unknown.
+	//
+	// TODO: fill from E2B's cpuCount in e2b and from machine.cpus in fake, then update the
+	// tests that compare whole Machine values.
+	CPUs     int
 	Metadata map[string]string
 }
 
@@ -145,6 +151,16 @@ type ExecResult struct {
 	Stderr   []byte
 }
 
+// File is one file Upload writes into a machine.
+type File struct {
+	// Path is absolute inside the machine. Missing parent folders are made.
+	Path string
+	// Size is the file's length, and Open returns its bytes from the start, so a retried upload
+	// reads them again.
+	Size int64
+	Open func() (io.ReadCloser, error)
+}
+
 // Engine runs machines.
 //
 // Methods that take a machine ID return an error wrapping ErrNotFound when no such machine
@@ -173,6 +189,11 @@ type Engine interface {
 	// ErrNotRunning for a paused machine, and never wakes it. It returns an error wrapping
 	// ErrConnectionLost if the connection broke before the command's exit was reported.
 	Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error)
+	// Upload writes files into a running machine as user, replacing any at the same paths. It
+	// returns ErrNotRunning for a paused machine and never wakes it. An error may leave some
+	// files written: the caller checks what arrived by hash. It never carries file contents in an
+	// ExecRequest, which engines may log.
+	Upload(ctx context.Context, id, user string, files []File) error
 	// DialWebSocket connects to the WebSocket server listening on port inside the machine and
 	// returns the connection as a byte stream carried in binary messages. It resumes a paused
 	// machine, and makes sure a running one runs for at least timeout more. ctx bounds only the

@@ -42,6 +42,7 @@ import (
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/slots"
 	"github.com/solev/hibernaut/internal/statefile"
+	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/version"
 )
@@ -92,13 +93,18 @@ commands:
                     are paused first and stay paused (-image NAME, -canary, -json)
   cleanup           delete unused build directories and trim old snapshot bodies, as root
                     (-n only says what it would delete or trim, and why it keeps the others)
+  task start|run|ls|show|logs|cancel|rescue|rm|cleanup
+                    save and look after tasks the daemon runs in their own machines. hibd
+                    task prints each command's usage
+  recipe put|ls|show|rm|default
+                    keep named commands for hib task start. hibd recipe prints their usage
   daemon            keep busy machines running (-every), clean up when a machine is
                     removed and hourly, and keep the Codex login fresh; systemd runs it as
                     root
   version           print the version
 
 new, ls, rm, pause, fork, port, image build|save|ls|rm, connect, disconnect, codex refresh,
-status and version
+status, task, recipe and version
 print JSON with -json.
 
 hibd reads its settings from ` + defaultConfig + ` ($HIBD_CONFIG overrides the path).
@@ -250,6 +256,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return a.cleanup(ctx, args)
 	case "daemon":
 		return a.daemon(ctx, args)
+	case "task", "recipe":
+		return a.taskGroup(ctx, cmd, args)
 	case "version", "-v", "--version":
 		return a.version(args)
 	case "help", "-h", "--help":
@@ -420,17 +428,19 @@ func (a *App) byName(ctx context.Context, cmd string, args []string, do func(*ma
 	return 0
 }
 
-// pauseOrRemove is hibd pause and hibd rm: byName with Manager.Pause or Manager.Remove. With
-// links on, that goes through pauseFenced, pause marks the machine as paused by hand, and rm
-// drops its entry from the link state once it's gone. Its address stays spent, because
+// pauseOrRemove is hibd pause and hibd rm: byName with Manager.Pause or Manager.Remove, once
+// tasks.Check allows it, so neither touches a task machine its run holds and rm never removes
+// one. With links on, that goes through pauseFenced, pause marks the machine as paused by hand,
+// and rm drops its entry from the link state once it's gone. Its address stays spent, because
 // addresses are never handed out twice.
 func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int {
-	do := (*machines.Manager).Pause
+	do, op := (*machines.Manager).Pause, task.OpPause
 	if cmd == "rm" {
-		do = (*machines.Manager).Remove
+		do, op = (*machines.Manager).Remove, task.OpRemove
 	}
 	cfg, err := loadConfig(a.Getenv)
-	if err != nil || !cfg.linksConfiguredOn() {
+	if err != nil {
+		// byName fails too: a.manager builds its engine from the same config, so do never runs.
 		return a.byName(ctx, cmd, args, do)
 	}
 	return a.byName(ctx, cmd, args, func(m *machines.Manager, ctx context.Context, name string) error {
@@ -441,6 +451,14 @@ func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int 
 		em, err := machines.Lookup(ctx, e, name)
 		if err != nil {
 			return err
+		}
+		ts := a.tasks(cfg)
+		defer ts.Close()
+		if err := ts.Check(ctx, em, op); err != nil {
+			return err
+		}
+		if !cfg.linksConfiguredOn() {
+			return do(m, ctx, name)
 		}
 		store := a.linkPartsFor(cfg).store
 		err = a.pauseFenced(ctx, cfg, em.ID, name, cmd, cmd+" "+name, func(ctx context.Context) error {
@@ -1508,6 +1526,10 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		return a.fail(false, "daemon", err)
 	}
 	logger := log.New(a.Stderr, "", 0)
+	// TODO: pass busy.Config.Exempt: a.tasks(cfg).Exempt, so busy leaves a task machine its run
+	// holds alone: it never renews or shortens its timeout, which the Owner's floor keeps at the
+	// deadline, and a busy task keeps no linked machine awake. Pass Now: a.now here and to
+	// machines.Config, so App.Now is the one clock a test sets.
 	w, err := busy.New(busy.Config{
 		Engine: e, CPU: busy.CgroupCPU(cfg.cgroups), Agents: cfg.agents, Logf: logger.Printf,
 		Activity: links.NewClock(cfg.stateDir).Touch, StateDir: cfg.stateDir,
@@ -1531,6 +1553,8 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	}
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
+	delivery.tasks = a.tasks(cfg)
+	defer delivery.tasks.Close()
 	removeLeftoverCodexLogins(cfg.stateDir, logger.Printf)
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	switch changed, err := rebindGitHub(cfg); {
@@ -1575,6 +1599,8 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 				now = err.Error()
 			}
 			delivery.look(ctx)
+			// TODO: tick the *tasks.Daemon from a.startTasks(ctx, cfg, e) here, on its own
+			// tasks.Poll ticker in the same select, and Close it before "stopping".
 		}
 		if now != problem {
 			if now == "" {
@@ -1601,6 +1627,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
+		// TODO: add hibapi.FeatureTasks once hibd task start saves tasks.
 		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect, hibapi.FeaturePorts}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
@@ -1710,7 +1737,21 @@ func (a *App) managerWithSetup(setup machines.Setup) (*machines.Manager, error) 
 	}), nil
 }
 
+// engine returns the engine every hibd command uses, guarded by tasks, so no path pauses, wakes,
+// dials or saves a task machine around the task machine guards.
 func (a *App) engine() (engine.Engine, error) {
+	e, err := a.rawEngine()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := loadSettings(a.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return a.tasks(cfg).Guard(e, "hibd"), nil
+}
+
+func (a *App) rawEngine() (engine.Engine, error) {
 	if a.NewEngine != nil {
 		return a.NewEngine()
 	}

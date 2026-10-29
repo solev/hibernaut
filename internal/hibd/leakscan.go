@@ -16,6 +16,7 @@ import (
 	"github.com/solev/hibernaut/internal/hibapi"
 	scanpkg "github.com/solev/hibernaut/internal/leakscan"
 	"github.com/solev/hibernaut/internal/machines"
+	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/termsafe"
 	"github.com/solev/hibernaut/internal/vault"
 )
@@ -132,6 +133,11 @@ func (a *App) runLeakscan(ctx context.Context, cfg config, target leakscanTarget
 	}
 	query := a.query()
 	pause := func(ctx context.Context, m engine.Machine) error {
+		ts := a.tasks(cfg)
+		defer ts.Close()
+		if err := ts.Check(ctx, m, task.OpPause); err != nil {
+			return err
+		}
 		return a.pauseMachine(ctx, cfg, e, m, "leak scan", "leakscan "+target.api().Name)
 	}
 	resolved, build, err := target.resolve(ctx, e, query, pause)

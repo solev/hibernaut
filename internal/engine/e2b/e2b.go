@@ -297,6 +297,17 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 	}, nil
 }
 
+// Upload writes files through envd's POST /files, as user.
+func (e *Engine) Upload(ctx context.Context, id, user string, files []engine.File) error {
+	// TODO:
+	//   resolve the sandbox's envd address and access token the way Exec does
+	//   for each file: POST /files?path=PATH&username=USER as multipart, streamed from Open
+	//   map a paused sandbox to engine.ErrNotRunning, a missing one to engine.ErrNotFound and a
+	//   broken stream to engine.ErrConnectionLost
+	//   the spike settles envd's size limit, whether it makes parents and who owns the file
+	return errors.New("e2b: Upload is not implemented")
+}
+
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
 	d, err := e.running(ctx, id)
 	if err != nil {

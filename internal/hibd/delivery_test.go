@@ -24,6 +24,7 @@ import (
 	"github.com/solev/hibernaut/internal/hostsblock"
 	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
+	"github.com/solev/hibernaut/internal/task"
 )
 
 type testClock struct {
@@ -115,6 +116,36 @@ func TestSetupDeliveryWritesTheSetupAgainAfterAResume(t *testing.T) {
 	d.look(ctx)
 	if n := len(guest.allRequests()) - requests; n != 0 {
 		t.Errorf("the look after the one that caught up with the resume ran %d commands in the machine, want none", n)
+	}
+}
+
+// The setup push skips a machine its task's run holds, and fails closed when tasks.db can't say.
+// The same machine without the label gets the setup at the next look.
+func TestSetupDeliverySkipsATaskMachine(t *testing.T) {
+	ctx := t.Context()
+	guest := &secretGuest{env: []byte("PATH=/usr/bin\n")}
+	e := fake.New(fake.WithExec(guest.exec))
+	const tid = "t-abcdefgh"
+	m := engine.Machine{ID: "task1", State: engine.Running, StartedAt: time.Now(),
+		EndAt: time.Now().Add(time.Hour), Metadata: map[string]string{"hib.name": tid,
+			"hib.image": "dev", "hib.idle": "10m0s", task.Label: tid}}
+	e.Add(m)
+	a, _, _ := newApp(t, e)
+	withSecretConfig(t, a)
+	secret := storeTestSecret(t, a, "github", "GH_TOKEN", "github.com", "gho_realSecretValue1234567890")
+	saveTestProfile(t, a, "The Octocat")
+	d := newTestDelivery(t, a, e)
+	d.tasks = a.tasks(d.cfg)
+	defer d.tasks.Close()
+	d.look(ctx)
+	if n := len(guest.allRequests()); n != 0 {
+		t.Fatalf("the look ran %d commands in a task machine, want none", n)
+	}
+	delete(m.Metadata, task.Label)
+	e.Add(m)
+	d.look(ctx)
+	if env := guest.envString(); !strings.Contains(env, secret.Placeholder) {
+		t.Errorf("/etc/environment without the label = %q, want the setup", env)
 	}
 }
 

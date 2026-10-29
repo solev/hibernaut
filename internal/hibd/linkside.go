@@ -171,6 +171,8 @@ func (a *App) linkRoom(e engine.Engine) func(target string) (int, int, error) {
 		// A machine with at most k times a default machine's memory takes no more pages and no
 		// more pause disk than k default machines, so rounding k up charges it enough.
 		need := max((em.MemoryMB+def-1)/def, 1)
+		// TODO: count Fits on room.Host.Reserve(machines.PeopleReserveMB()) instead of Fits-1,
+		// so links and task admission hold back the one people reserve from one definition.
 		return max(r.Fits-1, 0), need, nil
 	}
 }

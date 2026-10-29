@@ -1,0 +1,31 @@
+flowchart TD
+    submitted(["submitted"])
+    machine["machine: wait for room, then create or resume"]
+    upload["upload: upload inputs and runner, check hashes"]
+    setup["setup: clone and branch"]
+    command["command: run the command"]
+    finish["finish: commit, push, draft PR"]
+    stop["stop: kill the live stage, prove it gone"]
+    collect["collect: copy last logs and the publication"]
+    keep["keep: pause and keep, or remove on rm"]
+    ended(["ended"])
+    submitted --> machine
+    submitted -.->|ends while queued| stop
+    machine -.->|refused, queued again| machine
+    machine --> upload
+    machine -.->|ends early| stop
+    upload --> setup
+    upload -.->|follow-up or no repo| command
+    upload -.->|ends early| stop
+    setup --> command
+    setup -.->|fails| collect
+    setup -.->|ends early| stop
+    command --> finish
+    command -.->|no repo| collect
+    command -.->|fails| collect
+    command -.->|ends early| stop
+    finish --> collect
+    finish -.->|ends early| stop
+    stop --> collect
+    collect --> keep
+    keep --> ended

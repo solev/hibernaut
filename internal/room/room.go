@@ -177,6 +177,13 @@ type Plan struct {
 	Peak int
 }
 
+// Reserve returns h with memoryMB of RAM held back from FreePages, for checks that must leave
+// room a person may need. Task admission reserves one default machine this way.
+func (h Host) Reserve(memoryMB int) Host {
+	h.FreePages = max(h.FreePages-h.pages(memoryMB), 0)
+	return h
+}
+
 func (h Host) pages(memoryMB int) int64 {
 	if h.PageSize <= 0 {
 		return h.FreePages + 1

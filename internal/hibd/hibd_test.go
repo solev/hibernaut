@@ -32,6 +32,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/tasks"
 	"github.com/solev/hibernaut/internal/version"
 )
 
@@ -957,7 +958,7 @@ func TestCleanup(t *testing.T) {
 		var dryRuns []bool
 		before := time.Now()
 		a.Clean = func(_ context.Context, ce engine.Engine, now time.Time, n bool, logf func(string, ...any)) error {
-			if ce != e || now.Before(before) || now.After(time.Now()) {
+			if !tasks.Guarded(ce) || now.Before(before) || now.After(time.Now()) {
 				t.Errorf("cleaned up with engine %v at %v, want the app's engine, now", ce, now)
 			}
 			dryRuns = append(dryRuns, n)
