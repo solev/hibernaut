@@ -28,11 +28,10 @@ type taskRemovalEngine struct {
 
 func (e *taskRemovalEngine) List(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
 	e.lists++
-	if e.lists == 2 && e.late != nil {
-		e.Add(*e.late)
-	}
 	ems, err := e.Engine.List(ctx, opts)
-	return slices.DeleteFunc(ems, func(em engine.Machine) bool { return em.ID == e.omit }), err
+	return slices.DeleteFunc(ems, func(em engine.Machine) bool {
+		return em.ID == e.omit || e.lists == 1 && e.late != nil && em.ID == e.late.ID
+	}), err
 }
 
 func (e *taskRemovalEngine) Kill(ctx context.Context, id string) error {
@@ -106,6 +105,9 @@ func TestTaskRemoveLeavesNoTaskMachine(t *testing.T) {
 				omit: tc.omit, late: tc.late, failID: tc.failID, killErr: tc.killErr}
 			for _, em := range tc.initial {
 				e.Add(em)
+			}
+			if tc.late != nil {
+				e.Add(*tc.late)
 			}
 			a, _, _ := newApp(t, e)
 			withLinks(a, e.links, true)
