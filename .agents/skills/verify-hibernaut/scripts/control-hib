@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+# control-hib drives Hibernaut the way its user does, for verification runs. One run at a time
+# per laptop: a scratch hib built from this checkout, a scratch settings directory, and
+# machines, images and secrets whose names start with the run's prefix. Every step it runs is
+# recorded under the run's evidence directory, which cleanup keeps.
+#
+#   control-hib launch [--no-deploy]   start the VM, deploy this checkout, set up a scratch hib
+#   control-hib doctor                 read-only: is this run's host worth driving?
+#   control-hib name ROLE              print a machine/image/secret name for this run
+#   control-hib env                    print RUN, PREFIX, EVIDENCE, HIB and HIB_CONFIG
+#   control-hib hib LABEL -- ARGS...   run hib ARGS, record stdout, stderr and exit code
+#   control-hib ssh LABEL NAME [-- CMD...]
+#                                      run CMD in machine NAME over ssh NAME.hib, recorded
+#   control-hib tty LABEL [--answer TEXT] -- ARGS...
+#                                      run hib ARGS in a terminal, answering a [y/N] prompt
+#   control-hib note LABEL TEXT        record what a step proved
+#   control-hib cleanup [--sweep]      remove this run's machines, images and secrets, put
+#                                      the VM back as launch found it, keep the evidence
+set -euo pipefail
+
+ROOT="${HIB_VERIFY_ROOT:-$HOME/.cache/hibernaut-verify}"
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(git -C "$SCRIPTS" rev-parse --show-toplevel)"
+CURRENT="$ROOT/current"
+ANY_RUN_RE='^vfy[0-9a-f]{6}-'
+
+say() { echo "control-hib: $*" >&2; }
+die() {
+  say "$*"
+  exit 1
+}
+
+usage() {
+  sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' >&2
+  exit 2
+}
+
+run_dir() {
+  if [[ -n "${HIB_VERIFY_RUN:-}" ]]; then
+    echo "$HIB_VERIFY_RUN"
+  elif [[ -f "$CURRENT" ]]; then
+    cat "$CURRENT"
+  else
+    return 1
+  fi
+}
+
+load_run() {
+  RUN="$(run_dir)" || die "no active run. Start one with: control-hib launch"
+  [[ -f "$RUN/run.env" ]] || die "$RUN has no run.env"
+  # shellcheck source=/dev/null
+  source "$RUN/run.env"
+  EVIDENCE="$RUN/evidence"
+  HIB="$RUN/bin/hib"
+  CONFIG="$RUN/config"
+  [[ ! -e "$RUN/cleaned" ]] || die "run $RUN_ID was cleaned up. Start another with: control-hib launch"
+}
+
+need_hib() {
+  [[ -x "$HIB" && -f "$CONFIG/config.json" ]] || die "run $RUN_ID has no scratch hib yet: launch didn't finish"
+}
+
+next_step() {
+  local n
+  n=$(($(cat "$RUN/step" 2>/dev/null || echo 0) + 1))
+  echo "$n" >"$RUN/step"
+  printf '%03d' "$n"
+}
+
+# record LABEL CMD... runs CMD with this script's stdin, shows its output, and writes the
+# command, time, exit code, stdout and stderr to the next evidence file. With RECORD_STREAM=1
+# the output shows as it comes, with stderr merged into stdout, for long steps.
+record() {
+  local label=$1 n file out err code=0
+  shift
+  n=$(next_step)
+  file="$EVIDENCE/$n-$label.txt"
+  out=$(mktemp)
+  err=$(mktemp)
+  if [[ "${RECORD_STREAM:-}" == 1 ]]; then
+    "$@" 2>&1 | tee "$out" >&2 || code=${PIPESTATUS[0]}
+  else
+    "$@" >"$out" 2>"$err" || code=$?
+  fi
+  {
+    printf '$ %s\n' "$(display "$@")"
+    printf 'time: %s\nexit: %d\n--- stdout\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code"
+    cat "$out"
+    echo '--- stderr'
+    cat "$err"
+  } >"$file"
+  if [[ "${RECORD_STREAM:-}" != 1 ]]; then
+    cat "$out"
+    cat "$err" >&2
+  fi
+  rm -f "$out" "$err"
+  say "evidence: $file (exit $code)"
+  return "$code"
+}
+
+# display shows a command as its user types it: hib ARGS, not the scratch binary and settings.
+display() {
+  local words=() a
+  for a in "$@"; do
+    case "$a" in
+      "$HIB") words+=(hib) ;;
+      --config | "$CONFIG") ;;
+      *) words+=("$(printf '%q' "$a")") ;;
+    esac
+  done
+  echo "${words[*]:-}"
+}
+
+hib_json() {
+  "$HIB" --config "$CONFIG" "$@" --json
+}
+
+# guard refuses hib commands that would touch what this run didn't make: other people's
+# machines, images and secrets, or the host's logins.
+guard() {
+  local cmd=${1:-} sub=${2:-}
+  case "$cmd" in
+    "" | ls | status | log | version | help | completion | --version) return 0 ;;
+    connect | disconnect | init | bridge)
+      global "hib $cmd changes every machine's logins or this run's settings"
+      return 0
+      ;;
+    port | secret | image)
+      case "$sub" in
+        ls) return 0 ;;
+        build)
+          global "hib image build replaces an image every new machine uses"
+          return 0
+          ;;
+      esac
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+  ours "$@"
+}
+
+global() {
+  [[ "${HIB_VERIFY_ALLOW_GLOBAL:-}" == 1 ]] ||
+    die "$1. Ask the user first, then rerun with HIB_VERIFY_ALLOW_GLOBAL=1"
+}
+
+ours() {
+  local a flag
+  while (($#)); do
+    a=$1
+    shift
+    case "$a" in
+      --) return 0 ;;
+      -*=*)
+        flag=${a#"${a%%[!-]*}"}
+        flag=${flag%%=*}
+        if [[ "$flag" == image ]]; then
+          mine_or_dev "${a#*=}"
+        fi
+        ;;
+      -*)
+        flag=${a#"${a%%[!-]*}"}
+        case "$flag" in
+          image)
+            mine_or_dev "${1:-}"
+            shift
+            ;;
+          size | idle | count | n | env | bind) shift ;;
+        esac
+        ;;
+      *[!0-9]*) mine "$a" ;;
+    esac
+  done
+}
+
+mine() {
+  [[ "$1" == "$PREFIX"-* ]] ||
+    die "$1 isn't this run's: only names from control-hib name ROLE ($PREFIX-ROLE) may be changed"
+}
+
+mine_or_dev() {
+  [[ "$1" == dev ]] || mine "$1"
+}
+
+cmd_launch() {
+  local deploy=1 id target images built prev
+  case "${1:-}" in
+    --no-deploy) deploy=0 ;;
+    "") ;;
+    *) usage ;;
+  esac
+  mkdir -p "$ROOT/runs"
+  if [[ -f "$CURRENT" ]]; then
+    prev=$(cat "$CURRENT")
+    [[ -e "$prev/cleaned" ]] ||
+      die "run $prev is still active, and runs share one host. Finish it with: control-hib cleanup"
+    rm -f "$CURRENT"
+  fi
+  id=$(openssl rand -hex 3)
+  RUN="$ROOT/runs/$(date -u +%Y%m%dT%H%M%SZ)-$id"
+  EVIDENCE="$RUN/evidence"
+  HIB="$RUN/bin/hib"
+  CONFIG="$RUN/config"
+  mkdir -p "$RUN/bin" "$EVIDENCE"
+  (set -o noclobber && echo "$RUN" >"$CURRENT") 2>/dev/null ||
+    die "another launch claimed $CURRENT first"
+
+  RUN_ID=$id
+  PREFIX="vfy$id"
+  VERSION=$(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo dev)
+  VM_WAS=$("$REPO/azure/state.sh")
+  AZURE_GROUP=${RESOURCE_GROUP:-rg-e2b-test}
+  AZURE_VM=${VM_NAME:-e2b-test}
+  {
+    printf 'RUN_ID=%q\nPREFIX=%q\nVERSION=%q\nVM_WAS=%q\nDEPLOYED=%q\n' "$RUN_ID" "$PREFIX" "$VERSION" "$VM_WAS" "$deploy"
+    printf 'STARTED=%q\nAZURE_GROUP=%q\nAZURE_VM=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$AZURE_GROUP" "$AZURE_VM"
+  } >"$RUN/run.env"
+  say "run $RUN_ID at $RUN, prefix $PREFIX, checkout $VERSION, VM was: $VM_WAS"
+
+  if ((deploy)); then
+    RECORD_STREAM=1 record launch-up "$REPO/azure/up.sh" || die "azure/up.sh failed. Run control-hib cleanup"
+  else
+    RECORD_STREAM=1 record launch-start "$REPO/azure/start.sh" || die "azure/start.sh failed. Run control-hib cleanup"
+    RECORD_STREAM=1 record launch-e2b "$REPO/azure/ssh.sh" 'hibernaut/vm/wait-e2b.sh --start' ||
+      die "E2B didn't come up. Run control-hib cleanup"
+  fi
+
+  (cd "$REPO" && go build -ldflags "-X github.com/solev/hibernaut/internal/version.Version=$VERSION" \
+    -o "$HIB" ./cmd/hib) || die "building hib failed. Run control-hib cleanup"
+  target=$("$REPO/azure/target.sh")
+  record launch-init "$HIB" --config "$CONFIG" init --host "$target" \
+    --ssh-config "$CONFIG/included.conf" --azure-group "$AZURE_GROUP" --azure-vm "$AZURE_VM" ||
+    die "hib init failed. Run control-hib cleanup"
+
+  images=$(hib_json image ls) || die "hib image ls failed. Run control-hib cleanup"
+  built=$(jq -r '[.images[]? | select(.name == "dev" and .kind == "built-in" and .built)] | length' <<<"$images")
+  if [[ "$built" == 0 ]]; then
+    say "the dev image isn't built: building it in every size (up to an hour)"
+    RECORD_STREAM=1 record launch-image-build "$HIB" --config "$CONFIG" image build dev ||
+      die "hib image build dev failed. Run control-hib cleanup"
+  fi
+  cmd_doctor
+}
+
+pass() { echo "ok    $*"; }
+flunk() {
+  echo "FAIL  $*"
+  fail=1
+}
+
+cmd_doctor() {
+  load_run
+  local fail=0 state status ls images others leftovers hibd small
+  echo "run $RUN_ID  prefix $PREFIX  checkout $VERSION  evidence $EVIDENCE"
+  if [[ -x "$HIB" && -f "$CONFIG/config.json" ]]; then
+    pass "scratch hib $("$HIB" version | cut -d' ' -f2)"
+  else
+    flunk "scratch hib: launch didn't finish"
+  fi
+  state=$("$REPO/azure/state.sh" 2>&1) || true
+  if [[ "$state" == "VM running" ]]; then
+    pass "host VM: $state"
+  else
+    flunk "host VM: $state (doctor never wakes it; control-hib launch does)"
+  fi
+  if ((fail)); then
+    exit 1
+  fi
+
+  status=$(hib_json status) || true
+  if [[ "$(jq -r '.status.e2b.ok // false' <<<"$status")" == true ]]; then
+    pass "E2B answers"
+  else
+    flunk "E2B: $(jq -r '.status.e2b.detail // .error // .host.detail // "no answer"' <<<"$status")"
+  fi
+  hibd=$(jq -r '.status.version // "unknown"' <<<"$status")
+  if [[ "$hibd" == "$VERSION" ]]; then
+    pass "hibd is this checkout's build ($hibd)"
+  else
+    flunk "hibd is $hibd, the checkout is $VERSION: control-hib launch deploys it (DEPLOYED=$DEPLOYED)"
+  fi
+  echo "info  github: $(jq -r '.status.github.login // "not connected"' <<<"$status")," \
+    "codex: $(jq -r '.status.codex.health // "not connected"' <<<"$status")," \
+    "secrets: $(jq -r '[.status.secrets[]? | "\(.name)=\(.state)"] | join(" ") | if . == "" then "none" else . end' <<<"$status")"
+
+  images=$(hib_json image ls) || true
+  if [[ "$(jq -r '[.images[]? | select(.name == "dev" and .kind == "built-in" and .built)] | length' <<<"$images")" != 0 ]]; then
+    pass "dev image built"
+  else
+    flunk "dev image not built: control-hib launch builds it"
+  fi
+
+  ls=$(hib_json ls) || true
+  small=$(jq -r '[.room.sizes[]? | select(.size == "small") | .fits][0] // 0' <<<"$ls")
+  if ((small > 0)); then
+    pass "room for $small more small machines"
+  else
+    flunk "no room for a small machine. Ask the user before pausing anything that isn't $PREFIX-*"
+  fi
+  echo "info  this run's: $(jq -r --arg p "$PREFIX-" '[.machines[]? | select(.name | startswith($p)) | "\(.name)(\(.state))"] | join(" ") | if . == "" then "none" else . end' <<<"$ls")"
+  others=$(jq -r --arg p "$PREFIX-" '[.machines[]? | select(.name | startswith($p) | not)] | length' <<<"$ls")
+  echo "info  $others other machines on the host: never pause, rm or exec them"
+  leftovers=$(jq -r --arg p "$PREFIX-" --arg re "$ANY_RUN_RE" \
+    '[.machines[]? | select((.name | test($re)) and (.name | startswith($p) | not)) | .name] | join(" ")' <<<"$ls")
+  [[ -z "$leftovers" ]] || echo "warn  leftovers from earlier runs: $leftovers (control-hib cleanup --sweep removes them)"
+  exit "$fail"
+}
+
+cmd_hib() {
+  local label=${1:-}
+  [[ -n "$label" && "${2:-}" == -- ]] || usage
+  shift 2
+  load_run
+  need_hib
+  guard "$@"
+  record "$label" "$HIB" --config "$CONFIG" "$@"
+}
+
+cmd_ssh() {
+  local label=${1:-} name=${2:-}
+  [[ -n "$label" && -n "$name" ]] || usage
+  shift 2
+  [[ "${1:-}" != -- ]] || shift
+  load_run
+  need_hib
+  mine "$name"
+  record "$label" ssh -F "$CONFIG/ssh_config" -o BatchMode=yes "$name.hib" "$@"
+}
+
+cmd_tty() {
+  local label=${1:-} answer="" n raw file code=0
+  [[ -n "$label" ]] || usage
+  shift
+  if [[ "${1:-}" == --answer ]]; then
+    answer=${2:-}
+    shift 2
+  fi
+  [[ "${1:-}" == -- ]] || usage
+  shift
+  load_run
+  need_hib
+  guard "$@"
+  n=$(next_step)
+  raw="$EVIDENCE/$n-$label.tty"
+  file="$EVIDENCE/$n-$label.txt"
+  TERM=${HIB_VERIFY_TERM:-xterm-256color} HIB_FACES=${HIB_FACES:-text} HIB_TTY_LOG="$raw" HIB_TTY_ANSWER="$answer" \
+    expect -f "$SCRIPTS/tty.exp" -- "$HIB" --config "$CONFIG" "$@" >/dev/null || code=$?
+  {
+    printf '$ %s   (in a terminal%s)\n' "$(display "$HIB" "$@")" "${answer:+, answering $answer}"
+    printf 'time: %s\nexit: %d\n--- terminal, escapes removed (raw: %s)\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" "$(basename "$raw")"
+    perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\e\][^\a\e]*(\a|\e\\)//g; s/\e_[^\e]*\e\\//g; s/\r(?!\n)/\n/g; s/\r//g' "$raw"
+  } >"$file"
+  sed -n '4,$p' "$file"
+  say "evidence: $file (exit $code)"
+  return "$code"
+}
+
+cmd_note() {
+  local label=${1:-}
+  [[ -n "$label" && $# -ge 2 ]] || usage
+  shift
+  load_run
+  local file
+  file="$EVIDENCE/$(next_step)-$label.note.txt"
+  printf 'time: %s\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >"$file"
+  say "evidence: $file"
+}
+
+cmd_cleanup() {
+  local sweep=0 match ls images secrets name state running
+  case "${1:-}" in
+    --sweep) sweep=1 ;;
+    "") ;;
+    *) usage ;;
+  esac
+  if ! RUN="$(run_dir)"; then
+    say "no active run to clean up"
+    return 0
+  fi
+  if [[ -e "$RUN/cleaned" ]]; then
+    rm -f "$CURRENT"
+    say "run $RUN was already cleaned up"
+    return 0
+  fi
+  # shellcheck source=/dev/null
+  source "$RUN/run.env"
+  EVIDENCE="$RUN/evidence"
+  HIB="$RUN/bin/hib"
+  CONFIG="$RUN/config"
+  match="^$PREFIX-"
+  ((sweep)) && match=$ANY_RUN_RE
+
+  if [[ -x "$HIB" && -f "$CONFIG/config.json" ]]; then
+    ls=$(hib_json ls) || die "hib ls failed, so this run's machines may remain. Fix the host and rerun cleanup"
+    for name in $(jq -r --arg re "$match" '.machines[]? | select(.name | test($re)) | .name' <<<"$ls"); do
+      record cleanup-rm "$HIB" --config "$CONFIG" rm "$name" --yes >/dev/null || true
+    done
+    images=$(hib_json image ls) || true
+    for name in $(jq -r --arg re "$match" '.images[]? | select(.kind == "saved" and (.name | test($re))) | .name' <<<"$images"); do
+      record cleanup-image-rm "$HIB" --config "$CONFIG" image rm "$name" >/dev/null || true
+    done
+    secrets=$(hib_json secret ls) || true
+    for name in $(jq -r --arg re "$match" '.secrets[]? | select(.name | test($re)) | .name' <<<"$secrets"); do
+      record cleanup-secret-rm "$HIB" --config "$CONFIG" secret rm "$name" >/dev/null || true
+    done
+
+    ls=$(hib_json ls) || true
+    local left
+    left=$(jq -r --arg re "$match" '[.machines[]? | select(.name | test($re)) | .name] | join(" ")' <<<"$ls")
+    left+=$({ hib_json image ls || true; } | jq -r --arg re "$match" '[.images[]? | select(.kind == "saved" and (.name | test($re))) | " image " + .name] | join("")')
+    left+=$({ hib_json secret ls || true; } | jq -r --arg re "$match" '[.secrets[]? | select(.name | test($re)) | " secret " + .name] | join("")')
+    [[ -z "$left" ]] || die "these remain: $left. Rerun control-hib cleanup, or check hib ls"
+  fi
+
+  state=$("$REPO/azure/state.sh")
+  if [[ "$VM_WAS" != "VM running" && "$state" == "VM running" ]]; then
+    running=$(jq -r '[.machines[]? | select(.state == "running") | .name] | join(" ")' <<<"${ls:-"{}"}")
+    if [[ -n "$running" ]]; then
+      say "the VM was off before this run, but $running is running now: leaving the VM on"
+    else
+      record cleanup-down "$REPO/azure/down.sh" >/dev/null || say "azure/down.sh failed: the VM may still be on"
+    fi
+  fi
+
+  rm -rf "${RUN:?}/config" "${RUN:?}/bin"
+  touch "$RUN/cleaned"
+  rm -f "$CURRENT"
+  say "cleaned up run $RUN_ID. Evidence kept in $EVIDENCE"
+}
+
+cmd=${1:-}
+[[ -n "$cmd" ]] || usage
+shift
+case "$cmd" in
+  launch) cmd_launch "$@" ;;
+  doctor) cmd_doctor ;;
+  name)
+    load_run
+    [[ -n "${1:-}" ]] || usage
+    echo "$PREFIX-$1"
+    ;;
+  env)
+    load_run
+    printf 'RUN=%q\nPREFIX=%q\nEVIDENCE=%q\nHIB=%q\nHIB_CONFIG=%q\n' "$RUN" "$PREFIX" "$EVIDENCE" "$HIB" "$CONFIG"
+    ;;
+  hib) cmd_hib "$@" ;;
+  ssh) cmd_ssh "$@" ;;
+  tty) cmd_tty "$@" ;;
+  note) cmd_note "$@" ;;
+  cleanup) cmd_cleanup "$@" ;;
+  -h | --help | help) usage ;;
+  *) usage ;;
+esac

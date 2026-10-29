@@ -1,0 +1,21 @@
+#!/usr/bin/expect -f
+# Runs hib in a terminal for control-hib tty. Writes everything the terminal showed to
+# $HIB_TTY_LOG, answers the first [y/N] prompt with $HIB_TTY_ANSWER when that's set, and exits
+# with hib's exit code.
+set timeout 1800
+log_user 1
+log_file -noappend -a $env(HIB_TTY_LOG)
+spawn -noecho {*}$argv
+if {$env(HIB_TTY_ANSWER) ne ""} {
+    expect {
+        -re {\[y/N\] ?$} { send -- "$env(HIB_TTY_ANSWER)\r" }
+        eof {}
+        timeout { puts stderr "tty.exp: no \[y/N\] prompt within $timeout seconds"; exit 124 }
+    }
+}
+expect {
+    eof {}
+    timeout { puts stderr "tty.exp: hib still running after $timeout seconds"; exit 124 }
+}
+lassign [wait] pid spawn_id os_error code
+exit $code
