@@ -966,4 +966,7 @@ M13a is done. The SQLite store and `FileLogs` pass their contracts without a tag
 freezer, pause and modernc spikes ran. M13b starts with question 10's four guest changes, each in
 `taskguest`, `runner.sh` and `guestsim` with a test that fails without it. Then comes the
 executor's log copy loop under the per-run cap. Each `FileLogs.Append` syncs the file and five
-directories, so the loop appends a poll's output at once, not line by line.
+directories, so the loop appends a poll's output at once, not line by line. Both stores' `Submit`
+must also refuse a follow-up once the task's inputs, summed over its runs, would pass
+`MaxInputBytes`. hibd checks one submission at a time, and the refusal needs a `task` error and
+a `hibapi` code.
