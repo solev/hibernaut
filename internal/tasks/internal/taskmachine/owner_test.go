@@ -15,6 +15,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/pauseall"
 	"github.com/solev/hibernaut/internal/task"
+	"github.com/solev/hibernaut/internal/taskguest"
 	"github.com/solev/hibernaut/internal/taskguest/guestsim"
 	"github.com/solev/hibernaut/internal/tasks/internal/taskstore"
 )
@@ -102,6 +103,9 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{now: t0, store: taskstore.NewMemory()}
 	now := func() time.Time { return f.now }
 	f.sim = guestsim.New(now)
+	f.sim.Script = func(task.RunID, task.Stage) guestsim.Behavior {
+		return guestsim.Behavior{Runs: time.Hour}
+	}
 	f.owner = New(f.sim, f.store, &memLocks{}, now, "test")
 	rc, err := f.store.Submit(ctx, task.Submission{RequestID: "r1", Spec: task.Spec{
 		Command: []string{"codex"}, Image: "dev", Size: "dev", Timeout: time.Hour},
@@ -127,6 +131,14 @@ func newFixture(t *testing.T) *fixture {
 		if err := f.store.Append(ctx, c); err != nil {
 			t.Fatal(err)
 		}
+	}
+	r, err := f.store.Run(ctx, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := f.sim.Exec(ctx, f.tm, root(taskguest.Launch(r, task.StageCommand, time.Hour))); err != nil ||
+		res.ExitCode != 0 {
+		t.Fatalf("launch fixture stage: %+v, %v", res, err)
 	}
 	return f
 }

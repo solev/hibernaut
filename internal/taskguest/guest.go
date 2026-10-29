@@ -46,6 +46,9 @@ const (
 // ExitTryAgain is what a stage's ExecStart exits with when its marker already exists.
 const ExitTryAgain = 75
 
+// ExitFrozen is reserved for runner launch refusing a frozen or transitioning slice.
+const ExitFrozen = 76
+
 // RunDir is run r's folder in the machine.
 func RunDir(r task.RunID) string {
 	return path.Join(Root, string(r.Task), "r"+strconv.Itoa(r.N))
@@ -86,7 +89,8 @@ func Verify(r task.RunID) []string {
 }
 
 // Launch is the systemd-run argv that starts stage s of run r. runtimeMax is the time left to
-// the deadline. The prompt reaches the command stage as a file on stdin, never in argv.
+// the deadline. It returns ExitFrozen for a frozen slice without thawing it. The prompt reaches
+// the command stage as a file on stdin, never in argv.
 func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 	dir := RunDir(r.ID)
 	runner := path.Join(dir, "runner")
@@ -95,7 +99,7 @@ func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 		stdin = "file:" + path.Join(dir, "in", p.Name)
 	}
 	logFile := path.Join(dir, string(s)+".log")
-	argv := []string{"systemd-run",
+	argv := []string{"systemd-run", "--expand-environment=no",
 		"--unit=" + Unit(r.ID, s),
 		"--slice=" + Slice,
 		"--no-block", "--quiet",
@@ -123,7 +127,7 @@ func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 	if s == task.StageCommand {
 		argv = append(append(argv, "--"), r.Spec.Command...)
 	}
-	return argv
+	return append([]string{"sh", runner, "launch"}, argv...)
 }
 
 func workingDir(r task.Run, s task.Stage) string {
@@ -141,10 +145,14 @@ func Look(r task.RunID, s task.Stage) []string {
 
 // Freeze freezes every stage unit through the cgroup v2 freezer. A frozen process doesn't run,
 // so it can't act on the network when its machine resumes.
-func Freeze() []string { return []string{"systemctl", "freeze", Slice} }
+func Freeze() []string { return control("freeze") }
 
 // Thaw lets the stage units run again.
-func Thaw() []string { return []string{"systemctl", "thaw", Slice} }
+func Thaw() []string { return control("thaw") }
+
+func control(cmd string, args ...string) []string {
+	return append([]string{"sh", "-c", string(Runner), "runner", cmd}, args...)
+}
 
 // Stop asks stage s's unit to end: TERM, then KILL after task.StopGrace, as its unit says.
 func Stop(r task.RunID, s task.Stage) []string {
@@ -154,7 +162,7 @@ func Stop(r task.RunID, s task.Stage) []string {
 // Kill ends stage s's unit at once with KILL, frozen or not, for rescue and for a frozen stage
 // past its deadline.
 func Kill(r task.RunID, s task.Stage) []string {
-	return []string{"systemctl", "kill", "--kill-whom=all", "--signal=SIGKILL", Unit(r, s)}
+	return control("kill", Unit(r, s))
 }
 
 // ReadLog reads at most max bytes of stage s's output from offset. The host's copy of the log
@@ -185,8 +193,10 @@ const (
 type Seen struct {
 	Marker bool
 	Exit   *task.ExitRecord
-	// Load, Active, Sub and Freezer are the unit's systemd properties.
-	Load, Active, Sub, Freezer string
+	// Load, Active and Sub are the unit's systemd properties.
+	Load, Active, Sub string
+	// CgroupFrozen is the unit's cgroup.events frozen value.
+	CgroupFrozen bool
 	// LogSize is the stage log's size in the machine.
 	LogSize int64
 }
@@ -206,9 +216,8 @@ func (s Seen) Verdict() Verdict {
 	return Vanished
 }
 
-// Frozen reports whether the unit is frozen, itself or through the slice. Which of the two
-// systemd reports for a unit in a frozen slice depends on its version: the freezer spike pins it.
-func (s Seen) Frozen() bool { return s.Freezer == "frozen" || s.Freezer == "frozen-by-parent" }
+// Frozen reports whether the kernel has frozen the unit, itself or through the slice.
+func (s Seen) Frozen() bool { return s.CgroupFrozen }
 
 // ParseLook parses Look's output.
 func ParseLook(out []byte) (Seen, error) {
@@ -243,8 +252,11 @@ func ParseLook(out []byte) (Seen, error) {
 			s.Active = v
 		case "SubState":
 			s.Sub = v
-		case "FreezerState":
-			s.Freezer = v
+		case "frozen":
+			if v != "0" && v != "1" {
+				return Seen{}, fmt.Errorf("look: bad frozen value %q", v)
+			}
+			s.CgroupFrozen = v == "1"
 		case "log":
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil {

@@ -140,6 +140,9 @@ func (x *executor) main(ctx context.Context) error {
 	if s, ok := x.r.Stop(); ok {
 		return s
 	}
+	if last, ok := x.r.Last(); ok && last.Step().WrapUp() {
+		return nil
+	}
 	if err := x.machine(ctx); err != nil {
 		return err
 	}
@@ -189,6 +192,9 @@ func (x *executor) machine(ctx context.Context) error {
 }
 
 func (x *executor) makeMachine(ctx context.Context) (task.Body, error) {
+	if err := x.boundary(ctx); err != nil {
+		return nil, err
+	}
 	timeout := task.MachineTimeout(x.r, x.now())
 	m, found, err := x.cfg.Machines.Find(ctx, x.id.Task)
 	if err != nil {
@@ -223,10 +229,10 @@ func (x *executor) upload(ctx context.Context) error {
 	if x.done(task.StepUpload) {
 		return nil
 	}
+	if err := x.ready(ctx); err != nil {
+		return err
+	}
 	if !x.open(task.StepUpload) {
-		if err := x.boundary(ctx); err != nil {
-			return err
-		}
 		if err := x.append(ctx, &task.UploadIntent{}); err != nil {
 			return err
 		}
@@ -251,7 +257,7 @@ func (x *executor) stage(ctx context.Context, s task.Stage) (bool, error) {
 		return e.OK(), nil
 	}
 	if !x.launched(s) {
-		if err := x.boundary(ctx); err != nil {
+		if err := x.ready(ctx); err != nil {
 			return false, err
 		}
 		if !x.open(s.Step()) {
@@ -284,9 +290,18 @@ func (x *executor) launch(ctx context.Context, s task.Stage) error {
 	adopted := seen.Verdict() != taskguest.NotStarted
 	if !adopted {
 		argv := taskguest.Launch(x.r, s, task.RuntimeMax(x.r, x.now()))
-		if _, err := x.exec(ctx, argv, taskguest.ExecTimeout); err != nil &&
-			!errors.Is(err, engine.ErrConnectionLost) {
+		res, err := x.exec(ctx, argv, taskguest.ExecTimeout)
+		if err != nil && !errors.Is(err, engine.ErrConnectionLost) {
 			return err
+		}
+		if err == nil && res.ExitCode == taskguest.ExitFrozen {
+			if err := x.cfg.Engine.Thaw(ctx, x.id.Task, x.r.MachineID()); err != nil {
+				return err
+			}
+			return fmt.Errorf("launch %s of %s: slice thawed; retry launch", s, x.id)
+		}
+		if err == nil && res.ExitCode != 0 {
+			return fmt.Errorf("launch %s of %s exited %d: %s", s, x.id, res.ExitCode, res.Stderr)
 		}
 		if seen, err = x.look(ctx, s); err != nil {
 			return err
@@ -306,14 +321,10 @@ func (x *executor) launch(ctx context.Context, s task.Stage) error {
 // *task.StopIntent when a stop comes first: the stop step then ends the stage.
 func (x *executor) await(ctx context.Context, s task.Stage) (task.ExitRecord, error) {
 	for {
-		if err := x.boundary(ctx); err != nil {
+		if err := x.ready(ctx); err != nil {
 			return task.ExitRecord{}, err
 		}
-		if x.r.Machine == task.MachinePaused {
-			if err := x.paused(ctx); err != nil {
-				return task.ExitRecord{}, err
-			}
-		} else if e, done, err := x.lookAndCopy(ctx, s); done || err != nil {
+		if e, done, err := x.lookAndCopy(ctx, s); done || err != nil {
 			return e, err
 		}
 		if err := x.wait(ctx); err != nil {
@@ -350,18 +361,39 @@ func (x *executor) lookAndCopy(ctx context.Context, s task.Stage) (task.ExitReco
 	return task.ExitRecord{}, false, nil
 }
 
-// paused acts on a paused machine while its stage is live and no stop is due. Only the host
-// pauses a live run's machine, freezing its stage first, so a frozen one is resumed at once. A
-// machine paused without the freeze is held.
-func (x *executor) paused(ctx context.Context) error {
-	if task.DecidePaused(x.r) != task.ResumeAndThaw {
-		return nil
+// ready checks the main-line boundary and resolves pauses and recorded freezes before exec.
+func (x *executor) ready(ctx context.Context) error {
+	for {
+		if err := x.boundary(ctx); err != nil {
+			return err
+		}
+		switch {
+		case x.r.Machine == task.MachinePaused:
+			_, live := x.r.LiveStage()
+			if !live || task.DecidePaused(x.r) == task.ResumeAndThaw {
+				_, err := x.cfg.Machines.Resume(ctx, x.r, x.r.MachineID(),
+					task.MachineTimeout(x.r, x.now()))
+				if err == nil {
+					continue
+				}
+				if !errors.Is(err, room.ErrFull) {
+					return err
+				}
+			}
+			if err := x.wait(ctx); err != nil {
+				return err
+			}
+		case x.r.Frozen():
+			if err := x.cfg.Engine.Thaw(ctx, x.id.Task, x.r.MachineID()); err != nil {
+				if stop := x.boundary(ctx); stop != nil {
+					return stop
+				}
+				return err
+			}
+		default:
+			return nil
+		}
 	}
-	_, err := x.cfg.Machines.Resume(ctx, x.r, x.r.MachineID(), task.MachineTimeout(x.r, x.now()))
-	if errors.Is(err, room.ErrFull) {
-		return nil
-	}
-	return err
 }
 
 // stop ends the live stage after a recorded stop. A frozen stage is killed, since it can't act
@@ -543,6 +575,13 @@ func (x *executor) boundary(ctx context.Context) error {
 	if err := x.refresh(ctx); err != nil {
 		return err
 	}
+	// A request or freeze row can change during the engine lookup, so read the store again.
+	r, err := x.cfg.Store.Run(ctx, x.id)
+	if err != nil {
+		return err
+	}
+	r.Machine = x.r.Machine
+	x.r = r
 	if s, ok := x.r.Stop(); ok {
 		return s
 	}
@@ -824,7 +863,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 			case nudged, errors.Is(err, taskstore.ErrStale):
 				continue
 			}
-			if s.cfg.Logf != nil && s.life.Err() == nil {
+			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) {
 				s.cfg.Logf("task %s: %v", r.ID, err)
 			}
 			_ = s.cfg.Clock.Sleep(s.life, h.x.poll())
