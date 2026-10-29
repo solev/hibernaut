@@ -245,7 +245,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						injected, restarted, woke, released := false, false, false, false
 						hostFreeze := false
 						var access task.Access
-						autoWoke := false
+						exitClearedHold := false
 						var injectedAt int
 						heldPolls := 0
 						var stopStarts []int
@@ -311,7 +311,6 @@ func TestExecBoundarySweep(t *testing.T) {
 								if _, live := r.LiveStage(); !live && access == task.AccessHeld &&
 									nowAccess == task.AccessLive && !woke && !released {
 									// LiveStage ends at StageExit, even if its final log copy was lost.
-									autoWoke = true
 									exitedBeforeResume++
 									t.Log("held at injection; StageExit cleared LiveStage before automatic resume")
 								}
@@ -333,15 +332,20 @@ func TestExecBoundarySweep(t *testing.T) {
 								restarted = true
 							}
 							if injected && strings.HasPrefix(event, "engine-pause") &&
-								access == task.AccessHeld && !autoWoke && !call.step.WrapUp() {
+								access == task.AccessHeld && !call.step.WrapUp() {
 								r := h.run(s.id)
-								if !woke && event == "engine-pause-wake" {
+								// LiveStage's durable exit ends the hold without a user action.
+								if _, live := r.LiveStage(); !live && !woke && !released {
+									exitClearedHold = true
+								}
+								if !exitClearedHold && !woke && event == "engine-pause-wake" {
 									// An external user wake is distinct from hibd's guarded automatic resume.
 									if _, err := h.sim.Resume(ctx, h.machineID(s.id), time.Hour); err != nil {
 										t.Fatal(err)
 									}
 									woke = true
-								} else if event != "engine-pause-wake" && !released && passes >= injectedAt+2 {
+								} else if !exitClearedHold && event != "engine-pause-wake" &&
+									!released && passes >= injectedAt+2 {
 									if _, stopped := r.Stop(); !stopped {
 										deadline, _ := r.Deadline()
 										h.clock.Advance(deadline.Sub(h.clock.Now()))
@@ -369,6 +373,10 @@ func TestExecBoundarySweep(t *testing.T) {
 							t.Fatal("event was never injected")
 						}
 						r := h.run(s.id)
+						if _, live := r.LiveStage(); !live && access == task.AccessHeld &&
+							!woke && !released {
+							exitClearedHold = true
+						}
 						want := task.Succeeded
 						switch event {
 						case "cancel":
@@ -376,7 +384,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						case "deadline":
 							want = task.TimedOut
 						case "engine-pause-rescue", "engine-pause-rm":
-							if access == task.AccessHeld && !autoWoke {
+							if access == task.AccessHeld && !exitClearedHold {
 								want = task.TimedOut
 							}
 						}
@@ -410,7 +418,7 @@ func TestExecBoundarySweep(t *testing.T) {
 							}
 						}
 						if event == "engine-pause-wake" && access == task.AccessHeld &&
-							!autoWoke && !call.step.WrapUp() && !woke {
+							!exitClearedHold && !call.step.WrapUp() && !woke {
 							t.Error("run ended without the external user wake")
 						}
 						h.checkLog(s.id)
