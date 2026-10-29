@@ -31,7 +31,7 @@ func (m *Manager) restoreOrigin(ctx context.Context, em engine.Machine) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if em.State == engine.Running {
-		_, err := m.e.Resume(rctx, em.ID, m.saveTimeout(em))
+		_, err := m.resumeRoom(rctx, em, m.saveTimeout(em))
 		return err
 	}
 	err := m.e.Pause(rctx, em.ID)

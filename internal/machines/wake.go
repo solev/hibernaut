@@ -38,18 +38,28 @@ func (m *Manager) Wake(ctx context.Context, id string, leaseUntil time.Time) (en
 	if !ok {
 		return engine.Machine{}, fmt.Errorf("waking %s: %w with that ID", id, ErrNoMachine)
 	}
-	if err := m.checkRoom(ctx, cmp.Or(Name(em), id), em.MemoryMB, false); err != nil {
-		return engine.Machine{}, err
-	}
-
 	left := leaseUntil.Sub(now)
 	wctx, cancel := context.WithTimeoutCause(ctx, left, links.ErrLeaseExpired)
 	defer cancel()
+	name := cmp.Or(Name(em), id)
+	unlock, err := m.checkRoom(wctx, name, em.MemoryMB, false)
+	if err != nil {
+		if errors.Is(context.Cause(wctx), links.ErrLeaseExpired) {
+			return engine.Machine{}, fmt.Errorf("waking %s: %w", id, links.ErrLeaseExpired)
+		}
+		return engine.Machine{}, err
+	}
+	left = leaseUntil.Sub(m.now())
+	if left <= 0 {
+		unlock()
+		return engine.Machine{}, fmt.Errorf("waking %s: %w", id, links.ErrLeaseExpired)
+	}
 	_, err = m.e.Resume(wctx, id, min(timeoutFor(idle), left))
+	unlock()
 	if err != nil {
 		cause := fmt.Errorf("waking %s: %w", id, safeError(err))
 		if wctx.Err() == nil {
-			return engine.Machine{}, cause
+			return engine.Machine{}, m.refused(ctx, name, em.MemoryMB, false, cause)
 		}
 		// The engine may have finished the resume after we stopped waiting for it.
 		if errors.Is(context.Cause(wctx), links.ErrLeaseExpired) {

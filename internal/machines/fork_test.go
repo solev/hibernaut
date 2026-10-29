@@ -1,6 +1,7 @@
 package machines_test
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"slices"
@@ -183,11 +184,17 @@ func TestForkRoomRetriesWhileCheckpointFreesMemory(t *testing.T) {
 		v.create(t, "web")
 		at := time.Now()
 		reads := 0
+		saved := false
 		m := imageManager(v, func(cfg *machines.Config) {
+			cfg.Engine = &faultEngine{Engine: v.e, save: func(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
+				tmpl, err := v.e.SaveTemplate(ctx, id, alias)
+				saved = err == nil
+				return tmpl, err
+			}}
 			cfg.ReadRoom = func() (room.Host, error) {
 				reads++
 				h, _ := roomy()
-				if reads > 1 && time.Since(at) < time.Second {
+				if saved && time.Since(at) < time.Second {
 					h.FreePages = 0
 				}
 				return h, nil
@@ -211,12 +218,16 @@ func TestForkRoomWaitIsBounded(t *testing.T) {
 		v := newEnv(t, fake.WithExec(newCopyGuest().exec))
 		v.create(t, "web")
 		at := time.Now()
-		reads := 0
+		saved := false
 		m := imageManager(v, func(cfg *machines.Config) {
+			cfg.Engine = &faultEngine{Engine: v.e, save: func(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
+				tmpl, err := v.e.SaveTemplate(ctx, id, alias)
+				saved = err == nil
+				return tmpl, err
+			}}
 			cfg.ReadRoom = func() (room.Host, error) {
-				reads++
 				h, _ := roomy()
-				if reads > 1 {
+				if saved {
 					h.FreePages = 0
 				}
 				return h, nil

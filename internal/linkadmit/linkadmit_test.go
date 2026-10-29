@@ -46,6 +46,7 @@ func TestNewNamesTheMissingPart(t *testing.T) {
 		{"gate keeper", func(c *linkadmit.Config) { c.Keeper = nil }},
 		{"link store", func(c *linkadmit.Config) { c.Store = nil }},
 		{"activity clock", func(c *linkadmit.Config) { c.Clock = nil }},
+		{"state directory", func(c *linkadmit.Config) { c.StateDir = "" }},
 	} {
 		cfg := full
 		tc.clear(&cfg)

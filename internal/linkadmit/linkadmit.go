@@ -4,7 +4,7 @@
 // It owns the room reserve, the caps, the wake rate limit, the activity clock, the run watcher
 // and the control socket hibd's other invocations use to cancel links across processes.
 //
-// New refuses a configuration missing any of Engine, Runs, Keeper, Store or Clock.
+// New refuses a configuration missing StateDir, Engine, Runs, Keeper, Store or Clock.
 package linkadmit
 
 import (
@@ -21,6 +21,8 @@ import (
 
 // Config is everything admission needs.
 type Config struct {
+	// StateDir is the shared hibd state directory, including room.lock.
+	StateDir string
 	// Engine resumes targets and reads their state.
 	Engine engine.Engine
 	// Runs is the run watcher, usually the one NewRuns returns.
@@ -96,6 +98,8 @@ func New(cfg Config) (*Admitter, error) {
 		return nil, errors.New("linkadmit: no link store")
 	case cfg.Clock == nil:
 		return nil, errors.New("linkadmit: no activity clock")
+	case cfg.StateDir == "":
+		return nil, errors.New("linkadmit: no state directory")
 	}
 	a := &Admitter{
 		cfg: cfg, closer: cfg.Closer,
@@ -111,9 +115,13 @@ func New(cfg Config) (*Admitter, error) {
 		a.quiescing = func() bool { return false }
 	}
 	a.wake = machines.New(machines.Config{
+		StateDir: cfg.StateDir,
 		Engine:   cfg.Engine,
 		Now:      a.now,
-		ReadRoom: func() (room.Host, error) { return a.readRoom() },
+		ReadRoom: func() (room.Host, error) {
+			h, err := a.readRoom()
+			return h.Reserve(machines.PeopleReserveMB()), err
+		},
 		Activity: cfg.Clock,
 		Fence:    cfg.Store.Fence,
 	}).Wake

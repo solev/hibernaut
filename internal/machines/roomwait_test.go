@@ -17,17 +17,24 @@ import (
 type slowRoomEngine struct {
 	engine.Engine
 	reads int
+	saved bool
 }
 
 func (e *slowRoomEngine) List(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
-	if slices.Contains(opts.States, engine.Running) {
+	if e.saved && slices.Contains(opts.States, engine.Running) {
 		e.reads++
-		if e.reads > 2 {
+		if e.reads > 1 {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
 	}
 	return e.Engine.List(ctx, opts)
+}
+
+func (e *slowRoomEngine) SaveTemplate(ctx context.Context, id, alias string) (engine.TemplateInfo, error) {
+	tmpl, err := e.Engine.SaveTemplate(ctx, id, alias)
+	e.saved = err == nil
+	return tmpl, err
 }
 
 func TestForkRoomWaitBoundsEngineReads(t *testing.T) {
@@ -39,7 +46,7 @@ func TestForkRoomWaitBoundsEngineReads(t *testing.T) {
 			cfg.Engine = e
 			cfg.ReadRoom = func() (room.Host, error) {
 				h, _ := roomy()
-				if e.reads > 1 {
+				if e.saved {
 					h.FreePages = 0
 				}
 				return h, nil

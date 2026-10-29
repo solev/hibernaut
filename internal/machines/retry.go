@@ -43,7 +43,12 @@ const startFailedFor = 30 * time.Second
 func (m *Manager) retryResume(ctx context.Context, name string, memoryMB int, resume func(context.Context) error) error {
 	var failedAt time.Time
 	for attempt := 1; ; attempt++ {
-		err := resume(ctx)
+		unlock, err := m.checkRoom(ctx, name, memoryMB, false)
+		if err != nil {
+			return err
+		}
+		err = resume(ctx)
+		unlock()
 		switch {
 		case err == nil:
 			return nil
@@ -59,7 +64,7 @@ func (m *Manager) retryResume(ctx context.Context, name string, memoryMB int, re
 			}
 			return fmt.Errorf("%w (tried %d times)", err, attempt)
 		}
-		if rerr := m.checkRoom(ctx, name, memoryMB, false); errors.Is(rerr, room.ErrFull) {
+		if rerr := m.roomError(ctx, name, memoryMB, false); errors.Is(rerr, room.ErrFull) {
 			return rerr
 		}
 		if werr := m.waitCut(ctx, 2*time.Second); werr != nil {

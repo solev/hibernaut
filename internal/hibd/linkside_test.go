@@ -22,6 +22,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/linkctl"
 	"github.com/solev/hibernaut/internal/links"
+	"github.com/solev/hibernaut/internal/room"
 )
 
 type fakeGuard struct {
@@ -511,6 +512,7 @@ func TestLinkRoomChargesATargetItsSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	e := fake.New()
 	for id, mb := range map[string]int{"big1": 2 * def, "dev1": def, "small1": def / 2, "odd1": def + 1, "nosize1": 0} {
 		e.Add(engine.Machine{ID: id, State: engine.Paused, MemoryMB: mb})
@@ -529,5 +531,19 @@ func TestLinkRoomChargesATargetItsSize(t *testing.T) {
 		if free, need, err := roomFor(target); err == nil {
 			t.Errorf("room for %s = %d, %d, nil; want an error", target, free, need)
 		}
+	}
+
+}
+
+func TestLinkRoomReservesMemoryNotDisk(t *testing.T) {
+	e := fake.New()
+	e.Add(engine.Machine{ID: "target", State: engine.Paused, MemoryMB: 2048})
+	a, _, _ := newApp(t, e)
+	a.ReadRoom = func() (room.Host, error) {
+		return room.Host{PageSize: 2 << 20, Pages: 8192, FreePages: 4096, DiskFree: 3 << 30}, nil
+	}
+	free, need, err := a.linkRoom(e)("target")
+	if err != nil || free != 1 || need != 1 {
+		t.Fatalf("disk-limited link room = %d, %d, %v, want 1, 1, nil with only RAM reserved", free, need, err)
 	}
 }
