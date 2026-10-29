@@ -88,6 +88,9 @@ and return. The daemon notices on its next tick.
 
 ```go
 // internal/hibd/task.go, startTasks, called from hibd daemon. e is engine()'s, so guarded.
+// Setup holds the task's secrets and git identity. machines.Config gains TaskLimits, from settings.
+m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, Now: a.now,
+	TaskLimits: limits, ReadRoom: a.ReadRoom, Setup: setup, Awake: a.awake})
 d, err := a.tasks(cfg).Daemon(life, tasks.DaemonConfig{Engine: e,
 	Machines: taskMachines{a, cfg, e, m}, Logf: logger.Printf}) // tasks.ErrDaemonRunning
 tick := func(ctx context.Context) error {

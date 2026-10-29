@@ -263,9 +263,6 @@ func (l *lineReader) line() []byte {
 	return l.buf
 }
 
-// rest is the stream after the first line: the inputs.
-func (l *lineReader) rest() io.Reader { return l.r }
-
 // taskLs is hibd task ls.
 func (a *App) taskLs(ctx context.Context, c taskCommand, args []string) int {
 	return a.taskNotYet(c, args)
@@ -375,15 +372,3 @@ func (t taskMachines) Remove(ctx context.Context, id task.ID) error {
 }
 
 var _ tasks.Machines = taskMachines{}
-
-// startTasks starts running tasks in hibd daemon, on e, which engine() already guarded. The
-// daemon ticks it every tasks.Poll, skips the tick while the host is going to sleep, and closes
-// it after life ends. Another daemon running tasks is tasks.ErrDaemonRunning.
-func (a *App) startTasks(life context.Context, cfg config, e engine.Engine) (*tasks.Daemon, error) {
-	return nil, errTasksNotImplemented
-	// TODO:
-	//   m := machines.New(Config{Engine: e, StateDir, Now: a.now, TaskLimits: from settings,
-	//     ReadRoom: a.ReadRoom, Setup: the task's secrets and git identity, Awake: a.awake})
-	//   return a.tasks(cfg).Daemon(life, tasks.DaemonConfig{Engine: e,
-	//     Machines: taskMachines{a, cfg, e, m}, Logf: logger.Printf})
-}
