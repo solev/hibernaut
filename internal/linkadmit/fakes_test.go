@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"net/netip"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -318,8 +319,12 @@ func newEnv(t *testing.T, configure ...func(*linkadmit.Config)) *env {
 		needs:  map[string]int{},
 	}
 	v.free.Store(8)
+	state := t.TempDir()
+	if err := os.Chmod(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cfg := linkadmit.Config{
-		StateDir: t.TempDir(),
+		StateDir: state,
 		Engine:   v.e, Runs: v.runs, Keeper: v.keeper, Dropper: v.guard, Closer: v.closer,
 		Resolver: v.guard, Store: v.store, Clock: v.clock,
 		Room: func(target string) (int, int, error) { return int(v.free.Load()), v.need(target), nil },

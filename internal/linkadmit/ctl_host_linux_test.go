@@ -21,6 +21,9 @@ func TestHostControlSocketBelongsToTheStateOwner(t *testing.T) {
 	}
 	const nobody = 65534
 	state := t.TempDir()
+	if err := os.Chmod(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chown(state, nobody, nobody); err != nil {
 		t.Fatal(err)
 	}
