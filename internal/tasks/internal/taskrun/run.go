@@ -288,6 +288,12 @@ func (x *executor) launch(ctx context.Context, s task.Stage) error {
 		if err != nil && !errors.Is(err, engine.ErrConnectionLost) {
 			return err
 		}
+		if err == nil && res.ExitCode == taskguest.ExitFrozen {
+			if err := x.cfg.Engine.Thaw(ctx, x.id.Task, x.r.MachineID()); err != nil {
+				return err
+			}
+			return fmt.Errorf("launch %s of %s: slice thawed; retry launch", s, x.id)
+		}
 		if err == nil && res.ExitCode != 0 {
 			return fmt.Errorf("launch %s of %s exited %d: %s", s, x.id, res.ExitCode, res.Stderr)
 		}

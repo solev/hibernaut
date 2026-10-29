@@ -46,6 +46,9 @@ const (
 // ExitTryAgain is what a stage's ExecStart exits with when its marker already exists.
 const ExitTryAgain = 75
 
+// ExitFrozen is reserved for runner launch refusing a frozen or transitioning slice.
+const ExitFrozen = 76
+
 // RunDir is run r's folder in the machine.
 func RunDir(r task.RunID) string {
 	return path.Join(Root, string(r.Task), "r"+strconv.Itoa(r.N))
@@ -86,8 +89,8 @@ func Verify(r task.RunID) []string {
 }
 
 // Launch is the systemd-run argv that starts stage s of run r. runtimeMax is the time left to
-// the deadline. It refuses a frozen slice without thawing it. The prompt reaches the command
-// stage as a file on stdin, never in argv.
+// the deadline. It returns ExitFrozen for a frozen slice without thawing it. The prompt reaches
+// the command stage as a file on stdin, never in argv.
 func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 	dir := RunDir(r.ID)
 	runner := path.Join(dir, "runner")

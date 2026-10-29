@@ -94,8 +94,8 @@ func TestLaunchRefusesFrozenSlice(t *testing.T) {
 		}
 	}
 	argv := taskguest.Launch(next, task.StageCommand, time.Hour)
-	if res := execGuest(t, s, id, argv); res.ExitCode == 0 {
-		t.Fatal("launch accepted a frozen slice")
+	if res := execGuest(t, s, id, argv); res.ExitCode != taskguest.ExitFrozen {
+		t.Fatalf("launch did not return ExitFrozen: %+v", res)
 	}
 	if !s.Frozen(id) || s.Starts(id, next.ID, task.StageCommand) != 0 {
 		t.Fatal("launch thawed the slice or started the command")

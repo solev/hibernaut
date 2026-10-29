@@ -9,6 +9,8 @@
 #   in/                 the uploaded inputs and their manifest
 set -eu
 
+EXIT_FROZEN=76
+
 die() {
 	printf 'runner: %s\n' "$*" >&2
 	exit 2
@@ -84,14 +86,21 @@ kill_stage() {
 }
 
 launch() {
-	cgroup=$(slice_cgroup)
+	cgroup=$(slice_cgroup) || die "cannot read hib-task.slice cgroup"
 	if [ -n "$cgroup" ]; then
 		if [ "$(cat "$cgroup/cgroup.freeze")" != 0 ] ||
 			! grep -qx 'frozen 0' "$cgroup/cgroup.events"; then
-			die "hib-task.slice is frozen; only the executor may thaw it"
+			printf '%s\n' "runner: hib-task.slice is frozen; only the executor may thaw it" >&2
+			exit "$EXIT_FROZEN"
 		fi
 	fi
-	exec "$@"
+	if "$@"; then
+		return 0
+	else
+		status=$?
+	fi
+	[ "$status" -ne "$EXIT_FROZEN" ] || die "launch command exited reserved code $EXIT_FROZEN"
+	return "$status"
 }
 
 # log RUN STAGE OFFSET MAX: at most MAX bytes of the stage's output from OFFSET, base64 on one

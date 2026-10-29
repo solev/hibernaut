@@ -211,7 +211,7 @@ func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.S
 	switch {
 	case argv[0] == "sh" && len(argv) > 3 && argv[2] == "launch":
 		if g.frozen {
-			return engine.ExecResult{ExitCode: 2,
+			return engine.ExecResult{ExitCode: taskguest.ExitFrozen,
 				Stderr: []byte("runner: hib-task.slice is frozen; only the executor may thaw it")}
 		}
 		return g.launch(argv[3:], now, script)

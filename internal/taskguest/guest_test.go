@@ -205,8 +205,9 @@ shift 3
 exec "$@"
 `)
 			out, code := g.run(t, argv)
-			if code == 0 || !strings.Contains(out, "hib-task.slice is frozen") {
-				t.Fatalf("launch did not refuse the %s slice: exit %d: %s", tt.name, code, out)
+			if code != ExitFrozen {
+				t.Fatalf("launch did not return ExitFrozen for the %s slice: exit %d: %s",
+					tt.name, code, out)
 			}
 			freeze, err := os.ReadFile(filepath.Join(cg, "cgroup.freeze"))
 			if err != nil || string(freeze) != tt.freeze+"\n" {
@@ -217,6 +218,25 @@ exec "$@"
 			}
 			if out, code := g.run(t, argv); code != 0 || out != "$$\n${HIB_RUN}\n" {
 				t.Fatalf("launch after explicit thaw: exit %d: %q", code, out)
+			}
+		})
+	}
+}
+
+func TestLaunchReservesFrozenExitCode(t *testing.T) {
+	for _, tool := range []string{"systemctl", "systemd-run"} {
+		t.Run(tool, func(t *testing.T) {
+			g := newShellGuest(t)
+			writeTestFile(t, filepath.Join(g.bin, "systemd-run"), "#!/bin/sh\nexit 0\n")
+			writeTestFile(t, filepath.Join(g.bin, tool),
+				"#!/bin/sh\nexit "+strconv.Itoa(ExitFrozen)+"\n")
+			r := task.Run{ID: task.RunID{Task: "t-abcdefgh", N: 2},
+				Spec: task.Spec{Command: []string{"true"}}}
+			argv := Launch(r, task.StageCommand, time.Hour)
+			argv[1] = g.runner
+			if out, code := g.run(t, argv); code == 0 || code == ExitFrozen {
+				t.Fatalf("%s failure became success or a frozen refusal: exit %d: %s",
+					tool, code, out)
 			}
 		})
 	}
