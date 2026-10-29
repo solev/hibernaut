@@ -227,6 +227,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						h, s := newSweep(t, scenario == "follow-up")
 						ctx := context.Background()
 						injected, restarted, woke, released := false, false, false, false
+						hostFreeze := false
 						var injectedAt int
 						var stopStarts []int
 						h.store.FailAppends(func(c task.Checkpoint) error {
@@ -239,7 +240,8 @@ func TestExecBoundarySweep(t *testing.T) {
 						})
 						s.before = func(got sweepCall, n int) {
 							if injected && strings.HasPrefix(event, "engine-pause") &&
-								got.name == "resume" && !woke && !released && !h.run(s.id).Frozen() {
+								(got.name == "resume" || got.name == "thaw") &&
+								!hostFreeze && !woke && !released {
 								t.Error("hibd tried to resume an engine-paused machine without user intent")
 							}
 							if injected || n != i+1 {
@@ -259,16 +261,7 @@ func TestExecBoundarySweep(t *testing.T) {
 									h.stopSup()
 								}
 							case "engine-pause-wake", "engine-pause-rescue", "engine-pause-rm":
-								r := h.run(s.id)
-								if r.Frozen() {
-									// Remove an earlier host freeze before modelling an unrelated engine pause.
-									if _, err := h.owner.Resume(ctx, mid, time.Hour); err != nil {
-										t.Error(err)
-									}
-									if err := h.owner.Thaw(ctx, s.id.Task, mid); err != nil {
-										t.Error(err)
-									}
-								}
+								hostFreeze = h.run(s.id).Frozen()
 								if err := h.sim.Pause(ctx, mid); err != nil {
 									t.Error(err)
 								}
@@ -294,7 +287,8 @@ func TestExecBoundarySweep(t *testing.T) {
 								h.settle()
 								restarted = true
 							}
-							if injected && strings.HasPrefix(event, "engine-pause") {
+							if injected && strings.HasPrefix(event, "engine-pause") &&
+								!hostFreeze && !call.step.WrapUp() {
 								r := h.run(s.id)
 								if !woke && event == "engine-pause-wake" {
 									// An external user wake is distinct from hibd's guarded automatic resume.
@@ -331,6 +325,17 @@ func TestExecBoundarySweep(t *testing.T) {
 						case "deadline", "engine-pause-rescue", "engine-pause-rm":
 							want = task.TimedOut
 						}
+						if strings.HasPrefix(event, "engine-pause") && hostFreeze {
+							want = task.Succeeded
+						}
+						if call.step.WrapUp() {
+							// task.Steps makes wrap-up non-interruptible and collect never wakes.
+							want = outcome(r)
+							if want != task.Succeeded && want != task.NoChanges {
+								t.Errorf("wrap-up changed outcome to %s", want)
+							}
+							t.Logf("wrap-up observation: %s", sweepResult(h, s.id, passes))
+						}
 						if !r.Ended() || outcome(r) != want {
 							t.Errorf("want %s; %s", want, sweepResult(h, s.id, passes))
 						}
@@ -343,7 +348,7 @@ func TestExecBoundarySweep(t *testing.T) {
 								t.Errorf("stage %s starts=%d, want 1; %s", stage, starts, sweepResult(h, s.id, passes))
 							}
 						}
-						if event == "engine-pause-wake" && !woke {
+						if event == "engine-pause-wake" && !hostFreeze && !call.step.WrapUp() && !woke {
 							t.Error("run ended without the external user wake")
 						}
 						h.checkLog(s.id)
