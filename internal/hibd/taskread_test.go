@@ -194,6 +194,9 @@ func TestTaskReadOfHistoryAndRemoval(t *testing.T) {
 				(out.Removal.Done == nil) != (state != "done")) {
 				t.Fatalf("show removal = %+v for %s", out.Removal, state)
 			}
+			if state == "done" && !out.Removal.Done.Equal(record.Removal.Done) {
+				t.Fatalf("removal done = %v, want %v", out.Removal.Done, record.Removal.Done)
+			}
 			listed := taskReadOf(record, "current-daemon", nil, false)
 			if len(listed.Runs) != 1 || listed.Runs[0].N != 2 || len(listed.Requests) != 0 || listed.Removal != nil {
 				t.Fatalf("ls history = %+v, want only latest run", listed)
@@ -239,15 +242,17 @@ func TestTaskShowAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, selectBy := range [][]string{{string(rec.Run.Task)}, {"-request", "submission"}} {
-		before := e.lists
-		code, r := taskReadReply(t, a, out, append([]string{"task", "show"}, selectBy...)...)
-		if code != 0 || r.Task == nil || r.Task.ID != rec.Run.Task || len(r.Task.Runs) != 1 ||
-			len(r.Task.Requests) != 1 || r.Task.Requests[0].Kind != task.RequestCancel || r.Task.Runs[0].Phase != task.PhaseQueued {
-			t.Fatalf("show %v = exit %d, %+v, want submitted task and request", selectBy, code, r)
-		}
-		if e.lists != before+1 {
-			t.Errorf("show lists = %d, want one", e.lists-before)
-		}
+		t.Run(selectBy[0], func(t *testing.T) {
+			before := e.lists
+			code, r := taskReadReply(t, a, out, append([]string{"task", "show"}, selectBy...)...)
+			if code != 0 || r.Task == nil || r.Task.ID != rec.Run.Task || len(r.Task.Runs) != 1 ||
+				len(r.Task.Requests) != 1 || r.Task.Requests[0].Kind != task.RequestCancel || r.Task.Runs[0].Phase != task.PhaseQueued {
+				t.Fatalf("show %v = exit %d, %+v, want submitted task and request", selectBy, code, r)
+			}
+			if e.lists != before+1 {
+				t.Errorf("show lists = %d, want one", e.lists-before)
+			}
+		})
 	}
 	for _, tc := range []struct {
 		args []string
@@ -332,7 +337,8 @@ func TestTaskLogsCommandEdges(t *testing.T) {
 func TestTaskRequestsRecordAndReplay(t *testing.T) {
 	for _, cmd := range []string{"cancel", "rescue", "rm"} {
 		t.Run(cmd, func(t *testing.T) {
-			a, out, _ := newApp(t, fake.New())
+			e := fake.New()
+			a, out, _ := newApp(t, e)
 			baseEnv := a.Getenv
 			a.Getenv = func(k string) string {
 				if k == "SUDO_USER" {
@@ -342,6 +348,8 @@ func TestTaskRequestsRecordAndReplay(t *testing.T) {
 			}
 			st := taskReadStore(t, a)
 			rec := submitReadTask(t, st, "read", time.Now())
+			e.Add(engine.Machine{ID: "untouched", State: engine.Paused,
+				Metadata: map[string]string{"hib.name": string(rec.Run.Task), task.Label: string(rec.Run.Task)}})
 			kind := map[string]task.RequestKind{"cancel": task.RequestCancel, "rescue": task.RequestRescue, "rm": task.RequestRemove}[cmd]
 			var first *hibapi.TaskRequest
 			for range 2 {
@@ -383,6 +391,9 @@ func TestTaskRequestsRecordAndReplay(t *testing.T) {
 			record, err := st.Task(t.Context(), rec.Run.Task)
 			if err != nil || len(record.Requests) != 3 || record.Removal != nil || record.Runs[0].Ended() {
 				t.Errorf("request command acted instead of recording: %+v, %v", record, err)
+			}
+			if m, err := e.Get(t.Context(), "untouched"); err != nil || m.State != engine.Paused {
+				t.Errorf("request command touched machine: %+v, %v, want paused", m, err)
 			}
 		})
 	}
