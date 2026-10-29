@@ -485,8 +485,19 @@ func TestUploadConnectionCutAndRetry(t *testing.T) {
 }
 
 func TestUploadRejectsHTTPFailuresAndRedirects(t *testing.T) {
-	for _, status := range []int{http.StatusFound, http.StatusForbidden, http.StatusRequestEntityTooLarge, http.StatusBadGateway} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+	for _, tc := range []struct {
+		status         int
+		connectionLost bool
+	}{
+		{http.StatusFound, false},
+		{http.StatusForbidden, false},
+		{http.StatusRequestEntityTooLarge, false},
+		{http.StatusTooManyRequests, true},
+		{http.StatusBadGateway, true},
+		{http.StatusServiceUnavailable, true},
+		{http.StatusGatewayTimeout, true},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			f, e := newFakeE2B(t)
 			f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -496,14 +507,17 @@ func TestUploadRejectsHTTPFailuresAndRedirects(t *testing.T) {
 			f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, r.Body)
 				w.Header().Set("Location", target.URL)
-				http.Error(w, "upload refused", status)
+				http.Error(w, "upload refused", tc.status)
 			})
 			err := e.Upload(t.Context(), "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
 				Path: "/root/file", Size: 1,
 				Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("x")), nil },
 			}})
-			if err == nil || !strings.Contains(err.Error(), fmt.Sprint(status)) {
-				t.Errorf("Upload = %v, want HTTP status %d", err, status)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprint(tc.status)) {
+				t.Errorf("Upload = %v, want HTTP status %d", err, tc.status)
+			}
+			if got := errors.Is(err, engine.ErrConnectionLost); got != tc.connectionLost {
+				t.Errorf("Upload = %v, ErrConnectionLost = %t, want %t", err, got, tc.connectionLost)
 			}
 		})
 	}
@@ -531,6 +545,9 @@ func TestUploadSourceErrors(t *testing.T) {
 			}})
 			if !errors.Is(err, boom) {
 				t.Errorf("Upload = %v, want %v", err, boom)
+			}
+			if errors.Is(err, engine.ErrConnectionLost) {
+				t.Errorf("Upload = %v, source errors must not wrap ErrConnectionLost", err)
 			}
 			if where != "open" && closed.Load() != 1 {
 				t.Errorf("Close called %d times, want 1", closed.Load())
