@@ -839,8 +839,9 @@ func (s *Supervisor) tickRuns(ctx context.Context) error {
 }
 
 func (s *Supervisor) remove(ctx context.Context) error {
-	// TODO: retention waits for M16. SKETCH.md:998 asks whether the 7 days count from the
-	// last keep or the last ssh. Until then, only rm requests and open removals are read.
+	// TODO: retention waits for M16. SKETCH.md asks, "Should the 7-day keep count from the last
+	// run's keep, as `Retire` does, or from the last ssh?" Until then, only rm requests and open
+	// removals are read.
 	tasks, err := s.cfg.Store.Removing(ctx)
 	if err != nil {
 		return err
