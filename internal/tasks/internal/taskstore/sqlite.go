@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite"
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
