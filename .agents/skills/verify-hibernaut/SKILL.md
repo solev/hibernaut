@@ -23,9 +23,9 @@ control-hib launch --no-deploy   # verify what's already on the host, without de
 `launch` does this:
 
 1. Records the VM's power state.
-2. Runs `azure/up.sh`, which starts the VM, deploys this checkout's hibd and host scripts, installs E2B if its pin changed, and waits for `E2B is healthy`.
+2. Runs `azure/up.sh`, which starts the VM, deploys this checkout's hibd and host scripts, installs E2B if its pin changed, and waits for `E2B is healthy`. With `--no-deploy`, starts the VM and E2B without deploying this checkout.
 3. Builds `hib` with `git describe --tags --always --dirty` as its version.
-4. Runs `hib init` into the scratch config.
+4. Runs `hib init` into the scratch config. Records `EXPECTED_HIBD_VERSION` once in `run.env`. A deploy run expects the checkout's build. A `--no-deploy` run expects the version the host's hibd reports at this point.
 5. Builds the `dev` image if `hib image ls` says it isn't built.
 6. Runs `doctor`.
 
@@ -42,11 +42,13 @@ Read-only, and it never wakes the host. It exits 1 on any `FAIL` line:
 - The scratch hib exists.
 - The VM reports `VM running`.
 - E2B answers (`hib status --json` `.status.e2b.ok`).
-- hibd's version equals the checkout's. Against a dirty tree that's `<sha>-dirty`, the same on both sides.
+- hibd reports a readable version that equals the run's `EXPECTED_HIBD_VERSION`. Older runs without that field expect the checkout's build.
 - The `dev` image is built.
 - There is room for at least one small machine.
 
-It also prints `info` lines for the GitHub, Codex and secret states, this run's machines, and how many machines are someone else's. Run it first, and again whenever anything looks off. A `FAIL` on the version means another deploy happened mid-run. Rerun `azure/up.sh` or report it.
+For a `--no-deploy` run whose expected version differs from the checkout's, an `info` line says that hib commands reach the host's hibd, not this checkout.
+
+It also prints `info` lines for the GitHub, Codex and secret states, this run's machines, and how many machines are someone else's. Run it first, and again whenever anything looks off. A version mismatch means another deploy happened mid-run. An unreadable version also fails. Report either failure. To verify this checkout's hibd instead, clean up and start a deploy run with the user's agreement.
 
 ## Drive
 
