@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ type sweepCall struct {
 }
 
 type sweepTrace struct {
+	mu     sync.Mutex
 	h      *harness
 	id     task.RunID
 	calls  []sweepCall
@@ -29,6 +31,8 @@ type sweepTrace struct {
 }
 
 func (s *sweepTrace) call(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	r := s.h.run(s.id)
 	var step task.Step
 	if last, ok := r.Last(); ok {
