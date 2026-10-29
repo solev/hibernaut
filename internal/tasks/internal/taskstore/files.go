@@ -21,7 +21,8 @@ func privateFile(fi fs.FileInfo, owner statefile.Owner) error {
 }
 
 func openPrivate(root *os.Root, owner statefile.Owner, name string, flag int) (*os.File, error) {
-	f, err := root.OpenFile(name, flag|syscall.O_NOFOLLOW, 0)
+	// A planted FIFO must not block open before fstat can refuse it.
+	f, err := root.OpenFile(name, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

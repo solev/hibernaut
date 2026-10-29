@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/task"
@@ -50,5 +52,44 @@ func TestFileLogsRefuseSymlinks(t *testing.T) {
 	}
 	if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("symlink target = %q, %v", got, err)
+	}
+}
+
+func TestFileLogsRefuseFIFO(t *testing.T) {
+	dir := statefile.Dir{Path: t.TempDir()}
+	logs := taskstore.FileLogs{Dir: dir}
+	r := task.RunID{Task: "t-aaaaaaaa", N: 1}
+	stage := task.StageCommand
+	if err := logs.Append(r, stage, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(dir.Path, taskstore.Files, "logs", r.String(), string(stage))
+	if err := os.Remove(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(name, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		rc, err := logs.Open(r, stage, 0)
+		if rc != nil {
+			rc.Close()
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("Open accepted a FIFO")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Open blocked on a FIFO")
+	}
+	if _, err := logs.Size(r, stage); err == nil {
+		t.Fatal("Size accepted a FIFO")
+	}
+	if err := logs.Append(r, stage, 0, []byte("x")); err == nil {
+		t.Fatal("Append accepted a FIFO")
 	}
 }

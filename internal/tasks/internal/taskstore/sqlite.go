@@ -176,6 +176,9 @@ func Open(ctx context.Context, dir statefile.Dir) (*SQLite, error) {
 		if err := dir.EnsureDirectory(root, owner, name); err != nil {
 			return nil, err
 		}
+		if err := syncDirectory(root, filepath.Dir(name)); err != nil {
+			return nil, err
+		}
 	}
 	path, err := filepath.Abs(filepath.Join(dir.Path, DB))
 	if err != nil {

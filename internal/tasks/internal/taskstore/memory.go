@@ -63,6 +63,9 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		if err := task.CheckInputName(f.Name); err != nil {
 			return task.Receipt{}, err
 		}
+		if f.Size < 0 {
+			return task.Receipt{}, fmt.Errorf("input %s: negative size", f.Name)
+		}
 		b := make([]byte, f.Size)
 		if _, err := io.ReadFull(inputs, b); err != nil {
 			return task.Receipt{}, fmt.Errorf("reading %s: %w", f.Name, err)
