@@ -140,6 +140,9 @@ func (x *executor) main(ctx context.Context) error {
 	if s, ok := x.r.Stop(); ok {
 		return s
 	}
+	if last, ok := x.r.Last(); ok && last.Step().WrapUp() {
+		return nil
+	}
 	if err := x.machine(ctx); err != nil {
 		return err
 	}
@@ -152,7 +155,7 @@ func (x *executor) main(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return x.ready(ctx)
 }
 ```
 
@@ -599,7 +602,7 @@ restarted daemon what to look for. `makeMachine` then looks before it acts:
 m, found, err := x.cfg.Machines.Find(ctx, x.id.Task) // by name, then the hib.task label
 switch {
 case found && m.State == engine.Running: // adopt what a crashed daemon created
-case found:                              // resume it, through the guard
+case found:                             // DecidePaused permits resume, or wait a poll
 case x.r.Kept != "":                     // the kept machine is gone: lost
 default:                                 // create, under hibd.lock and room.lock
 }
@@ -636,6 +639,11 @@ under `/var/lib/hib-task/RUN`.
   unit or didn't, and the look tells which.
 - **Exec races a pause.** `ErrNotRunning` and `ErrConnectionLost` mean look again after a poll.
   Exec never wakes, and `collect` never resumes a paused or gone machine.
+- **Main-line readiness.** Every pass through `upload`, a stage launch or `await` checks
+  `boundary`. A paused machine goes through `DecidePaused`; a recorded freeze goes through
+  `Owner.Thaw` before exec. A held machine or a full room waits a poll without an error log.
+  A successful resume and thaw continue in the same pass. `upload` checks even with its intent
+  already recorded. The final main-line check precedes the non-interruptible wrap-up.
 
 `runner look` reports the marker, the exit record, the log size, the unit's `systemctl show`
 properties and the `frozen` line of its `cgroup.events`. `taskguest.Seen.Verdict()` turns that into
@@ -808,9 +816,11 @@ promises, and these tests hold `runner.sh` to it.
      14 ms after the kill, and its exit record said `result=signal` and `status=KILL`.
    - Done. A stage launched into a frozen slice ran nothing until the thaw, while systemd called
      it active. `Launch` refuses a frozen or transitioning slice with the reserved `ExitFrozen`
-     code, without thawing it. The executor calls `Owner.Thaw` on that code and returns an error
-     to re-enter through the stop and deadline boundary before retrying the launch. `Owner.Thaw`
-     alone permits a pre-launch thaw, after its locked stop checks and unfrozen record.
+     code, without thawing it. Before exec the executor resolves a paused machine through
+     `DecidePaused` and a recorded freeze through `Owner.Thaw`. The refusal is the backstop for
+     a freeze not yet recorded. On that code the executor calls `Owner.Thaw` and re-enters
+     through the stop and deadline boundary. Only `Owner.Thaw` permits a pre-launch thaw,
+     after its locked stop checks and unfrozen record.
 3. **A frozen unit across a memory pause.** The spike froze the slice, then ran `hib pause` and
    an ssh wake 30 s later. The slice still said `frozen 1`. Its counter held while a control
    counter outside the slice ran on, and it resumed on thaw.
