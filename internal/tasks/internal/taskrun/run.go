@@ -155,7 +155,7 @@ func (x *executor) main(ctx context.Context) error {
 			return err
 		}
 	}
-	return x.ready(ctx)
+	return nil
 }
 
 // machine leaves the task's machine running: a first run creates it, a follow-up resumes the
@@ -192,45 +192,35 @@ func (x *executor) machine(ctx context.Context) error {
 }
 
 func (x *executor) makeMachine(ctx context.Context) (task.Body, error) {
-	for {
-		if err := x.boundary(ctx); err != nil {
-			return nil, err
-		}
-		timeout := task.MachineTimeout(x.r, x.now())
-		m, found, err := x.cfg.Machines.Find(ctx, x.id.Task)
-		if err != nil {
-			return nil, err
-		}
-		// TODO: when the open intent is another instance's and younger than the engine's create
-		// timeout, and Find found nothing, wait a poll instead of creating: a create the crashed
-		// daemon sent may still land at E2B. FindTask settles the rare duplicate that slips past.
-		adopted := found && m.ID != x.r.Kept
-		switch {
-		case found && m.State == engine.Running:
-		case found:
-			x.r.Machine = task.MachinePaused
-			if task.DecidePaused(x.r) == task.ResumeAndThaw {
-				m, err = x.cfg.Machines.Resume(ctx, x.r, m.ID, timeout)
-				break
-			}
-			if err := x.wait(ctx); err != nil {
-				return nil, err
-			}
-			continue
-		case x.r.Kept != "":
-			return x.stopNow(ctx, task.StopIntent{Outcome: task.Lost,
-				Detail: "E2B no longer has the machine the last run kept"})
-		default:
-			m, err = x.cfg.Machines.Create(ctx, x.r, timeout)
-		}
-		if errors.Is(err, room.ErrFull) {
-			return &task.MachineResult{Refused: err.Error()}, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		return &task.MachineResult{ID: m.ID, Adopted: adopted}, nil
+	if err := x.boundary(ctx); err != nil {
+		return nil, err
 	}
+	timeout := task.MachineTimeout(x.r, x.now())
+	m, found, err := x.cfg.Machines.Find(ctx, x.id.Task)
+	if err != nil {
+		return nil, err
+	}
+	// TODO: when the open intent is another instance's and younger than the engine's create
+	// timeout, and Find found nothing, wait a poll instead of creating: a create the crashed
+	// daemon sent may still land at E2B. FindTask settles the rare duplicate that slips past.
+	adopted := found && m.ID != x.r.Kept
+	switch {
+	case found && m.State == engine.Running:
+	case found:
+		m, err = x.cfg.Machines.Resume(ctx, x.r, m.ID, timeout)
+	case x.r.Kept != "":
+		return x.stopNow(ctx, task.StopIntent{Outcome: task.Lost,
+			Detail: "E2B no longer has the machine the last run kept"})
+	default:
+		m, err = x.cfg.Machines.Create(ctx, x.r, timeout)
+	}
+	if errors.Is(err, room.ErrFull) {
+		return &task.MachineResult{Refused: err.Error()}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task.MachineResult{ID: m.ID, Adopted: adopted}, nil
 }
 
 // upload writes the runner, the inputs and their manifest into the machine, then checks every
@@ -379,7 +369,8 @@ func (x *executor) ready(ctx context.Context) error {
 		}
 		switch {
 		case x.r.Machine == task.MachinePaused:
-			if task.DecidePaused(x.r) == task.ResumeAndThaw {
+			_, live := x.r.LiveStage()
+			if !live || task.DecidePaused(x.r) == task.ResumeAndThaw {
 				_, err := x.cfg.Machines.Resume(ctx, x.r, x.r.MachineID(),
 					task.MachineTimeout(x.r, x.now()))
 				if err == nil {
@@ -584,6 +575,7 @@ func (x *executor) boundary(ctx context.Context) error {
 	if err := x.refresh(ctx); err != nil {
 		return err
 	}
+	// A request or freeze row can change during the engine lookup, so read the store again.
 	r, err := x.cfg.Store.Run(ctx, x.id)
 	if err != nil {
 		return err
