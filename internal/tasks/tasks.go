@@ -114,6 +114,16 @@ func (t *Tasks) Task(ctx context.Context, id task.ID) (task.Task, error) {
 	return st.Task(ctx, id)
 }
 
+// Instance returns the daemon instance tasks.db recorded last, or "" if no daemon has started.
+// hibapi.RunOf needs it: an intent another instance left open shows as recovering.
+func (t *Tasks) Instance(ctx context.Context) (task.Instance, error) {
+	st, err := t.store(ctx)
+	if err != nil {
+		return "", err
+	}
+	return st.Daemon(ctx)
+}
+
 // List returns every task not yet removed, newest first.
 func (t *Tasks) List(ctx context.Context) ([]task.Task, error) {
 	st, err := t.store(ctx)
@@ -121,11 +131,6 @@ func (t *Tasks) List(ctx context.Context) ([]task.Task, error) {
 		return nil, err
 	}
 	return st.Tasks(ctx)
-}
-
-// Logs reads stage s's output of run r from offset, for hib task logs.
-func (t *Tasks) Logs(r task.RunID, s task.Stage, offset int64) (io.ReadCloser, error) {
-	return taskstore.FileLogs{Dir: t.dir}.Open(r, s, offset)
 }
 
 // Close closes tasks.db if a method opened it.

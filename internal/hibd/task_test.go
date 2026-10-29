@@ -58,8 +58,26 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 			args = append(args, "t-aaaaaaaa")
 		}
 		code, r, err := runJSON(t, a, out, args...)
-		if code != 1 || err == nil || (c.path == "task start" && r.Code != hibapi.CodeBadRequest) {
-			t.Errorf("hibd %v = exit %d, %+v, %v; want a JSON failure", args, code, r, err)
+		if check := r.TaskReply.Check(); check != nil {
+			t.Errorf("hibd %v reply: %v", args, check)
+		}
+		switch c.path {
+		case "task ls":
+			if code != 0 || err != nil || len(r.Tasks) != 0 {
+				t.Errorf("hibd %v = exit %d, %+v, %v; want no tasks", args, code, r, err)
+			}
+		case "task show", "task logs", "task cancel", "task rescue", "task rm":
+			if code != 1 || err == nil || r.Code != hibapi.CodeNoTask {
+				t.Errorf("hibd %v = exit %d, code %s, %v; want NO_TASK", args, code, r.Code, err)
+			}
+		case "task start", "task run":
+			if code != 1 || err == nil || r.Code != hibapi.CodeBadRequest {
+				t.Errorf("hibd %v = exit %d, code %s, %v; want BAD_REQUEST", args, code, r.Code, err)
+			}
+		default:
+			if code != 1 || err == nil {
+				t.Errorf("hibd %v = exit %d, %+v, %v; want a JSON failure", args, code, r, err)
+			}
 		}
 	}
 	for _, args := range [][]string{{"task"}, {"task", "nope"}, {"recipe"}} {

@@ -367,7 +367,7 @@ flowchart TD
   `ErrRunLive`. The user reads "refused to pause task machine t-k3x9q2ab: ...".
 - **The daemon's own pauses never ask.** The keep step, pause-all at shutdown and `Wake`'s pause
   again go through `Owner.Pause`, which freezes and never refuses, since they must always land.
-  The keep step's removal after `hib task rm` calls `Manager.Remove` without asking.
+  The removal after `hib task rm` calls `Manager.RemoveID` with the run's recorded ID without asking.
 - **A person's machine pays nothing.** `Tasks.Check` passes a machine without the `hib.task`
   label and never opens tasks.db for it. A task machine fails closed when tasks.db can't be
   read.
@@ -542,11 +542,11 @@ nothing is paused, snapshotted or left to clean up, and the copy path needs no s
 state. `Owner.SaveTemplate` refuses it too, as the backstop for any other path to the engine.
 `hib task run TASK` works in the machine again.
 
-**Pause and Remove by name.** The daemon's `taskMachines` adapter keeps through `pauseMachine`
-and removes through `pauseFenced` and `Manager.Remove`, the helpers `hibd pause` and `hibd rm`
-use, so the fence and link closing stay in one place. Gotcha 1's name race can't bite a task
-machine. `CreateSize` refuses task-shaped names (`ErrTaskName`), and only the task's own
-executor creates one, never concurrently with its keep step.
+**Pause and removal.** The daemon's `taskMachines` adapter keeps through `pauseMachine`
+and removes the run's recorded ID through `pauseFenced` and `Manager.RemoveID`. The fence,
+link closing and link-entry drop use the same helpers as `hibd pause` and `hibd rm`.
+`FindTask` removes crash duplicates through their fences and checks again after removal.
+A machine that appears without a recorded ID makes removal fail so the daemon retries.
 
 `TestEveryMethodIsClassified` parses `owner.go` and fails when `engine.Engine` gains a method
 that isn't listed as guarded or passing through. `SaveTemplate` is now guarded.
@@ -1000,7 +1000,6 @@ exits for free.
   records. Keep question 3's may-finish guard for other kill timings and the M16 timeout wait.
 - Is one `Engine.Get` per live run every 5 s acceptable E2B API load at the `MaxTasks` cap?
 - Should the 7-day keep count from the last run's keep, as `Retire` does, or from the last ssh?
-- Removing a task machine must also drop its link entry, as `pauseOrRemove` does (TODO).
 - envd uploads passed through 100 MiB with parents and replacement. Both abandoned-create
   labels stayed empty beyond the 70 s request bound. Question 10 names their evidence.
 - Should the dev image gain D-Bus, so systemd freezes the slice and reports it? That costs an
