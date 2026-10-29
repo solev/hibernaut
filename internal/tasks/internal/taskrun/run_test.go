@@ -233,9 +233,10 @@ type harness struct {
 	store *taskstore.Memory
 	m     *machines
 
-	sup     *Supervisor
-	stopSup context.CancelFunc
-	daemons int
+	sup       *Supervisor
+	stopSup   context.CancelFunc
+	daemons   int
+	configure func(*Config)
 
 	mu sync.Mutex
 	// crashAt crashes the daemon at its crashAt'th outside action, counting from 1. The
@@ -281,11 +282,15 @@ func (h *harness) start() {
 		h.t.Fatal(err)
 	}
 	life, cancel := context.WithCancel(context.Background())
-	sup := NewSupervisor(life, Config{
+	cfg := Config{
 		Store: h.store, Logs: taskstore.MemoryLogs{M: h.store}, Engine: h.owner,
 		Machines: h.m, Clock: h.clock, Instance: inst, Poll: time.Second,
 		Logf: func(string, ...any) {},
-	})
+	}
+	if h.configure != nil {
+		h.configure(&cfg)
+	}
+	sup := NewSupervisor(life, cfg)
 	h.mu.Lock()
 	h.sup, h.stopSup = sup, cancel
 	h.mu.Unlock()
