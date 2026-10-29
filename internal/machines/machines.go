@@ -402,7 +402,9 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 
 	if em.State != engine.Paused {
 		err := Renew(ctx, m.e, em, timeoutFor(idle), m.now())
-		if err != nil && !errors.Is(err, engine.ErrNotRunning) {
+		if errors.Is(err, engine.ErrNotRunning) {
+			em.State = engine.Paused
+		} else if err != nil {
 			return nil, fmt.Errorf("%q: %w", name, err)
 		}
 	}
@@ -417,7 +419,7 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		return fail(fmt.Errorf("%q: %w", name, err))
 	}
 	var conn net.Conn
-	err = m.retryResume(ctx, name, em.MemoryMB, func(ctx context.Context) error {
+	err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
 		var err error
 		conn, err = m.e.DialWebSocket(ctx, em.ID, images.SSHPort, timeoutFor(idle))
 		return err
@@ -590,7 +592,7 @@ func (m *Manager) repin(ctx context.Context, name string, em engine.Machine, idl
 	if err != nil {
 		return nil, err
 	}
-	err = m.retryResume(ctx, name, em.MemoryMB, func(ctx context.Context) error {
+	err = m.retryResume(ctx, name, em, func(ctx context.Context) error {
 		_, err := m.e.Resume(ctx, em.ID, timeoutFor(idle))
 		return err
 	})

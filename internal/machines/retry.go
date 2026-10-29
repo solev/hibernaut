@@ -36,19 +36,24 @@ func (m *Manager) retryCut(ctx context.Context, run func(context.Context) error)
 // fails every start there.
 const startFailedFor = 30 * time.Second
 
-// retryResume runs resume, which resumes the paused machine called name, again every 2 s while
-// the engine turns it down for now, until ctx ends, and while the machine fails to start, for
-// startFailedFor after the first time. It stops once the host has no room left for the
-// machine's memoryMB.
-func (m *Manager) retryResume(ctx context.Context, name string, memoryMB int, resume func(context.Context) error) error {
+// retryResume retries every 2 s while the engine turns the machine down, until ctx ends, and
+// for startFailedFor after a start failure. When em was paused, each attempt holds RoomLock
+// from its room reading through resume. A running machine skips that admission. A refusal
+// checks room after releasing the lock, and retry waits hold no lock.
+func (m *Manager) retryResume(ctx context.Context, name string, em engine.Machine, resume func(context.Context) error) error {
 	var failedAt time.Time
 	for attempt := 1; ; attempt++ {
-		unlock, err := m.checkRoom(ctx, name, memoryMB, false)
-		if err != nil {
-			return err
+		var err error
+		if em.State == engine.Paused {
+			unlock, rerr := m.checkRoom(ctx, name, em.MemoryMB, false)
+			if rerr != nil {
+				return rerr
+			}
+			err = resume(ctx)
+			unlock()
+		} else {
+			err = resume(ctx)
 		}
-		err = resume(ctx)
-		unlock()
 		switch {
 		case err == nil:
 			return nil
@@ -64,7 +69,7 @@ func (m *Manager) retryResume(ctx context.Context, name string, memoryMB int, re
 			}
 			return fmt.Errorf("%w (tried %d times)", err, attempt)
 		}
-		if rerr := m.roomError(ctx, name, memoryMB, false); errors.Is(rerr, room.ErrFull) {
+		if rerr := m.roomError(ctx, name, em.MemoryMB, false); errors.Is(rerr, room.ErrFull) {
 			return rerr
 		}
 		if werr := m.waitCut(ctx, 2*time.Second); werr != nil {

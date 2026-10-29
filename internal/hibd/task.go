@@ -333,8 +333,8 @@ func (t taskMachines) Fits(ctx context.Context) (func(task.Run) error, error) {
 	return t.m.TaskFits(ctx)
 }
 
-func (t taskMachines) Find(ctx context.Context, id task.ID) (engine.Machine, bool, error) {
-	return t.m.FindTask(ctx, id)
+func (t taskMachines) Find(ctx context.Context, r task.Run) (engine.Machine, bool, error) {
+	return t.m.FindTask(ctx, r)
 }
 
 func (t taskMachines) Create(ctx context.Context, r task.Run, timeout time.Duration) (engine.Machine, error) {
@@ -351,20 +351,21 @@ func (t taskMachines) Resume(ctx context.Context, r task.Run, id string, timeout
 	return t.m.ResumeTask(ctx, r, id, timeout)
 }
 
-func (t taskMachines) Pause(ctx context.Context, id task.ID) error {
-	em, found, err := t.m.FindTask(ctx, id)
+func (t taskMachines) Pause(ctx context.Context, r task.Run) error {
+	em, found, err := t.m.FindTask(ctx, r)
 	if err != nil || !found {
 		return err
 	}
-	return t.a.pauseMachine(ctx, t.cfg, t.e, em, "keep "+string(id), "pause "+string(id))
+	name := string(r.ID.Task)
+	return t.a.pauseMachine(ctx, t.cfg, t.e, em, "keep "+name, "pause "+name)
 }
 
-func (t taskMachines) Remove(ctx context.Context, id task.ID) error {
-	em, found, err := t.m.FindTask(ctx, id)
+func (t taskMachines) Remove(ctx context.Context, r task.Run) error {
+	em, found, err := t.m.FindTask(ctx, r)
 	if err != nil || !found {
 		return err
 	}
-	name := string(id)
+	name := string(r.ID.Task)
 	return t.a.pauseFenced(ctx, t.cfg, em.ID, name, "rm", "rm "+name, func(ctx context.Context) error {
 		return t.m.Remove(ctx, name)
 	})
