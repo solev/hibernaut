@@ -27,6 +27,60 @@ func TestSQLiteContract(t *testing.T) {
 	})
 }
 
+func TestOpen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := taskstore.Open(context.Background(), statefile.Dir{Path: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, name := range []string{taskstore.DB, taskstore.DB + "-wal", taskstore.DB + "-shm"} {
+		fi, err := os.Lstat(filepath.Join(dir, name))
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s = %v, %v", name, fi, err)
+		}
+	}
+}
+
+func TestSQLiteRefusesLinkedSidecars(t *testing.T) {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		t.Run(suffix, func(t *testing.T) {
+			dir := statefile.Dir{Path: t.TempDir()}
+			ctx := context.Background()
+			s, err := taskstore.Open(ctx, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.StartDaemon(ctx, "initial", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "target")
+			want := []byte("outside data must not change")
+			if err := os.WriteFile(target, want, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dir.Path, taskstore.DB+suffix)); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", filepath.Join(dir.Path, taskstore.DB))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, writeErr := db.ExecContext(ctx, `UPDATE daemon SET instance = 'linked' WHERE one = 1`)
+			db.Close()
+			if writeErr == nil {
+				t.Fatal("SQLite accepted a linked " + suffix)
+			}
+			if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("symlink target = %q, %v", got, err)
+			}
+		})
+	}
+}
+
 // Open checks existing files before SQLite can discard a stale WAL. It checks files SQLite
 // creates after the schema transaction too.
 func TestOpenRefusesSymlinks(t *testing.T) {
