@@ -157,6 +157,7 @@ func (e *Engine) Add(m engine.Machine) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m.Metadata = maps.Clone(m.Metadata)
+	m.CPUs = DefaultCPUs
 	e.machines[m.ID] = &machine{Machine: m, cpus: DefaultCPUs, hasSnapshot: m.State == engine.Paused}
 }
 
@@ -203,6 +204,7 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 			StartedAt: now,
 			EndAt:     now.Add(orDefault(opts.Timeout)),
 			MemoryMB:  src.memoryMB,
+			CPUs:      src.cpus,
 			Metadata:  maps.Clone(opts.Metadata),
 		},
 		cpus: src.cpus,

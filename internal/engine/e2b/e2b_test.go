@@ -394,6 +394,29 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestMachineCPUs(t *testing.T) {
+	f, e := newFakeE2B(t)
+	f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+	f.add("bbbbbbbbbbbbbbbbbbbb", "paused", nil)
+	f.sandboxes["bbbbbbbbbbbbbbbbbbbb"]["cpuCount"] = 4
+	for id, want := range map[string]int{"aaaaaaaaaaaaaaaaaaaa": 2, "bbbbbbbbbbbbbbbbbbbb": 4} {
+		m, err := e.Get(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.CPUs != want {
+			t.Errorf("Get(%s).CPUs = %d, want %d", id, m.CPUs, want)
+		}
+	}
+	ms, err := e.List(t.Context(), engine.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 2 || ms[0].CPUs != 2 || ms[1].CPUs != 4 {
+		t.Errorf("List CPUs = %+v, want 2 and 4", ms)
+	}
+}
+
 func TestListFollowsPagesAndEncodesFilters(t *testing.T) {
 	f, e := newFakeE2B(t)
 	f.add("aaaaaaaaaaaaaaaaaaaa", "running", map[string]string{"k": "v"})

@@ -35,9 +35,6 @@ type Machine struct {
 	// MemoryMB is the machine's RAM in MiB, which it holds while it runs.
 	MemoryMB int
 	// CPUs is the machine's vCPUs, which admission counts while it runs. 0 means unknown.
-	//
-	// TODO: fill from E2B's cpuCount in e2b and from machine.cpus in fake, then update the
-	// tests that compare whole Machine values.
 	CPUs     int
 	Metadata map[string]string
 }
