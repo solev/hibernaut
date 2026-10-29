@@ -14,6 +14,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/task"
+	"github.com/solev/hibernaut/internal/taskguest"
 	"github.com/solev/hibernaut/internal/taskguest/guestsim"
 	"github.com/solev/hibernaut/internal/tasks/internal/taskmachine"
 	"github.com/solev/hibernaut/internal/tasks/internal/taskstore"
@@ -607,27 +608,156 @@ func TestLostReplies(t *testing.T) {
 	}
 }
 
-func TestLaunchReportsFrozenSliceWithoutThawing(t *testing.T) {
-	h := newHarness(t, script(time.Hour, 0))
+func TestFollowUpOnKeptMachineSucceeds(t *testing.T) {
+	h := newHarness(t, script(3*time.Second, 0))
 	h.start()
-	id := h.submit(2 * time.Hour)
-	h.until(30, h.launched(id, task.StageCommand))
+	first := h.submit(2 * time.Minute)
+	h.until(30, h.ended(first))
 	h.stop()
-	ctx := context.Background()
-	machine := h.machineID(id)
-	if err := h.owner.Pause(ctx, machine); err != nil {
+	mid := h.machineID(first)
+	if !h.sim.Frozen(mid) || outcome(h.run(first)) != task.Succeeded {
+		t.Fatal("the first run did not succeed and keep its machine frozen")
+	}
+	rc, err := h.store.Submit(context.Background(), task.Submission{
+		RequestID: "follow-up", Task: first.Task, Spec: h.run(first).Spec, Actor: alice,
+		At: h.clock.Now()}, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.owner.Resume(ctx, machine, time.Hour); err != nil {
-		t.Fatal(err)
+	h.start()
+	h.until(180, h.ended(rc.Run))
+	h.stop()
+	h.checkLog(rc.Run)
+	if o, s := h.run(rc.Run).Outcome(); o != task.Succeeded {
+		t.Fatalf("follow-up ended %s at %s, want succeeded; command starts=%d",
+			o, s, h.sim.Starts(mid, rc.Run, task.StageCommand))
 	}
-	x := executor{cfg: Config{Engine: h.owner, Clock: h.clock}, id: id, r: h.run(id)}
-	if err := x.launch(ctx, task.StageFinish); err == nil ||
-		!strings.Contains(err.Error(), "hib-task.slice is frozen") {
-		t.Fatalf("launch did not report the refusal: %v", err)
+	if h.machineID(rc.Run) != mid || h.sim.Starts(mid, rc.Run, task.StageCommand) != 1 {
+		t.Fatal("the follow-up did not run its command once on the kept machine")
 	}
-	if !h.sim.Frozen(machine) || h.sim.Starts(machine, id, task.StageFinish) != 0 {
-		t.Fatal("launch thawed the paused run or started the next stage")
+}
+
+func TestHostPauseBetweenStagesSucceeds(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		from task.Stage
+		next task.Stage
+	}{
+		{"after-setup", task.StageSetup, task.StageCommand},
+		{"after-command", task.StageCommand, task.StageFinish},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, func(_ task.RunID, s task.Stage) guestsim.Behavior {
+				if s == tt.from {
+					return guestsim.Behavior{Runs: 5 * time.Second}
+				}
+				return script(0, 0)(task.RunID{}, s)
+			})
+			h.start()
+			id := h.submit(4 * time.Minute)
+			h.until(30, h.launched(id, tt.from))
+			h.stop()
+			h.clock.Advance(10 * time.Second)
+			mid := h.machineID(id)
+			if err := h.owner.Pause(context.Background(), mid); err != nil {
+				t.Fatal(err)
+			}
+			if !h.sim.Frozen(mid) {
+				t.Fatal("the host pause did not freeze the slice")
+			}
+			h.clock.Advance(time.Minute)
+			h.start()
+			h.until(300, h.ended(id))
+			h.stop()
+			h.checkLog(id)
+			if o, s := h.run(id).Outcome(); o != task.Succeeded {
+				t.Fatalf("host pause %s ended %s at %s, want succeeded; next starts=%d",
+					tt.name, o, s, h.sim.Starts(mid, id, tt.next))
+			}
+			if h.sim.Starts(mid, id, tt.next) != 1 {
+				t.Fatal("the next stage did not run once after the host pause")
+			}
+		})
+	}
+}
+
+func TestFrozenLaunchDoesNotThawStoppingRun(t *testing.T) {
+	for _, cause := range []string{"cancel", "deadline"} {
+		t.Run(cause, func(t *testing.T) {
+			h := newHarness(t, func(_ task.RunID, s task.Stage) guestsim.Behavior {
+				if s == task.StageSetup {
+					return guestsim.Behavior{Runs: 5 * time.Second}
+				}
+				return script(0, 0)(task.RunID{}, s)
+			})
+			h.start()
+			id := h.submit(4 * time.Minute)
+			h.until(30, h.launched(id, task.StageSetup))
+			h.stop()
+			h.clock.Advance(10 * time.Second)
+			ctx := context.Background()
+			mid := h.machineID(id)
+			if err := h.owner.Pause(ctx, mid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.owner.Resume(ctx, mid, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			injected := false
+			h.sim.Lose = func(_ string, argv []string) bool {
+				if injected || len(argv) < 3 || argv[2] != "launch" ||
+					!slices.Contains(argv, "--unit="+taskguest.Unit(id, task.StageCommand)) {
+					return false
+				}
+				injected = true
+				r, err := h.store.Run(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cause == "deadline" {
+					deadline, _ := r.Deadline()
+					h.clock.Advance(deadline.Sub(h.clock.Now()))
+				} else {
+					h.request(id, task.RequestCancel)
+					r, err = h.store.Run(ctx, id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					stop, due := task.StopFor(r, h.clock.Now())
+					if !due {
+						t.Fatal("the cancel did not require a stop")
+					}
+					if err := h.store.Append(ctx, task.Checkpoint{Run: id, Seq: len(r.Log) + 1,
+						At: h.clock.Now(), By: "cancel", Body: &stop}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return false
+			}
+			h.start()
+			h.until(30, h.ended(id))
+			h.stop()
+			h.checkLog(id)
+			if !injected {
+				t.Fatal("the stop never reached a frozen launch")
+			}
+			for _, argv := range h.sim.Calls {
+				if slices.Equal(argv, taskguest.Thaw()) {
+					t.Errorf("slice thawed after %s before launch", cause)
+				}
+			}
+			if h.sim.Starts(mid, id, task.StageCommand) != 0 ||
+				h.sim.Starts(mid, id, task.StageFinish) != 0 {
+				t.Error("a stage started after the run had to stop")
+			}
+			want := task.Cancelled
+			if cause == "deadline" {
+				want = task.TimedOut
+			}
+			if o := outcome(h.run(id)); o != want {
+				t.Fatalf("outcome %s, want %s", o, want)
+			}
+		})
 	}
 }
 
