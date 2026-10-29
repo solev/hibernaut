@@ -337,6 +337,13 @@ func (l MemoryLogs) Append(r task.RunID, s task.Stage, offset int64, data []byte
 	if int64(len(l.M.logs[k])) != offset {
 		return ErrStale
 	}
+	var total int64
+	for _, stage := range task.Stages() {
+		total += int64(len(l.M.logs[logKey(r, stage)]))
+	}
+	if int64(len(data)) > task.MaxLogBytes-total {
+		return ErrLogFull
+	}
 	l.M.logs[k] = append(l.M.logs[k], data...)
 	return nil
 }
@@ -345,7 +352,7 @@ func (l MemoryLogs) Open(r task.RunID, s task.Stage, offset int64) (io.ReadClose
 	l.M.mu.Lock()
 	defer l.M.mu.Unlock()
 	b := l.M.logs[logKey(r, s)]
-	if offset > int64(len(b)) {
+	if offset < 0 || offset > int64(len(b)) {
 		return nil, errors.New("offset past the end of the log")
 	}
 	return io.NopCloser(bytes.NewReader(slices.Clone(b[offset:]))), nil
