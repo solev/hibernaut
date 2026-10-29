@@ -630,6 +630,7 @@ func TestUploadCancellationClosesSource(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("canceled Upload did not close its blocked source")
 	}
+	_ = r.Close()
 	<-sent
 	if closed.Load() != 1 {
 		t.Errorf("Close called %d times, want 1", closed.Load())

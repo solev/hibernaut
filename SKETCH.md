@@ -792,16 +792,19 @@ promises, and these tests hold `runner.sh` to it.
 
 | Fact | Where the design depends on it | Spike |
 | --- | --- | --- |
-| envd `POST /files` | `Engine.Upload`, the upload step | to run: upload, overwrite, `sha256sum` |
+| envd `POST /files` | `Engine.Upload`, the upload step | ran through 100 MiB, note 017 |
 | systemd PID 1, cgroup v2 freezer | launch, look, freeze, thaw | ran in M13a, four changes |
 | a frozen unit survives pause | `AccessOf`, `DecidePaused` | ran in M13a, holds |
 | modernc keeps no-follow and chown | `taskstore.Open` | ran in M13a, holds |
-| E2B settles an abandoned create | the duplicate sweep, question 3 | to run: kill a client |
+| E2B settles an abandoned create | the duplicate sweep, question 3 | ran twice, note 018 |
 
-1. **envd `POST /files`.** The upload step assumes it writes as a given user, makes parent
-   folders and replaces existing files. `runner verify` catches a partial or wrong write either
-   way. Spike: upload a nested 50 MiB file and a small one as root, upload again over them and
-   compare `sha256sum` in the machine.
+1. **envd `POST /files`.** `Engine.Upload` wrote nested 50 MiB, small and 100 MiB files as root.
+   The last size is `task.MaxInputBytes`. Both rounds matched every `sha256sum`; the second
+   replaced all bytes and truncated the small file from 4096 to 7 bytes. envd made missing
+   parents as root:root, mode 755, and files as root:root, mode 644. No tested size was refused.
+   `runner verify` still checks partial or wrong writes. Run `20261029T171639Z-4fbfa1` keeps
+   `011-upload-api-round1.note.txt`, `012-upload-check-round1.txt`, rounds 2 in 013 and 014,
+   and `017-upload-result.note.txt`. Its `evidence/spike-main.go` reruns the API calls.
 2. **systemd and the freezer.** The spike ran in a dev machine with systemd 255 and cgroup v2.
    The dev image has no D-Bus, so `systemctl freeze` and `thaw` fail with "Failed to connect to
    bus". `systemd-run` and `systemctl kill`, `stop` and `show` work as root over systemd's
@@ -832,9 +835,14 @@ promises, and these tests hold `runner.sh` to it.
    checks tasks.db, -wal and -shm itself before SQLite opens them and again after the schema.
    `TestHostRootStoreStaysTheOwners` passed as root on the Azure host. Every file and directory
    root made stayed the owner's, and a root-owned tasks.db and a linked -wal were refused.
-5. **E2B and an abandoned create.** The duplicate sweep in question 3 assumes a create whose
-   client died either lands or fails within E2B's create timeout. Spike: start a create, kill
-   the client, and list labeled machines until the timeout.
+5. **E2B and an abandoned create.** Two clients were killed with SIGKILL after writing the
+   complete create request and before `Engine.Create` returned. Neither label appeared in
+   3 s samples through 75 s. These immediate disconnects do not prove every kill timing.
+   E2B `5cfcf328` sets a 70 s request deadline in `packages/api/main.go:63-67,163` through
+   `packages/shared/pkg/middleware/timeout.go:52-58`. Keep question 3's conservative guard.
+   Run `20261029T171639Z-4fbfa1` keeps `010-create-timeout.note.txt`, both trials in
+   `015-abandoned-create-1.note.txt` and `016-abandoned-create-2.note.txt`, and the empty-label
+   cleanup in `018-abandoned-create-result.note.txt`. The M16 timeout wait remains TODO.
 
 ## Synthesis decision
 
@@ -971,13 +979,13 @@ exits for free.
 - Should a run held past its deadline show `stopping` with `Held`, or a phase of its own?
 - `systemd-run --no-block` can return 0 and the unit never start. How many looks that find it
   `NotStarted` should pass before the stage records `launch-failed` (TODO in `launch`)?
-- What does E2B do with a create whose client died mid-call? The duplicate-create guard in
-  question 3 assumes it may still finish.
+- Two immediate create-client deaths left no labeled machine through 75 s, as question 10
+  records. Keep question 3's may-finish guard for other kill timings and the M16 timeout wait.
 - Is one `Engine.Get` per live run every 5 s acceptable E2B API load at the `MaxTasks` cap?
 - Should the 7-day keep count from the last run's keep, as `Retire` does, or from the last ssh?
 - Removing a task machine must also drop its link entry, as `pauseOrRemove` does (TODO).
-- envd uploads and E2B's abandoned create, two of question 10's facts, stay risks until their
-  spikes run.
+- envd uploads passed through 100 MiB with parents and replacement. Both abandoned-create
+  labels stayed empty beyond the 70 s request bound. Question 10 names their evidence.
 - Should the dev image gain D-Bus, so systemd freezes the slice and reports it? That costs an
   image rebuild and a daemon in every machine. The cgroup writes in question 10 need neither.
 
