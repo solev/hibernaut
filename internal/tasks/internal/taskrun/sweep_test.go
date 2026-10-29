@@ -226,7 +226,7 @@ func TestExecBoundarySweep(t *testing.T) {
 			if finishExitLook < 0 {
 				t.Fatal("clean trace never observed finish's exit")
 			}
-			held, live := 0, 0
+			held, live, exitedBeforeResume := 0, 0, 0
 			for i, call := range trace.calls {
 				t.Logf("trace %02d %s exists=%v step=%s", i+1, call.name, call.exists, call.step)
 				if !call.exists {
@@ -241,6 +241,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						injected, restarted, woke, released := false, false, false, false
 						hostFreeze := false
 						var access task.Access
+						autoWoke := false
 						var injectedAt int
 						heldPolls := 0
 						var stopStarts []int
@@ -255,9 +256,9 @@ func TestExecBoundarySweep(t *testing.T) {
 						s.before = func(got sweepCall, n int) {
 							if !injected && n == i+1 {
 								injected = true
-								if !slices.Equal(s.calls, trace.calls[:n]) {
+								if !slices.Equal(s.calls, trace.calls[:i+1]) {
 									t.Errorf("trace prefix changed at %d: got %+v, want %+v",
-										n, s.calls, trace.calls[:n])
+										n, s.calls, trace.calls[:i+1])
 								}
 								mid := h.machineID(s.id)
 								switch event {
@@ -299,8 +300,16 @@ func TestExecBoundarySweep(t *testing.T) {
 							}
 							if got.name == "resume" {
 								r := h.run(s.id)
-								if err := task.AccessOf(r, h.clock.Now()).Allows(task.OpWake); err != nil {
+								nowAccess := task.AccessOf(r, h.clock.Now())
+								if err := nowAccess.Allows(task.OpWake); err != nil {
 									t.Errorf("hibd attempted a resume AccessOf refuses: %v", err)
+								}
+								if _, live := r.LiveStage(); !live && access == task.AccessHeld &&
+									nowAccess == task.AccessLive && !woke && !released {
+									// LiveStage ends at StageExit, even if its final log copy was lost.
+									autoWoke = true
+									exitedBeforeResume++
+									t.Log("held at injection; StageExit cleared LiveStage before automatic resume")
 								}
 							}
 						}
@@ -320,7 +329,7 @@ func TestExecBoundarySweep(t *testing.T) {
 								restarted = true
 							}
 							if injected && strings.HasPrefix(event, "engine-pause") &&
-								access == task.AccessHeld && !call.step.WrapUp() {
+								access == task.AccessHeld && !autoWoke && !call.step.WrapUp() {
 								r := h.run(s.id)
 								if !woke && event == "engine-pause-wake" {
 									// An external user wake is distinct from hibd's guarded automatic resume.
@@ -363,7 +372,7 @@ func TestExecBoundarySweep(t *testing.T) {
 						case "deadline":
 							want = task.TimedOut
 						case "engine-pause-rescue", "engine-pause-rm":
-							if access == task.AccessHeld {
+							if access == task.AccessHeld && !autoWoke {
 								want = task.TimedOut
 							}
 						}
@@ -397,7 +406,7 @@ func TestExecBoundarySweep(t *testing.T) {
 							}
 						}
 						if event == "engine-pause-wake" && access == task.AccessHeld &&
-							!call.step.WrapUp() && !woke {
+							!autoWoke && !call.step.WrapUp() && !woke {
 							t.Error("run ended without the external user wake")
 						}
 						h.checkLog(s.id)
@@ -406,6 +415,7 @@ func TestExecBoundarySweep(t *testing.T) {
 			}
 			t.Logf("skipped %d calls before the machine existed", skipped)
 			t.Logf("unfrozen main-line engine pauses: held=%d live=%d", held, live)
+			t.Logf("held injections whose StageExit preceded automatic resume: %d", exitedBeforeResume)
 		})
 	}
 	t.Logf("swept %d injected cases", cases)
