@@ -115,6 +115,10 @@ hib_json() {
   "$HIB" --config "$CONFIG" "$@" --json
 }
 
+hibd_version() {
+  jq -er '.status.version | strings | select(length > 0 and . != "unknown")'
+}
+
 # guard refuses hib commands that would touch what this run didn't make: other people's
 # machines, images and secrets, or the host's logins.
 guard() {
@@ -184,7 +188,7 @@ mine_or_dev() {
 }
 
 cmd_launch() {
-  local deploy=1 id target images built prev
+  local deploy=1 id target images built prev status
   case "${1:-}" in
     --no-deploy) deploy=0 ;;
     "") ;;
@@ -233,6 +237,14 @@ cmd_launch() {
     --ssh-config "$CONFIG/included.conf" --azure-group "$AZURE_GROUP" --azure-vm "$AZURE_VM" ||
     die "hib init failed. Run control-hib cleanup"
 
+  EXPECTED_HIBD_VERSION=$VERSION
+  if ((!deploy)); then
+    status=$(hib_json status) || true
+    EXPECTED_HIBD_VERSION=$(hibd_version <<<"$status") ||
+      die "hibd version is unreadable: $(jq -r '.error // .host.detail // "no answer"' <<<"$status"). Run control-hib cleanup"
+  fi
+  printf 'EXPECTED_HIBD_VERSION=%q\n' "$EXPECTED_HIBD_VERSION" >>"$RUN/run.env"
+
   images=$(hib_json image ls) || die "hib image ls failed. Run control-hib cleanup"
   built=$(jq -r '[.images[]? | select(.name == "dev" and .kind == "built-in" and .built)] | length' <<<"$images")
   if [[ "$built" == 0 ]]; then
@@ -251,7 +263,8 @@ flunk() {
 
 cmd_doctor() {
   load_run
-  local fail=0 state status ls images others leftovers hibd small
+  local fail=0 state status ls images others leftovers hibd small expected
+  expected=${EXPECTED_HIBD_VERSION-$VERSION}
   echo "run $RUN_ID  prefix $PREFIX  checkout $VERSION  evidence $EVIDENCE"
   if [[ -x "$HIB" && -f "$CONFIG/config.json" ]]; then
     pass "scratch hib $("$HIB" version | cut -d' ' -f2)"
@@ -274,11 +287,15 @@ cmd_doctor() {
   else
     flunk "E2B: $(jq -r '.status.e2b.detail // .error // .host.detail // "no answer"' <<<"$status")"
   fi
-  hibd=$(jq -r '.status.version // "unknown"' <<<"$status")
-  if [[ "$hibd" == "$VERSION" ]]; then
+  if ! hibd=$(hibd_version <<<"$status"); then
+    flunk "hibd version is unreadable"
+  elif [[ "$hibd" != "$expected" ]]; then
+    flunk "hibd is $hibd, this run expects $expected: another deploy happened mid-run (DEPLOYED=$DEPLOYED)"
+  elif [[ "$hibd" == "$VERSION" ]]; then
     pass "hibd is this checkout's build ($hibd)"
   else
-    flunk "hibd is $hibd, the checkout is $VERSION: control-hib launch deploys it (DEPLOYED=$DEPLOYED)"
+    pass "hibd is this run's expected build ($hibd)"
+    echo "info  hib commands reach the host's hibd ($hibd), not this checkout's build ($VERSION)"
   fi
   echo "info  github: $(jq -r '.status.github.login // "not connected"' <<<"$status")," \
     "codex: $(jq -r '.status.codex.health // "not connected"' <<<"$status")," \

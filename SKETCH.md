@@ -627,7 +627,11 @@ waits out E2B's create timeout before it looks, so the in-flight create has land
 never a duplicate. With no record, it keeps the earliest `StartedAt`, then ID. That is discovery,
 not age. `StartedAt` moves on every resume. `Find` removes every unused named and labelled machine
 by ID through its fence. A machine with the task's name but not its label fails with `ErrNotTask`.
-`keep` passes the refreshed run through Pause or Remove, so neither can pick an unused duplicate.
+`keep` passes the refreshed run through Pause or Remove. Pause acts on the machine `Find` keeps.
+Remove kills that ID under its `rm` fence, never through a second name lookup, and drops its pin.
+It then runs `Find` again with that ID recorded, removing late unused duplicates through their
+own fences. Success means the recorded machine and every listed task-named, labelled machine
+are gone. A new machine found without a recorded ID makes removal fail so a retry can remove it.
 
 ### 4. Exec hazards
 

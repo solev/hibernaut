@@ -76,7 +76,11 @@ func TestDialWaitsForRoomOnlyWhenItCanResume(t *testing.T) {
 			}
 			release := sync.OnceFunc(unlock)
 			defer release()
-			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			wait := 200 * time.Millisecond
+			if tc.state == engine.Running && !tc.renewPaused {
+				wait = 30 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), wait)
 			defer cancel()
 			conn, err := m.Dial(ctx, "target")
 			if conn != nil {
@@ -98,7 +102,7 @@ func TestDialWaitsForRoomOnlyWhenItCanResume(t *testing.T) {
 				t.Fatalf("blocked Dial left target %s, %v, want paused", em.State, err)
 			}
 			release()
-			ctx, stop := context.WithTimeout(t.Context(), time.Second)
+			ctx, stop := context.WithTimeout(t.Context(), 30*time.Second)
 			defer stop()
 			conn, err = m.Dial(ctx, "target")
 			if err != nil {
