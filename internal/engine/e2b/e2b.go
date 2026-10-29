@@ -12,13 +12,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -139,6 +144,7 @@ func (e *Engine) Get(ctx context.Context, id string) (engine.Machine, error) {
 		StartedAt: d.StartedAt,
 		EndAt:     d.EndAt,
 		MemoryMB:  int(d.MemoryMB),
+		CPUs:      int(d.CpuCount),
 		Metadata:  metadata(d.Metadata),
 	}, nil
 }
@@ -189,6 +195,7 @@ func (e *Engine) List(ctx context.Context, opts engine.ListOptions) ([]engine.Ma
 				StartedAt: s.StartedAt,
 				EndAt:     s.EndAt,
 				MemoryMB:  int(s.MemoryMB),
+				CPUs:      int(s.CpuCount),
 				Metadata:  metadata(s.Metadata),
 			}
 			// A machine can move between the running and paused pages while we read them.
@@ -299,13 +306,113 @@ func (e *Engine) Metrics(ctx context.Context, id string) (engine.Metrics, error)
 
 // Upload writes files through envd's POST /files, as user.
 func (e *Engine) Upload(ctx context.Context, id, user string, files []engine.File) error {
-	// TODO:
-	//   resolve the sandbox's envd address and access token the way Exec does
-	//   for each file: POST /files?path=PATH&username=USER as multipart, streamed from Open
-	//   map a paused sandbox to engine.ErrNotRunning, a missing one to engine.ErrNotFound and a
-	//   broken stream to engine.ErrConnectionLost
-	//   the spike settles envd's size limit, whether it makes parents and who owns the file
-	return errors.New("e2b: Upload is not implemented")
+	d, err := e.running(ctx, id)
+	if err != nil {
+		return fmt.Errorf("upload: %w", err)
+	}
+	if d.EnvdAccessToken == nil {
+		return fmt.Errorf("upload %s: E2B returned no envd access token", id)
+	}
+	for _, file := range files {
+		if err := e.uploadFile(ctx, id, user, *d.EnvdAccessToken, file); err != nil {
+			return fmt.Errorf("upload %s %s: %w", id, file.Path, err)
+		}
+	}
+	return nil
+}
+
+type uploadSource struct {
+	io.ReadCloser
+	closing atomic.Bool
+	readErr error
+}
+
+func (s *uploadSource) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && !s.closing.Load() {
+		s.readErr = err
+	}
+	return n, err
+}
+
+func (s *uploadSource) Close() error {
+	s.closing.Store(true)
+	return s.ReadCloser.Close()
+}
+
+func (e *Engine) uploadFile(ctx context.Context, id, user, token string, file engine.File) error {
+	u, err := url.Parse(strings.TrimRight(e.sandboxURL, "/") + "/files")
+	if err != nil {
+		return err
+	}
+	u.RawQuery = url.Values{"path": {file.Path}, "username": {user}}.Encode()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	mw := multipart.NewWriter(writer)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("E2b-Sandbox-Id", id)
+	req.Header.Set("E2b-Sandbox-Port", strconv.Itoa(envdPort))
+	req.Header.Set("X-Access-Token", token)
+
+	source, err := file.Open()
+	if err != nil {
+		return err
+	}
+	src := &uploadSource{ReadCloser: source}
+	closeSource := sync.OnceValue(src.Close)
+	stop := context.AfterFunc(ctx, func() {
+		_ = reader.CloseWithError(ctx.Err())
+		_ = closeSource()
+	})
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		part, err := mw.CreateFormFile("file", path.Base(file.Path))
+		if err == nil {
+			_, err = io.Copy(part, src)
+		}
+		if err == nil {
+			err = mw.Close()
+		}
+		_ = writer.CloseWithError(err)
+		done <- err
+	}()
+	resp, requestErr := e.guestHC.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
+	_ = reader.Close()
+	closeErr := closeSource()
+	streamErr := <-done
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if sourceErr := errors.Join(src.readErr, closeErr); sourceErr != nil {
+		return sourceErr
+	}
+	if requestErr != nil {
+		return fmt.Errorf("%w: %w", engine.ErrConnectionLost, errors.Join(requestErr, streamErr))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return fmt.Errorf("%w: %w", engine.ErrConnectionLost, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		err := fmt.Errorf("envd returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return fmt.Errorf("%w: %w", engine.ErrConnectionLost, err)
+		}
+		return err
+	}
+	if streamErr != nil {
+		return fmt.Errorf("%w: %w", engine.ErrConnectionLost, streamErr)
+	}
+	return nil
 }
 
 func (e *Engine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {

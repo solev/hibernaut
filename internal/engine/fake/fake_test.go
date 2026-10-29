@@ -36,6 +36,54 @@ func TestContract(t *testing.T) {
 	}
 }
 
+func TestMachineCPUs(t *testing.T) {
+	e := fake.New()
+	if _, err := e.BuildTemplate(t.Context(), engine.TemplateSpec{
+		Name: "four", FromImage: "ubuntu:24.04", CPUs: 4, MemoryMB: 512,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := e.Create(t.Context(), engine.CreateOptions{Template: "four"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.CPUs != 4 {
+		t.Errorf("Create.CPUs = %d, want template's 4", m.CPUs)
+	}
+	e.Add(engine.Machine{ID: "added", State: engine.Running, CPUs: 5})
+	e.Add(engine.Machine{ID: "default", State: engine.Running})
+	wantCPUs := map[string]int{m.ID: 4, "added": 5, "default": fake.DefaultCPUs}
+	for id, want := range wantCPUs {
+		got, err := e.Get(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.CPUs != want {
+			t.Errorf("Get(%s).CPUs = %d, want %d", id, got.CPUs, want)
+		}
+		metrics, err := e.Metrics(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if metrics.CPUCount != want {
+			t.Errorf("Metrics(%s).CPUCount = %d, want %d", id, metrics.CPUCount, want)
+		}
+	}
+	ms, err := e.List(t.Context(), engine.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != len(wantCPUs) {
+		t.Fatalf("List returned %d machines, want %d", len(ms), len(wantCPUs))
+	}
+	for _, got := range ms {
+		want := wantCPUs[got.ID]
+		if got.CPUs != want {
+			t.Errorf("List(%s).CPUs = %d, want %d", got.ID, got.CPUs, want)
+		}
+	}
+}
+
 func TestBuildReportsLogsBeforeFailure(t *testing.T) {
 	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	want := engine.LogEntry{Time: at, Level: "error", Step: "1", Message: "command output"}
