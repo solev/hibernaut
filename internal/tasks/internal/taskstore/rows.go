@@ -29,6 +29,8 @@ type taskRows struct {
 	freeze   task.Freeze
 }
 
+func storedTime(t time.Time) time.Time { return time.UnixMilli(t.UnixMilli()).UTC() }
+
 func cloneSpec(sp task.Spec) task.Spec {
 	sp.Command = slices.Clone(sp.Command)
 	sp.Inputs = slices.Clone(sp.Inputs)

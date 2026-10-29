@@ -56,6 +56,7 @@ func (m *Memory) FailAppends(f func(task.Checkpoint) error) {
 }
 
 func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error) {
+	sub.At = storedTime(sub.At)
 	staged := map[task.Hash][]byte{}
 	sub.Spec = cloneSpec(sub.Spec)
 	for i, f := range sub.Spec.Inputs {
@@ -163,7 +164,7 @@ func (m *Memory) Request(ctx context.Context, q NewRequest) (task.Request, error
 		return task.Request{}, ErrNotLive
 	}
 	r := task.Request{ID: int64(len(m.requests) + 1), Task: q.Task, Run: n, Kind: q.Kind,
-		At: q.At, Actor: task.Actor{Name: q.Actor.Name, Source: q.Actor.Source}}
+		At: storedTime(q.At), Actor: task.Actor{Name: q.Actor.Name, Source: q.Actor.Source}}
 	m.requests = append(m.requests, r)
 	if q.RequestID != "" {
 		m.reqIDs[q.RequestID] = r.ID
@@ -247,6 +248,7 @@ func (m *Memory) Append(ctx context.Context, c task.Checkpoint) error {
 	if err := task.CheckNext(r.id, r.spec, r.log, c.Body); err != nil {
 		return err
 	}
+	c.At = storedTime(c.At)
 	r.log = append(r.log, c)
 	return nil
 }
@@ -260,6 +262,7 @@ func sameCheckpoint(a, b task.Checkpoint) bool {
 func (m *Memory) RecordFreeze(ctx context.Context, id task.ID, f task.Freeze) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	f.At = storedTime(f.At)
 	m.freezes[id] = append(m.freezes[id], f)
 	return nil
 }
@@ -272,6 +275,7 @@ func (m *Memory) Retire(ctx context.Context, id task.ID, r task.Removal) error {
 		return task.ErrNoTask
 	}
 	if t.record.removal == nil || !r.Done.IsZero() {
+		r.At, r.Done = storedTime(r.At), storedTime(r.Done)
 		t.record.removal = &r
 	}
 	return nil
