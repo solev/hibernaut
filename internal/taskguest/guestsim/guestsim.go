@@ -209,8 +209,12 @@ func (g *guest) exit(u *unit, rec task.ExitRecord) {
 
 func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.Stage) Behavior) engine.ExecResult {
 	switch {
-	case argv[0] == "systemd-run":
-		return g.launch(argv, now, script)
+	case argv[0] == "sh" && len(argv) > 3 && argv[2] == "launch":
+		if g.frozen {
+			return engine.ExecResult{ExitCode: 2,
+				Stderr: []byte("runner: hib-task.slice is frozen; only the executor may thaw it")}
+		}
+		return g.launch(argv[3:], now, script)
 	case argv[0] == "sh" && len(argv) > 4 && argv[1] == "-c" && argv[2] == string(taskguest.Runner):
 		switch argv[4] {
 		case "freeze":

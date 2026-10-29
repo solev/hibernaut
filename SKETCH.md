@@ -792,18 +792,19 @@ promises, and these tests hold `runner.sh` to it.
    bus". `systemd-run` and `systemctl kill`, `stop` and `show` work as root over systemd's
    private socket. Writing 1 to the slice's `cgroup.freeze` froze a counter at once and held
    across `daemon-reload`, while systemd's `FreezerState` still said `running`. Four changes
-   follow, and they are M13b's first work.
-   - `Freeze` and `Thaw` write the slice's `cgroup.freeze` and wait, bounded, for its
+   are done in M13b, with failing-first tests and a rerun of the real guest argv.
+   - Done. `Freeze` and `Thaw` write the slice's `cgroup.freeze` and wait, bounded, for its
      `cgroup.events` to say `frozen 1` or `frozen 0`. The slice has no cgroup until a stage has
      run since boot, and then there is nothing to freeze. `look` reports the `frozen` line of the
      unit's `cgroup.events`, and `Seen.Frozen` reads it instead of `FreezerState`.
-   - `Launch` passes `--expand-environment=no`. Without it systemd rewrote `$$` and `${HIB_RUN}`
-     in the task's command.
-   - `Kill` thaws after it kills a frozen stage. A kill alone left `ExecStopPost` frozen, the
+   - Done. `Launch` passes `--expand-environment=no`. Without it systemd rewrote `$$` and
+     `${HIB_RUN}` in the task's command.
+   - Done. `Kill` thaws after it kills a frozen stage. A kill alone left `ExecStopPost` frozen, the
      unit timed out 30 s later and no exit record was written. With the thaw the unit ended
      14 ms after the kill, and its exit record said `result=signal` and `status=KILL`.
-   - A stage launched into a frozen slice ran nothing until the thaw, while systemd called it
-     active. Launch only into a thawed slice.
+   - Done. A stage launched into a frozen slice ran nothing until the thaw, while systemd called
+     it active. `Launch` now refuses a frozen or transitioning slice without thawing it. Only the
+     executor's guarded thaw permits another launch.
 3. **A frozen unit across a memory pause.** The spike froze the slice, then ran `hib pause` and
    an ssh wake 30 s later. The slice still said `frozen 1`. Its counter held while a control
    counter outside the slice ran on, and it resumed on thaw.
@@ -963,10 +964,10 @@ exits for free.
 ## Next implementation step
 
 M13a is done. The SQLite store and `FileLogs` pass their contracts without a tag, and the
-freezer, pause and modernc spikes ran. M13b starts with question 10's four guest changes, each in
-`taskguest`, `runner.sh` and `guestsim` with a test that fails without it. Then comes the
-executor's log copy loop under the per-run cap. Each `FileLogs.Append` syncs the file and five
-directories, so the loop appends a poll's output at once, not line by line. Both stores' `Submit`
+freezer, pause and modernc spikes ran. Question 10's four guest changes are done in `taskguest`,
+`runner.sh` and `guestsim`, each with a test that fails without it. M13b next adds the executor's
+log copy loop under the per-run cap. Each `FileLogs.Append` syncs the file and five directories, so
+the loop appends a poll's output at once, not line by line. Both stores' `Submit`
 must also refuse a follow-up once the task's inputs, summed over its runs, would pass
 `MaxInputBytes`. hibd checks one submission at a time, and the refusal needs a `task` error and
 a `hibapi` code.

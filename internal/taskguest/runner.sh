@@ -83,6 +83,17 @@ kill_stage() {
 	freezer 0
 }
 
+launch() {
+	cgroup=$(slice_cgroup)
+	if [ -n "$cgroup" ]; then
+		if [ "$(cat "$cgroup/cgroup.freeze")" != 0 ] ||
+			! grep -qx 'frozen 0' "$cgroup/cgroup.events"; then
+			die "hib-task.slice is frozen; only the executor may thaw it"
+		fi
+	fi
+	exec "$@"
+}
+
 # log RUN STAGE OFFSET MAX: at most MAX bytes of the stage's output from OFFSET, base64 on one
 # line, after a line with the log's size. MAX keeps every reply far below Exec's 8 MiB.
 log() {
@@ -126,7 +137,7 @@ finish() {
 	die "finish is not implemented"
 }
 
-[ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify|freeze|thaw|kill ..."
+[ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify|freeze|thaw|kill|launch ..."
 cmd=$1
 shift
 case $cmd in
@@ -138,5 +149,6 @@ verify) verify "$@" ;;
 freeze) freezer 1 ;;
 thaw) freezer 0 ;;
 kill) kill_stage "$@" ;;
+launch) launch "$@" ;;
 *) die "unknown subcommand $cmd" ;;
 esac

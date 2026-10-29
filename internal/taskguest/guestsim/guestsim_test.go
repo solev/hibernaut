@@ -81,3 +81,32 @@ func TestFreezeBeforeFirstStageDoesNotLatch(t *testing.T) {
 		t.Fatalf("freeze without a cgroup latched: %+v", seen)
 	}
 }
+
+func TestLaunchRefusesFrozenSlice(t *testing.T) {
+	s, id, first := machine(t)
+	next := first
+	next.ID.N++
+	for _, argv := range [][]string{
+		taskguest.Launch(first, task.StageCommand, time.Hour), taskguest.Freeze(),
+	} {
+		if res := execGuest(t, s, id, argv); res.ExitCode != 0 {
+			t.Fatalf("exec: %+v", res)
+		}
+	}
+	argv := taskguest.Launch(next, task.StageCommand, time.Hour)
+	if res := execGuest(t, s, id, argv); res.ExitCode == 0 {
+		t.Fatal("launch accepted a frozen slice")
+	}
+	if !s.Frozen(id) || s.Starts(id, next.ID, task.StageCommand) != 0 {
+		t.Fatal("launch thawed the slice or started the command")
+	}
+	if res := execGuest(t, s, id, taskguest.Thaw()); res.ExitCode != 0 {
+		t.Fatalf("thaw: %+v", res)
+	}
+	if res := execGuest(t, s, id, argv); res.ExitCode != 0 {
+		t.Fatalf("launch after thaw: %+v", res)
+	}
+	if seen := look(t, s, id, next); seen.Frozen() || seen.Verdict() != taskguest.Running {
+		t.Fatalf("launch after thaw: %+v", seen)
+	}
+}

@@ -86,7 +86,8 @@ func Verify(r task.RunID) []string {
 }
 
 // Launch is the systemd-run argv that starts stage s of run r. runtimeMax is the time left to
-// the deadline. The prompt reaches the command stage as a file on stdin, never in argv.
+// the deadline. It refuses a frozen slice without thawing it. The prompt reaches the command
+// stage as a file on stdin, never in argv.
 func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 	dir := RunDir(r.ID)
 	runner := path.Join(dir, "runner")
@@ -123,7 +124,7 @@ func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 	if s == task.StageCommand {
 		argv = append(append(argv, "--"), r.Spec.Command...)
 	}
-	return argv
+	return append([]string{"sh", runner, "launch"}, argv...)
 }
 
 func workingDir(r task.Run, s task.Stage) string {

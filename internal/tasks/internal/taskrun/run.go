@@ -284,9 +284,12 @@ func (x *executor) launch(ctx context.Context, s task.Stage) error {
 	adopted := seen.Verdict() != taskguest.NotStarted
 	if !adopted {
 		argv := taskguest.Launch(x.r, s, task.RuntimeMax(x.r, x.now()))
-		if _, err := x.exec(ctx, argv, taskguest.ExecTimeout); err != nil &&
-			!errors.Is(err, engine.ErrConnectionLost) {
+		res, err := x.exec(ctx, argv, taskguest.ExecTimeout)
+		if err != nil && !errors.Is(err, engine.ErrConnectionLost) {
 			return err
+		}
+		if err == nil && res.ExitCode != 0 {
+			return fmt.Errorf("launch %s of %s exited %d: %s", s, x.id, res.ExitCode, res.Stderr)
 		}
 		if seen, err = x.look(ctx, s); err != nil {
 			return err

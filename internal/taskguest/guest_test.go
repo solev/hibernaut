@@ -92,6 +92,7 @@ func TestExitRecordIsWrittenOnceByItsInvocation(t *testing.T) {
 type shellGuest struct {
 	cgroup string
 	runner string
+	bin    string
 	env    []string
 }
 
@@ -108,11 +109,11 @@ func writeTestFile(t *testing.T, name, content string) {
 func newShellGuest(t *testing.T) shellGuest {
 	t.Helper()
 	dir := t.TempDir()
-	g := shellGuest{cgroup: filepath.Join(dir, "cgroup"), runner: filepath.Join(dir, "runner")}
+	g := shellGuest{cgroup: filepath.Join(dir, "cgroup"), runner: filepath.Join(dir, "runner"),
+		bin: filepath.Join(dir, "bin")}
 	writeTestFile(t, g.runner, strings.ReplaceAll(string(Runner), "/sys/fs/cgroup", g.cgroup))
-	bin := filepath.Join(dir, "bin")
-	g.env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "CGROOT=" + g.cgroup}
-	writeTestFile(t, filepath.Join(bin, "systemctl"), `#!/bin/sh
+	g.env = []string{"PATH=" + g.bin + ":" + os.Getenv("PATH"), "CGROOT=" + g.cgroup}
+	writeTestFile(t, filepath.Join(g.bin, "systemctl"), `#!/bin/sh
 set -eu
 case $1 in
 show)
@@ -133,7 +134,7 @@ kill)
 *) echo "unexpected systemctl $*" >&2; exit 1 ;;
 esac
 `)
-	writeTestFile(t, filepath.Join(bin, "sleep"), `#!/bin/sh
+	writeTestFile(t, filepath.Join(g.bin, "sleep"), `#!/bin/sh
 set -eu
 cg="$CGROOT/hib.slice/hib-task.slice"
 echo poll >>"$CGROOT/polls"
@@ -172,6 +173,52 @@ func TestKillThawsOnlyAfterSIGKILL(t *testing.T) {
 	freeze, err := os.ReadFile(filepath.Join(cg, "cgroup.freeze"))
 	if err != nil || string(freeze) != "1\n" {
 		t.Fatalf("a failed kill thawed the stage: %q, %v", freeze, err)
+	}
+}
+
+func TestLaunchRefusesFrozenSlice(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		freeze string
+		frozen string
+	}{
+		{"frozen", "1", "1"},
+		{"freezing", "1", "0"},
+		{"thawing", "0", "1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newShellGuest(t)
+			cg := filepath.Join(g.cgroup, "hib.slice", Slice)
+			writeTestFile(t, filepath.Join(cg, "cgroup.freeze"), tt.freeze+"\n")
+			writeTestFile(t, filepath.Join(cg, "cgroup.events"), "frozen "+tt.frozen+"\n")
+			command := []string{"sh", "-c", `printf '%s\n' "$@"`, "stage", "$$", "${HIB_RUN}"}
+			r := task.Run{ID: task.RunID{Task: "t-abcdefgh", N: 2},
+				Spec: task.Spec{Command: command}}
+			argv := Launch(r, task.StageCommand, time.Hour)
+			if argv[0] == "sh" {
+				argv[1] = g.runner
+			}
+			writeTestFile(t, filepath.Join(g.bin, "systemd-run"), `#!/bin/sh
+while [ "$1" != start ]; do shift; done
+shift 3
+[ "$1" = -- ] && shift
+exec "$@"
+`)
+			out, code := g.run(t, argv)
+			if code == 0 || !strings.Contains(out, "hib-task.slice is frozen") {
+				t.Fatalf("launch did not refuse the %s slice: exit %d: %s", tt.name, code, out)
+			}
+			freeze, err := os.ReadFile(filepath.Join(cg, "cgroup.freeze"))
+			if err != nil || string(freeze) != tt.freeze+"\n" {
+				t.Fatalf("launch changed an intentional freeze: %q, %v", freeze, err)
+			}
+			if out, code := g.run(t, Thaw()); code != 0 {
+				t.Fatalf("explicit thaw exited %d: %s", code, out)
+			}
+			if out, code := g.run(t, argv); code != 0 || out != "$$\n${HIB_RUN}\n" {
+				t.Fatalf("launch after explicit thaw: exit %d: %q", code, out)
+			}
+		})
 	}
 }
 

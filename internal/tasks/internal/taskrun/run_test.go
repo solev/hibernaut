@@ -578,7 +578,11 @@ func TestLostReplies(t *testing.T) {
 	h := newHarness(t, script(3*time.Second, 0))
 	lost := map[string]bool{}
 	h.sim.Lose = func(_ string, argv []string) bool {
-		k := strings.Join(argv[:min(len(argv), 3)], " ")
+		kind := argv[:min(len(argv), 3)]
+		if len(argv) > 3 && argv[2] == "launch" {
+			kind = argv[3:6]
+		}
+		k := strings.Join(kind, " ")
 		if lost[k] {
 			return false
 		}
@@ -600,6 +604,30 @@ func TestLostReplies(t *testing.T) {
 	}
 	if launches != 3 {
 		t.Fatalf("lost %d launch replies, want one per stage", launches)
+	}
+}
+
+func TestLaunchReportsFrozenSliceWithoutThawing(t *testing.T) {
+	h := newHarness(t, script(time.Hour, 0))
+	h.start()
+	id := h.submit(2 * time.Hour)
+	h.until(30, h.launched(id, task.StageCommand))
+	h.stop()
+	ctx := context.Background()
+	machine := h.machineID(id)
+	if err := h.owner.Pause(ctx, machine); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.owner.Resume(ctx, machine, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	x := executor{cfg: Config{Engine: h.owner, Clock: h.clock}, id: id, r: h.run(id)}
+	if err := x.launch(ctx, task.StageFinish); err == nil ||
+		!strings.Contains(err.Error(), "hib-task.slice is frozen") {
+		t.Fatalf("launch did not report the refusal: %v", err)
+	}
+	if !h.sim.Frozen(machine) || h.sim.Starts(machine, id, task.StageFinish) != 0 {
+		t.Fatal("launch thawed the paused run or started the next stage")
 	}
 }
 
