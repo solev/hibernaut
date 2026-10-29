@@ -20,6 +20,7 @@ import (
 	"github.com/solev/hibernaut/internal/linkproxy"
 	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/machines"
+	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/slots"
 	"github.com/solev/hibernaut/internal/statefile"
 )
@@ -100,7 +101,8 @@ func (a *App) newLinkSide(setup proxySetup, logf func(format string, args ...any
 		return !errors.Is(err, fs.ErrNotExist)
 	}
 	admitter, err := linkadmit.New(linkadmit.Config{
-		Engine: setup.engine, Runs: runs, Keeper: keeper, Dropper: guard, Resolver: resolver,
+		StateDir: cfg.stateDir,
+		Engine:   setup.engine, Runs: runs, Keeper: keeper, Dropper: guard, Resolver: resolver,
 		Store: store, Clock: clock, Room: a.linkRoom(setup.engine), Quiescing: quiescing,
 		Socket: cfg.linkSocket,
 	})
@@ -146,10 +148,17 @@ func openLinkLog(path string, logf func(format string, args ...any)) *audit.Link
 }
 
 // linkRoom reports the room for a link's wake of target, counted in default machines: how many
-// more may run, less the one the owner is always kept, and how many waking target takes. A target
+// more may run with the owner's memory reserve held back, and how many waking target takes. A target
 // whose size can't be read is refused, since it can't be charged.
 func (a *App) linkRoom(e engine.Engine) func(target string) (int, int, error) {
-	m := machines.New(machines.Config{Engine: e, ReadRoom: a.ReadRoom})
+	read := a.ReadRoom
+	if read == nil {
+		read = room.Read
+	}
+	m := machines.New(machines.Config{Engine: e, ReadRoom: func() (room.Host, error) {
+		h, err := read()
+		return h.Reserve(machines.PeopleReserveMB()), err
+	}})
 	return func(target string) (int, int, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), links.AdmitTimeout)
 		defer cancel()
@@ -171,9 +180,7 @@ func (a *App) linkRoom(e engine.Engine) func(target string) (int, int, error) {
 		// A machine with at most k times a default machine's memory takes no more pages and no
 		// more pause disk than k default machines, so rounding k up charges it enough.
 		need := max((em.MemoryMB+def-1)/def, 1)
-		// TODO: count Fits on room.Host.Reserve(machines.PeopleReserveMB()) instead of Fits-1,
-		// so links and task admission hold back the one people reserve from one definition.
-		return max(r.Fits-1, 0), need, nil
+		return r.Fits, need, nil
 	}
 }
 

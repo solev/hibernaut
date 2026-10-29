@@ -579,6 +579,7 @@ flowchart TD
     FE["links-fence-ID.lock"] -->|"pause and rm"| HL
     HL -->|"save and fork, bounded to 30 s"| FE
     HL -->|"CreateSize, CreateTask"| RL["room.lock"]
+    FE -->|"save and fork origin resumes and save plan check"| RL
     RL -->|"Wake, Dial, ResumeTask through the Owner"| TM["task-machine-TASK.lock"]
     FE -->|"every fenced pause"| TM
     HL -->|"Manager.Pause"| TM
@@ -667,16 +668,17 @@ properties and the `frozen` line of its `cgroup.events`. `taskguest.Seen.Verdict
 override.
 
 Atomicity comes from `machines.RoomLock` (`room.lock`), a short flock held from the room reading
-through the E2B call by every check that is followed by a create or a resume: `CreateSize`,
-`CreateTask`, `ResumeTask`, `Wake` and `Dial`'s resume. So a one-shot `hibd new`, an ssh wake and
-the proxy's link wake can't spend pages a task admission just counted, and the reverse. It is a
-new lock rather than `hibd.lock` because `Wake` and `Dial` must not wait behind a save. The
-proxy's `pendingWakes` stay as coalescing within the proxy. Admission no longer depends on
+through one create or resume by `CreateSize`, `CreateTask`, `ResumeTask`, `Wake`, `Dial`, save
+and fork's origin resumes, and each fork copy's create. A one-shot `hibd new`, an ssh wake and
+the proxy's link wake cannot spend pages a task admission just counted, or the reverse. It is
+separate from `hibd.lock` so `Wake` and `Dial` do not wait behind a save. No holder takes a fence.
+The proxy's `pendingWakes` stay as coalescing within the proxy. Admission no longer depends on
 seeing them. `TaskFits` gives `Pick` its order from one reading, and `CreateTask` decides.
 
-Two gaps stay TODO. Save and fork create their copy under `hibd.lock` only, so the copy's create
-moves under `room.lock` too. A machine whose `CPUs` E2B doesn't report counts as 0 today, and
-`Admit` must charge it the default size's vCPUs instead.
+SaveTemplate checks its extra copy's plan under `room.lock` but runs outside it so wakes do not
+wait. An admission can consume that room before E2B starts the temporary copy. E2B can refuse
+the save; hibd reports the failure and attempts to restore the origin. No reservation spans the
+call or a crash. `Admit` charges a machine with unknown `CPUs` the default size's vCPUs.
 
 ### 6. The busy watcher
 
@@ -890,9 +892,9 @@ rubric, the two were close, about 18 for A and 19.5 for B.
   apply per task, summed over its runs.
 - `CommitAuthor` and `PRAuthor` are separate.
 - A follow-up inherits the task's repo and workdir and can't change them.
-- A machine with unknown vCPUs is charged the default size's.
+- A machine with unknown vCPUs is charged the default size's. Covered by the room unit.
 - The duplicate create sweep in question 3.
-- Save and fork's copy create goes under `room.lock`.
+- Fork copy creates hold `room.lock`; SaveTemplate checks its plan but does not block wakes.
 - hibapi gets its own wire structs rather than exporting `task.Publication`.
 
 **Rejected:**

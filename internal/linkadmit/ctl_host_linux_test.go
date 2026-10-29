@@ -28,6 +28,7 @@ func TestHostControlSocketBelongsToTheStateOwner(t *testing.T) {
 	v := newEnv(t, func(c *linkadmit.Config) {
 		c.Socket = path
 		c.Store = links.NewStore(state)
+		c.StateDir = state
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

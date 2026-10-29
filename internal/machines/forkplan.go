@@ -103,9 +103,15 @@ func (m *Manager) makeCopy(ctx context.Context, origin engine.Machine, template,
 	if size, ok := machineSize(origin); ok {
 		labels[labelSize] = size.Name()
 	}
-	em, err := m.e.Create(ctx, engine.CreateOptions{Template: template, Timeout: timeoutFor(idle), Metadata: labels})
+	unlock, err := m.checkRoom(ctx, name, origin.MemoryMB, false)
 	if err != nil {
-		return hibapi.Machine{}, m.failedCreate(ctx, name, fmt.Errorf("creating %s: %w", name, safeError(err)))
+		return hibapi.Machine{}, err
+	}
+	em, err := m.e.Create(ctx, engine.CreateOptions{Template: template, Timeout: timeoutFor(idle), Metadata: labels})
+	unlock()
+	if err != nil {
+		cause := m.refused(ctx, name, origin.MemoryMB, false, fmt.Errorf("creating %s: %w", name, safeError(err)))
+		return hibapi.Machine{}, m.failedCreate(ctx, name, cause)
 	}
 	if err := m.setupCopy(ctx, em.ID, keys); err != nil {
 		return hibapi.Machine{}, m.killFailedSetup(ctx, name, em.ID, err)

@@ -156,11 +156,12 @@ func (m *Manager) findTask(ctx context.Context, id task.ID) (engine.Machine, boo
 	return ems[0], true, nil
 }
 
-// RoomLock is the admission lock. Every check of room that is followed by a create or a resume
-// holds it from the reading through the E2B call: CreateSize, CreateTask, ResumeTask, Wake (so
-// the proxy's link wakes) and Dial's resume. So no create or wake in any process spends the
-// pages another just counted. It nests inside hibd.lock and outside the task machine lock, and
-// is held only for one reading and one E2B call, never for a whole save or fork.
+// RoomLock serializes admission from the room reading through one create or resume call.
+// CreateSize, CreateTask, ResumeTask, Wake and Dial hold it, as do save and fork's origin
+// resumes and each fork copy's create. SaveTemplate checks its plan under the lock but releases
+// it before the call, so wakes don't wait behind a save. It nests inside hibd.lock and any
+// machine fence, outside the task machine lock. A holder never takes a fence. Setup, cleanup
+// and retry waits hold no RoomLock.
 const RoomLock = "room.lock"
 
 // CreateTask creates run r's machine, named for its task and labelled with task.Label, if Admit

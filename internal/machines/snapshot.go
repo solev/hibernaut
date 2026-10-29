@@ -91,11 +91,16 @@ func (m *Manager) saveRoundTrip(ctx context.Context, em engine.Machine, alias st
 	}
 	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), saveCallTimeout)
 	defer cancel()
-	tmpl, err := m.e.SaveTemplate(call, em.ID, alias)
+	tmpl, attempted, err := m.saveCopy(call, em, alias)
+	if !attempted {
+		recordErr := m.finishSave(key, record, engine.ErrNotRunning)
+		return engine.TemplateInfo{}, errors.Join(m.restoreAfterFailure(ctx, em, err, true), recordErr)
+	}
 	recordErr := m.finishSave(key, record, err)
 	if err != nil {
 		return engine.TemplateInfo{}, errors.Join(m.failedSave(ctx, em, alias, err), m.saveEndFailure(em, record, recordErr))
 	}
+
 	if em.State == engine.Paused {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
@@ -115,6 +120,22 @@ func (m *Manager) saveRoundTrip(ctx context.Context, em engine.Machine, alias st
 		return tmpl, describe(failure, fmt.Sprintf("saved %s, but %v", alias, failure))
 	}
 	return tmpl, nil
+}
+
+func (m *Manager) saveCopy(ctx context.Context, em engine.Machine, alias string) (engine.TemplateInfo, bool, error) {
+	unlock, err := m.lockRoom(ctx)
+	if err != nil {
+		return engine.TemplateInfo{}, false, err
+	}
+	err = m.checkPlan(ctx, Name(em), room.Plan{
+		MemoryMB: em.MemoryMB, Running: 1, Snapshots: 1, Peak: 2,
+	})
+	unlock()
+	if err != nil {
+		return engine.TemplateInfo{}, false, err
+	}
+	tmpl, err := m.e.SaveTemplate(ctx, em.ID, alias)
+	return tmpl, true, err
 }
 
 func (m *Manager) saveEndFailure(em engine.Machine, record cleanup.SaveRecord, cause error) error {
@@ -147,7 +168,7 @@ func (m *Manager) prepareSnapshot(ctx context.Context, em engine.Machine) error 
 	if err != nil {
 		return m.restoreAfterFailure(ctx, em, describe(err, fmt.Sprintf("hibd couldn't confirm %s's snapshot reached disk: %v. Nothing was saved.", name, err)), false)
 	}
-	resumed, err := m.e.Resume(ctx, em.ID, timeout)
+	resumed, err := m.resumeRoom(ctx, em, timeout)
 	if err != nil {
 		if em.State == engine.Paused {
 			if restoration := m.restoreOrigin(ctx, em); restoration != nil {
@@ -171,7 +192,7 @@ func (m *Manager) restoreAfterFailure(ctx context.Context, em engine.Machine, ca
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if em.State == engine.Running {
-		if _, err := m.e.Resume(rctx, em.ID, m.saveTimeout(em)); err != nil {
+		if _, err := m.resumeRoom(rctx, em, m.saveTimeout(em)); err != nil {
 			return describe(errors.Join(cause, err), fmt.Sprintf("%v Couldn't resume %s: %v. %s", cause, Name(em), err, m.readOriginState(rctx, em, safeSnapshot)))
 		}
 	} else if err := m.e.Pause(rctx, em.ID); err != nil && !errors.Is(err, engine.ErrNotRunning) {

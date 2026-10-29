@@ -22,6 +22,7 @@ type placementEngine struct {
 	kill   func(context.Context, string) error
 	save   func(context.Context, string, string) (engine.TemplateInfo, error)
 	exec   func(context.Context, string, engine.ExecRequest) (engine.ExecResult, error)
+	list   func(context.Context, engine.ListOptions) ([]engine.Machine, error)
 }
 
 func (e *placementEngine) Create(ctx context.Context, o engine.CreateOptions) (engine.Machine, error) {
@@ -63,13 +64,25 @@ func placementRun(id task.ID, size string) task.Run {
 	return task.Run{ID: task.RunID{Task: id, N: 1}, Spec: task.Spec{Image: "dev", Size: size}}
 }
 
+func (e *placementEngine) List(ctx context.Context, o engine.ListOptions) ([]engine.Machine, error) {
+	if e.list != nil {
+		return e.list(ctx, o)
+	}
+	return e.Engine.List(ctx, o)
+}
+
 func placementHost(freeMB int) room.Host {
 	return room.Host{PageSize: 2 << 20, Pages: 8192, FreePages: int64(freeMB / 2), DiskFree: 100 << 30}
 }
 
 func TestTaskFitsUsesOneReading(t *testing.T) {
-	m, _ := sharedStateManager(t)
-	reads := 0
+	m, e := sharedStateManager(t)
+	reads, lists := 0, 0
+	m.taskLim = TaskLimits{HostCPUs: 1}
+	m.e = &placementEngine{Engine: e, list: func(ctx context.Context, o engine.ListOptions) ([]engine.Machine, error) {
+		lists++
+		return e.List(ctx, o)
+	}}
 	m.readRoom = func() (room.Host, error) {
 		reads++
 		return placementHost(3072), nil
@@ -78,21 +91,22 @@ func TestTaskFitsUsesOneReading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.Add(engine.Machine{ID: "later", State: engine.Running, MemoryMB: 2048, CPUs: 2})
 	if err := fits(placementRun("t-aaaaaaaa", "small")); err != nil {
 		t.Fatalf("small task should fit: %v", err)
 	}
 	if err := fits(placementRun("t-bbbbbbbb", "medium")); !errors.Is(err, room.ErrFull) {
 		t.Fatalf("medium task = %v, want ErrFull", err)
 	}
-	if reads != 1 {
-		t.Fatalf("Fits read room %d times, want one reading for the queue", reads)
+	if reads != 1 || lists != 1 {
+		t.Fatalf("Fits read host %d times and listed %d times, want one reading for the queue", reads, lists)
 	}
 }
 
 func TestCreateTaskDecidesAdmission(t *testing.T) {
 	m, e := sharedStateManager(t)
-	r := placementRun("t-aaaaaaaa", "small")
-	m.readRoom = func() (room.Host, error) { return placementHost(3072), nil }
+	r := placementRun("t-aaaaaaaa", "medium")
+	m.readRoom = func() (room.Host, error) { return placementHost(4096), nil }
 	fits, err := m.TaskFits(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +114,7 @@ func TestCreateTaskDecidesAdmission(t *testing.T) {
 	if err := fits(r); err != nil {
 		t.Fatal(err)
 	}
-	m.readRoom = func() (room.Host, error) { return placementHost(3070), nil }
+	m.readRoom = func() (room.Host, error) { return placementHost(4094), nil }
 	if _, err := m.CreateTask(t.Context(), r, time.Hour); !errors.Is(err, room.ErrFull) {
 		t.Fatalf("CreateTask = %v, want fresh admission to refuse with ErrFull", err)
 	}
@@ -114,6 +128,8 @@ func TestCreateTaskLabelsTimeoutAndSetup(t *testing.T) {
 	m, e := sharedStateManager(t)
 	r := placementRun("t-aaaaaaaa", "medium")
 	wantTimeout := 25 * time.Hour
+	setupCalled := false
+	m.setup = Setup{Git: &GitIdentity{Name: "Task User", Email: "task@example.test"}}
 	m.e = &placementEngine{Engine: e, create: func(ctx context.Context, o engine.CreateOptions) (engine.Machine, error) {
 		if o.Timeout != wantTimeout || o.Template != images.Template("dev") {
 			t.Errorf("Create options = %+v", o)
@@ -127,6 +143,14 @@ func TestCreateTaskLabelsTimeoutAndSetup(t *testing.T) {
 			}
 		}
 		return e.Create(ctx, o)
+	}, exec: func(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
+		if req.Cmd == "sh" && len(req.Args) > 1 && req.Args[1] == gitScript {
+			setupCalled = true
+			if placementIsLocked(t, m.dir) {
+				t.Error("task Setup held room.lock")
+			}
+		}
+		return e.Exec(ctx, id, req)
 	}}
 	em, err := m.CreateTask(t.Context(), r, wantTimeout)
 	if err != nil {
@@ -137,6 +161,9 @@ func TestCreateTaskLabelsTimeoutAndSetup(t *testing.T) {
 	}
 	if _, err := m.readPin(em.ID); err != nil {
 		t.Fatalf("task was not set up: %v", err)
+	}
+	if !setupCalled {
+		t.Fatal("task creation skipped Config.Setup")
 	}
 	adopted, err := m.CreateTask(t.Context(), r, wantTimeout)
 	if err != nil || adopted.ID != em.ID {
@@ -230,6 +257,8 @@ func TestResumeTaskAdmitsActualSizeThroughOwner(t *testing.T) {
 		{"memory", 4096, 2, room.ErrFull},
 		{"vCPUs", 8192, 5, room.ErrFull},
 		{"owner guard", 8192, 2, ErrNotTask},
+		{"resumes", 8192, 2, nil},
+		{"unknown vCPUs", 8192, 0, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, e := sharedStateManager(t)
@@ -238,16 +267,25 @@ func TestResumeTaskAdmitsActualSizeThroughOwner(t *testing.T) {
 			m.taskLim = TaskLimits{HostCPUs: 2}
 			m.readRoom = func() (room.Host, error) { return placementHost(tc.free), nil }
 			called := false
-			m.e = &placementEngine{Engine: e, resume: func(_ context.Context, id string, d time.Duration) (engine.Machine, error) {
+			m.e = &placementEngine{Engine: e, resume: func(ctx context.Context, id string, d time.Duration) (engine.Machine, error) {
 				called = true
+				assertPlacementLocked(t, m.dir)
 				if id != "paused" || d != 25*time.Hour {
 					t.Errorf("Resume %s, %v", id, d)
 				}
-				return engine.Machine{}, ErrNotTask
+				if tc.name == "owner guard" {
+					return engine.Machine{}, ErrNotTask
+				}
+				return e.Resume(ctx, id, d)
 			}}
-			_, err := m.ResumeTask(t.Context(), placementRun("t-aaaaaaaa", "small"), "paused", 25*time.Hour)
-			if !errors.Is(err, tc.want) || called != (tc.name == "owner guard") {
+			resumed, err := m.ResumeTask(t.Context(), placementRun("t-aaaaaaaa", "small"), "paused", 25*time.Hour)
+			if !errors.Is(err, tc.want) || called != !errors.Is(tc.want, room.ErrFull) {
 				t.Fatalf("ResumeTask = %v, Owner called %v, want %v", err, called, tc.want)
+			}
+			if err == nil && (resumed.ID != "paused" || resumed.State != engine.Running ||
+				resumed.EndAt.Sub(resumed.StartedAt) != 25*time.Hour) {
+				t.Fatalf("ResumeTask returned %s in %s with timeout %v", resumed.ID, resumed.State,
+					resumed.EndAt.Sub(resumed.StartedAt))
 			}
 		})
 	}

@@ -109,8 +109,7 @@ type Config struct {
 	// machine they save until it is back in the state it started in. name is what messages call
 	// the machine and why is the fence's reason. Fenced returns op's error as it was, or its own
 	// when it left the machine as it was without running op. FindTask also uses it to remove
-	// crash duplicates by ID. Default: op runs unfenced, which
-	// is right only while links are off.
+	// crash duplicates by ID. Default: op runs unfenced, which is right only while links are off.
 	Fenced func(ctx context.Context, id, name, why string, op func(context.Context) error) error
 	// TaskLimits are task admission's settings beside room. The zero value is the defaults.
 	TaskLimits TaskLimits
@@ -253,7 +252,8 @@ func (m *Manager) CreateSize(ctx context.Context, name, image string, size image
 		return hibapi.Machine{}, err
 	}
 	builtIn := images.IsBuiltIn(image)
-	if err := m.checkRoom(ctx, name, plan.memoryMB, builtIn); err != nil {
+	unlockRoom, err := m.checkRoom(ctx, name, plan.memoryMB, builtIn)
+	if err != nil {
 		return hibapi.Machine{}, err
 	}
 
@@ -262,6 +262,7 @@ func (m *Manager) CreateSize(ctx context.Context, name, image string, size image
 		labels[labelSize] = plan.size.Name()
 	}
 	em, err := m.e.Create(ctx, engine.CreateOptions{Template: plan.template, Timeout: timeoutFor(idle), Metadata: labels})
+	unlockRoom()
 	if err != nil {
 		cause := fmt.Errorf("creating %q: %w", name, safeError(err))
 		if errors.Is(err, engine.ErrNoTemplate) && builtIn {
@@ -399,18 +400,10 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 	}
 	idle, _ := Idle(em)
 
-	paused := em.State == engine.Paused
-	if !paused {
+	if em.State != engine.Paused {
 		err := Renew(ctx, m.e, em, timeoutFor(idle), m.now())
-		if errors.Is(err, engine.ErrNotRunning) {
-			paused = true
-		} else if err != nil {
+		if err != nil && !errors.Is(err, engine.ErrNotRunning) {
 			return nil, fmt.Errorf("%q: %w", name, err)
-		}
-	}
-	if paused {
-		if err := m.checkRoom(ctx, name, em.MemoryMB, false); err != nil {
-			return nil, err
 		}
 	}
 	fail := func(err error) (*Conn, error) {
@@ -467,16 +460,29 @@ func (m *Manager) heartbeat(ctx context.Context, id string, done chan<- struct{}
 	}
 }
 
-func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int, suggestSizes bool) error {
-	// TODO: return an unlock for RoomLock, taken before roomNow, and have CreateSize, Wake and
-	// Dial's resume hold it until their E2B call returns, as CreateTask and ResumeTask do.
-	reading, err := m.roomNow(ctx)
+func (m *Manager) checkRoom(ctx context.Context, name string, memoryMB int, suggestSizes bool) (func(), error) {
+	unlock, err := m.lockRoom(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.roomError(ctx, name, memoryMB, suggestSizes); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+func (m *Manager) roomError(ctx context.Context, name string, memoryMB int, suggestSizes bool) error {
+	ems, err := m.runningNow(ctx)
 	if err != nil {
 		return err
 	}
-	ems, h := reading.running, reading.host
 	if slices.ContainsFunc(ems, func(em engine.Machine) bool { return Name(em) == name }) {
 		return nil
+	}
+	h, err := m.readRoom()
+	if err != nil {
+		return fmt.Errorf("checking the room on the host: %w", err)
 	}
 	running := roomMachines(ems)
 	err = h.Check(name, memoryMB, running)
@@ -532,15 +538,23 @@ type roomReading struct {
 }
 
 func (m *Manager) roomNow(ctx context.Context) (roomReading, error) {
-	ems, err := m.e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
+	ems, err := m.runningNow(ctx)
 	if err != nil {
-		return roomReading{}, fmt.Errorf("checking the room on the host: %w", err)
+		return roomReading{}, err
 	}
 	h, err := m.readRoom()
 	if err != nil {
 		return roomReading{}, fmt.Errorf("checking the room on the host: %w", err)
 	}
 	return roomReading{running: ems, host: h}, nil
+}
+
+func (m *Manager) runningNow(ctx context.Context) ([]engine.Machine, error) {
+	ems, err := m.e.List(ctx, engine.ListOptions{States: []engine.State{engine.Running}})
+	if err != nil {
+		return nil, fmt.Errorf("checking the room on the host: %w", err)
+	}
+	return ems, nil
 }
 
 func roomMachines(ems []engine.Machine) []room.Machine {
@@ -552,10 +566,23 @@ func roomMachines(ems []engine.Machine) []room.Machine {
 }
 
 func (m *Manager) refused(ctx context.Context, name string, memoryMB int, suggestSizes bool, err error) error {
-	if rerr := m.checkRoom(ctx, name, memoryMB, suggestSizes); errors.Is(rerr, room.ErrFull) {
+	if rerr := m.roomError(ctx, name, memoryMB, suggestSizes); errors.Is(rerr, room.ErrFull) {
 		return rerr
 	}
 	return err
+}
+
+func (m *Manager) resumeRoom(ctx context.Context, em engine.Machine, timeout time.Duration) (engine.Machine, error) {
+	unlock, err := m.checkRoom(ctx, Name(em), em.MemoryMB, false)
+	if err != nil {
+		return engine.Machine{}, err
+	}
+	resumed, err := m.e.Resume(ctx, em.ID, timeout)
+	unlock()
+	if err != nil {
+		return engine.Machine{}, m.refused(ctx, Name(em), em.MemoryMB, false, err)
+	}
+	return resumed, nil
 }
 
 func (m *Manager) repin(ctx context.Context, name string, em engine.Machine, idle time.Duration) (ssh.PublicKey, error) {
