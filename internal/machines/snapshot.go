@@ -49,11 +49,11 @@ func (m *Manager) canSave() error {
 }
 
 func (m *Manager) checkPlan(ctx context.Context, name string, p room.Plan) error {
-	ems, host, err := m.roomNow(ctx)
+	reading, err := m.roomNow(ctx)
 	if err != nil {
 		return safeError(err)
 	}
-	return safeError(host.CheckPlan(name, p, roomMachines(ems)))
+	return safeError(reading.host.CheckPlan(name, p, roomMachines(reading.running)))
 }
 
 // saveOrigin saves em as alias, and puts em back in the state it started in. With links on, the

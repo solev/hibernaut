@@ -29,3 +29,7 @@ func (m *Manager) tryLock(ctx context.Context) (func(), error) {
 func (m *Manager) TryCleanupRead(ctx context.Context) (func(), error) {
 	return m.tryLock(ctx)
 }
+
+func (m *Manager) lockRoom(ctx context.Context) (func(), error) {
+	return m.stateDir().WaitLock(ctx, RoomLock, "machine admission")
+}
