@@ -133,13 +133,34 @@ func (a *App) taskStart(ctx context.Context, c taskCommand, args []string) int {
 	if err != nil {
 		return a.taskFail(*asJSON, c.path, req.RequestID, err)
 	}
-	_ = sub
-	return a.taskFail(*asJSON, c.path, req.RequestID, errTasksNotImplemented)
-	// TODO:
-	//   st, err := a.taskStore(ctx); defer st.Close()
-	//   receipt, err := st.Submit(ctx, sub, in.rest())
-	//   reply Response{TaskReply{RequestID, Task: the task with its one queued run}}
-	//   failures go through taskFail, which sets Code and Retryable from hibapi.CodeOf
+	cfg, err := loadSettings(a.Getenv)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+	}
+	st := a.tasks(cfg)
+	defer st.Close()
+	receipt, err := st.Submit(ctx, sub, in.rest())
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+	}
+	t, err := st.Task(ctx, receipt.Run.Task)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+	}
+	instance, err := st.Instance(ctx)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+	}
+	run := t.Runs[receipt.Run.N-1]
+	reply := hibapi.Task{ID: t.ID, Repo: run.Spec.Repo.String(), Created: t.Created,
+		Runs: []hibapi.TaskRun{hibapi.RunOf(run, instance)}}
+	if *asJSON {
+		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{
+			RequestID: receipt.RequestID, Task: &reply}})
+	}
+	status := run.Status(instance)
+	return a.writeReply([]byte(fmt.Sprintf("%s  %d  %s\n", t.ID, run.ID.N,
+		cmp.Or(string(status.Phase), string(status.Outcome)))), nil, false)
 }
 
 var errBadTaskRequest = errors.New("bad task request")

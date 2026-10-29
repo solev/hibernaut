@@ -114,6 +114,16 @@ func (t *Tasks) Task(ctx context.Context, id task.ID) (task.Task, error) {
 	return st.Task(ctx, id)
 }
 
+// Instance returns the daemon instance tasks.db recorded last, or "" if no daemon has started.
+// hibapi.RunOf needs it: an intent another instance left open shows as recovering.
+func (t *Tasks) Instance(ctx context.Context) (task.Instance, error) {
+	st, err := t.store(ctx)
+	if err != nil {
+		return "", err
+	}
+	return st.Daemon(ctx)
+}
+
 // List returns every task not yet removed, newest first.
 func (t *Tasks) List(ctx context.Context) ([]task.Task, error) {
 	st, err := t.store(ctx)
@@ -192,6 +202,10 @@ type DaemonConfig struct {
 	Engine   engine.Engine
 	Machines Machines
 	Logf     func(format string, args ...any)
+	// Clock and Poll replace the workflow clock and wait interval. Zero values use wall time
+	// and the package's Poll interval.
+	Clock taskrun.Clock
+	Poll  time.Duration
 }
 
 // Daemon runs every task's workflow. Only the hibd daemon holding DaemonLock has one.
@@ -238,9 +252,13 @@ func (t *Tasks) startDaemon(life context.Context, cfg DaemonConfig, owner *taskm
 	if err := st.StartDaemon(life, inst, t.now()); err != nil {
 		return nil, err
 	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = taskrun.RealClock{}
+	}
 	sup := taskrun.NewSupervisor(life, taskrun.Config{Store: st, Logs: taskstore.FileLogs{Dir: t.dir},
-		Engine: owner, Machines: cfg.Machines, Clock: taskrun.RealClock{}, Instance: inst,
-		Logf: cfg.Logf})
+		Engine: owner, Machines: cfg.Machines, Clock: clock, Instance: inst,
+		Poll: cfg.Poll, Logf: cfg.Logf})
 	return &Daemon{sup: sup}, nil
 }
 
