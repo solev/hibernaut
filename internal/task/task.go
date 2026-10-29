@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-// Limits every run lives within. They are constants, not settings, except where Admission says
-// otherwise.
+// Limits tasks and their runs live within. They are constants, not settings, except where
+// Admission says otherwise.
 const (
 	// DefaultTimeout is a run's deadline when --timeout isn't given. Any length is allowed, and
 	// time paused counts.
@@ -31,7 +31,7 @@ const (
 	MaxQueuedRuns = 32
 	// MaxLogBytes is how much of a run's output hibd keeps. The rest is dropped and says so.
 	MaxLogBytes = 50 << 20
-	// MaxInputBytes is how much a task's prompt and files may add up to.
+	// MaxInputBytes is how much a task's prompts and files may add up to over all its runs.
 	MaxInputBytes = 100 << 20
 	// KeepFor is how long a finished task's machine is kept paused before retention removes it.
 	KeepFor = 7 * 24 * time.Hour
@@ -230,6 +230,8 @@ var (
 	ErrConflict = errors.New("request ID already used for a different request")
 	// ErrQueueFull means MaxQueuedRuns runs are waiting already.
 	ErrQueueFull = errors.New("the task queue is full")
+	// ErrInputFull means the task's inputs would exceed MaxInputBytes across its runs.
+	ErrInputFull = errors.New("the task inputs exceed the size limit")
 	// ErrNoTask means no task has that ID.
 	ErrNoTask = errors.New("no such task")
 	// ErrRunLive means the task has a run that hasn't ended. A follow-up waits for it, and once

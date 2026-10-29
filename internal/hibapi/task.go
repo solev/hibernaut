@@ -22,6 +22,8 @@ const (
 	CodeConflict ErrorCode = "CONFLICT"
 	// CodeQueueFull means too many runs wait already. Retry later.
 	CodeQueueFull ErrorCode = "QUEUE_FULL"
+	// CodeInputFull means the task's inputs would exceed its limit. Never retry.
+	CodeInputFull ErrorCode = "INPUT_FULL"
 	// CodeNoTask means no task has the ID.
 	CodeNoTask ErrorCode = "NO_TASK"
 	// CodeRunLive means the task has a run that hasn't ended, so no follow-up may start.
@@ -161,6 +163,7 @@ func CodeOf(err error) ErrorCode {
 	}{
 		{task.ErrConflict, CodeConflict},
 		{task.ErrQueueFull, CodeQueueFull},
+		{task.ErrInputFull, CodeInputFull},
 		{task.ErrNoTask, CodeNoTask},
 		{task.ErrRunLive, CodeRunLive},
 	} {

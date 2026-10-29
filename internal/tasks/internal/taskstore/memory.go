@@ -93,6 +93,10 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 	if queued >= task.MaxQueuedRuns {
 		return task.Receipt{}, task.ErrQueueFull
 	}
+	budget := inputBudget(task.MaxInputBytes)
+	if err := budget.take(sub.Spec); err != nil {
+		return task.Receipt{}, err
+	}
 	var t *memTask
 	if sub.Task != "" {
 		t = m.tasks[sub.Task]
@@ -101,6 +105,11 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		}
 		if _, live := m.view(t).Live(); live {
 			return task.Receipt{}, task.ErrRunLive
+		}
+		for _, r := range t.runs {
+			if err := budget.take(r.spec); err != nil {
+				return task.Receipt{}, err
+			}
 		}
 	} else {
 		id, err := m.newID()

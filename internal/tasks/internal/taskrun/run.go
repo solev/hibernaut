@@ -499,6 +499,7 @@ func (x *executor) collect(ctx context.Context) error {
 		if !x.launched(s) {
 			continue
 		}
+		var size int64
 		if x.r.Machine == task.MachineRunning {
 			seen, err := x.look(ctx, s)
 			if err != nil {
@@ -507,13 +508,14 @@ func (x *executor) collect(ctx context.Context) error {
 			if err := x.copyLog(ctx, s, seen.LogSize); err != nil {
 				return err
 			}
-			res.Dropped += max(seen.LogSize-task.MaxLogBytes, 0)
+			size = seen.LogSize
 		}
 		n, err := x.cfg.Logs.Size(x.id, s)
 		if err != nil {
 			return err
 		}
 		res.LogBytes += n
+		res.Dropped += max(size-n, 0)
 	}
 	if e, ok := x.exitOf(task.StageFinish); ok && e.OK() && x.r.Machine == task.MachineRunning {
 		p, err := x.publication(ctx)
@@ -680,27 +682,51 @@ func (x *executor) look(ctx context.Context, s task.Stage) (taskguest.Seen, erro
 	return taskguest.ParseLook(out)
 }
 
-// copyLog appends stage s's log to the host's copy, from the host copy's length up to size
-// and task.MaxLogBytes, in chunks of taskguest.MaxLogChunk. The host file's length is the only
-// cursor, so a chunk whose reply was lost is read again and never appended twice.
+// The stage files are the durable cursors and together spend the run's budget. Read chunks
+// into one batch so FileLogs syncs once per poll, not once per chunk.
 func (x *executor) copyLog(ctx context.Context, s task.Stage, size int64) error {
-	for {
-		have, err := x.cfg.Logs.Size(x.id, s)
-		if err != nil || have >= min(size, task.MaxLogBytes) {
-			return err
-		}
-		out, err := x.execOut(ctx, taskguest.ReadLog(x.id, s, have, task.MaxLogBytes-have))
+	var have, total int64
+	for _, stage := range task.Stages() {
+		n, err := x.cfg.Logs.Size(x.id, stage)
 		if err != nil {
-			return lookAgain(err)
-		}
-		_, data, err := taskguest.ParseLog(out)
-		if err != nil || len(data) == 0 {
 			return err
 		}
-		if err := x.cfg.Logs.Append(x.id, s, have, data); err != nil {
-			return err
+		total += n
+		if stage == s {
+			have = n
 		}
 	}
+	remaining := min(size-have, task.MaxLogBytes-total)
+	if remaining <= 0 {
+		return nil
+	}
+	data := make([]byte, 0, remaining)
+	var readErr error
+	for int64(len(data)) < remaining {
+		left := remaining - int64(len(data))
+		out, err := x.execOut(ctx, taskguest.ReadLog(x.id, s, have+int64(len(data)), left))
+		if err != nil {
+			readErr = lookAgain(err)
+			break
+		}
+		_, chunk, err := taskguest.ParseLog(out)
+		if err != nil {
+			readErr = err
+			break
+		}
+		if int64(len(chunk)) > min(left, taskguest.MaxLogChunk) {
+			readErr = fmt.Errorf("log %s of %s: chunk exceeds requested bytes", s, x.id)
+			break
+		}
+		if len(chunk) == 0 {
+			break
+		}
+		data = append(data, chunk...)
+	}
+	if len(data) != 0 {
+		return errors.Join(readErr, x.cfg.Logs.Append(x.id, s, have, data))
+	}
+	return readErr
 }
 
 func (x *executor) exec(ctx context.Context, argv []string, timeout time.Duration) (engine.ExecResult, error) {

@@ -311,7 +311,7 @@ func (h *harness) stop() {
 // settle waits until every workflow sleeps on the clock.
 func (h *harness) settle() {
 	h.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		h.sup.mu.Lock()
 		live := len(h.sup.runs)

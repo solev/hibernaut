@@ -18,11 +18,18 @@ import (
 
 func TestSQLiteContract(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) taskstore.Store {
-		s, err := taskstore.Open(context.Background(), statefile.Dir{Path: t.TempDir()})
+		dir := t.TempDir()
+		s, err := taskstore.Open(context.Background(), statefile.Dir{Path: dir})
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { s.Close() })
+		t.Cleanup(func() {
+			entries, err := os.ReadDir(filepath.Join(dir, taskstore.Files, "staging"))
+			if err != nil || len(entries) != 0 {
+				t.Errorf("staging after contract = %v, %v, want empty", entries, err)
+			}
+			s.Close()
+		})
 		return s
 	})
 }

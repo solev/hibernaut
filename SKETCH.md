@@ -627,8 +627,9 @@ under `/var/lib/hib-task/RUN`.
   never in argv or on Exec's stdin.
 - **Output over 8 MiB.** `runner look` prints a few lines. `runner log` prints at most
   `MaxLogChunk`, 1 MiB, from a byte offset. Collect stops at `MaxLogBytes`, 50 MiB, per run, summed
-  over the stages. `FileLogs.Append` enforces the sum. The executor's copy loop still caps each
-  stage on its own (TODO).
+  over the stages in order. The executor's copy loop and `FileLogs.Append` both enforce the sum.
+  Collect counts kept bytes. `Dropped` counts excess bytes the guest reports while its machine runs.
+  It can understate when the machine is not running at collect.
 - **Lost replies.** Launch is idempotent by unit name and by a start marker made with `mkdir`.
   A second start exits 75 without acting. The executor launches only when a look says
   `NotStarted`, ignores `ErrConnectionLost` and judges the launch by the next look, never the
@@ -896,7 +897,7 @@ rubric, the two were close, about 18 for A and 19.5 for B.
 
 **Judge findings left as fill-in obligations:**
 
-- The 50 MiB log cap counts per run in the executor's copy loop, not per stage. Input limits
+- [x] The 50 MiB log cap counts per run in the executor's copy loop, not per stage. Input limits
   apply per task, summed over its runs.
 - `CommitAuthor` and `PRAuthor` are separate.
 - A follow-up inherits the task's repo and workdir and can't change them.
@@ -995,9 +996,11 @@ exits for free.
 
 M13a is done. The SQLite store and `FileLogs` pass their contracts without a tag, and the
 freezer, pause and modernc spikes ran. Question 10's four guest changes are done in `taskguest`,
-`runner.sh` and `guestsim`, each with a test that fails without it. M13b next adds the executor's
-log copy loop under the per-run cap. Each `FileLogs.Append` syncs the file and five directories, so
-the loop appends a poll's output at once, not line by line. Both stores' `Submit`
-must also refuse a follow-up once the task's inputs, summed over its runs, would pass
-`MaxInputBytes`. hibd checks one submission at a time, and the refusal needs a `task` error and
-a `hibapi` code.
+`runner.sh` and `guestsim`, each with a test that fails without it. The executor now spends one
+50 MiB log budget per run in stage order and records dropped bytes. Each `FileLogs.Append`
+syncs the file and five directories, so the loop batches a poll's chunks into one append,
+buffering at most the remaining run budget plus bounded protocol chunks.
+Both stores' `Submit` now refuse inputs past `MaxInputBytes`, summed over the task's runs.
+Receipt replays precede the cap check. Refusals leave no rows or published blobs and remove
+staged files. `task.ErrInputFull` maps to the non-retryable `hibapi.CodeInputFull`.
+M13b still needs the engine and room changes.

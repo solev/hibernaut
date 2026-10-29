@@ -309,7 +309,7 @@ func busy(err error) error {
 }
 
 // Submit stages, hashes and syncs every input under Files/staging, then in one transaction
-// checks the receipt, the queue and a follow-up's task, inserts the task, run, inputs and
+// checks the receipt, the queue and the task's input budget, inserts the task, run, inputs and
 // receipt, and renames the staged inputs into Files/blobs before it commits. A crash after the
 // renames and before the commit leaves blobs no row references, which cleanup removes.
 func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error) {
@@ -356,6 +356,10 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 	if queued >= task.MaxQueuedRuns {
 		return task.Receipt{}, task.ErrQueueFull
 	}
+	budget := inputBudget(task.MaxInputBytes)
+	if err := budget.take(sub.Spec); err != nil {
+		return task.Receipt{}, err
+	}
 	id := task.RunID{Task: sub.Task, N: 1}
 	if sub.Task != "" {
 		t, err := readTask(ctx, tx, sub.Task)
@@ -367,6 +371,11 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		}
 		if _, live := t.Live(); live {
 			return task.Receipt{}, task.ErrRunLive
+		}
+		for _, r := range t.Runs {
+			if err := budget.take(r.Spec); err != nil {
+				return task.Receipt{}, err
+			}
 		}
 		id.N = len(t.Runs) + 1
 	} else {
