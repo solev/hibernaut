@@ -291,7 +291,7 @@ func TestRemoveWaitsForCancelledAction(t *testing.T) {
 	select {
 	case <-waited:
 		t.Fatal("Wait returned before Remove")
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 	close(release)
 	receiveRemoval(t, waited, "Wait did not return after Remove")

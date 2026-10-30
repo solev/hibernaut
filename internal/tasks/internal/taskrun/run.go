@@ -775,10 +775,11 @@ type Supervisor struct {
 	cfg  Config
 	life context.Context
 
-	mu       sync.Mutex
-	runs     map[task.RunID]*handle
-	removing map[task.ID]struct{}
-	wg       sync.WaitGroup
+	mu              sync.Mutex
+	runs            map[task.RunID]*handle
+	removing        map[task.ID]struct{}
+	removalProblems map[task.ID]string
+	wg              sync.WaitGroup
 }
 
 type handle struct {
@@ -792,7 +793,7 @@ type handle struct {
 // NewSupervisor returns a Supervisor whose workflows live as long as life.
 func NewSupervisor(life context.Context, cfg Config) *Supervisor {
 	return &Supervisor{cfg: cfg, life: life, runs: map[task.RunID]*handle{},
-		removing: map[task.ID]struct{}{}}
+		removing: map[task.ID]struct{}{}, removalProblems: map[task.ID]string{}}
 }
 
 // Tick starts a workflow for each unfinished run that has none, nudges each whose run has a new
@@ -854,12 +855,14 @@ func (s *Supervisor) remove(ctx context.Context) error {
 		}
 		s.removing[t.ID] = struct{}{}
 		s.wg.Go(func() {
-			defer func() {
-				s.mu.Lock()
-				delete(s.removing, t.ID)
-				s.mu.Unlock()
-			}()
-			if err := s.retire(t); err != nil && s.cfg.Logf != nil {
+			err := s.retire(t)
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			delete(s.removing, t.ID)
+			if err == nil {
+				delete(s.removalProblems, t.ID)
+			} else if s.life.Err() == nil && s.cfg.Logf != nil && s.removalProblems[t.ID] != err.Error() {
+				s.removalProblems[t.ID] = err.Error()
 				s.cfg.Logf("task %s removal: %v", t.ID, err)
 			}
 		})
@@ -933,6 +936,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 	}
 	s.runs[r.ID] = h
 	s.wg.Go(func() {
+		var problem string
 		defer func() {
 			s.mu.Lock()
 			delete(s.runs, r.ID)
@@ -952,7 +956,8 @@ func (s *Supervisor) start(r task.Run) *handle {
 			case nudged, errors.Is(err, taskstore.ErrStale):
 				continue
 			}
-			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) {
+			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) && problem != err.Error() {
+				problem = err.Error()
 				s.cfg.Logf("task %s: %v", r.ID, err)
 			}
 			_ = s.cfg.Clock.Sleep(s.life, h.x.poll())
