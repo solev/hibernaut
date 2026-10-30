@@ -343,6 +343,16 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 	} else if !errors.Is(err, ErrNoReceipt) {
 		return task.Receipt{}, err
 	}
+	var t task.Task
+	if sub.Task != "" {
+		t, err = readTask(ctx, tx, sub.Task)
+		if err != nil {
+			return task.Receipt{}, err
+		}
+		if t.Removal != nil || t.Removing() {
+			return task.Receipt{}, task.ErrNoTask
+		}
+	}
 	runs, err := readUnfinished(ctx, tx)
 	if err != nil {
 		return task.Receipt{}, err
@@ -362,13 +372,6 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 	}
 	id := task.RunID{Task: sub.Task, N: 1}
 	if sub.Task != "" {
-		t, err := readTask(ctx, tx, sub.Task)
-		if err != nil {
-			return task.Receipt{}, err
-		}
-		if t.Removal != nil || t.Removing() {
-			return task.Receipt{}, task.ErrNoTask
-		}
 		if _, live := t.Live(); live {
 			return task.Receipt{}, task.ErrRunLive
 		}
