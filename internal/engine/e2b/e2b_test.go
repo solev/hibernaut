@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -107,6 +108,11 @@ func newFakeE2B(t *testing.T, stateDir ...string) (*fakeE2B, *e2b.Engine) {
 	cfg := e2b.Config{APIURL: apiSrv.URL, SandboxURL: envdSrv.URL, APIKey: apiKey}
 	if len(stateDir) != 0 {
 		cfg.StateDir = stateDir[0]
+		if cfg.StateDir != "" {
+			if err := os.Chmod(cfg.StateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	eng, err := e2b.New(cfg)
 	if err != nil {
