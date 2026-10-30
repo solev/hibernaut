@@ -683,9 +683,13 @@ save and fork's origin resumes, and each fork copy's create. The save's plan che
 A running-machine ssh dial uses `DialRunningWebSocket`, which never resumes. Its traffic token
 survives bridge processes and host restarts in hibd's private state directory. A pause after
 Dial's read fails that call without resuming, then requires admission before a resumable retry.
-A missing token also requires admission. Running repin uses non-resuming Exec. Neither takes a
-room lock or room reading. A paused repin's Resume and dial share one admitted attempt, and its
-initialization runs after releasing the lock.
+A missing token also requires admission. If the running dial fails and E2B still reports running,
+the engine invalidates the token and returns the dial error with `ErrNoTrafficToken`. Dial then
+admits one resumable fallback, whose connect stores the current token. The check lets a machine
+already running through even on a full host. The next running dial needs no admission. An ended
+context or task guard error does not trigger that fallback. Running repin uses non-resuming Exec.
+Successful running dials and repins take no room lock or room reading. A paused repin's Resume
+and dial share one admitted attempt, and its initialization runs after releasing the lock.
 A one-shot `hibd new`, an ssh wake and the proxy's link wake cannot spend pages a task admission
 just counted, or the reverse. The lock is separate from `hibd.lock` so `Wake` and `Dial` do not
 wait behind a save.

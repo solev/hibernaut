@@ -414,9 +414,6 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		}
 	}
 	fail := func(err error) (*Conn, error) {
-		if errors.Is(err, room.ErrFull) {
-			return nil, err
-		}
 		return nil, m.refused(ctx, name, em.MemoryMB, false, err)
 	}
 	key, err := m.readPin(em.ID)
@@ -463,6 +460,9 @@ func (m *Manager) Dial(ctx context.Context, name string) (*Conn, error) {
 		})
 	}
 	if err != nil {
+		if errors.Is(err, room.ErrFull) {
+			return nil, err
+		}
 		return fail(fmt.Errorf("connecting to %q: %w", name, err))
 	}
 	if key == nil {

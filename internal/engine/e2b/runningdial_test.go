@@ -21,12 +21,13 @@ func runningProxy(f *fakeE2B) http.Handler {
 		f.mu.Lock()
 		m, ok := f.sandboxes[r.Header.Get("E2b-Sandbox-Id")]
 		running := ok && m["state"] == "running"
+		token := m["trafficAccessToken"]
 		f.mu.Unlock()
 		if !running {
 			http.Error(w, "sandbox is not running", http.StatusBadGateway)
 			return
 		}
-		if r.Header.Get("E2b-Traffic-Access-Token") != trafficToken {
+		if r.Header.Get("E2b-Traffic-Access-Token") != token {
 			http.Error(w, "bad traffic token", http.StatusForbidden)
 			return
 		}
@@ -157,6 +158,138 @@ func TestRunningDialRequiresTokenAndPreservesRefusals(t *testing.T) {
 	})
 	if _, err := e.DialRunningWebSocket(ctx, id, 8081); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("running dial refusal = %v, want E2B's 403", err)
+	}
+}
+
+func TestRunningDialRefreshesRejectedToken(t *testing.T) {
+	for _, persistent := range []bool{false, true} {
+		name := "memory"
+		if persistent {
+			name = "disk"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := ""
+			if persistent {
+				dir = t.TempDir()
+			}
+			f, e := newFakeE2B(t, dir)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			id := "aaaaaaaaaaaaaaaaaaaa"
+			f.add(id, "running", nil)
+			if _, err := e.Resume(ctx, id, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			const freshToken = "replacement-traffic-token"
+			f.mu.Lock()
+			f.sandboxes[id]["trafficAccessToken"] = freshToken
+			f.envd = runningProxy(f)
+			f.mu.Unlock()
+			c, err := e.DialRunningWebSocket(ctx, id, 8081)
+			if c != nil {
+				c.Close()
+			}
+			if !errors.Is(err, engine.ErrNoTrafficToken) || !strings.Contains(err.Error(), "403") {
+				t.Errorf("rejected-token dial = %v, want ErrNoTrafficToken and the proxy's 403", err)
+			}
+			if persistent {
+				if _, err := os.Stat(filepath.Join(dir, "traffic-token-"+id)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("rejected traffic token remains stored: %v", err)
+				}
+			}
+			before, err := e.Get(ctx, id)
+			if err != nil || before.State != engine.Running {
+				t.Fatalf("rejected-token dial left machine %s, %v, want running", before.State, err)
+			}
+			c, err = e.DialWebSocket(ctx, id, 8081, time.Minute)
+			if err != nil || c == nil {
+				t.Fatalf("admitted connect = %v, want a connection with the API's new token", err)
+			}
+			c.Close()
+			if persistent {
+				data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id))
+				if err != nil || string(data) != freshToken {
+					t.Fatalf("stored token after connect = %q, %v, want the API's new token", data, err)
+				}
+				e, err = e2b.New(e2b.Config{StateDir: dir, APIURL: f.apiURL, SandboxURL: f.proxyURL, APIKey: apiKey})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			c, err = e.DialRunningWebSocket(ctx, id, 8081)
+			if err != nil || c == nil {
+				t.Fatalf("next running dial = %v, want a connection without connect", err)
+			}
+			c.Close()
+			after, err := e.Get(ctx, id)
+			if err != nil || after.State != engine.Running || !after.EndAt.Equal(before.EndAt) {
+				t.Errorf("running dial changed machine state or timeout: %+v, %v", after, err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			connects := 0
+			for _, req := range f.requests {
+				if strings.HasSuffix(req.URL.Path, "/connect") {
+					connects++
+				}
+			}
+			if connects != 2 {
+				t.Errorf("running recovery made %d connects, want setup and one admitted connect", connects)
+			}
+		})
+	}
+}
+
+func TestRunningDialFailureRequiresAdmission(t *testing.T) {
+	f, e := newFakeE2B(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	id := "aaaaaaaaaaaaaaaaaaaa"
+	f.add(id, "running", nil)
+	if _, err := e.Resume(ctx, id, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "proxy unavailable", http.StatusBadGateway)
+	})
+	c, err := e.DialRunningWebSocket(ctx, id, 8081)
+	if c != nil {
+		c.Close()
+	}
+	if !errors.Is(err, engine.ErrNoTrafficToken) || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("failed running dial = %v, want ErrNoTrafficToken and the proxy's 502", err)
+	}
+}
+
+func TestRunningDialCancellationKeepsToken(t *testing.T) {
+	dir := t.TempDir()
+	f, e := newFakeE2B(t, dir)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	id := "aaaaaaaaaaaaaaaaaaaa"
+	f.add(id, "running", nil)
+	if _, err := e.Resume(ctx, id, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	dialCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stop()
+		select {
+		case <-r.Context().Done():
+		case <-ctx.Done():
+		}
+	})
+	c, err := e.DialRunningWebSocket(dialCtx, id, 8081)
+	if c != nil {
+		c.Close()
+	}
+	if !errors.Is(err, context.Canceled) || errors.Is(err, engine.ErrNoTrafficToken) {
+		t.Errorf("canceled running dial = %v, want cancellation without fallback", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id))
+	if err != nil || string(data) != trafficToken {
+		t.Errorf("canceled dial changed stored token: %q, %v", data, err)
 	}
 }
 

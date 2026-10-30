@@ -199,7 +199,9 @@ type Engine interface {
 	DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error)
 	// DialRunningWebSocket carries the same byte stream but never resumes or changes a timeout.
 	// A paused machine returns ErrNotRunning. Without a stored traffic token it returns
-	// ErrNoTrafficToken. Callers must admit any fallback to DialWebSocket or Resume.
+	// ErrNoTrafficToken. A failed dial while the machine still runs invalidates its token and
+	// wraps ErrNoTrafficToken and the dial error, unless ctx ended. Task guard errors pass through.
+	// Callers must admit any fallback to DialWebSocket or Resume.
 	DialRunningWebSocket(ctx context.Context, id string, port int) (net.Conn, error)
 	// BuildTemplate builds spec, or rebuilds the template of that name, calling logs synchronously with each
 	// complete entry as it arrives. A nil callback ignores logs. Entries keep their full message,

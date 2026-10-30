@@ -3,6 +3,7 @@ package machines
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/room"
+	"github.com/solev/hibernaut/internal/task"
 )
 
 type pauseAfterDialRead struct {
@@ -29,6 +31,153 @@ type missingTrafficToken struct{ engine.Engine }
 
 func (e *missingTrafficToken) DialRunningWebSocket(context.Context, string, int) (net.Conn, error) {
 	return nil, engine.ErrNoTrafficToken
+}
+
+type failedRunningDial struct {
+	engine.Engine
+	failure      error
+	cancel       context.CancelFunc
+	runningDials int
+	dials        int
+	fresh        bool
+}
+
+func (e *failedRunningDial) DialRunningWebSocket(ctx context.Context, id string, port int) (net.Conn, error) {
+	e.runningDials++
+	if !e.fresh {
+		if e.cancel != nil {
+			e.cancel()
+		}
+		return nil, e.failure
+	}
+	return e.Engine.DialRunningWebSocket(ctx, id, port)
+}
+
+func (e *failedRunningDial) DialWebSocket(ctx context.Context, id string, port int, timeout time.Duration) (net.Conn, error) {
+	e.dials++
+	c, err := e.Engine.DialWebSocket(ctx, id, port, timeout)
+	if err == nil {
+		e.fresh = true
+	}
+	return c, err
+}
+
+func TestDialRecoversRunningDialFailureUnderAdmission(t *testing.T) {
+	m, e := sharedStateManager(t)
+	e.Add(engine.Machine{ID: "target", State: engine.Running, MemoryMB: 2048,
+		EndAt:    time.Now().Add(2 * DefaultIdle),
+		Metadata: map[string]string{labelName: "target", labelIdle: DefaultIdle.String()}})
+	if err := m.checkState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.writePin("target", mustReadPlacementKey(t, m)); err != nil {
+		t.Fatal(err)
+	}
+	reads, lists := 0, 0
+	m.readRoom = func() (room.Host, error) {
+		reads++
+		return placementHost(0), nil
+	}
+	admitted := &placementEngine{Engine: e, list: func(ctx context.Context, opts engine.ListOptions) ([]engine.Machine, error) {
+		if len(opts.States) > 0 && ctx.Err() == nil {
+			assertPlacementLocked(t, m.dir)
+			lists++
+		}
+		return e.List(ctx, opts)
+	}}
+	wrapped := &failedRunningDial{Engine: &refusingDial{Engine: admitted},
+		failure: fmt.Errorf("dial: proxy rejected traffic token with 403: %w", engine.ErrNoTrafficToken)}
+	m.e = wrapped
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	unlock, err := m.lockRoom(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := sync.OnceFunc(unlock)
+	defer release()
+	blocked, stop := context.WithTimeout(ctx, 2*time.Second)
+	c, err := m.Dial(blocked, "target")
+	stop()
+	if c != nil {
+		c.Close()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || wrapped.dials != 0 {
+		t.Fatalf("failed running dial = %v, resumable dials=%d, want blocked admission", err, wrapped.dials)
+	}
+	release()
+	c, err = m.Dial(ctx, "target")
+	if err != nil || c == nil {
+		t.Fatalf("admitted running recovery = %v, want a connection on the full host", err)
+	}
+	c.Close()
+	if wrapped.dials != 1 || lists != 1 || reads != 0 {
+		t.Fatalf("running recovery made %d resumable dials, %d room lists, %d readings, want 1, 1, 0",
+			wrapped.dials, lists, reads)
+	}
+	unlock, err = m.lockRoom(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	c, err = m.Dial(ctx, "target")
+	if err != nil || c == nil {
+		t.Fatalf("next running Dial waited for admission: %v", err)
+	}
+	c.Close()
+	if wrapped.runningDials != 3 || wrapped.dials != 1 || lists != 1 || reads != 0 {
+		t.Errorf("next Dial made running=%d resumable=%d room lists=%d readings=%d, want 3, 1, 1, 0",
+			wrapped.runningDials, wrapped.dials, lists, reads)
+	}
+	if em, err := e.Get(ctx, "target"); err != nil || em.State != engine.Running {
+		t.Errorf("recovery left target %s, %v, want running", em.State, err)
+	}
+}
+
+func TestDialRunningFailurePreservesCancellationAndGuard(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		name := "task guard"
+		if canceled {
+			name = "canceled"
+		}
+		t.Run(name, func(t *testing.T) {
+			m, e := sharedStateManager(t)
+			e.Add(engine.Machine{ID: "target", State: engine.Running, MemoryMB: 2048,
+				EndAt:    time.Now().Add(2 * DefaultIdle),
+				Metadata: map[string]string{labelName: "target", labelIdle: DefaultIdle.String()}})
+			if err := m.checkState(); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.writePin("target", mustReadPlacementKey(t, m)); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			failure := task.ErrHeld
+			wrapped := &failedRunningDial{Engine: &refusingDial{Engine: e}, failure: failure}
+			if canceled {
+				failure = context.Canceled
+				wrapped.failure, wrapped.cancel = failure, cancel
+			}
+			m.e = wrapped
+			reads := 0
+			m.readRoom = func() (room.Host, error) {
+				reads++
+				return placementHost(0), nil
+			}
+			c, err := m.Dial(ctx, "target")
+			if c != nil {
+				c.Close()
+			}
+			want := fmt.Sprintf("connecting to %q: %s", "target", failure)
+			if !errors.Is(err, failure) || err.Error() != want || wrapped.dials != 0 || reads != 0 {
+				t.Errorf("Dial = %v, resumable dials=%d readings=%d, want %q without fallback", err, wrapped.dials, reads, want)
+			}
+			if em, err := e.Get(t.Context(), "target"); err != nil || em.State != engine.Running {
+				t.Errorf("failed dial left target %s, %v, want running", em.State, err)
+			}
+		})
+	}
 }
 
 func TestDialMissingTrafficTokenRequiresAdmission(t *testing.T) {
@@ -117,6 +266,10 @@ func TestDialAdmitsAPauseAfterItsRead(t *testing.T) {
 					if !errors.Is(err, room.ErrFull) {
 						t.Errorf("Dial = %v, want the room error without resuming", err)
 					}
+					const want = `no room on the host for "target": it needs 2 GiB of memory and 0 MiB is free. No machine is running, so an image build may be using it: try again when it's done`
+					if err == nil || err.Error() != want {
+						t.Errorf("Dial = %v, want exactly %q", err, want)
+					}
 					if d.dials != 0 {
 						t.Errorf("full host received %d resumable dials, want none", d.dials)
 					}
@@ -132,6 +285,42 @@ func TestDialAdmitsAPauseAfterItsRead(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDialPausedPinnedKeepsRoomError(t *testing.T) {
+	m, e := sharedStateManager(t)
+	e.Add(engine.Machine{ID: "target", State: engine.Paused, MemoryMB: 2048,
+		Metadata: map[string]string{labelName: "target", labelIdle: DefaultIdle.String()}})
+	if err := m.checkState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.writePin("target", mustReadPlacementKey(t, m)); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	m.readRoom = func() (room.Host, error) {
+		assertPlacementLocked(t, m.dir)
+		reads++
+		return placementHost(0), nil
+	}
+	d := &refusingDial{Engine: e}
+	m.e = d
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, err := m.Dial(ctx, "target")
+	if c != nil {
+		c.Close()
+	}
+	const want = `no room on the host for "target": it needs 2 GiB of memory and 0 MiB is free. No machine is running, so an image build may be using it: try again when it's done`
+	if !errors.Is(err, room.ErrFull) || err.Error() != want {
+		t.Errorf("Dial = %v, want exactly %q wrapping room.ErrFull", err, want)
+	}
+	if reads != 1 || d.dials != 0 {
+		t.Errorf("full host received %d room readings and %d resumable dials, want 1 and 0", reads, d.dials)
+	}
+	if em, err := e.Get(ctx, "target"); err != nil || em.State != engine.Paused {
+		t.Errorf("room refusal left target %s, %v, want paused", em.State, err)
 	}
 }
 
