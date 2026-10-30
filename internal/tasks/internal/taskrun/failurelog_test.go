@@ -70,6 +70,33 @@ func TestRemovalLogsChangedFailures(t *testing.T) {
 	})
 }
 
+func TestRemovalLoggingDoesNotBlockTick(t *testing.T) {
+	h, id := keptRemoval(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	h.configure = func(cfg *Config) {
+		cfg.Logf = func(string, ...any) {
+			close(started)
+			select {
+			case <-release:
+			case <-t.Context().Done():
+			}
+		}
+		cfg.Machines = removeMachines{Machines: h.m, remove: func(context.Context, task.Run) error {
+			return errors.New("remove failed")
+		}}
+	}
+	h.request(id, task.RequestRemove)
+	h.start()
+	if err := tickRemoval(t, h); err != nil {
+		t.Fatal(err)
+	}
+	receiveRemoval(t, started, "removal failure was not logged")
+	defer close(release)
+	if err := tickRemoval(t, h); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type failingFind struct {
 	Machines
 	find func() error

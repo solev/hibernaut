@@ -855,14 +855,21 @@ func (s *Supervisor) remove(ctx context.Context) error {
 		}
 		s.removing[t.ID] = struct{}{}
 		s.wg.Go(func() {
+			defer func() {
+				s.mu.Lock()
+				delete(s.removing, t.ID)
+				s.mu.Unlock()
+			}()
 			err := s.retire(t)
 			s.mu.Lock()
-			defer s.mu.Unlock()
-			delete(s.removing, t.ID)
+			logFailure := err != nil && s.life.Err() == nil && s.cfg.Logf != nil && s.removalProblems[t.ID] != err.Error()
 			if err == nil {
 				delete(s.removalProblems, t.ID)
-			} else if s.life.Err() == nil && s.cfg.Logf != nil && s.removalProblems[t.ID] != err.Error() {
+			} else if logFailure {
 				s.removalProblems[t.ID] = err.Error()
+			}
+			s.mu.Unlock()
+			if logFailure && s.life.Err() == nil {
 				s.cfg.Logf("task %s removal: %v", t.ID, err)
 			}
 		})
