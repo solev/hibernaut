@@ -133,11 +133,6 @@ func (t *Tasks) List(ctx context.Context) ([]task.Task, error) {
 	return st.Tasks(ctx)
 }
 
-// Logs reads stage s's output of run r from offset, for hib task logs.
-func (t *Tasks) Logs(r task.RunID, s task.Stage, offset int64) (io.ReadCloser, error) {
-	return taskstore.FileLogs{Dir: t.dir}.Open(r, s, offset)
-}
-
 // Close closes tasks.db if a method opened it.
 func (t *Tasks) Close() error {
 	t.mu.Lock()

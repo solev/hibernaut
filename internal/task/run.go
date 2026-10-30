@@ -66,6 +66,14 @@ const (
 	MachineGone    MachineState = "gone"
 )
 
+func (s MachineState) Valid() bool {
+	switch s {
+	case MachineUnknown, MachineRunning, MachinePaused, MachineGone:
+		return true
+	}
+	return false
+}
+
 // Run is everything known about one run, merged at read time from the submission, the run's
 // log, the requests made against it, the machine's latest freeze row and what E2B says. It is a
 // value: derive from it, never store what it derives.

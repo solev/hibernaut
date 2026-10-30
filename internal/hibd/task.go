@@ -17,6 +17,7 @@ import (
 	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/tasks"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 // taskCommand is one leaf of hibd's task and recipe groups. taskCommands is the only list of
@@ -47,17 +48,17 @@ func taskLeaves() []taskCommand {
 		{path: "task run", args: "TASK", run: (*App).taskStart,
 			help: "save a follow-up run of TASK on its machine the same way"},
 		{path: "task ls", e2b: true, run: (*App).taskLs,
-			help: "list tasks, each with its latest run's phase or outcome"},
+			help: "read tasks newest first, with each latest run and machine state"},
 		{path: "task show", args: "TASK | -request ID", e2b: true, run: (*App).taskShow,
-			help: "show a task's runs, stages, holds and requests"},
+			help: "read every run, hold, request and removal of a task or submission"},
 		{path: "task logs", args: "TASK [-run N] [-from BYTE]", run: (*App).taskLogs,
-			help: "print a run's copied log from a byte cursor, 1 MiB at most per call"},
+			help: "print the run's setup, command and finish output; -from counts bytes already read. JSON reads at most 1 MiB"},
 		{path: "task cancel", args: "TASK [-request-id ID]", run: (*App).taskRequest,
-			help: "ask the daemon to stop the live run"},
+			help: "record a request for the daemon to stop the live run"},
 		{path: "task rescue", args: "TASK [-request-id ID]", run: (*App).taskRequest,
-			help: "resume a held machine and kill its stage at once"},
+			help: "record consent for the daemon to resume a held machine and kill its stage"},
 		{path: "task rm", args: "TASK [-request-id ID]", run: (*App).taskRequest,
-			help: "stop the live run, then delete the task's machine and records"},
+			help: "record a request for the daemon to stop the live run and remove the task"},
 		{path: "task cleanup", args: "[-n]", run: (*App).taskCleanup,
 			help: "delete inputs and logs no task refers to"},
 		{path: "recipe put", args: "NAME", run: (*App).recipe,
@@ -252,14 +253,16 @@ func (a *App) taskFail(asJSON bool, cmd, requestID string, err error) int {
 	}
 	code := hibapi.CodeOf(err)
 	switch {
-	case errors.Is(err, errBadTaskRequest):
+	case errors.Is(err, errBadTaskRequest), errors.Is(err, tasks.ErrLogRange):
 		code = hibapi.CodeBadRequest
+	case errors.Is(err, tasks.ErrNoReceipt):
+		code = hibapi.CodeNoTask
 	case errors.Is(err, tasks.ErrNotLive):
 		code = hibapi.CodeNotLive
 	case errors.Is(err, tasks.ErrBusy):
 		code = hibapi.CodeBusy
 	}
-	return a.reply(hibapi.Response{Error: err.Error(), TaskReply: hibapi.TaskReply{
+	return a.reply(hibapi.Response{Error: termsafe.String(withNextStep(cmd, err).Error()), TaskReply: hibapi.TaskReply{
 		RequestID: requestID, Code: code, Retryable: code.Retryable()}})
 }
 
@@ -286,31 +289,133 @@ func (l *lineReader) line() []byte {
 
 // taskLs is hibd task ls.
 func (a *App) taskLs(ctx context.Context, c taskCommand, args []string) int {
-	return a.taskNotYet(c, args)
-	// TODO: st.Tasks, one engine List by task.Label to fill each latest run's Machine, then
-	// hibapi.RunOf with st.Daemon for each. A merge at the read boundary: nothing is stored twice.
+	fl := a.flags(c.path)
+	asJSON := fl.Bool("json", false, "print JSON")
+	if _, ok := a.parse(fl, args, 0, c.path); !ok {
+		return 2
+	}
+	cfg, err := loadSettings(a.Getenv)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	st := a.tasks(cfg)
+	defer st.Close()
+	records, err := st.List(ctx)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	instance, ms, err := a.taskReadState(ctx, st)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	out := make([]hibapi.Task, len(records))
+	for i, record := range records {
+		out[i] = taskReadOf(record, instance, ms, false)
+	}
+	if *asJSON {
+		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Tasks: out}})
+	}
+	if err := a.printTaskList(out); err != nil {
+		return a.taskFail(false, c.path, "", err)
+	}
+	return 0
 }
 
 // taskShow is hibd task show TASK and hibd task show -request ID.
 func (a *App) taskShow(ctx context.Context, c taskCommand, args []string) int {
-	return a.taskNotYet(c, args)
-	// TODO: -request: st.Receipt, then show its task. Otherwise st.Task, FindTask for Machine.
+	fl := a.flags(c.path)
+	asJSON := fl.Bool("json", false, "print JSON")
+	request := fl.String("request", "", "show the task a submission made")
+	rest, ok := a.parseAny(fl, args)
+	if !ok {
+		return 2
+	}
+	var id task.ID
+	switch {
+	case len(rest) == 1 && *request == "":
+		var err error
+		id, err = task.ParseID(rest[0])
+		if err != nil {
+			return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: %w", errBadTaskRequest, err))
+		}
+	case len(rest) == 0 && *request != "":
+	default:
+		return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: give TASK or -request ID", errBadTaskRequest))
+	}
+	cfg, err := loadSettings(a.Getenv)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	st := a.tasks(cfg)
+	defer st.Close()
+	if *request != "" {
+		rec, err := st.Receipt(ctx, *request)
+		if err != nil {
+			return a.taskFail(*asJSON, c.path, "", err)
+		}
+		id = rec.Run.Task
+	}
+	record, err := st.Task(ctx, id)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	instance, ms, err := a.taskReadState(ctx, st)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	out := taskReadOf(record, instance, ms, true)
+	if *asJSON {
+		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Task: &out}})
+	}
+	if err := a.printTask(out); err != nil {
+		return a.taskFail(false, c.path, "", err)
+	}
+	return 0
 }
 
 // taskLogs is hibd task logs. The cursor is a byte offset in the host's copy, so -f on the
 // laptop is a loop of calls that each pass the last reply's Next.
 func (a *App) taskLogs(ctx context.Context, c taskCommand, args []string) int {
-	return a.taskNotYet(c, args)
-	// TODO: Logs.Read(run, from, 1 MiB), reply TaskLog{From, Next, Data, Ended: run.Ended()}
+	fl := a.flags(c.path)
+	asJSON := fl.Bool("json", false, "print JSON")
+	n := fl.Int("run", 0, "run number, latest by default")
+	from := fl.Int64("from", 0, "number of stream bytes already read")
+	rest, ok := a.parse(fl, args, 1, c.path+" "+c.args)
+	if !ok {
+		return 2
+	}
+	id, err := task.ParseID(rest[0])
+	if err != nil || *n < 0 || *from < 0 {
+		return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: want a task ID and nonnegative run and cursor", errBadTaskRequest))
+	}
+	cfg, err := loadSettings(a.Getenv)
+	if err != nil {
+		return a.taskFail(*asJSON, c.path, "", err)
+	}
+	st := a.tasks(cfg)
+	defer st.Close()
+	for {
+		out, err := st.Logs(ctx, id, *n, *from)
+		if err != nil {
+			return a.taskFail(*asJSON, c.path, "", err)
+		}
+		if *asJSON {
+			return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{TaskLog: &out}})
+		}
+		if _, err := a.Stdout.Write(out.Data); err != nil {
+			return a.taskFail(false, c.path, "", err)
+		}
+		if len(out.Data) == 0 || out.Done {
+			return 0
+		}
+		*n, *from = out.Run, out.Next
+	}
 }
 
 // taskRequest is hibd task cancel, rescue and rm. It records a request row and answers. The
 // daemon carries it out at the run's next step boundary or poll, and show says when it has.
 func (a *App) taskRequest(ctx context.Context, c taskCommand, args []string) int {
-	return a.taskNotYet(c, args)
-	// TODO: kind from c.path. st.Request(NewRequest{RequestID or a fresh one, Task, Kind,
-	// Actor, At: a.now()}). ErrNotLive for cancel and rescue without a live run. rm needs none,
-	// and the daemon's Tick retires a task with no live run.
+	return a.recordTaskRequest(ctx, c, args)
 }
 
 // taskCleanup is hibd task cleanup.
@@ -396,7 +501,7 @@ func (t taskMachines) Remove(ctx context.Context, r task.Run) error {
 		}); err != nil {
 			return fmt.Errorf("removing task machine %s (%s): %w", name, em.ID, err)
 		}
-		// TODO: drop em.ID's link entry as pauseOrRemove does, through one helper both call.
+		t.a.dropRemovedLink(ctx, t.cfg, em.ID, name)
 	}
 	_, found, err = t.m.FindTask(ctx, task.Run{ID: r.ID, Kept: em.ID})
 	if err != nil {

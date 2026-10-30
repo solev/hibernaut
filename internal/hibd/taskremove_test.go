@@ -84,6 +84,7 @@ func TestTaskRemoveLeavesNoTaskMachine(t *testing.T) {
 		{name: "missing recorded with duplicate", recorded: "recorded", initial: []engine.Machine{duplicate}},
 		{name: "unrecorded duplicates", initial: []engine.Machine{running, duplicate}},
 		{name: "unrecorded late duplicate", initial: []engine.Machine{running}, late: &late},
+		{name: "unrecorded late only", late: &late},
 		{name: "nothing recorded or listed"},
 		{name: "kill recorded fails", recorded: "recorded", initial: []engine.Machine{running},
 			failID: "recorded", killErr: killFailure, wantErr: killFailure, survivors: []string{"recorded"}},
@@ -136,9 +137,14 @@ func TestTaskRemoveLeavesNoTaskMachine(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			err = tm.Remove(ctx, r)
-			if err != nil && tc.late != nil {
-				t.Logf("first removal = %v; retrying", err)
-				err = tm.Remove(ctx, r)
+			if tc.recorded == "" && len(tc.initial) == 0 && tc.late != nil {
+				if err == nil || !strings.Contains(err.Error(), "appeared during removal: try again") {
+					t.Errorf("first removal = %v, want appeared during removal: try again", err)
+				}
+				if err != nil {
+					t.Logf("first removal = %v; retrying", err)
+					err = tm.Remove(ctx, r)
+				}
 			}
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("Remove = %v, want %v", err, tc.wantErr)

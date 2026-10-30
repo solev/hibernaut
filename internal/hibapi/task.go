@@ -46,11 +46,12 @@ type TaskReply struct {
 	// RequestID is the ID the request carried, echoed so a retry can be matched.
 	RequestID string `json:"requestId,omitempty"`
 	// Code is set with Error on a task command's failure.
-	Code      ErrorCode `json:"errorCode,omitempty"`
-	Retryable bool      `json:"retryable,omitempty"`
-	Task      *Task     `json:"task,omitempty"`
-	Tasks     []Task    `json:"tasks,omitzero"`
-	// TaskLog is a range of a run's stage log, from task logs.
+	Code      ErrorCode    `json:"errorCode,omitempty"`
+	Retryable bool         `json:"retryable,omitempty"`
+	Task      *Task        `json:"task,omitempty"`
+	Tasks     []Task       `json:"tasks,omitzero"`
+	Request   *TaskRequest `json:"request,omitempty"`
+	// TaskLog is a range of a run's output, from task logs.
 	TaskLog *TaskLog `json:"taskLog,omitempty"`
 }
 
@@ -86,11 +87,38 @@ type Task struct {
 	ID      task.ID   `json:"id"`
 	Repo    string    `json:"repo,omitempty"`
 	Created time.Time `json:"created"`
-	// Machine is the task machine's state: running, paused, or gone. Empty before its first
-	// machine.
-	Machine string `json:"machine,omitempty"`
+	// Machine is running, paused, or gone. Empty without a recorded machine ID.
+	Machine task.MachineState `json:"machine,omitempty"`
 	// Runs are oldest first. task ls sends only the latest.
-	Runs []TaskRun `json:"runs"`
+	Runs     []TaskRun     `json:"runs"`
+	Requests []TaskRequest `json:"requests,omitempty"`
+	Removal  *TaskRemoval  `json:"removal,omitempty"`
+}
+
+// TaskRequest is a recorded request. Run is 0 for removal with no live run.
+type TaskRequest struct {
+	ID    int64            `json:"id"`
+	Kind  task.RequestKind `json:"kind"`
+	Run   int              `json:"run"`
+	At    time.Time        `json:"at"`
+	Actor TaskActor        `json:"actor"`
+}
+
+type TaskActor struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// TaskRemoval is a task's removal. Done is absent while removal is open.
+type TaskRemoval struct {
+	Why  string     `json:"why"`
+	At   time.Time  `json:"at"`
+	Done *time.Time `json:"done,omitempty"`
+}
+
+func RequestOf(r task.Request) TaskRequest {
+	return TaskRequest{ID: r.ID, Kind: r.Kind, Run: r.Run, At: r.At,
+		Actor: TaskActor{Name: r.Actor.Name, Source: r.Actor.Source}}
 }
 
 // TaskRun is one run. Exactly one of Phase and Outcome is set.
@@ -111,16 +139,79 @@ type TaskRun struct {
 	Publication *task.Publication `json:"publication,omitempty"`
 }
 
-// TaskLog is a range of one stage's log as the host copied it. Data is base64 in JSON.
+// TaskLog is a range of a run's setup, command and finish logs in task.Stages order.
+// From and Next count bytes in that stream. A range never spans stages. Data is base64 in JSON.
+// Done means the run ended before the read and Next reaches the stream's end.
 type TaskLog struct {
-	Run    string     `json:"run"`
-	Stage  task.Stage `json:"stage"`
-	Offset int64      `json:"offset"`
-	Data   []byte     `json:"data"`
-	// Next is the offset to ask for next. Done is true once the stage has exited and Next is
-	// the end of its copied log.
-	Next int64 `json:"next"`
-	Done bool  `json:"done,omitempty"`
+	Run   int        `json:"run"`
+	Stage task.Stage `json:"stage,omitempty"`
+	From  int64      `json:"from"`
+	Data  []byte     `json:"data"`
+	Next  int64      `json:"next"`
+	Done  bool       `json:"done,omitempty"`
+}
+
+func (r TaskReply) Check() error {
+	switch r.Code {
+	case "", CodeConflict, CodeQueueFull, CodeInputFull, CodeNoTask, CodeRunLive,
+		CodeNotLive, CodeBadRequest, CodeBusy:
+	default:
+		return fmt.Errorf("unknown error code %q", r.Code)
+	}
+	if r.Task != nil {
+		if err := r.Task.Check(); err != nil {
+			return err
+		}
+	}
+	for _, t := range r.Tasks {
+		if err := t.Check(); err != nil {
+			return err
+		}
+	}
+	if r.Request != nil {
+		if err := r.Request.Check(); err != nil {
+			return err
+		}
+	}
+	if r.TaskLog != nil {
+		return r.TaskLog.Check()
+	}
+	return nil
+}
+
+func (t Task) Check() error {
+	if !t.Machine.Valid() {
+		return fmt.Errorf("unknown machine state %q", t.Machine)
+	}
+	for _, r := range t.Runs {
+		if err := r.Check(); err != nil {
+			return err
+		}
+	}
+	for _, r := range t.Requests {
+		if err := r.Check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r TaskRequest) Check() error {
+	if !r.Kind.Valid() {
+		return fmt.Errorf("unknown request kind %q", r.Kind)
+	}
+	return nil
+}
+
+func (l TaskLog) Check() error {
+	if l.Stage != "" && !slices.Contains(task.Stages(), l.Stage) {
+		return fmt.Errorf("unknown stage %q", l.Stage)
+	}
+	if l.Run < 1 || l.From < 0 || l.Next != l.From+int64(len(l.Data)) ||
+		len(l.Data) > 1<<20 || len(l.Data) > 0 && l.Stage == "" {
+		return errors.New("invalid task log range")
+	}
+	return nil
 }
 
 // RunOf is the wire form of run r as daemon sees it.

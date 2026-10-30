@@ -480,17 +480,7 @@ func (a *App) pauseOrRemove(ctx context.Context, cmd string, args []string) int 
 		if err != nil || cmd != "rm" {
 			return err
 		}
-		unchanged := errors.New("no entry")
-		err = store.Update(ctx, func(d *links.Doc) error {
-			if _, ok := d.Machines[em.ID]; !ok {
-				return unchanged
-			}
-			delete(d.Machines, em.ID)
-			return nil
-		})
-		if err != nil && !errors.Is(err, unchanged) {
-			a.warnf("removed %s, but couldn't drop its entry from the link state: %v. hibd cleanup drops it later", name, err)
-		}
+		a.dropRemovedLink(ctx, cfg, em.ID, name)
 		return nil
 	})
 }
