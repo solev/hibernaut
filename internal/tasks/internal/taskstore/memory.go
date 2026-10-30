@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,7 +104,11 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		if t == nil || t.record.removal != nil {
 			return task.Receipt{}, task.ErrNoTask
 		}
-		if _, live := m.view(t).Live(); live {
+		view := m.view(t)
+		if view.Removing() {
+			return task.Receipt{}, task.ErrNoTask
+		}
+		if _, live := view.Live(); live {
 			return task.Receipt{}, task.ErrRunLive
 		}
 		for _, r := range t.runs {
@@ -162,11 +167,14 @@ func (m *Memory) Request(ctx context.Context, q NewRequest) (task.Request, error
 	defer m.mu.Unlock()
 	if id, ok := m.reqIDs[q.RequestID]; ok && q.RequestID != "" {
 		r := m.requests[id-1]
+		if r.Task != q.Task || r.Kind != q.Kind {
+			return task.Request{}, task.ErrConflict
+		}
 		r.Actor.Owner = m.tasks[r.Task].record.actor.Owner
 		return r, nil
 	}
 	t := m.tasks[q.Task]
-	if t == nil {
+	if t == nil || t.record.removal != nil {
 		return task.Request{}, task.ErrNoTask
 	}
 	n := 0
@@ -205,6 +213,34 @@ func (m *Memory) Tasks(ctx context.Context) ([]task.Task, error) {
 		}
 	}
 	slices.SortFunc(out, func(a, b task.Task) int { return b.Created.Compare(a.Created) })
+	return out, nil
+}
+
+func (m *Memory) Removing(ctx context.Context) ([]task.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	requested := map[task.ID]bool{}
+	for _, q := range m.requests {
+		if q.Kind == task.RequestRemove {
+			requested[q.Task] = true
+		}
+	}
+	var out []task.Task
+	for id, t := range m.tasks {
+		r := t.record.removal
+		if r != nil && !r.Done.IsZero() {
+			continue
+		}
+		if r != nil || requested[id] {
+			out = append(out, m.view(t))
+		}
+	}
+	slices.SortFunc(out, func(a, b task.Task) int {
+		if n := a.Created.Compare(b.Created); n != 0 {
+			return n
+		}
+		return strings.Compare(string(a.ID), string(b.ID))
+	})
 	return out, nil
 }
 
@@ -285,6 +321,11 @@ func (m *Memory) Retire(ctx context.Context, id task.ID, r task.Removal) error {
 	t := m.tasks[id]
 	if t == nil {
 		return task.ErrNoTask
+	}
+	if r.Done.IsZero() && t.record.removal == nil {
+		if _, live := m.view(t).Live(); live {
+			return task.ErrRunLive
+		}
 	}
 	if t.record.removal == nil || !r.Done.IsZero() {
 		r.At, r.Done = storedTime(r.At), storedTime(r.Done)

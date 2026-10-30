@@ -335,7 +335,13 @@ func (h *harness) stop() {
 	h.mu.Unlock()
 	if sup != nil {
 		cancel()
-		sup.Wait()
+		done := make(chan struct{})
+		go func() { sup.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			h.t.Fatal("the daemon's workflows did not stop")
+		}
 	}
 }
 
@@ -932,4 +938,14 @@ func TestRemoveWhileRunning(t *testing.T) {
 	if _, found, _ := h.m.Find(context.Background(), h.run(id)); found {
 		t.Fatal("the machine outlived hib task rm")
 	}
+	if outcome(h.run(id)) != task.Cancelled {
+		t.Fatal("rm did not cancel the live run")
+	}
+	if err := tickRemoval(t, h); err != nil {
+		t.Fatal(err)
+	}
+	waitRemoval(t, "the next Tick did not complete the running task's removal", func() bool {
+		return h.removalDone(id)
+	})
+	h.checkRemoved(id)
 }

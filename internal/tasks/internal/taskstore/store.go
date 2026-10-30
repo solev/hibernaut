@@ -46,7 +46,7 @@ var (
 
 // NewRequest is a cancel, rescue or rm as a CLI one-shot asks for it.
 type NewRequest struct {
-	// RequestID makes the request safe to retry: the same ID returns the first row.
+	// RequestID makes the request safe to retry for the same task and kind.
 	RequestID string
 	Task      task.ID
 	Kind      task.RequestKind
@@ -65,18 +65,25 @@ type Store interface {
 	// The same RequestID with the same digest returns the first receipt, with a different one
 	// task.ErrConflict. It fails with task.ErrQueueFull when task.MaxQueuedRuns runs are queued,
 	// task.ErrInputFull when the task's inputs across its runs would exceed task.MaxInputBytes,
-	// and for a follow-up with task.ErrNoTask or task.ErrRunLive. Receipt replays precede limits.
+	// and for a follow-up with task.ErrNoTask or task.ErrRunLive. A task with an rm request or
+	// a recorded removal refuses follow-ups with task.ErrNoTask before saving any run or blob.
+	// Receipt replays precede these checks and limits.
 	Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error)
 	// Receipt returns the answer a submission got, or ErrNoReceipt.
 	Receipt(ctx context.Context, requestID string) (task.Receipt, error)
 	// Request records a request against the task's live run, or ErrNotLive. An rm needs no live
-	// run.
+	// run. A recorded removal refuses a new request with task.ErrNoTask. The same RequestID
+	// with the same task and kind returns the first row, even after removal. Reusing the ID
+	// for a different task or kind fails with task.ErrConflict without saving a request.
 	Request(ctx context.Context, q NewRequest) (task.Request, error)
 
 	// Task returns a task with all its runs, or task.ErrNoTask.
 	Task(ctx context.Context, id task.ID) (task.Task, error)
 	// Tasks returns every task not yet removed, newest first.
 	Tasks(ctx context.Context) ([]task.Task, error)
+	// Removing returns tasks not yet removed with an rm request or an open removal, oldest
+	// first. It builds merged views only for those tasks.
+	Removing(ctx context.Context) ([]task.Task, error)
 	// Run returns one run, or ErrNoRun.
 	Run(ctx context.Context, id task.RunID) (task.Run, error)
 	// Unfinished returns every run whose keep step hasn't closed, oldest first.
@@ -88,7 +95,8 @@ type Store interface {
 	Append(ctx context.Context, c task.Checkpoint) error
 	// RecordFreeze adds a freeze row for the task's machine.
 	RecordFreeze(ctx context.Context, id task.ID, f task.Freeze) error
-	// Retire records a task's removal: begun when r.Done is zero, finished otherwise.
+	// Retire records a task's removal: begun when r.Done is zero, finished otherwise. Beginning
+	// a removal while a run is live fails with task.ErrRunLive and records nothing.
 	Retire(ctx context.Context, id task.ID, r task.Removal) error
 
 	// StartDaemon records inst as the daemon now running. Intents other instances left open
