@@ -3,10 +3,12 @@ package hibd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -123,6 +125,8 @@ func TestTaskReadOfMachineStates(t *testing.T) {
 			{By: "daemon", Body: &task.MachineResult{ID: "recorded"}},
 			{By: "daemon", Body: &task.StageIntent{Stage: task.StageCommand}},
 			{By: "daemon", Body: &task.StageLaunched{Stage: task.StageCommand}}}}
+	replaced := run
+	replaced.Kept = "kept"
 	for _, tc := range []struct {
 		name string
 		run  task.Run
@@ -133,6 +137,9 @@ func TestTaskReadOfMachineStates(t *testing.T) {
 		{"paused", run, []hibapi.Machine{{ID: "recorded", State: "paused"}}, task.MachinePaused},
 		{"gone", run, []hibapi.Machine{{ID: "other", State: "running"}}, task.MachineGone},
 		{"kept before resume", task.Run{ID: id, Kept: "kept"}, []hibapi.Machine{{ID: "kept", State: "paused"}}, task.MachinePaused},
+		{"recorded replaces kept", replaced, []hibapi.Machine{
+			{ID: "kept", State: "paused"}, {ID: "recorded", State: "running"},
+		}, task.MachineRunning},
 		{"none recorded", task.Run{ID: id}, []hibapi.Machine{{ID: "unrecorded", Name: string(id.Task), State: "running"}}, task.MachineUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -394,6 +401,75 @@ func TestTaskRequestsRecordAndReplay(t *testing.T) {
 			}
 			if m, err := e.Get(t.Context(), "untouched"); err != nil || m.State != engine.Paused {
 				t.Errorf("request command touched machine: %+v, %v, want paused", m, err)
+			}
+		})
+	}
+}
+
+func TestTaskRequestRejectsInvalidUTF8(t *testing.T) {
+	for _, cmd := range []string{"cancel", "rescue", "rm"} {
+		t.Run(cmd, func(t *testing.T) {
+			a, out, _ := newApp(t, fake.New())
+			st := taskReadStore(t, a)
+			rec := submitReadTask(t, st, "invalid-request", time.Now())
+			code, reply := taskReadReply(t, a, out, "task", cmd, string(rec.Run.Task),
+				"-request-id", "bad\xff\xfeutf")
+			if code != 1 || reply.Code != hibapi.CodeBadRequest || reply.Request != nil {
+				t.Errorf("non-UTF-8 request = exit %d, %+v, want BAD_REQUEST", code, reply)
+			}
+			record, err := st.Task(t.Context(), rec.Run.Task)
+			if err != nil || len(record.Requests) != 0 {
+				t.Errorf("invalid request saved %d requests, %v, want none", len(record.Requests), err)
+			}
+		})
+	}
+}
+
+func TestTaskStartDecodesInvalidUTF8(t *testing.T) {
+	a, out, _ := newApp(t, fake.New())
+	a.Stdin = strings.NewReader("{\"requestId\":\"bad\xff\xfeutf\",\"command\":[\"true\"]}\n")
+	code, reply := taskReadReply(t, a, out, "task", "start")
+	const decoded = "bad\ufffd\ufffdutf"
+	if code != 0 || reply.Task == nil || reply.RequestID != decoded {
+		t.Fatalf("JSON request = exit %d, %+v, want decoded UTF-8 request ID", code, reply)
+	}
+	st := taskReadStore(t, a)
+	rec, err := st.Receipt(t.Context(), decoded)
+	if err != nil || rec.Run.Task != reply.Task.ID || rec.RequestID != decoded {
+		t.Fatalf("decoded receipt = %+v, %v, want JSON-decoded request ID", rec, err)
+	}
+}
+
+func TestTaskShowPlainRemovalDone(t *testing.T) {
+	for _, finished := range []bool{false, true} {
+		t.Run(fmt.Sprint("finished=", finished), func(t *testing.T) {
+			a, out, errOut := newApp(t, fake.New())
+			at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+			rec := submitReadTask(t, taskReadStore(t, a), "removal", at)
+			db, err := sql.Open("sqlite", filepath.Join(a.Getenv("HIBD_STATE_DIR"), "tasks.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var done any
+			if finished {
+				done = at.Add(time.Hour).UnixMilli()
+			}
+			if _, err := db.ExecContext(ctx, `UPDATE tasks SET removal_why = 'rm',
+				removal_at = ?, removed_at = ? WHERE id = ?`, at.UnixMilli(), done, rec.Run.Task); err != nil {
+				t.Fatal(err)
+			}
+			if code := a.Run(ctx, []string{"task", "show", string(rec.Run.Task)}); code != 0 || errOut.Len() != 0 {
+				t.Fatalf("task show = exit %d, stderr %q", code, errOut)
+			}
+			want := "removal rm at 2026-10-28T12:00:00Z"
+			if finished {
+				want += " done at 2026-10-28T13:00:00Z"
+			}
+			if !strings.HasSuffix(out.String(), want+"\n") {
+				t.Fatalf("plain task removal = %q, want final line %q", out, want)
 			}
 		})
 	}
