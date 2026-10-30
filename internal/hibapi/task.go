@@ -104,6 +104,7 @@ type TaskRequest struct {
 	Actor TaskActor        `json:"actor"`
 }
 
+// TaskActor identifies who made a request and where it came from.
 type TaskActor struct {
 	Name   string `json:"name"`
 	Source string `json:"source"`
@@ -116,6 +117,7 @@ type TaskRemoval struct {
 	Done *time.Time `json:"done,omitempty"`
 }
 
+// RequestOf is the wire form of recorded request r.
 func RequestOf(r task.Request) TaskRequest {
 	return TaskRequest{ID: r.ID, Kind: r.Kind, Run: r.Run, At: r.At,
 		Actor: TaskActor{Name: r.Actor.Name, Source: r.Actor.Source}}
@@ -151,6 +153,7 @@ type TaskLog struct {
 	Done  bool       `json:"done,omitempty"`
 }
 
+// Check rejects unknown task values and invalid log ranges in the reply.
 func (r TaskReply) Check() error {
 	switch r.Code {
 	case "", CodeConflict, CodeQueueFull, CodeInputFull, CodeNoTask, CodeRunLive,
@@ -179,6 +182,7 @@ func (r TaskReply) Check() error {
 	return nil
 }
 
+// Check rejects unknown machine states, run values and request kinds.
 func (t Task) Check() error {
 	if !t.Machine.Valid() {
 		return fmt.Errorf("unknown machine state %q", t.Machine)
@@ -196,6 +200,7 @@ func (t Task) Check() error {
 	return nil
 }
 
+// Check rejects request kinds that task does not define.
 func (r TaskRequest) Check() error {
 	if !r.Kind.Valid() {
 		return fmt.Errorf("unknown request kind %q", r.Kind)
@@ -203,6 +208,7 @@ func (r TaskRequest) Check() error {
 	return nil
 }
 
+// Check rejects unknown stages and invalid byte ranges.
 func (l TaskLog) Check() error {
 	if l.Stage != "" && !slices.Contains(task.Stages(), l.Stage) {
 		return fmt.Errorf("unknown stage %q", l.Stage)

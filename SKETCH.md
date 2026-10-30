@@ -440,6 +440,10 @@ nudge.
   done. It retries open removals after a failure or restart, without blocking grants or nudges.
   No store or machine call holds the Supervisor's mutex. An rm refuses follow-ups immediately.
   The store rejects a stale removal decision while a run is live.
+- **Repeated failures.** A workflow or removal logs only when its error text changes, and
+  nothing after the daemon's life ends. `ErrNotRunning` stays silent. The workflow keeps its
+  last logged text until it returns. The Supervisor keeps a removal's text across attempts
+  and drops it once removal records done.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
 - **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
