@@ -192,6 +192,9 @@ type App struct {
 	Now func() time.Time
 	// DaemonTicks supplies the daemon's ticks. If it's nil, App uses a ticker at -every.
 	DaemonTicks <-chan time.Time
+	// TaskTicks supplies task supervisor ticks. Nil uses tasks.Poll.
+	TaskTicks <-chan time.Time
+	taskPoll  time.Duration
 
 	codexEvery time.Duration
 	// linkParts replaces the links pieces hibd's own commands use, for tests only.
@@ -1526,13 +1529,12 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		return a.fail(false, "daemon", err)
 	}
 	logger := log.New(a.Stderr, "", 0)
-	// TODO: pass busy.Config.Exempt: a.tasks(cfg).Exempt, so busy leaves a task machine its run
-	// holds alone: it never renews or shortens its timeout, which the Owner's floor keeps at the
-	// deadline, and a busy task keeps no linked machine awake. Pass Now: a.now here and to
-	// machines.Config, so App.Now is the one clock a test sets.
+	ts := a.tasks(cfg)
+	defer ts.Close()
 	w, err := busy.New(busy.Config{
 		Engine: e, CPU: busy.CgroupCPU(cfg.cgroups), Agents: cfg.agents, Logf: logger.Printf,
 		Activity: links.NewClock(cfg.stateDir).Touch, StateDir: cfg.stateDir,
+		Now: a.now, Exempt: ts.Exempt,
 	})
 	if err != nil {
 		return a.fail(false, "daemon", err)
@@ -1544,7 +1546,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	s := &sweeper{engine: e, clock: clock, logf: func(format string, args ...any) {
 		logger.Printf("cleanup: %s", termsafe.String(fmt.Sprintf(format, args...)))
 	}}
-	m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir})
+	m := a.taskManager(cfg, e)
 	s.clean = func(ctx, listingCtx context.Context, now time.Time) error {
 		if err := m.SweepForks(listingCtx); err != nil {
 			return err
@@ -1553,8 +1555,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	}
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
-	delivery.tasks = a.tasks(cfg)
-	defer delivery.tasks.Close()
+	delivery.tasks = ts
 	removeLeftoverCodexLogins(cfg.stateDir, logger.Printf)
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	switch changed, err := rebindGitHub(cfg); {
@@ -1577,6 +1578,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	var wg sync.WaitGroup
 	refresher := &codexRefresher{store: a.codexStore(cfg, nil), logf: func(format string, args ...any) { logger.Printf("codex: "+format, args...) }}
 	wg.Go(func() { refresher.run(ctx, cmp.Or(a.codexEvery, time.Minute), a.awake) })
+	wg.Go(func() { a.startTasks(ctx, cfg, e, m, ts, logger.Printf) })
 	problem := ""
 	for {
 		now := ""
@@ -1599,8 +1601,6 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 				now = err.Error()
 			}
 			delivery.look(ctx)
-			// TODO: tick the *tasks.Daemon from a.startTasks(ctx, cfg, e) here, on its own
-			// tasks.Poll ticker in the same select, and Close it before "stopping".
 		}
 		if now != problem {
 			if now == "" {
@@ -1627,8 +1627,7 @@ func (a *App) version(args []string) int {
 		return 2
 	}
 	if *asJSON {
-		// TODO: add hibapi.FeatureTasks once hibd task start saves tasks.
-		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect, hibapi.FeaturePorts}})
+		return a.reply(hibapi.Response{Version: version.Version, Features: []string{hibapi.FeatureBuildEvents, hibapi.FeatureDisconnect, hibapi.FeaturePorts, hibapi.FeatureTasks}})
 	}
 	fmt.Fprintln(a.Stdout, "hibd", version.Version)
 	return 0

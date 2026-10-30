@@ -9,8 +9,8 @@ import (
 	"github.com/solev/hibernaut/internal/task"
 )
 
-// FeatureTasks means hibd has the task command group. hibd sends it once the group's handlers
-// are implemented, not before.
+// FeatureTasks means hibd saves task submissions and its daemon runs them.
+// Other task handlers may still be unavailable.
 const FeatureTasks = "tasks"
 
 // ErrorCode says what kind of failure a Response's Error is, so hib can decide without reading

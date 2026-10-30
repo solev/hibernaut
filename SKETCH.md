@@ -77,8 +77,17 @@ handler parses at the boundary and saves. It never touches a machine.
 var req hibapi.TaskStart
 json.Unmarshal(in.line(), &req)
 sub, err := submissionOf(req, task.Actor{Owner: user, Name: user, Source: "cli"}, a.now())
-receipt, err := a.tasks(cfg).Submit(ctx, sub, in.rest()) // idempotent by sub.RequestID
-a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{RequestID: req.RequestID, Task: ...}})
+cfg, err := loadSettings(a.Getenv)
+st := a.tasks(cfg)
+defer st.Close()
+receipt, err := st.Submit(ctx, sub, in.rest())
+t, err := st.Task(ctx, receipt.Run.Task)
+instance, err := st.Instance(ctx)
+run := t.Runs[receipt.Run.N-1]
+reply := hibapi.Task{ID: t.ID, Repo: run.Spec.Repo.String(), Created: t.Created,
+	Runs: []hibapi.TaskRun{hibapi.RunOf(run, instance)}}
+a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{
+	RequestID: receipt.RequestID, Task: &reply}})
 ```
 
 `hibd task cancel`, `rescue` and `rm` are the same shape with `Tasks.Request`. They write a row
@@ -87,20 +96,27 @@ and return. The daemon notices on its next tick.
 ### Call site 2: the daemon drives
 
 ```go
-// internal/hibd/task.go, startTasks, called from hibd daemon. e is engine()'s, so guarded.
-// Setup holds the task's secrets and git identity. machines.Config gains TaskLimits, from settings.
-m := machines.New(machines.Config{Engine: e, StateDir: cfg.stateDir, Now: a.now,
-	TaskLimits: limits, ReadRoom: a.ReadRoom, Setup: setup, Awake: a.awake})
-d, err := a.tasks(cfg).Daemon(life, tasks.DaemonConfig{Engine: e,
-	Machines: taskMachines{a, cfg, e, m}, Logf: logger.Printf}) // tasks.ErrDaemonRunning
-tick := func(ctx context.Context) error {
-	if a.awake() != nil {
-		return nil // never start work while the host goes to sleep
-	}
-	return d.Tick(ctx) // start workflows, nudge on requests, grant the next machine
-}
-// The daemon calls tick every tasks.Poll, and d.Close() once life ends.
+// internal/hibd/taskdaemon.go. e is engine()'s guarded engine.
+m := machines.New(machines.Config{
+	Engine: e, StateDir: cfg.stateDir, AuthorizedKeys: cfg.authorizedKeys,
+	Now: a.now, ReadRoom: a.ReadRoom, Awake: a.awake,
+	TaskLimits: machines.TaskLimits{HostCPUs: runtime.NumCPU()},
+	Durable: func(ctx context.Context, id string) error {
+		return a.durableSnapshot(ctx, cfg, id)
+	},
+	Fenced: a.snapshotFence(cfg),
+})
+d, err := ts.Daemon(ctx, tasks.DaemonConfig{
+	Engine: e, Machines: taskMachines{a, cfg, e, m}, Logf: logf,
+	Clock: taskDaemonClock{a.now}, Poll: a.taskPoll,
+})
 ```
+
+`startTasks` owns `d` in a serial worker. It retries startup every `tasks.Poll` until it holds
+`tasks-daemon.lock`. It calls `d.Tick(ctx)` only while `a.awake()` succeeds, with no lock or
+fence held. Busy and cleanup use the same engine and continue while a task tick blocks.
+After cancellation, the worker calls `d.Close()` before the daemon logs `stopping`.
+Setup stays empty in M13b. Task machines get no secrets, git identity or Codex login yet.
 
 ### Call site 2b: every engine is guarded
 
@@ -721,14 +737,14 @@ is renewed like any other. An exempt machine is neither renewed nor recorded as 
 | the `-json` line | names the groups, every task leaf takes `-json` |
 | `usesE2B` | falls through to `taskUsesE2B`, from the table's `e2b` field |
 | `FeatureTasks` | one constant |
-| `version` features | one line, added when `task start` saves (TODO) |
+| `version` features | includes `FeatureTasks` because `task start` saves and the daemon runs it |
 | `Response` fields | one embedded `TaskReply`, `TestTaskRunWire` |
 | `cmd/hib` command tree | M14 moves `taskCommands` to hibapi, and hib and hibd share it |
 | `needTasks` gate | one function modeled on `needPorts`, M14 |
 | `callOptions` replay | stdin as a byte slice, replayed with the same request ID |
 | `complete.go` | no task ID completion, the cache knows no tasks |
 | README and help tests | stay loud |
-| daemon init | `startTasks` and one tick call |
+| daemon init | `startTasks` worker ticks every `tasks.Poll` and closes before `stopping` |
 
 `TestTaskCommandsDispatchAndUsage` checks every row dispatches, appears in its group's usage and
 is named in hibd's usage. Within the subsystem every enum is defined once in `task`:
