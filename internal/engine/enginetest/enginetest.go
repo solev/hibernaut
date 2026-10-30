@@ -138,6 +138,13 @@ func (s *suite) unknownMachine(t *testing.T) {
 			}
 			return err
 		},
+		"DialRunningWebSocket": func() error {
+			c, err := e.DialRunningWebSocket(ctx, id, 8080)
+			if c != nil {
+				c.Close()
+			}
+			return err
+		},
 	}
 	for _, name := range slices.Sorted(maps.Keys(calls)) {
 		if err := calls[name](); !errors.Is(err, engine.ErrNotFound) {
@@ -183,6 +190,16 @@ func (s *suite) lifecycle(t *testing.T) {
 	s.wantListed(t, ctx, labels, []engine.State{engine.Paused})
 	s.wantListed(t, ctx, labels, nil, m.ID)
 	started := s.startedAt(t, ctx, labels, m.ID)
+	c, dialErr := e.DialRunningWebSocket(ctx, m.ID, 8080)
+	if c != nil {
+		c.Close()
+	}
+	if errors.Is(dialErr, engine.ErrNoTrafficToken) {
+		t.Errorf("DialRunningWebSocket after Create lost its traffic token: %v", dialErr)
+	}
+	if endAt := s.get(t, ctx, m.ID).EndAt; !endAt.Equal(got.EndAt) {
+		t.Errorf("DialRunningWebSocket changed EndAt from %v to %v", got.EndAt, endAt)
+	}
 
 	s.mustExec(t, ctx, m.ID, "echo persisted > marker")
 
@@ -239,6 +256,13 @@ func (s *suite) lifecycle(t *testing.T) {
 		"SetTimeout": func() error { return e.SetTimeout(ctx, m.ID, time.Minute) },
 		"Metrics":    func() error { _, err := e.Metrics(ctx, m.ID); return err },
 		"Exec":       func() error { _, err := e.Exec(ctx, m.ID, engine.ExecRequest{Cmd: "true"}); return err },
+		"DialRunningWebSocket": func() error {
+			c, err := e.DialRunningWebSocket(ctx, m.ID, 8080)
+			if c != nil {
+				c.Close()
+			}
+			return err
+		},
 	}
 	for _, name := range slices.Sorted(maps.Keys(notRunning)) {
 		if err := notRunning[name](); !errors.Is(err, engine.ErrNotRunning) {

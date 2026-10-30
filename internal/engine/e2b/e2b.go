@@ -53,6 +53,9 @@ type Config struct {
 	APIKey     string
 	// HTTPClient defaults to a client without a timeout; calls are bounded by their contexts.
 	HTTPClient *http.Client
+	// StateDir keeps private traffic-token files across bridge processes and host restarts.
+	// Empty keeps tokens only in this Engine, for callers without persistent state.
+	StateDir string
 }
 
 // Engine talks to one E2B installation.
@@ -62,6 +65,7 @@ type Engine struct {
 	hc         *http.Client
 	guestHC    *http.Client
 	sandboxURL string
+	tokens     trafficTokens
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -95,6 +99,7 @@ func New(cfg Config) (*Engine, error) {
 		hc:         hc,
 		guestHC:    &guestHC,
 		sandboxURL: cfg.SandboxURL,
+		tokens:     trafficTokens{dir: cfg.StateDir},
 	}, nil
 }
 
@@ -128,6 +133,11 @@ func (e *Engine) Create(ctx context.Context, opts engine.CreateOptions) (engine.
 	}
 	if resp.JSON201 == nil {
 		return engine.Machine{}, apiError("create", opts.Template, resp.StatusCode(), resp.Body)
+	}
+	if err := e.tokens.store(resp.JSON201.SandboxID, resp.JSON201.TrafficAccessToken); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		return engine.Machine{}, errors.Join(err, e.Kill(cleanup, resp.JSON201.SandboxID))
 	}
 	return e.Get(ctx, resp.JSON201.SandboxID)
 }
@@ -240,13 +250,19 @@ func (e *Engine) connect(ctx context.Context, id string, timeout time.Duration) 
 		return nil, fmt.Errorf("resume %s: %w", id, err)
 	}
 	// 200: it was running and its timeout was extended. 201: it was resumed.
+	var sbx *e2bapi.Sandbox
 	switch {
 	case resp.JSON200 != nil:
-		return resp.JSON200, nil
+		sbx = resp.JSON200
 	case resp.JSON201 != nil:
-		return resp.JSON201, nil
+		sbx = resp.JSON201
+	default:
+		return nil, apiError("resume", id, resp.StatusCode(), resp.Body)
 	}
-	return nil, apiError("resume", id, resp.StatusCode(), resp.Body)
+	if err := e.tokens.store(id, sbx.TrafficAccessToken); err != nil {
+		return nil, err
+	}
+	return sbx, nil
 }
 
 func (e *Engine) Kill(ctx context.Context, id string) error {
@@ -255,7 +271,7 @@ func (e *Engine) Kill(ctx context.Context, id string) error {
 		return fmt.Errorf("kill %s: %w", id, err)
 	}
 	if resp.StatusCode() == http.StatusNoContent {
-		return nil
+		return e.tokens.remove(id)
 	}
 	return apiError("kill", id, resp.StatusCode(), resp.Body)
 }
@@ -484,12 +500,39 @@ func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
+	return e.dialWebSocket(ctx, id, port, sbx.TrafficAccessToken)
+}
+
+func (e *Engine) DialRunningWebSocket(ctx context.Context, id string, port int) (net.Conn, error) {
+	token, err := e.tokens.load(id)
+	if err != nil {
+		if errors.Is(err, engine.ErrNoTrafficToken) {
+			if _, stateErr := e.running(ctx, id); stateErr != nil {
+				return nil, stateErr
+			}
+		}
+		return nil, err
+	}
+	c, err := e.dialWebSocket(ctx, id, port, &token)
+	if err != nil && ctx.Err() == nil {
+		if _, stateErr := e.running(ctx, id); stateErr != nil {
+			return nil, stateErr
+		}
+		if tokenErr := e.tokens.remove(id); tokenErr != nil {
+			return nil, errors.Join(err, tokenErr)
+		}
+		return nil, errors.Join(err, engine.ErrNoTrafficToken)
+	}
+	return c, err
+}
+
+func (e *Engine) dialWebSocket(ctx context.Context, id string, port int, token *string) (net.Conn, error) {
 	h := http.Header{}
 	h.Set("E2b-Sandbox-Id", id)
 	h.Set("E2b-Sandbox-Port", strconv.Itoa(port))
 	// No token means the machine takes public traffic.
-	if sbx.TrafficAccessToken != nil {
-		h.Set("E2b-Traffic-Access-Token", *sbx.TrafficAccessToken)
+	if token != nil {
+		h.Set("E2b-Traffic-Access-Token", *token)
 	}
 	c, resp, err := websocket.Dial(ctx, e.sandboxURL, &websocket.DialOptions{HTTPClient: e.guestHC, HTTPHeader: h})
 	if err != nil {

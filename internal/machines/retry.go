@@ -37,23 +37,19 @@ func (m *Manager) retryCut(ctx context.Context, run func(context.Context) error)
 const startFailedFor = 30 * time.Second
 
 // retryResume retries every 2 s while the engine turns the machine down, until ctx ends, and
-// for startFailedFor after a start failure. When em was paused, each attempt holds RoomLock
-// from its room reading through resume. A running machine skips that admission. A refusal
-// checks room after releasing the lock, and retry waits hold no lock.
+// for startFailedFor after a start failure. Every attempt holds RoomLock from its room reading
+// through the resumable calls. Running dials use DialRunningWebSocket instead. A pause after
+// their state read requires this admission before a resumable retry. A refusal checks room
+// after releasing the lock, and setup and retry waits hold no lock.
 func (m *Manager) retryResume(ctx context.Context, name string, em engine.Machine, resume func(context.Context) error) error {
 	var failedAt time.Time
 	for attempt := 1; ; attempt++ {
-		var err error
-		if em.State == engine.Paused {
-			unlock, rerr := m.checkRoom(ctx, name, em.MemoryMB, false)
-			if rerr != nil {
-				return rerr
-			}
-			err = resume(ctx)
-			unlock()
-		} else {
-			err = resume(ctx)
+		unlock, rerr := m.checkRoom(ctx, name, em.MemoryMB, false)
+		if rerr != nil {
+			return rerr
 		}
+		err := resume(ctx)
+		unlock()
 		switch {
 		case err == nil:
 			return nil

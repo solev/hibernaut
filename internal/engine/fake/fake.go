@@ -398,6 +398,20 @@ func (e *Engine) DialWebSocket(ctx context.Context, id string, port int, timeout
 	return e.dial(ctx, c, port)
 }
 
+func (e *Engine) DialRunningWebSocket(ctx context.Context, id string, port int) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m, err := e.runningCopy(id)
+	if err != nil {
+		return nil, err
+	}
+	if e.dial == nil {
+		return nil, errors.New("fake: dial not configured (use WithDialer)")
+	}
+	return e.dial(ctx, m.Machine, port)
+}
+
 // BuildTemplate records spec and returns "tmpl-" and its name. Machines created from the
 // template have the spec's CPUs and MemoryMB, or DefaultCPUs and DefaultMemoryMB if it has none.
 func (e *Engine) BuildTemplate(ctx context.Context, spec engine.TemplateSpec, logs func(engine.LogEntry)) (string, error) {

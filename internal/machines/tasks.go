@@ -174,12 +174,15 @@ func (m *Manager) findTask(ctx context.Context, r task.Run) (engine.Machine, boo
 	return kept, found, nil
 }
 
-// RoomLock serializes admission from the room reading through one create or resume call.
+// RoomLock serializes admission from the room reading through one placement attempt.
 // CreateSize, CreateTask, ResumeTask, Wake and Dial's resumes hold it, as do save and fork's origin
 // resumes and each fork copy's create. saveCopy checks its plan under the lock but releases
 // it before the call, so wakes don't wait behind a save. It nests inside hibd.lock and any
 // machine fence, outside the task machine lock. A holder never takes a fence. Setup, cleanup
-// and retry waits hold no RoomLock.
+// and retry waits hold no RoomLock. DialRunningWebSocket cannot resume, so a running dial and
+// repin take none. A pause after Dial's read, a missing token, or a failed running dial with
+// an invalidated token requires admission before any resumable call. A still-running machine
+// passes that check even on a full host. A paused repin's Resume and dial share one attempt.
 const RoomLock = "room.lock"
 
 // CreateTask creates run r's machine, named for its task and labelled with task.Label, if Admit

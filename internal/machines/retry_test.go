@@ -121,6 +121,19 @@ func (e *refusingDial) DialWebSocket(ctx context.Context, id string, _ int, time
 	return near, nil
 }
 
+func (e *refusingDial) DialRunningWebSocket(ctx context.Context, id string, _ int) (net.Conn, error) {
+	em, err := e.Engine.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if em.State != engine.Running {
+		return nil, engine.ErrNotRunning
+	}
+	near, far := net.Pipe()
+	far.Close()
+	return near, nil
+}
+
 func pausedWeb(t *testing.T) (*Manager, *fake.Engine) {
 	t.Helper()
 	m, e := sharedStateManager(t)

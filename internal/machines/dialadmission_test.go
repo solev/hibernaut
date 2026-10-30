@@ -69,14 +69,15 @@ func TestDialWaitsForRoomOnlyWhenItCanResume(t *testing.T) {
 			if tc.renewPaused {
 				wrapped = &pauseOnRenew{Engine: wrapped}
 			}
-			m.e = &refusingDial{Engine: wrapped}
+			dial := &refusingDial{Engine: wrapped}
+			m.e = dial
 			unlock, err := m.lockRoom(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
 			release := sync.OnceFunc(unlock)
 			defer release()
-			wait := 200 * time.Millisecond
+			wait := 2 * time.Second
 			if tc.state == engine.Running && !tc.renewPaused {
 				wait = 30 * time.Second
 			}
@@ -97,6 +98,9 @@ func TestDialWaitsForRoomOnlyWhenItCanResume(t *testing.T) {
 			}
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("paused Dial = %v, want the deadline behind room.lock", err)
+			}
+			if dial.dials != 0 {
+				t.Fatalf("blocked Dial reached %d resumable dials, want none", dial.dials)
 			}
 			if em, err := e.Get(t.Context(), "target"); err != nil || em.State != engine.Paused {
 				t.Fatalf("blocked Dial left target %s, %v, want paused", em.State, err)
