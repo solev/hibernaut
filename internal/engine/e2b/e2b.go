@@ -514,12 +514,9 @@ func (e *Engine) DialRunningWebSocket(ctx context.Context, id string, port int) 
 		return nil, err
 	}
 	c, err := e.dialWebSocket(ctx, id, port, &token)
-	if err != nil && ctx.Err() == nil {
+	if err != nil {
 		if _, stateErr := e.running(ctx, id); stateErr != nil {
 			return nil, stateErr
-		}
-		if tokenErr := e.tokens.remove(id); tokenErr != nil {
-			return nil, errors.Join(err, tokenErr)
 		}
 		return nil, errors.Join(err, engine.ErrNoTrafficToken)
 	}

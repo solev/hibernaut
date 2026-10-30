@@ -1118,8 +1118,8 @@ func readFenceLocks(stateDir string) ([]string, error) {
 }
 
 // pruneLinkLeftovers removes what machines E2B has forgotten left behind: their activity files,
-// their fence lock files and, with links on, their link entries. It also removes the temporary
-// files a crashed activity update left. Removing one an update is still using only loses that
+// their fence lock files, traffic tokens and, with links on, their link entries. It also removes
+// the temporary files a crashed activity update left. Removing one an update is still using only loses that
 // update, which errs toward less activity. With links on it also settles the stale fences. It
 // asks E2B about each machine once.
 func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engine, left linkLeftovers, listed map[string]bool, dryRun bool, logf func(format string, args ...any)) error {
@@ -1156,6 +1156,16 @@ func (a *App) pruneLinkLeftovers(ctx context.Context, cfg config, e engine.Engin
 	if len(left.fenceLocks) > 0 {
 		errs = append(errs, pruneFenceLocks(cfg.stateDir, left.fenceLocks, forgotten, dryRun, logf))
 	}
+	errs = append(errs, e2b.PruneTrafficTokens(cfg.stateDir, func(id string) (bool, error) {
+		if listed[id] {
+			return true, nil
+		}
+		_, err := get(id)
+		if errors.Is(err, engine.ErrNotFound) {
+			return false, nil
+		}
+		return true, err
+	}, dryRun, logf))
 	return errors.Join(errs...)
 }
 
