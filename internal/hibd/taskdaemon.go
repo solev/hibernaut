@@ -54,17 +54,15 @@ func (a *App) startTasks(ctx context.Context, cfg config, e engine.Engine, m *ma
 			if err == nil {
 				err = d.Tick(ctx)
 			}
-			if ctx.Err() == nil {
-				var line string
-				var log bool
-				if err != nil {
-					line, log = failures.Failure(a.now(), termsafe.String(err.Error()))
-				} else {
-					line, log = failures.Success("recovered")
-				}
-				if log && ctx.Err() == nil {
-					logf("tasks: %s", line)
-				}
+			var line string
+			var log bool
+			if err != nil {
+				line, log = failures.Failure(a.now(), termsafe.String(err.Error()))
+			} else {
+				line, log = failures.Success("recovered")
+			}
+			if log && ctx.Err() == nil {
+				logf("tasks: %s", line)
 			}
 		}
 		select {
