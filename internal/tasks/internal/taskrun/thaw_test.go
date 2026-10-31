@@ -26,6 +26,7 @@ func (a *thawRecordAudit) Exec(ctx context.Context, mid string, req engine.ExecR
 		r := a.h.run(a.id)
 		if r.Frozen() || !r.Freeze.At.After(a.before) || r.Freeze.By != "test" {
 			a.h.t.Errorf("guest thaw saw no current unfrozen row: %+v", r.Freeze)
+			a.h.stopSup()
 		}
 	}
 	return a.Engine.Exec(ctx, mid, req)
