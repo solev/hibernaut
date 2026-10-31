@@ -670,9 +670,10 @@ under `/var/lib/hib-task/RUN`.
   `MaxLogChunk`, 1 MiB, from a byte offset. Collect stops at `MaxLogBytes`, 50 MiB, per run, summed
   over the stages in order. The executor's copy loop and `FileLogs.Append` both enforce the sum.
   An exited stage's host copy is final. Collect copies only launched stages without a `StageExit`.
-  `Dropped` counts reported guest bytes not kept, even below the cap. `Unread` names tails or
-  publication that could not be read. Both can miss output written later. `Dropped` can understate
-  when the machine is not running, a size could not be read, or the guest reports a false size.
+  `Dropped` counts reported guest bytes not kept, even below the cap. `Unread` names unread tails
+  only for launched stages without a `StageExit`, or unread publication. Both can miss later output.
+  `Dropped` can understate when the machine is not running, a size could not be read, or the guest
+  reports a false size.
   All collect reads share `CollectLimit`, 60 s, from the later of its intent and daemon start.
   Downtime is not a guest read. Guest read errors become `Unread`, not workflow retries.
   An unproven stop reads nothing from the guest.

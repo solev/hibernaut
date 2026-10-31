@@ -384,8 +384,8 @@ type CollectResult struct {
 	// unread bytes below MaxLogBytes. It can understate when a guest size is unknown or false.
 	LogBytes int64 `json:",omitempty"`
 	Dropped  int64 `json:",omitempty"`
-	// Unread names tails and publication the host could not read. Their size may be unknown,
-	// and output written after collection is not counted.
+	// Unread names tails of launched stages without a StageExit and publication the host could
+	// not read. Their size may be unknown, and output written after collection is not counted.
 	Unread []string `json:",omitempty"`
 	// Publication is what finish published, if it ran.
 	Publication *Publication `json:",omitempty"`

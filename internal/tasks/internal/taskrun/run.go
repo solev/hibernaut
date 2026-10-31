@@ -523,30 +523,35 @@ func (x *executor) collect(ctx context.Context) error {
 		if !x.launched(s) {
 			continue
 		}
+		_, exited := x.exitOf(s)
 		var size int64
+		var unread string
 		switch {
 		case x.r.UnprovenStop():
-			res.Unread = append(res.Unread, string(s)+": stop unproven; tail not read")
+			unread = "stop unproven; tail not read"
 		case x.r.Machine != task.MachineRunning:
-			res.Unread = append(res.Unread, string(s)+": machine "+string(x.r.Machine)+"; tail not read")
+			unread = "machine " + string(x.r.Machine) + "; tail not read"
 		case task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) == 0 || reads.Err() != nil:
-			res.Unread = append(res.Unread, string(s)+": collect budget exhausted; tail not read")
+			unread = "collect budget exhausted; tail not read"
 		default:
 			seen, err := x.look(reads, s)
 			if err != nil {
-				res.Unread = append(res.Unread, string(s)+": "+err.Error())
+				unread = err.Error()
 			} else {
 				size = seen.LogSize
-				if _, exited := x.exitOf(s); !exited {
+				if !exited {
 					if err := x.copyLog(reads, s, size); err != nil {
 						var guest *guestReplyError
 						if !errors.As(err, &guest) {
 							return err
 						}
-						res.Unread = append(res.Unread, string(s)+": "+err.Error())
+						unread = err.Error()
 					}
 				}
 			}
+		}
+		if unread != "" && !exited {
+			res.Unread = append(res.Unread, string(s)+": "+unread)
 		}
 		n, err := x.cfg.Logs.Size(x.id, s)
 		if err != nil {
