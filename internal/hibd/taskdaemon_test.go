@@ -371,7 +371,13 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 				err error
 			}
 			readings := make(chan reading)
+			waiting := make(chan struct{})
 			a.ReadRoom = func() (room.Host, error) {
+				select {
+				case waiting <- struct{}{}:
+				case <-ctx.Done():
+					return room.Host{}, ctx.Err()
+				}
 				select {
 				case r := <-readings:
 					at.Store(r.at.UnixNano())
@@ -422,6 +428,7 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 				if mode == "successes" && n%2 != 0 {
 					err = nil
 				}
+				waitTaskSignal(t, waiting, "start reading admission")
 				select {
 				case readings <- reading{at: base.Add(elapsed), err: err}:
 				case <-ctx.Done():
@@ -442,6 +449,8 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 			want := []string{first,
 				fmt.Sprintf("tasks: checking the room on the host: %s (%d more since the last line)", latest, count)}
 			check(want)
+			waitTaskSignal(t, waiting, "start the final admission read")
+			at.Store(base.Add(30 * time.Minute).UnixNano())
 			stop()
 			check(want)
 		})
