@@ -515,6 +515,9 @@ func (e *Engine) DialRunningWebSocket(ctx context.Context, id string, port int) 
 	}
 	c, err := e.dialWebSocket(ctx, id, port, &token)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
 		if _, stateErr := e.running(ctx, id); stateErr != nil {
 			return nil, stateErr
 		}

@@ -262,34 +262,53 @@ func TestRunningDialFailureRequiresAdmission(t *testing.T) {
 }
 
 func TestRunningDialCancellationKeepsToken(t *testing.T) {
-	dir := t.TempDir()
-	f, e := newFakeE2B(t, dir)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	id := "aaaaaaaaaaaaaaaaaaaa"
-	f.add(id, "running", nil)
-	if _, err := e.Resume(ctx, id, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	dialCtx, stop := context.WithCancel(ctx)
-	defer stop()
-	f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		stop()
-		select {
-		case <-r.Context().Done():
-		case <-ctx.Done():
+	for _, deadline := range []bool{false, true} {
+		name, want := "cancel", context.Canceled
+		if deadline {
+			name, want = "deadline", context.DeadlineExceeded
 		}
-	})
-	c, err := e.DialRunningWebSocket(dialCtx, id, 8081)
-	if c != nil {
-		c.Close()
-	}
-	if !errors.Is(err, context.Canceled) || errors.Is(err, engine.ErrNoTrafficToken) {
-		t.Errorf("canceled running dial = %v, want cancellation without fallback", err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id))
-	if err != nil || string(data) != trafficToken {
-		t.Errorf("canceled dial changed stored token: %q, %v", data, err)
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			f, e := newFakeE2B(t, dir)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			id := "aaaaaaaaaaaaaaaaaaaa"
+			f.add(id, "running", nil)
+			if _, err := e.Resume(ctx, id, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			var dialCtx context.Context
+			var stop context.CancelFunc
+			if deadline {
+				dialCtx, stop = context.WithTimeout(ctx, 100*time.Millisecond)
+			} else {
+				dialCtx, stop = context.WithCancel(ctx)
+			}
+			defer stop()
+			f.envd = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !deadline {
+					stop()
+				}
+				select {
+				case <-r.Context().Done():
+				case <-ctx.Done():
+				}
+			})
+			c, err := e.DialRunningWebSocket(dialCtx, id, 8081)
+			if c != nil {
+				c.Close()
+			}
+			if !errors.Is(err, want) || errors.Is(err, engine.ErrNoTrafficToken) {
+				t.Errorf("context-ended running dial = %v, want %v without fallback", err, want)
+			}
+			if err == nil || !strings.HasPrefix(err.Error(), "dial "+id+" port 8081:") {
+				t.Errorf("context-ended running dial = %v, want the dial's own error", err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id))
+			if err != nil || string(data) != trafficToken {
+				t.Errorf("context-ended dial changed stored token: %q, %v", data, err)
+			}
+		})
 	}
 }
 

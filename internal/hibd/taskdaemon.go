@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/failurelog"
 	"github.com/solev/hibernaut/internal/machines"
 	"github.com/solev/hibernaut/internal/tasks"
 	"github.com/solev/hibernaut/internal/termsafe"
@@ -40,7 +41,7 @@ func (a *App) startTasks(ctx context.Context, cfg config, e engine.Engine, m *ma
 			d.Close()
 		}
 	}()
-	problem := ""
+	var failures failurelog.Limiter
 	for ctx.Err() == nil {
 		if a.awake() == nil {
 			var err error
@@ -53,14 +54,15 @@ func (a *App) startTasks(ctx context.Context, cfg config, e engine.Engine, m *ma
 			if err == nil {
 				err = d.Tick(ctx)
 			}
-			now := ""
 			if err != nil && ctx.Err() == nil {
-				now = err.Error()
-				if now != problem {
-					logf("tasks: %s", termsafe.String(now))
+				if more, log := failures.Failure(a.now()); log && ctx.Err() == nil {
+					if more == 0 {
+						logf("tasks: %s", termsafe.String(err.Error()))
+					} else {
+						logf("tasks: %s (%d more since the last line)", termsafe.String(err.Error()), more)
+					}
 				}
 			}
-			problem = now
 		}
 		select {
 		case <-ctx.Done():

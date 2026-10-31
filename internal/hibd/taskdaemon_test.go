@@ -354,6 +354,100 @@ func TestTaskDaemonRetriesUnreadableStoreWithoutStoppingOtherWork(t *testing.T) 
 	})
 }
 
+func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
+	for _, mode := range []string{"changing", "alternating", "successes"} {
+		t.Run(mode, func(t *testing.T) {
+			a, _ := taskDaemonApp(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			base := a.now()
+			var at atomic.Int64
+			at.Store(base.UnixNano())
+			a.Now = func() time.Time { return time.Unix(0, at.Load()).UTC() }
+			ticks := make(chan time.Time)
+			a.TaskTicks = ticks
+			type reading struct {
+				at  time.Time
+				err error
+			}
+			readings := make(chan reading)
+			a.ReadRoom = func() (room.Host, error) {
+				select {
+				case r := <-readings:
+					at.Store(r.at.UnixNano())
+					return roomy, r.err
+				case <-ctx.Done():
+					return room.Host{}, ctx.Err()
+				}
+			}
+			done := make(chan int, 1)
+			go func() { done <- a.Run(ctx, []string{"daemon"}) }()
+			var once sync.Once
+			stop := func() {
+				t.Helper()
+				once.Do(func() {
+					cancel()
+					select {
+					case code := <-done:
+						if code != 0 {
+							t.Errorf("daemon exit %d; log %s", code, a.Stderr)
+						}
+					case <-time.After(5 * time.Second):
+						t.Error("daemon did not stop within its deadline")
+					}
+				})
+			}
+			t.Cleanup(stop)
+			logs := a.Stderr.(*syncBuffer)
+			check := func(want []string) {
+				t.Helper()
+				var got []string
+				for _, line := range strings.Split(logs.String(), "\n") {
+					if i := strings.Index(line, "tasks: "); i >= 0 {
+						got = append(got, line[i:])
+					}
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("task tick logs = %q, want %q", got, want)
+				}
+			}
+			first := "tasks: checking the room on the host: failure 0"
+			for n, elapsed := range []time.Duration{0, 5 * time.Second, 10 * time.Second,
+				15 * time.Second, 10 * time.Minute} {
+				text := fmt.Sprintf("failure %d", n)
+				if mode == "alternating" {
+					text = fmt.Sprintf("failure %d", n%2)
+				}
+				err := errors.New(text)
+				if mode == "successes" && n%2 != 0 {
+					err = nil
+				}
+				select {
+				case readings <- reading{at: base.Add(elapsed), err: err}:
+				case <-ctx.Done():
+					t.Fatal("daemon did not read admission before its deadline")
+				}
+				sendTaskTick(t, ticks, base.Add(elapsed))
+				if n < 4 {
+					check([]string{first})
+				}
+			}
+			latest, count := "failure 4", 3
+			if mode == "alternating" {
+				latest = "failure 0"
+			}
+			if mode == "successes" {
+				count = 1
+			}
+			want := []string{first,
+				fmt.Sprintf("tasks: checking the room on the host: %s (%d more since the last line)", latest, count)}
+			check(want)
+			stop()
+			check(want)
+		})
+	}
+}
+
 func TestTaskDaemonDoesNotTickWhileQuiescing(t *testing.T) {
 	for _, broken := range []bool{false, true} {
 		t.Run(fmt.Sprint(broken), func(t *testing.T) {

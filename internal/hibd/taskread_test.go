@@ -3,12 +3,10 @@ package hibd
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -443,26 +441,15 @@ func TestTaskStartDecodesInvalidUTF8(t *testing.T) {
 func TestTaskShowPlainRemovalDone(t *testing.T) {
 	for _, finished := range []bool{false, true} {
 		t.Run(fmt.Sprint("finished=", finished), func(t *testing.T) {
-			a, out, errOut := newApp(t, fake.New())
+			a, out, _ := newApp(t, fake.New())
 			at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			rec := submitReadTask(t, taskReadStore(t, a), "removal", at)
-			db, err := sql.Open("sqlite", filepath.Join(a.Getenv("HIBD_STATE_DIR"), "tasks.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			var done any
+			record := task.Task{ID: "t-aaaaaaaa", Created: at,
+				Removal: &task.Removal{Why: "rm", At: at}}
 			if finished {
-				done = at.Add(time.Hour).UnixMilli()
+				record.Removal.Done = at.Add(time.Hour)
 			}
-			if _, err := db.ExecContext(ctx, `UPDATE tasks SET removal_why = 'rm',
-				removal_at = ?, removed_at = ? WHERE id = ?`, at.UnixMilli(), done, rec.Run.Task); err != nil {
+			if err := a.printTask(taskReadOf(record, "", nil, true)); err != nil {
 				t.Fatal(err)
-			}
-			if code := a.Run(ctx, []string{"task", "show", string(rec.Run.Task)}); code != 0 || errOut.Len() != 0 {
-				t.Fatalf("task show = exit %d, stderr %q", code, errOut)
 			}
 			want := "removal rm at 2026-10-28T12:00:00Z"
 			if finished {

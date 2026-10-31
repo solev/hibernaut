@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/failurelog"
 	"github.com/solev/hibernaut/internal/room"
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/taskguest"
@@ -778,7 +779,7 @@ type Supervisor struct {
 	mu              sync.Mutex
 	runs            map[task.RunID]*handle
 	removing        map[task.ID]struct{}
-	removalProblems map[task.ID]string
+	removalFailures map[task.ID]*failurelog.Limiter
 	wg              sync.WaitGroup
 }
 
@@ -793,7 +794,7 @@ type handle struct {
 // NewSupervisor returns a Supervisor whose workflows live as long as life.
 func NewSupervisor(life context.Context, cfg Config) *Supervisor {
 	return &Supervisor{cfg: cfg, life: life, runs: map[task.RunID]*handle{},
-		removing: map[task.ID]struct{}{}, removalProblems: map[task.ID]string{}}
+		removing: map[task.ID]struct{}{}, removalFailures: map[task.ID]*failurelog.Limiter{}}
 }
 
 // Tick starts a workflow for each unfinished run that has none, nudges each whose run has a new
@@ -862,15 +863,25 @@ func (s *Supervisor) remove(ctx context.Context) error {
 			}()
 			err := s.retire(t)
 			s.mu.Lock()
-			logFailure := err != nil && s.life.Err() == nil && s.cfg.Logf != nil && s.removalProblems[t.ID] != err.Error()
+			var more uint64
+			var logFailure bool
 			if err == nil {
-				delete(s.removalProblems, t.ID)
-			} else if logFailure {
-				s.removalProblems[t.ID] = err.Error()
+				delete(s.removalFailures, t.ID)
+			} else if s.life.Err() == nil && s.cfg.Logf != nil {
+				l := s.removalFailures[t.ID]
+				if l == nil {
+					l = &failurelog.Limiter{}
+					s.removalFailures[t.ID] = l
+				}
+				more, logFailure = l.Failure(s.cfg.Clock.Now())
 			}
 			s.mu.Unlock()
 			if logFailure && s.life.Err() == nil {
-				s.cfg.Logf("task %s removal: %v", t.ID, err)
+				if more == 0 {
+					s.cfg.Logf("task %s removal: %v", t.ID, err)
+				} else {
+					s.cfg.Logf("task %s removal: %v (%d more since the last line)", t.ID, err, more)
+				}
 			}
 		})
 		s.mu.Unlock()
@@ -943,7 +954,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 	}
 	s.runs[r.ID] = h
 	s.wg.Go(func() {
-		var problem string
+		var failures failurelog.Limiter
 		defer func() {
 			s.mu.Lock()
 			delete(s.runs, r.ID)
@@ -963,9 +974,14 @@ func (s *Supervisor) start(r task.Run) *handle {
 			case nudged, errors.Is(err, taskstore.ErrStale):
 				continue
 			}
-			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) && problem != err.Error() {
-				problem = err.Error()
-				s.cfg.Logf("task %s: %v", r.ID, err)
+			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) {
+				if more, log := failures.Failure(s.cfg.Clock.Now()); log && s.life.Err() == nil {
+					if more == 0 {
+						s.cfg.Logf("task %s: %v", r.ID, err)
+					} else {
+						s.cfg.Logf("task %s: %v (%d more since the last line)", r.ID, err, more)
+					}
+				}
 			}
 			_ = s.cfg.Clock.Sleep(s.life, h.x.poll())
 		}
