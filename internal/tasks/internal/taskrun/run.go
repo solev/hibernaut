@@ -863,9 +863,12 @@ func (s *Supervisor) remove(ctx context.Context) error {
 			}()
 			err := s.retire(t)
 			s.mu.Lock()
-			var more uint64
-			var logFailure bool
+			var line string
+			var logLine bool
 			if err == nil {
+				if l := s.removalFailures[t.ID]; l != nil {
+					line, logLine = l.Success("recovered")
+				}
 				delete(s.removalFailures, t.ID)
 			} else if s.life.Err() == nil && s.cfg.Logf != nil {
 				l := s.removalFailures[t.ID]
@@ -873,15 +876,11 @@ func (s *Supervisor) remove(ctx context.Context) error {
 					l = &failurelog.Limiter{}
 					s.removalFailures[t.ID] = l
 				}
-				more, logFailure = l.Failure(s.cfg.Clock.Now())
+				line, logLine = l.Failure(s.cfg.Clock.Now(), err.Error())
 			}
 			s.mu.Unlock()
-			if logFailure && s.life.Err() == nil {
-				if more == 0 {
-					s.cfg.Logf("task %s removal: %v", t.ID, err)
-				} else {
-					s.cfg.Logf("task %s removal: %v (%d more since the last line)", t.ID, err, more)
-				}
+			if logLine && s.life.Err() == nil {
+				s.cfg.Logf("task %s removal: %s", t.ID, line)
 			}
 		})
 		s.mu.Unlock()
@@ -970,17 +969,18 @@ func (s *Supervisor) start(r task.Run) *handle {
 			cancel(nil)
 			switch {
 			case err == nil:
+				if s.cfg.Logf != nil && s.life.Err() == nil {
+					if line, log := failures.Success("recovered"); log && s.life.Err() == nil {
+						s.cfg.Logf("task %s: %s", r.ID, line)
+					}
+				}
 				return
 			case nudged, errors.Is(err, taskstore.ErrStale):
 				continue
 			}
 			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) {
-				if more, log := failures.Failure(s.cfg.Clock.Now()); log && s.life.Err() == nil {
-					if more == 0 {
-						s.cfg.Logf("task %s: %v", r.ID, err)
-					} else {
-						s.cfg.Logf("task %s: %v (%d more since the last line)", r.ID, err, more)
-					}
+				if line, log := failures.Failure(s.cfg.Clock.Now(), err.Error()); log && s.life.Err() == nil {
+					s.cfg.Logf("task %s: %s", r.ID, line)
 				}
 			}
 			_ = s.cfg.Clock.Sleep(s.life, h.x.poll())
