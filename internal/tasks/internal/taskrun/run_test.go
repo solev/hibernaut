@@ -268,6 +268,8 @@ type harness struct {
 	stopSup   context.CancelFunc
 	daemons   int
 	configure func(*Config)
+	logs      failureLogs
+	logStart  int
 
 	mu sync.Mutex
 	// crashAt crashes the daemon at its crashAt'th outside action, counting from 1. The
@@ -309,14 +311,18 @@ func (h *harness) start() {
 	h.t.Helper()
 	h.daemons++
 	inst := task.Instance(fmt.Sprintf("d%d", h.daemons))
-	if err := h.store.StartDaemon(context.Background(), inst, h.clock.Now()); err != nil {
+	startedAt := h.clock.Now()
+	if err := h.store.StartDaemon(context.Background(), inst, startedAt); err != nil {
 		h.t.Fatal(err)
 	}
 	life, cancel := context.WithCancel(context.Background())
+	h.logs.mu.Lock()
+	h.logStart = len(h.logs.lines)
+	h.logs.mu.Unlock()
 	cfg := Config{
 		Store: h.store, Logs: taskstore.MemoryLogs{M: h.store}, Engine: h.owner,
-		Machines: h.m, Clock: h.clock, Instance: inst, Poll: time.Second,
-		Logf: func(string, ...any) {},
+		Machines: h.m, Clock: h.clock, Instance: inst, StartedAt: startedAt, Poll: time.Second,
+		Logf: h.logs.logf,
 	}
 	if h.configure != nil {
 		h.configure(&cfg)
@@ -616,7 +622,8 @@ func TestCrashAtEveryAppend(t *testing.T) {
 }
 
 // TestLostReplies loses the first reply of every kind of call. Launches are judged by looks,
-// log chunks by the host copy's length and uploads by the in-machine check.
+// log chunks by the host copy's length and uploads by the in-machine check. A publication
+// whose reply is lost is an unread wrap-up tail, not an indefinitely retried stage.
 func TestLostReplies(t *testing.T) {
 	h := newHarness(t, script(3*time.Second, 0))
 	lost := map[string]bool{}
@@ -636,8 +643,11 @@ func TestLostReplies(t *testing.T) {
 	id := h.submit(time.Hour)
 	h.until(40, h.ended(id))
 	h.checkLog(id)
-	if o := outcome(h.run(id)); o != task.Succeeded {
-		t.Fatalf("outcome %s", o)
+	if o := outcome(h.run(id)); o != task.NoChanges {
+		t.Fatalf("outcome %s, want no_changes without a proven publication", o)
+	}
+	if unread := strings.Join(unreadResult(t, h.run(id)), "\n"); !strings.Contains(unread, "publication:") || !strings.Contains(unread, engine.ErrConnectionLost.Error()) {
+		t.Fatalf("lost publication was not recorded: %q", unread)
 	}
 	launches := 0
 	for k := range lost {
@@ -791,6 +801,24 @@ func TestFrozenLaunchDoesNotThawStoppingRun(t *testing.T) {
 }
 
 func TestCancel(t *testing.T) {
+	t.Run("outlive-term", func(t *testing.T) {
+		h := newHarness(t, script(time.Hour, 0))
+		h.configure = func(cfg *Config) {
+			cfg.Engine = wrapGuest{Engine: cfg.Engine, h: h, mode: "outlive-term"}
+		}
+		h.start()
+		id := h.submit(2 * time.Hour)
+		h.until(30, h.launched(id, task.StageCommand))
+		h.request(id, task.RequestCancel)
+		h.until(30, h.ended(id))
+		h.stop()
+		r := h.run(id)
+		if outcome(r) != task.Cancelled || stopResult(t, r).How != "kill" ||
+			r.Machine != task.MachinePaused {
+			t.Fatal("a command that outlived TERM did not end cancelled after KILL")
+		}
+		h.checkLog(id)
+	})
 	h := newHarness(t, script(time.Hour, 0))
 	h.start()
 	id := h.submit(2 * time.Hour)

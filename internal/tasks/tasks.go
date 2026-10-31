@@ -244,7 +244,8 @@ func (t *Tasks) startDaemon(life context.Context, cfg DaemonConfig, owner *taskm
 		return nil, fmt.Errorf("tasks: making a daemon instance: %w", err)
 	}
 	inst := task.Instance(hex.EncodeToString(b[:]))
-	if err := st.StartDaemon(life, inst, t.now()); err != nil {
+	startedAt := t.now()
+	if err := st.StartDaemon(life, inst, startedAt); err != nil {
 		return nil, err
 	}
 	clock := cfg.Clock
@@ -252,7 +253,7 @@ func (t *Tasks) startDaemon(life context.Context, cfg DaemonConfig, owner *taskm
 		clock = taskrun.RealClock{}
 	}
 	sup := taskrun.NewSupervisor(life, taskrun.Config{Store: st, Logs: taskstore.FileLogs{Dir: t.dir},
-		Engine: owner, Machines: cfg.Machines, Clock: clock, Instance: inst,
+		Engine: owner, Machines: cfg.Machines, Clock: clock, Instance: inst, StartedAt: startedAt,
 		Poll: cfg.Poll, Logf: cfg.Logf})
 	return &Daemon{sup: sup}, nil
 }

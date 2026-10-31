@@ -19,6 +19,7 @@ import (
 type sweepCall struct {
 	name   string
 	exists bool
+	paused bool
 	step   task.Step
 }
 
@@ -39,11 +40,11 @@ func (s *sweepTrace) call(name string) {
 	if last, ok := r.Last(); ok {
 		step = last.Step()
 	}
-	_, exists, err := s.h.m.Find(context.Background(), r)
+	m, exists, err := s.h.m.Find(context.Background(), r)
 	if err != nil {
 		s.h.t.Fatal(err)
 	}
-	c := sweepCall{name: name, exists: exists, step: step}
+	c := sweepCall{name: name, exists: exists, paused: m.State == engine.Paused, step: step}
 	s.calls = append(s.calls, c)
 	if s.before != nil {
 		s.before(c, len(s.calls))
@@ -157,14 +158,20 @@ func (a sweepAudit) Exec(ctx context.Context, mid string, req engine.ExecRequest
 	return a.Engine.Exec(ctx, mid, req)
 }
 
-func newSweep(t *testing.T, followUp bool) (*harness, *sweepTrace) {
+func newSweep(t *testing.T, scenario string) (*harness, *sweepTrace) {
 	t.Helper()
 	h := newHarness(t, script(3*time.Second, 0))
+	if scenario == "kept-unfrozen" {
+		h.count.Engine = &failedKeepFreeze{Engine: h.sim, delivered: true}
+	}
 	h.start()
 	id := h.submit(10 * time.Minute)
-	if followUp {
+	if scenario != "fresh" {
 		h.until(30, h.ended(id))
 		h.stop()
+		if scenario == "kept-unfrozen" && h.run(id).Frozen() {
+			t.Fatal("scenario did not start with a kept unfrozen row")
+		}
 		rc, err := h.store.Submit(context.Background(), task.Submission{
 			RequestID: "sweep-follow-up", Task: id.Task, Spec: h.run(id).Spec,
 			Actor: alice, At: h.clock.Now()}, nil)
@@ -221,9 +228,9 @@ func TestExecBoundarySweep(t *testing.T) {
 	events := []string{"host-pause", "host-pause-restart", "engine-pause-wake",
 		"engine-pause-rescue", "engine-pause-rm", "cancel", "deadline"}
 	cases := 0
-	for _, scenario := range []string{"fresh", "follow-up"} {
+	for _, scenario := range []string{"fresh", "follow-up", "kept-unfrozen"} {
 		t.Run(scenario, func(t *testing.T) {
-			clean, trace := newSweep(t, scenario == "follow-up")
+			clean, trace := newSweep(t, scenario)
 			startSweep(t, clean, trace)
 			for pass := 0; pass < 40 && !clean.ended(trace.id)(); pass++ {
 				clean.clock.Advance(time.Second)
@@ -232,6 +239,13 @@ func TestExecBoundarySweep(t *testing.T) {
 			clean.stop()
 			if !clean.ended(trace.id)() || outcome(clean.run(trace.id)) != task.Succeeded {
 				t.Fatal("clean scenario failed: " + sweepResult(clean, trace.id, 40))
+			}
+			if scenario == "kept-unfrozen" {
+				clean.logs.check(t, []string{fmt.Sprintf(
+					"task %s: launch command of %s: slice thawed; retry launch", trace.id, trace.id),
+					fmt.Sprintf("task %s: the workflow ended", trace.id)})
+			} else {
+				clean.logs.check(t, nil)
 			}
 			skipped := 0
 			finishExitLook := -1
@@ -251,9 +265,14 @@ func TestExecBoundarySweep(t *testing.T) {
 					continue
 				}
 				for _, event := range events {
+					if call.paused && (strings.HasPrefix(event, "host-pause") ||
+						strings.HasPrefix(event, "engine-pause")) {
+						t.Logf("skipped %s at %02d-%s: machine already paused", event, i+1, call.name)
+						continue
+					}
 					cases++
 					t.Run(fmt.Sprintf("%s/%02d-%s", event, i+1, call.name), func(t *testing.T) {
-						h, s := newSweep(t, scenario == "follow-up")
+						h, s := newSweep(t, scenario)
 						ctx := context.Background()
 						injected, restarted, woke, released := false, false, false, false
 						hostFreeze := false
@@ -410,6 +429,12 @@ func TestExecBoundarySweep(t *testing.T) {
 								(strings.HasPrefix(event, "host-pause") || strings.HasPrefix(event, "engine-pause")) {
 								want = task.NoChanges
 							}
+							if call.step == task.StepCollect && call.name != "cat" && event == "deadline" {
+								want = task.NoChanges
+								if len(unreadResult(t, r)) == 0 {
+									t.Error("elapsed collect budget did not report an unread tail")
+								}
+							}
 							t.Logf("wrap-up observation: %s", sweepResult(h, s.id, passes))
 						}
 						if !r.Ended() || outcome(r) != want {
@@ -434,6 +459,7 @@ func TestExecBoundarySweep(t *testing.T) {
 							}
 						}
 						h.checkLog(s.id)
+						checkSweepLogs(t, h, s.id)
 					})
 				}
 			}
@@ -444,10 +470,39 @@ func TestExecBoundarySweep(t *testing.T) {
 	t.Logf("swept %d injected cases", cases)
 }
 
+func checkSweepLogs(t *testing.T, h *harness, id task.RunID) {
+	t.Helper()
+	h.logs.mu.Lock()
+	defer h.logs.mu.Unlock()
+	failures, ends := 0, 0
+	end := fmt.Sprintf("task %s: the workflow ended", id)
+	for _, line := range h.logs.lines {
+		if strings.Contains(line, task.ErrHeld.Error()) {
+			t.Errorf("supervisor attempted an impermissible held resume: %s", line)
+		}
+	}
+	for _, line := range h.logs.lines[h.logStart:] {
+		if strings.HasPrefix(line, end) {
+			ends++
+		} else {
+			failures++
+		}
+	}
+	want := 0
+	if failures != 0 {
+		want = 1
+	}
+	if ends != want {
+		t.Errorf("supervisor had %d failures and %d counted end lines, want %d: %q",
+			failures, ends, want, h.logs.lines)
+	}
+	t.Logf("supervisor log=%q", h.logs.lines)
+}
+
 func TestLaunchReadinessDoesNotPollOrLog(t *testing.T) {
 	for _, scenario := range []string{"follow-up", "host-pause"} {
 		t.Run(scenario, func(t *testing.T) {
-			h, trace := newSweep(t, scenario == "follow-up")
+			h, trace := newSweep(t, map[string]string{"follow-up": "follow-up", "host-pause": "fresh"}[scenario])
 			h.stop()
 			var logs []string
 			configure := h.configure
@@ -509,7 +564,7 @@ func TestLaunchReadinessDoesNotPollOrLog(t *testing.T) {
 func TestExecReadinessWaitsForRoom(t *testing.T) {
 	for _, at := range []string{"upload", "launch-setup"} {
 		t.Run(at, func(t *testing.T) {
-			h, trace := newSweep(t, false)
+			h, trace := newSweep(t, "fresh")
 			h.stop()
 			var logs []string
 			configure := h.configure
