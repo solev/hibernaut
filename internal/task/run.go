@@ -66,6 +66,7 @@ const (
 	MachineGone    MachineState = "gone"
 )
 
+// Valid reports whether s is a defined machine state.
 func (s MachineState) Valid() bool {
 	switch s {
 	case MachineUnknown, MachineRunning, MachinePaused, MachineGone:

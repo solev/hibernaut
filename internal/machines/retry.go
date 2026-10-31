@@ -39,8 +39,9 @@ const startFailedFor = 30 * time.Second
 // retryResume retries every 2 s while the engine turns the machine down, until ctx ends, and
 // for startFailedFor after a start failure. Every attempt holds RoomLock from its room reading
 // through the resumable calls. Running dials use DialRunningWebSocket instead. A pause after
-// their state read requires this admission before a resumable retry. A refusal checks room
-// after releasing the lock, and setup and retry waits hold no lock.
+// their state read, a missing token, or a failed running dial requires admission before any
+// resumable retry, which refreshes the token. A still-running machine passes even on a full
+// host. A refusal checks room after releasing the lock, and setup and retry waits hold no lock.
 func (m *Manager) retryResume(ctx context.Context, name string, em engine.Machine, resume func(context.Context) error) error {
 	var failedAt time.Time
 	for attempt := 1; ; attempt++ {

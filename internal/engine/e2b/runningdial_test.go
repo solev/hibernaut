@@ -193,8 +193,8 @@ func TestRunningDialRefreshesRejectedToken(t *testing.T) {
 				t.Errorf("rejected-token dial = %v, want ErrNoTrafficToken and the proxy's 403", err)
 			}
 			if persistent {
-				if _, err := os.Stat(filepath.Join(dir, "traffic-token-"+id)); !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("rejected traffic token remains stored: %v", err)
+				if data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id)); err != nil || string(data) != trafficToken {
+					t.Errorf("rejected dial changed stored token: %q, %v", data, err)
 				}
 			}
 			before, err := e.Get(ctx, id)
@@ -290,6 +290,59 @@ func TestRunningDialCancellationKeepsToken(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id))
 	if err != nil || string(data) != trafficToken {
 		t.Errorf("canceled dial changed stored token: %q, %v", data, err)
+	}
+}
+
+func TestRunningDialRecoversPrunedToken(t *testing.T) {
+	dir := t.TempDir()
+	f, e := newFakeE2B(t, dir)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	id := "aaaaaaaaaaaaaaaaaaaa"
+	f.add(id, "running", nil)
+	if _, err := e.Resume(ctx, id, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	f.envd = runningProxy(f)
+	if err := e2b.PruneTrafficTokens(dir, func(string) (bool, error) {
+		if _, err := e.Resume(ctx, id, time.Minute); err != nil {
+			return true, err
+		}
+		return false, nil
+	}, false, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.DialRunningWebSocket(ctx, id, 8081)
+	if c != nil {
+		c.Close()
+	}
+	if !errors.Is(err, engine.ErrNoTrafficToken) {
+		t.Fatalf("pruned-token running dial = %v, want ErrNoTrafficToken", err)
+	}
+	c, err = e.DialWebSocket(ctx, id, 8081, time.Minute)
+	if err != nil || c == nil {
+		t.Fatalf("admitted fallback after prune = %v", err)
+	}
+	c.Close()
+	data, err := os.ReadFile(filepath.Join(dir, "traffic-token-"+id))
+	if err != nil || string(data) != trafficToken {
+		t.Fatalf("fallback token = %q, %v, want fresh API token", data, err)
+	}
+	c, err = e.DialRunningWebSocket(ctx, id, 8081)
+	if err != nil || c == nil {
+		t.Fatalf("next running dial after prune = %v", err)
+	}
+	c.Close()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	connects := 0
+	for _, req := range f.requests {
+		if strings.HasSuffix(req.URL.Path, "/connect") {
+			connects++
+		}
+	}
+	if connects != 3 {
+		t.Errorf("prune recovery made %d connects, want setup, racing publication and one fallback", connects)
 	}
 }
 

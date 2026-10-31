@@ -28,6 +28,9 @@ func followUpAfterRemove(t *testing.T, s taskstore.Store) {
 		Kind: task.RequestRemove, Actor: alice, At: t0}); err != nil {
 		t.Fatal(err)
 	}
+	for i := range task.MaxQueuedRuns {
+		submit(t, s, "queued-"+string(rune('a'+i)), spec(), nil)
+	}
 	replay, err := s.Submit(ctx, earlier, nil)
 	if err != nil || replay != receipt {
 		t.Fatalf("receipt replay after rm = %v, %v, want %v", replay, err, receipt)

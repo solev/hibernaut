@@ -385,7 +385,8 @@ flowchart TD
   `ErrRunLive`. The user reads "refused to pause task machine t-k3x9q2ab: ...".
 - **The daemon's own pauses never ask.** The keep step, pause-all at shutdown and `Wake`'s pause
   again go through `Owner.Pause`, which freezes and never refuses, since they must always land.
-  The removal after `hib task rm` calls `Manager.RemoveID` with the run's recorded ID without asking.
+  The removal after `hib task rm` calls `Manager.RemoveID` with the run's recorded ID
+  without asking.
 - **A person's machine pays nothing.** `Tasks.Check` passes a machine without the `hib.task`
   label and never opens tasks.db for it. A task machine fails closed when tasks.db can't be
   read.
@@ -439,6 +440,10 @@ nudge.
   done. It retries open removals after a failure or restart, without blocking grants or nudges.
   No store or machine call holds the Supervisor's mutex. An rm refuses follow-ups immediately.
   The store rejects a stale removal decision while a run is live.
+- **Repeated failures.** A workflow or removal logs only when its error text changes, and
+  nothing after the daemon's life ends. `ErrNotRunning` stays silent. The workflow keeps its
+  last logged text until it returns. The Supervisor keeps a removal's text across attempts
+  and drops it once removal records done.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
 - **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
@@ -708,12 +713,15 @@ A running-machine ssh dial uses `DialRunningWebSocket`, which never resumes. Its
 survives bridge processes and host restarts in hibd's private state directory. A pause after
 Dial's read fails that call without resuming, then requires admission before a resumable retry.
 A missing token also requires admission. If the running dial fails and E2B still reports running,
-the engine invalidates the token and returns the dial error with `ErrNoTrafficToken`. Dial then
+the engine keeps the token and returns the dial error with `ErrNoTrafficToken`. Dial then
 admits one resumable fallback, whose connect stores the current token. The check lets a machine
 already running through even on a full host. The next running dial needs no admission. An ended
 context or task guard error does not trigger that fallback. Running repin uses non-resuming Exec.
 Successful running dials and repins take no room lock or room reading. A paused repin's Resume
 and dial share one admitted attempt, and its initialization runs after releasing the lock.
+Cleanup and the daemon's sweep prune cached traffic tokens of machines E2B has forgotten.
+If a create races with pruning and loses its token, the next dial takes one admitted fallback
+and stores a fresh token.
 A one-shot `hibd new`, an ssh wake and the proxy's link wake cannot spend pages a task admission
 just counted, or the reverse. The lock is separate from `hibd.lock` so `Wake` and `Dial` do not
 wait behind a save.

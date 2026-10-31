@@ -85,6 +85,18 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		}
 		return r.receipt, nil
 	}
+	var t *memTask
+	var view task.Task
+	if sub.Task != "" {
+		t = m.tasks[sub.Task]
+		if t == nil || t.record.removal != nil {
+			return task.Receipt{}, task.ErrNoTask
+		}
+		view = m.view(t)
+		if view.Removing() {
+			return task.Receipt{}, task.ErrNoTask
+		}
+	}
 	queued := 0
 	for _, r := range m.unfinished() {
 		if r.Queued() {
@@ -98,16 +110,7 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 	if err := budget.take(sub.Spec); err != nil {
 		return task.Receipt{}, err
 	}
-	var t *memTask
 	if sub.Task != "" {
-		t = m.tasks[sub.Task]
-		if t == nil || t.record.removal != nil {
-			return task.Receipt{}, task.ErrNoTask
-		}
-		view := m.view(t)
-		if view.Removing() {
-			return task.Receipt{}, task.ErrNoTask
-		}
 		if _, live := view.Live(); live {
 			return task.Receipt{}, task.ErrRunLive
 		}

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -79,7 +80,7 @@ func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full 
 func (a *App) recordTaskRequest(ctx context.Context, c taskCommand, args []string) int {
 	fl := a.flags(c.path)
 	asJSON := fl.Bool("json", false, "print JSON")
-	requestID := fl.String("request-id", "", "idempotency key of 1 to 128 bytes")
+	requestID := fl.String("request-id", "", "UTF-8 idempotency key of 1 to 128 bytes")
 	rest, ok := a.parse(fl, args, 1, c.path+" "+c.args)
 	if !ok {
 		return 2
@@ -94,8 +95,8 @@ func (a *App) recordTaskRequest(ctx context.Context, c taskCommand, args []strin
 	if err != nil {
 		return a.taskFail(*asJSON, c.path, *requestID, fmt.Errorf("%w: %w", errBadTaskRequest, err))
 	}
-	if supplied && (*requestID == "" || len(*requestID) > 128) {
-		return a.taskFail(*asJSON, c.path, *requestID, fmt.Errorf("%w: a request ID of 1 to 128 bytes is required", errBadTaskRequest))
+	if supplied && (*requestID == "" || len(*requestID) > 128 || !utf8.ValidString(*requestID)) {
+		return a.taskFail(*asJSON, c.path, *requestID, fmt.Errorf("%w: a UTF-8 request ID of 1 to 128 bytes is required", errBadTaskRequest))
 	}
 	if !supplied {
 		*requestID = rand.Text()
@@ -173,7 +174,11 @@ func (a *App) printTask(record hibapi.Task) error {
 		}
 	}
 	if r := record.Removal; r != nil {
-		_, err := fmt.Fprintf(a.Stdout, "removal %s at %s\n", termsafe.Line(r.Why), r.At.UTC().Format(time.RFC3339))
+		done := ""
+		if r.Done != nil {
+			done = " done at " + r.Done.UTC().Format(time.RFC3339)
+		}
+		_, err := fmt.Fprintf(a.Stdout, "removal %s at %s%s\n", termsafe.Line(r.Why), r.At.UTC().Format(time.RFC3339), done)
 		return err
 	}
 	return nil

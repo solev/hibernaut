@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -15,6 +17,53 @@ import (
 )
 
 var tokenID = regexp.MustCompile(`^[a-z0-9]{1,64}$`)
+
+// PruneTrafficTokens removes cached tokens whose machines keep confirms are forgotten.
+// It ignores unrelated files and symlinks. A dry run only reports the removals.
+func PruneTrafficTokens(stateDir string, keep func(string) (bool, error), dryRun bool, logf func(string, ...any)) error {
+	root, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return fmt.Errorf("pruning traffic tokens: %w", err)
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return fmt.Errorf("pruning traffic tokens: %w", err)
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("pruning traffic tokens: %w", err)
+	}
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	var errs []error
+	for _, entry := range entries {
+		id, token := strings.CutPrefix(entry.Name(), "traffic-token-")
+		if !token || !tokenID.MatchString(id) || !entry.Type().IsRegular() {
+			continue
+		}
+		kept, err := keep(id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("kept the traffic token of %s: %w", id, err))
+			continue
+		}
+		if kept {
+			continue
+		}
+		if dryRun {
+			logf("would remove the traffic token of %s, which E2B has forgotten", id)
+			continue
+		}
+		switch err := root.Remove(entry.Name()); {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			errs = append(errs, fmt.Errorf("pruning the traffic token of %s: %w", id, err))
+		default:
+			logf("removed the traffic token of %s, which E2B has forgotten", id)
+		}
+	}
+	return errors.Join(errs...)
+}
 
 type trafficTokens struct {
 	dir    string

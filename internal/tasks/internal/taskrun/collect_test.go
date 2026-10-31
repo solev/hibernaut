@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,45 @@ import (
 	"github.com/solev/hibernaut/internal/taskguest/guestsim"
 	"github.com/solev/hibernaut/internal/tasks/internal/taskstore"
 )
+
+type emptyLogEngine struct{ Engine }
+
+func (e emptyLogEngine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
+	if len(req.Args) > 1 && req.Args[1] == "log" {
+		return engine.ExecResult{Stdout: []byte("size=13\n\n")}, nil
+	}
+	return e.Engine.Exec(ctx, id, req)
+}
+
+func TestEmptyLogChunkDoesNotRecordExit(t *testing.T) {
+	h := newHarness(t, script(0, 0))
+	var logs failureLogs
+	h.configure = func(cfg *Config) {
+		cfg.Engine = emptyLogEngine{Engine: cfg.Engine}
+		cfg.Logf = logs.logf
+	}
+	h.start()
+	id := h.submit(time.Hour)
+	for range 4 {
+		h.tick()
+	}
+	h.stop()
+	r := h.run(id)
+	for _, c := range r.Log {
+		if exit, ok := c.Body.(*task.StageExit); ok && exit.Stage == task.StageCommand {
+			t.Fatal("recorded command exit over an empty host log copy")
+		}
+	}
+	n, err := (taskstore.MemoryLogs{M: h.store}).Size(id, task.StageCommand)
+	if err != nil || n != 0 {
+		t.Fatalf("host log size = %d, %v, want 0", n, err)
+	}
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	if len(logs.lines) == 0 || !strings.Contains(logs.lines[0], "empty chunk before reported size 13") {
+		t.Fatalf("short copy was not reported: %q", logs.lines)
+	}
+}
 
 type growExitedLogs struct {
 	taskstore.Store
