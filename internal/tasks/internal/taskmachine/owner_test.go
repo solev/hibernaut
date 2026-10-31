@@ -181,6 +181,57 @@ func TestPauseFreezesFirst(t *testing.T) {
 	}
 }
 
+func TestPauseWithoutCgroupIsHeld(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	f.sim.Reboot(f.tm)
+	f.owner.inner = emptyFreezer{f.sim}
+	if err := f.owner.Pause(ctx, f.tm); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.Run(ctx, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Freeze.Frozen || r.Freeze.Detail == "" {
+		t.Fatalf("empty freeze recorded as frozen or without detail: %+v", r.Freeze)
+	}
+	if _, err := f.owner.Resume(ctx, f.tm, time.Minute); !errors.Is(err, task.ErrHeld) {
+		t.Fatalf("empty freeze allowed wake: %v", err)
+	}
+}
+
+type emptyFreezer struct{ engine.Engine }
+
+func (e emptyFreezer) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
+	if slices.Equal(append([]string{req.Cmd}, req.Args...), taskguest.Freeze()) {
+		return engine.ExecResult{Stdout: []byte("freeze=empty\n")}, nil
+	}
+	return e.Engine.Exec(ctx, id, req)
+}
+
+func TestPauseCreatesSliceBeforeFirstStage(t *testing.T) {
+	f := newFixture(t)
+	f.sim.Reboot(f.tm)
+	if err := f.owner.Pause(t.Context(), f.tm); err != nil {
+		t.Fatal(err)
+	}
+	if !f.sim.Frozen(f.tm) || !f.frozen(t) {
+		t.Fatal("pause did not hold the slice before a first stage")
+	}
+	if _, err := f.owner.Resume(t.Context(), f.tm, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.Run(t.Context(), f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.sim.Exec(t.Context(), f.tm, root(taskguest.Launch(r, task.StageCommand, time.Hour)))
+	if err != nil || res.ExitCode != taskguest.ExitFrozen {
+		t.Fatalf("first launch into held slice = %+v, %v", res, err)
+	}
+}
+
 // TestPauseAllFreezes runs the shutdown pause-all through the Owner, as hibd's engine() wires
 // it in both the links-on and links-off branches.
 func TestPauseAllFreezes(t *testing.T) {

@@ -116,6 +116,7 @@ func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 		"--property=ExecStopPost=+/bin/sh " + runner + " exit " + dir + " " + string(s),
 		"--setenv=HIB_TASK=" + string(r.ID.Task),
 		"--setenv=HIB_RUN=" + r.ID.String(),
+		"--setenv=HIB_INPUTS=" + path.Join(dir, "in"),
 		"--setenv=HIB_WORKDIR=" + Workdir(r.ID.Task),
 		"--setenv=HIB_BRANCH=" + r.ID.Task.Branch(),
 	}
@@ -144,8 +145,26 @@ func Look(r task.RunID, s task.Stage) []string {
 }
 
 // Freeze freezes every stage unit through the cgroup v2 freezer. A frozen process doesn't run,
-// so it can't act on the network when its machine resumes.
+// so it can't act on the network when its machine resumes. ParseFreeze reads its answer.
 func Freeze() []string { return control("freeze") }
+
+type FreezeResult string
+
+const (
+	FreezeFrozen FreezeResult = "frozen"
+	FreezeEmpty  FreezeResult = "empty"
+)
+
+func ParseFreeze(out []byte) (FreezeResult, error) {
+	switch string(out) {
+	case "freeze=frozen\n":
+		return FreezeFrozen, nil
+	case "freeze=empty\n":
+		return FreezeEmpty, nil
+	default:
+		return "", fmt.Errorf("freeze: bad answer %q", out)
+	}
+}
 
 // Thaw lets the stage units run again.
 func Thaw() []string { return control("thaw") }
@@ -224,12 +243,18 @@ func ParseLook(out []byte) (Seen, error) {
 	var s Seen
 	var exit task.ExitRecord
 	hasExit := false
+	showFailed := false
 	for line := range strings.Lines(string(out)) {
 		k, v, ok := strings.Cut(strings.TrimRight(line, "\n"), "=")
 		if !ok {
 			return Seen{}, fmt.Errorf("look: bad line %q", line)
 		}
 		switch k {
+		case "show":
+			if v != "failed" {
+				return Seen{}, fmt.Errorf("look: bad show result %q", v)
+			}
+			showFailed = true
 		case "marker":
 			s.Marker = v == "yes"
 		case "exit.result":
@@ -267,6 +292,8 @@ func ParseLook(out []byte) (Seen, error) {
 	}
 	if hasExit {
 		s.Exit = &exit
+	} else if showFailed {
+		return Seen{}, errors.New("look: systemctl show failed without an exit record")
 	}
 	return s, nil
 }

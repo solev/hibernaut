@@ -62,6 +62,7 @@ type guest struct {
 	starts map[string]int
 	// frozen is the stage slice's freezer.
 	frozen bool
+	cgroup bool
 }
 
 type unit struct {
@@ -145,7 +146,7 @@ func (s *Sim) Reboot(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := s.guest(id)
-	g.units, g.frozen = map[string]*unit{}, false
+	g.units, g.frozen, g.cgroup = map[string]*unit{}, false, false
 }
 
 // Frozen reports whether machine id's stage slice is frozen.
@@ -218,7 +219,11 @@ func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.S
 	case argv[0] == "sh" && len(argv) > 4 && argv[1] == "-c" && argv[2] == string(taskguest.Runner):
 		switch argv[4] {
 		case "freeze":
-			g.frozen = len(g.units) > 0
+			g.frozen = g.cgroup
+			if g.frozen {
+				return ok("freeze=frozen\n")
+			}
+			return ok("freeze=empty\n")
 		case "thaw":
 			g.frozen = false
 		case "kill":
@@ -231,6 +236,9 @@ func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.S
 		default:
 			return engine.ExecResult{ExitCode: 2, Stderr: []byte("guestsim: unknown control")}
 		}
+		return ok("")
+	case argv[0] == "systemctl" && argv[1] == "start" && argv[2] == taskguest.Slice:
+		g.cgroup = true
 		return ok("")
 	case argv[0] == "systemctl" && argv[1] == "stop":
 		u := g.units[argv[len(argv)-1]]
@@ -283,6 +291,7 @@ func (g *guest) launch(argv []string, now time.Time, script func(task.RunID, tas
 	}
 	g.files[marker] = nil
 	g.starts[name]++
+	g.cgroup = true
 	b := Behavior{}
 	if script != nil {
 		b = script(runOf(dir), stage)

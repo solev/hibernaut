@@ -151,6 +151,11 @@ func (o *Owner) freeze(ctx context.Context, tid task.ID, id string) {
 	f := task.Freeze{At: o.now(), By: o.by}
 	fctx, cancel := context.WithTimeout(ctx, taskguest.ExecTimeout)
 	defer cancel()
+	if err := execOK(fctx, o.inner, id, []string{"systemctl", "start", taskguest.Slice}); err != nil {
+		f.Detail = "prepare freeze failed: " + err.Error()
+		_ = o.store.RecordFreeze(context.WithoutCancel(ctx), tid, f)
+		return
+	}
 	res, err := o.inner.Exec(fctx, id, root(taskguest.Freeze()))
 	switch {
 	case err != nil:
@@ -158,7 +163,15 @@ func (o *Owner) freeze(ctx context.Context, tid task.ID, id string) {
 	case res.ExitCode != 0:
 		f.Detail = fmt.Sprintf("freeze exited %d: %s", res.ExitCode, res.Stderr)
 	default:
-		f.Frozen = true
+		answer, err := taskguest.ParseFreeze(res.Stdout)
+		switch {
+		case err != nil:
+			f.Detail = err.Error()
+		case answer == taskguest.FreezeEmpty:
+			f.Detail = "freeze held nothing: hib-task.slice has no cgroup"
+		default:
+			f.Frozen = true
+		}
 	}
 	// A lost row reads as the row before it. Thaw writes unfrozen before it thaws, so that row
 	// never says frozen while the stage runs.
