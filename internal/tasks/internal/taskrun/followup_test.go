@@ -105,7 +105,9 @@ func TestKeptUnfrozenFollowUpDoesNotBlockQueue(t *testing.T) {
 				}
 			}
 			// Pick grants the next fitting run once the earlier machine intent closes.
-			if grantedAt == 0 || grantedAt > 1 {
+			if grantedAt == 0 {
+				t.Error("B was never granted, want no later than baseline pass 1")
+			} else if grantedAt > 1 {
 				t.Errorf("B granted at pass %d, want no later than baseline pass 1", grantedAt)
 			}
 			if !h.ended(b)() || outcome(h.run(b)) != task.Succeeded {
