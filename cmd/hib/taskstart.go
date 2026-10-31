@@ -42,7 +42,7 @@ func taskStartFlags(fl *flag.FlagSet) runner {
 	fl.DurationVar(&o.timeout, "timeout", 0, "run time limit `D` (default recipe's timeout or 24h)")
 	fl.StringVar(&o.recipe, "recipe", "", "use the named recipe `NAME`")
 	fl.StringVar(&o.requestID, "request-id", "", "idempotency `ID` (default a generated ID)")
-	return withJSON(fl, o.run)
+	return withTaskJSON(fl, o.run)
 }
 
 func (o taskStartOptions) run(ctx context.Context, a *app, args []string) int {

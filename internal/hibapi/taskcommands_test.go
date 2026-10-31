@@ -25,6 +25,10 @@ func TestTaskCommandRows(t *testing.T) {
 		if c.E2B != (c.Path == "task ls" || c.Path == "task show") {
 			t.Errorf("%s has wrong E2B use", c.Path)
 		}
+		if c.RequestID != slices.Contains([]string{"task start", "task run",
+			"task cancel", "task rescue", "task rm"}, c.Path) {
+			t.Errorf("%s has wrong request ID support", c.Path)
+		}
 		if strings.Count(c.Path, " ") != 1 {
 			t.Errorf("%q is not a group and leaf", c.Path)
 		}

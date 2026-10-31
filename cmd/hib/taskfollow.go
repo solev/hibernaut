@@ -47,7 +47,7 @@ type taskWaitOptions struct{ run int }
 func taskWaitFlags(fl *flag.FlagSet) runner {
 	var o taskWaitOptions
 	fl.IntVar(&o.run, "run", 0, "wait for run `N` instead of the latest")
-	return withJSON(fl, o.wait)
+	return withTaskJSON(fl, o.wait)
 }
 
 func (o taskWaitOptions) wait(ctx context.Context, a *app, args []string) int {

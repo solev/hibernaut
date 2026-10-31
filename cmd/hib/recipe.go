@@ -20,26 +20,26 @@ func recipeCommands() map[string]*command {
 		"ls": {
 			about:    "Lists saved recipes. This command isn't in this build yet.",
 			examples: []string{"hib recipe ls", "hib recipe ls --json"},
-			flags:    jsonOnly(recipeLS),
+			flags:    taskJSONOnly(recipeLS),
 		},
 		"show": {
 			args: "NAME", nargs: 1,
 			about:    "Shows a recipe's command, image, size and timeout. This command isn't in this build yet.",
 			examples: []string{"hib recipe show check"},
-			flags:    jsonOnly(recipeShow),
+			flags:    taskJSONOnly(recipeShow),
 		},
 		"rm": {
 			args: "NAME", nargs: 1,
 			about:    "Removes a saved recipe. This command isn't in this build yet.",
 			examples: []string{"hib recipe rm check"},
-			flags:    jsonOnly(recipeRM),
+			flags:    taskJSONOnly(recipeRM),
 		},
 		"default": {
 			args: "[NAME]", nargs: anyArgs,
 			about: "Shows the default recipe without NAME, or sets it to NAME. hib task start uses it when\n" +
 				"neither -- CMD nor --recipe is given. This command isn't in this build yet.",
 			examples: []string{"hib recipe default", "hib recipe default check"},
-			flags:    jsonOnly(recipeDefault),
+			flags:    taskJSONOnly(recipeDefault),
 		},
 	}
 }
@@ -54,7 +54,7 @@ func recipePutFlags(fl *flag.FlagSet) runner {
 	fl.StringVar(&o.image, "image", "", "default machine `I`mage")
 	fl.StringVar(&o.size, "size", "", "default machine `S`ize")
 	fl.DurationVar(&o.timeout, "timeout", 0, "default run time limit `D`")
-	return withJSON(fl, o.put)
+	return withTaskJSON(fl, o.put)
 }
 
 func (o recipePutOptions) put(ctx context.Context, a *app, args []string) int {

@@ -11,7 +11,7 @@ func taskReadCommands() map[string]*command {
 			about: "Lists tasks newest first, with each latest run and machine state.\n" +
 				"This command isn't in this build yet." + taskDocs(),
 			examples: []string{"hib task ls", "hib task ls --json"},
-			flags:    jsonOnly(taskLS),
+			flags:    taskJSONOnly(taskLS),
 		},
 		"show": {
 			args: "TASK | --request ID", nargs: anyArgs,
@@ -55,7 +55,7 @@ type taskShowOptions struct{ request string }
 func taskShowFlags(fl *flag.FlagSet) runner {
 	var o taskShowOptions
 	fl.StringVar(&o.request, "request", "", "look up request `ID` instead of TASK")
-	return withJSON(fl, o.run)
+	return withTaskJSON(fl, o.run)
 }
 
 func (o taskShowOptions) run(ctx context.Context, a *app, args []string) int {
@@ -74,20 +74,20 @@ func taskRequestFlags(fl *flag.FlagSet, o *taskRequestOptions) {
 func taskCancelFlags(fl *flag.FlagSet) runner {
 	var o taskRequestOptions
 	taskRequestFlags(fl, &o)
-	return withJSON(fl, o.cancel)
+	return withTaskJSON(fl, o.cancel)
 }
 
 func taskRescueFlags(fl *flag.FlagSet) runner {
 	var o taskRequestOptions
 	taskRequestFlags(fl, &o)
-	return withJSON(fl, o.rescue)
+	return withTaskJSON(fl, o.rescue)
 }
 
 func taskRMFlags(fl *flag.FlagSet) runner {
 	var o taskRequestOptions
 	taskRequestFlags(fl, &o)
 	fl.BoolVar(&o.yes, "yes", false, "delete without asking")
-	return withJSON(fl, o.rm)
+	return withTaskJSON(fl, o.rm)
 }
 
 func (o taskRequestOptions) cancel(ctx context.Context, a *app, args []string) int {
