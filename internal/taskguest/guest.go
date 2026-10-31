@@ -116,6 +116,7 @@ func Launch(r task.Run, s task.Stage, runtimeMax time.Duration) []string {
 		"--property=ExecStopPost=+/bin/sh " + runner + " exit " + dir + " " + string(s),
 		"--setenv=HIB_TASK=" + string(r.ID.Task),
 		"--setenv=HIB_RUN=" + r.ID.String(),
+		"--setenv=HIB_INPUTS=" + path.Join(dir, "in"),
 		"--setenv=HIB_WORKDIR=" + Workdir(r.ID.Task),
 		"--setenv=HIB_BRANCH=" + r.ID.Task.Branch(),
 	}

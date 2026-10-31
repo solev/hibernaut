@@ -481,6 +481,17 @@ func TestLaunchPreservesCommand(t *testing.T) {
 	}
 }
 
+func TestLaunchExposesInputs(t *testing.T) {
+	r := task.Run{ID: task.RunID{Task: "t-abcdefgh", N: 2},
+		Spec: task.Spec{Command: []string{"sh", "-c", `cat "$HIB_INPUTS/data"`}}}
+	for _, stage := range task.Stages() {
+		if argv := Launch(r, stage, time.Hour); !slices.Contains(argv,
+			"--setenv=HIB_INPUTS=/var/lib/hib-task/t-abcdefgh/r2/in") {
+			t.Fatalf("%s command cannot find its inputs: %q", stage, argv)
+		}
+	}
+}
+
 func TestVerdict(t *testing.T) {
 	exit := &task.ExitRecord{Result: "success"}
 	tests := []struct {
