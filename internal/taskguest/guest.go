@@ -144,8 +144,26 @@ func Look(r task.RunID, s task.Stage) []string {
 }
 
 // Freeze freezes every stage unit through the cgroup v2 freezer. A frozen process doesn't run,
-// so it can't act on the network when its machine resumes.
+// so it can't act on the network when its machine resumes. ParseFreeze reads its answer.
 func Freeze() []string { return control("freeze") }
+
+type FreezeResult string
+
+const (
+	FreezeFrozen FreezeResult = "frozen"
+	FreezeEmpty  FreezeResult = "empty"
+)
+
+func ParseFreeze(out []byte) (FreezeResult, error) {
+	switch string(out) {
+	case "freeze=frozen\n":
+		return FreezeFrozen, nil
+	case "freeze=empty\n":
+		return FreezeEmpty, nil
+	default:
+		return "", fmt.Errorf("freeze: bad answer %q", out)
+	}
+}
 
 // Thaw lets the stage units run again.
 func Thaw() []string { return control("thaw") }

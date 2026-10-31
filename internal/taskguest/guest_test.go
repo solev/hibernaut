@@ -270,6 +270,11 @@ func TestFreezerWaitsForCgroupEvents(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("%s exited %d: %s", tt.name, code, out)
 			}
+			if tt.name == "freeze" {
+				if answer, err := ParseFreeze([]byte(out)); err != nil || answer != FreezeFrozen {
+					t.Fatalf("freeze answer = %q, %v", answer, err)
+				}
+			}
 			events, err := os.ReadFile(filepath.Join(cg, "cgroup.events"))
 			if err != nil || !strings.Contains(string(events), "frozen "+tt.to+"\n") {
 				t.Fatalf("%s returned before frozen %s: %q, %v", tt.name, tt.to, events, err)
@@ -294,9 +299,19 @@ func TestFreezerWaitsForCgroupEvents(t *testing.T) {
 
 func TestFreezerWithoutCgroupIsNoop(t *testing.T) {
 	g := newShellGuest(t)
-	for _, argv := range [][]string{Freeze(), Thaw()} {
-		if out, code := g.run(t, argv); code != 0 {
-			t.Fatalf("missing cgroup: exit %d: %s", code, out)
+	out, code := g.run(t, Freeze())
+	if answer, err := ParseFreeze([]byte(out)); code != 0 || err != nil || answer != FreezeEmpty {
+		t.Fatalf("missing cgroup: exit %d, answer %q, %v", code, out, err)
+	}
+	if out, code := g.run(t, Thaw()); code != 0 || out != "" {
+		t.Fatalf("empty thaw: exit %d: %s", code, out)
+	}
+}
+
+func TestParseFreezeRejectsUnconfirmedAnswers(t *testing.T) {
+	for _, out := range []string{"", "freeze=unknown\n", "freeze=frozen\nfreeze=empty\n"} {
+		if _, err := ParseFreeze([]byte(out)); err == nil {
+			t.Fatalf("accepted unconfirmed freeze %q", out)
 		}
 	}
 }
