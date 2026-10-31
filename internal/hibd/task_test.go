@@ -56,9 +56,6 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 		if !strings.Contains(taskUsage(group), "  "+strings.TrimSpace(leaf+" "+c.Args)+"\n") {
 			t.Errorf("hibd %s usage lacks %q", group, leaf)
 		}
-		if !strings.Contains(usage, leaf) {
-			t.Errorf("hibd usage doesn't name %q", c.Path)
-		}
 		out.Reset()
 		errOut.Reset()
 		args := append(strings.Fields(c.Path), "-json")

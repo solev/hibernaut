@@ -1,9 +1,17 @@
 package hibapi
 
 type TaskCommand struct {
-	Path, Args, Help, Summary string
-	E2B, Laptop               bool
-	RequestID                 bool
+	Path, Args string
+	// Help describes the leaf in hibd's group usage.
+	Help string
+	// Summary describes the leaf in hib's command list.
+	Summary string
+	// E2B says the handler reads machine state, so errors may need E2B guidance.
+	E2B bool
+	// Laptop says hib declares this leaf, not that its runner is implemented yet.
+	Laptop bool
+	// RequestID says the request takes an idempotency key for recording it once.
+	RequestID bool
 }
 
 func TaskCommands() []TaskCommand {

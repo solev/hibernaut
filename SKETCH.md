@@ -785,7 +785,7 @@ is named in hibd's usage. Within the subsystem every enum is defined once in `ta
 - **hibapi** uses task's types for its enums, and `TaskRun.Check` parses a reply against
   task's lists, so hib refuses a phase it doesn't know.
 - **CLI help** for `hib task ls` and `show` prints `task.Phases()`, `task.Outcomes()` and each
-  step's `Doc()`. The README test makes the README follow.
+  step's `Doc()`. `TestTaskHelpIncludesTheDomainDocs` checks this help.
 
 ### 8. The three-file trace
 
