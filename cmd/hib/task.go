@@ -172,15 +172,13 @@ func (a *app) taskCall(ctx context.Context, cfg *config, opts taskCallOptions) (
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return result, ctx.Err()
+				err = ctx.Err()
 			case <-timer.C:
 				continue
 			}
 		}
 		var transport transportFailure
-		var remote *hibapi.RemoteError
-		lost := errors.As(err, &transport) || resent && err != nil &&
-			!errors.As(err, &remote) && !errors.Is(err, hibapi.ErrVersion)
+		lost := errors.As(err, &transport) || resent && err != nil
 		if lost && result.requestID != "" {
 			id := "'" + strings.ReplaceAll(result.requestID, "'", "'\\''") + "'"
 			err = fmt.Errorf("%w\nThe request may have been recorded. Look it up with hib task show --request %s", err, id)

@@ -287,6 +287,66 @@ func TestTaskCallSharesOneTransportRetryAcrossBusyReplies(t *testing.T) {
 	}
 }
 
+func TestTaskCallEveryFailureAfterResendHasLookupHint(t *testing.T) {
+	cases := map[string]taskHostReply{
+		"transport":  {code: 255},
+		"version":    {code: 1, text: `{"v":99}`},
+		"unreadable": {text: `{"v":`},
+	}
+	for _, code := range []hibapi.ErrorCode{hibapi.CodeBusy, hibapi.CodeQueueFull,
+		hibapi.CodeInputFull, hibapi.CodeConflict, hibapi.CodeBadRequest} {
+		cases[string(code)] = taskHostReply{code: 1,
+			text: fmt.Sprintf(`{"v":1,"error":"host refuses %s","errorCode":%q}`, code, code)}
+	}
+	for name, reply := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
+				{code: -1, err: errors.New("connection reset")}, reply,
+			}}
+			a, _, stderr := taskCallClient(t, h)
+			result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
+				taskCallOptions{path: "task start", requestID: "submit-1", timeout: shortTimeout})
+			if code := taskCallExit(a, result, err); code != 1 ||
+				!strings.Contains(stderr.String(), "hib task show --request 'submit-1'") {
+				t.Errorf("lost then %s = exit %d, stderr %q; want lookup guidance", name, code, stderr)
+			}
+			sends := 2
+			if name == string(hibapi.CodeBusy) {
+				sends = 5
+			}
+			if len(h.calls) != sends || result.requestID != "submit-1" {
+				t.Errorf("lost then %s = %d sends, ID %q; want %d sends and the same ID",
+					name, len(h.calls), result.requestID, sends)
+			}
+		})
+	}
+}
+
+func TestTaskCallCancelledBusyWaitAfterResendHasLookupHint(t *testing.T) {
+	h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
+		{code: -1, err: errors.New("connection reset")},
+		{code: 1, text: `{"v":1,"error":"locked","errorCode":"BUSY"}`},
+	}}
+	a, _, stderr := taskCallClient(t, h)
+	ctx, cancel := context.WithCancel(taskCallContext(t))
+	defer cancel()
+	ssh := a.ssh
+	a.ssh = func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) (int, error) {
+		code, err := ssh(ctx, args, in, out, stderr)
+		if len(h.calls) == 2 {
+			cancel()
+		}
+		return code, err
+	}
+	result, err := a.taskCall(ctx, &config{Host: testHost},
+		taskCallOptions{path: "task start", requestID: "submit-1", timeout: shortTimeout})
+	if code := taskCallExit(a, result, err); code != 1 || !errors.Is(err, context.Canceled) ||
+		!strings.Contains(stderr.String(), "hib task show --request 'submit-1'") || len(h.calls) != 2 {
+		t.Errorf("cancelled BUSY wait after resend = exit %d, %d sends, stderr %q; want cancellation and lookup guidance",
+			code, len(h.calls), stderr)
+	}
+}
+
 func TestTaskCallGeneratesAndReusesARequestID(t *testing.T) {
 	h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{code: 255}, {text: `{"v":1}`}}}
 	a, _, _ := taskCallClient(t, h)
