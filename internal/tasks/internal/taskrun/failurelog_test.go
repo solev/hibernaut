@@ -156,7 +156,7 @@ func TestRemovalLogsRecovery(t *testing.T) {
 	logs.check(t, want)
 }
 
-func TestWorkflowLogsRecovery(t *testing.T) {
+func TestWorkflowLogsEnd(t *testing.T) {
 	h := newHarness(t, script(0, 0))
 	var recovered atomic.Bool
 	var logs failureLogs
@@ -187,7 +187,7 @@ func TestWorkflowLogsRecovery(t *testing.T) {
 	h.until(30, h.ended(id))
 	h.stop()
 	logs.check(t, []string{fmt.Sprintf("task %s: find failed", id),
-		fmt.Sprintf("task %s: recovered (1 more since the last line)", id)})
+		fmt.Sprintf("task %s: the workflow ended (1 more since the last line)", id)})
 }
 
 type failingFind struct {

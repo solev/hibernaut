@@ -970,7 +970,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 			switch {
 			case err == nil:
 				if s.cfg.Logf != nil && s.life.Err() == nil {
-					if line, log := failures.Success("recovered"); log && s.life.Err() == nil {
+					if line, log := failures.Success("the workflow ended"); log && s.life.Err() == nil {
 						s.cfg.Logf("task %s: %s", r.ID, line)
 					}
 				}

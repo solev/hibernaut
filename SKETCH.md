@@ -441,10 +441,11 @@ nudge.
   No store or machine call holds the Supervisor's mutex. An rm refuses follow-ups immediately.
   The store rejects a stale removal decision while a run is live.
 - **Repeated failures.** Each workflow, removal, task tick, watcher, setup key and codex refresh
-  logs a failure at most once per 10 minutes with the latest text and suppressed count. Success
-  logs one counted recovery per failure line without resetting the interval. States log on
-  change. Nothing logs after daemon life ends; `ErrNotRunning` stays silent. Run and removal
-  state leaves on completion, absent setup keys after a full pass, and loop state on exit.
+  logs a failure at most once per 10 minutes with the latest text and suppressed count. A
+  workflow logs one counted end line when it ends. Other successes log one counted recovery per
+  failure line. Neither resets the interval. States log on change. Nothing logs after daemon
+  life ends; `ErrNotRunning` stays silent. Run and removal state leaves on completion, absent
+  setup keys after a full pass, and loop state on exit.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
 - **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
