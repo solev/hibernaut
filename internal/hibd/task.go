@@ -37,7 +37,6 @@ func taskHandlers() map[string]func(*App, context.Context, taskCommand, []string
 
 var errTasksNotImplemented = errors.New("tasks are not implemented yet")
 
-// taskGroup runs hibd task or hibd recipe: group is args[0] of Run.
 func (a *App) taskGroup(ctx context.Context, group string, args []string) int {
 	if len(args) > 0 {
 		for _, c := range hibapi.TaskCommands() {
@@ -74,25 +73,6 @@ func taskUsesE2B(cmd string) bool {
 		}
 	}
 	return false
-}
-
-func taskMainUsage(base string) string {
-	var groups, jsonPaths []string
-	for _, group := range []string{"task", "recipe"} {
-		var leaves []string
-		for _, c := range hibapi.TaskCommands() {
-			if leaf, ok := strings.CutPrefix(c.Path, group+" "); ok {
-				leaves = append(leaves, leaf)
-				if c.JSON {
-					jsonPaths = append(jsonPaths, c.Path)
-				}
-			}
-		}
-		groups = append(groups, "  "+group+" "+strings.Join(leaves, "|")+
-			"\n                    hibd "+group+" prints each command's usage")
-	}
-	return strings.NewReplacer("{{taskCommands}}", strings.Join(groups, "\n"),
-		"{{taskJSON}}", strings.Join(jsonPaths, ", ")).Replace(base)
 }
 
 func (a *App) taskWaitNotYet(_ context.Context, c taskCommand, args []string) int {

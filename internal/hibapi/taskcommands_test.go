@@ -13,8 +13,8 @@ func TestTaskCommandRows(t *testing.T) {
 	var paths []string
 	for _, c := range TaskCommands() {
 		paths = append(paths, c.Path)
-		if c.Help == "" || !c.JSON {
-			t.Errorf("%s lacks help or JSON support", c.Path)
+		if c.Help == "" {
+			t.Errorf("%s lacks help", c.Path)
 		}
 		if c.Laptop != (c.Path != "task run" && c.Path != "task cleanup") {
 			t.Errorf("%s has wrong laptop availability", c.Path)

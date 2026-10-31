@@ -759,7 +759,7 @@ is renewed like any other. An exempt machine is neither renewed nor recorded as 
 | --- | --- |
 | `case` in `App.Run` | one case for both groups, rows in `hibapi.TaskCommands()` |
 | usage text | `taskUsage(group)` from the table, test checks every row |
-| the `-json` line | names every JSON leaf from the shared rows |
+| the `-json` line | names the groups because every task and recipe leaf takes `-json` |
 | `usesE2B` | falls through to `taskUsesE2B`, from the table's `E2B` field |
 | `FeatureTasks` | one constant |
 | `version` features | includes `FeatureTasks` because `task start` saves and the daemon runs it |

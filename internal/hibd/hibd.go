@@ -49,7 +49,7 @@ import (
 
 const defaultConfig = "/etc/hibernaut/hibd.env"
 
-var usage = taskMainUsage(`usage: hibd <command> [flags]
+const usage = `usage: hibd <command> [flags]
 
 commands:
   new NAME          make a machine (-image, default ` + images.Default + `; -size small, medium or large,
@@ -93,14 +93,18 @@ commands:
                     are paused first and stay paused (-image NAME, -canary, -json)
   cleanup           delete unused build directories and trim old snapshot bodies, as root
                     (-n only says what it would delete or trim, and why it keeps the others)
-{{taskCommands}}
+  task start|run|ls|show|logs|wait|cancel|rescue|rm|cleanup
+                    save and look after tasks the daemon runs in their own machines. hibd
+                    task prints each command's usage
+  recipe put|ls|show|rm|default
+                    keep named commands for hib task start. hibd recipe prints their usage
   daemon            keep busy machines running (-every), clean up when a machine is
                     removed and hourly, and keep the Codex login fresh; systemd runs it as
                     root
   version           print the version
 
 new, ls, rm, pause, fork, port, image build|save|ls|rm, connect, disconnect, codex refresh,
-status, {{taskJSON}} and version
+status, task, recipe and version
 print JSON with -json.
 
 hibd reads its settings from ` + defaultConfig + ` ($HIBD_CONFIG overrides the path).
@@ -129,7 +133,7 @@ Environment variables of the same names override the file:
   HIBD_LINK_PORT        port for links between machines, default 5444, or 0 to turn them off
   HIBD_LINK_LOG         link log, default /var/log/hibernaut/links.jsonl
   HIBD_LINK_SOCKET      link control socket, default /run/hibernaut/links.sock
-`)
+`
 
 const (
 	createTimeout = 5 * time.Minute

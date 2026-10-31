@@ -59,9 +59,6 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 		if !strings.Contains(usage, leaf) {
 			t.Errorf("hibd usage doesn't name %q", c.Path)
 		}
-		if c.JSON && !strings.Contains(usage, c.Path) {
-			t.Errorf("hibd JSON usage doesn't name %q", c.Path)
-		}
 		out.Reset()
 		errOut.Reset()
 		args := append(strings.Fields(c.Path), "-json")
@@ -86,8 +83,8 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 				t.Errorf("hibd %v = exit %d, code %s, %v; want BAD_REQUEST", args, code, r.Code, err)
 			}
 		default:
-			if code != 1 || err == nil {
-				t.Errorf("hibd %v = exit %d, %+v, %v; want a JSON failure", args, code, r, err)
+			if code != 1 || err == nil || r.Error != "tasks are not implemented yet" {
+				t.Errorf("hibd %v = exit %d, %+v, %v; want the not-yet reply", args, code, r, err)
 			}
 		}
 	}
