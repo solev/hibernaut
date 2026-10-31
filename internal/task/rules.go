@@ -123,30 +123,36 @@ func RuntimeMax(r Run, now time.Time) time.Duration {
 	return max(d.Sub(now).Truncate(time.Second), time.Second)
 }
 
-// StopRemaining is the stop's remaining proof budget, measured from its durable intent.
-func StopRemaining(r Run, now time.Time) time.Duration {
-	return remaining(r, StepStop, StopLimit, now)
+// StopRemaining measures the proof budget from the later of the stop intent and daemon start.
+// Retries share it, but time with no daemon running does not spend a guest-call budget.
+func StopRemaining(r Run, startedAt, now time.Time) time.Duration {
+	return remaining(r, StepStop, StopLimit, startedAt, now)
 }
 
 // StopUnproven reports when no more attempts may wait for proof from the guest.
-func StopUnproven(r Run, now time.Time) bool {
+func StopUnproven(r Run, startedAt, now time.Time) bool {
 	for _, c := range r.Log {
 		if _, ok := c.Body.(*StopIntent); ok {
-			return StopRemaining(r, now) == 0
+			return StopRemaining(r, startedAt, now) == 0
 		}
 	}
 	return false
 }
 
-// CollectRemaining is the budget for all guest reads, measured from the durable collect intent.
-func CollectRemaining(r Run, now time.Time) time.Duration {
-	return remaining(r, StepCollect, CollectLimit, now)
+// CollectRemaining measures all guest reads from the later of the collect intent and daemon start.
+// Retries share it, but time with no daemon running does not spend a guest-call budget.
+func CollectRemaining(r Run, startedAt, now time.Time) time.Duration {
+	return remaining(r, StepCollect, CollectLimit, startedAt, now)
 }
 
-func remaining(r Run, step Step, limit time.Duration, now time.Time) time.Duration {
+func remaining(r Run, step Step, limit time.Duration, startedAt, now time.Time) time.Duration {
 	for _, c := range r.Log {
 		if c.Step() == step && c.Kind() == Intent {
-			return max(c.At.Add(limit).Sub(now), 0)
+			at := c.At
+			if startedAt.After(at) {
+				at = startedAt
+			}
+			return max(at.Add(limit).Sub(now), 0)
 		}
 	}
 	return limit

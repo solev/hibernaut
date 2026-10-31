@@ -370,7 +370,8 @@ type StopResult struct {
 	// How says how the stage ended: "term" or "kill" when the stop ended it, "vanished" when its
 	// unit was gone without an exit record, "not-started" when no stage was live, "gone" with
 	// the machine, "removed-paused" when an rm removes it paused, or "unproven" when the
-	// proof budget expired. An unproven stage may still run when the machine wakes.
+	// proof budget expired since the later of the intent and this daemon's start.
+	// An unproven stage may still run when the machine wakes.
 	How string
 }
 

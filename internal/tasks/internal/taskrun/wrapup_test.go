@@ -25,6 +25,21 @@ type wrapGuest struct {
 	mode string
 }
 
+type retryStopLookup struct {
+	Engine
+	h    *harness
+	next time.Time
+}
+
+func (e *retryStopLookup) Get(ctx context.Context, mid string) (engine.Machine, error) {
+	last, _ := e.h.run(e.h.testRun()).Last()
+	if last.Step() == task.StepStop && last.Kind() == task.Intent && !time.Now().Before(e.next) {
+		e.next = time.Now().Add(10 * time.Second)
+		return engine.Machine{}, errors.New("stop catalog unavailable")
+	}
+	return e.Engine.Get(ctx, mid)
+}
+
 func (e wrapGuest) Exec(ctx context.Context, mid string, req engine.ExecRequest) (engine.ExecResult, error) {
 	argv := append([]string{req.Cmd}, req.Args...)
 	if e.mode == "outlive-term" && req.Cmd == "systemctl" && req.Args[0] == "stop" {
@@ -96,6 +111,9 @@ func bubbleHarness(t *testing.T, mode string) *harness {
 	h.configure = func(cfg *Config) {
 		cfg.Clock = RealClock{}
 		cfg.Engine = wrapGuest{Engine: cfg.Engine, h: h, mode: mode}
+		if mode == "retry" {
+			cfg.Engine = &retryStopLookup{Engine: wrapGuest{Engine: h.owner, h: h, mode: "garbage"}, h: h}
+		}
 	}
 	h.start()
 	return h
@@ -149,7 +167,7 @@ func unreadResult(t *testing.T, r task.Run) []string {
 }
 
 func TestStopUntrustedGuest(t *testing.T) {
-	for _, mode := range []string{"garbage", "nonzero", "hang"} {
+	for _, mode := range []string{"garbage", "nonzero", "hang", "retry"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				h := bubbleHarness(t, mode)
@@ -176,6 +194,12 @@ func TestStopUntrustedGuest(t *testing.T) {
 						t.Fatalf("stop result took %s, want at most 60s plus final KILL's 10s", c.At.Sub(at))
 					}
 				}
+				var logs []string
+				if mode == "retry" {
+					logs = []string{fmt.Sprintf("task %s: stop catalog unavailable", id),
+						fmt.Sprintf("task %s: the workflow ended (6 more since the last line)", id)}
+				}
+				h.logs.check(t, logs)
 				h.checkLog(id)
 			})
 		})
@@ -219,20 +243,34 @@ func TestStopPausedWithoutRoom(t *testing.T) {
 
 func TestStopBudgetSurvivesRestart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := bubbleHarness(t, "garbage")
+		h := bubbleHarness(t, "hang")
 		id := h.submit(2 * time.Hour)
 		bubbleUntil(t, h, 30*time.Second, h.launched(id, task.StageCommand))
 		h.request(id, task.RequestCancel)
 		bubbleUntil(t, h, 5*time.Second, func() bool { _, ok := h.run(id).Stop(); return ok })
 		h.stop()
-		time.Sleep(time.Minute)
-		h.clock.Advance(time.Minute)
+		time.Sleep(3 * time.Minute)
+		h.clock.Advance(3 * time.Minute)
+		restarted := time.Now()
 		h.start()
-		bubbleUntil(t, h, 5*time.Second, h.ended(id))
+		bubbleUntil(t, h, 75*time.Second, h.ended(id))
 		h.stop()
-		if stopResult(t, h.run(id)).How != "unproven" {
-			t.Fatal("restart reset the durable stop budget")
+		r := h.run(id)
+		if stopResult(t, r).How != "unproven" || r.Machine != task.MachinePaused ||
+			!r.Frozen() || outcome(r) != task.Cancelled ||
+			!strings.Contains(r.Status("").Detail, "may still run when the machine wakes") {
+			t.Fatalf("lying guest after restart did not end unproven and paused: %+v", r.Status(""))
 		}
+		for _, c := range r.Log {
+			if c.Step() == task.StepStop && c.Kind() == task.Result {
+				if elapsed := c.At.Sub(restarted); elapsed < task.StopLimit ||
+					elapsed > task.StopLimit+taskguest.ExecTimeout {
+					t.Fatalf("restarted stop took %s, want 60s through 70s after daemon start", elapsed)
+				}
+			}
+		}
+		h.logs.check(t, nil)
+		h.checkLog(id)
 	})
 }
 

@@ -42,6 +42,8 @@ type Config struct {
 	Clock    Clock
 	// Instance is this daemon's instance, written into every checkpoint it appends.
 	Instance task.Instance
+	// StartedAt is the timestamp recorded for Instance at daemon start.
+	StartedAt time.Time
 	// Poll is how often a waiting step looks again. Zero means DefaultPoll.
 	Poll time.Duration
 	Logf func(format string, args ...any)
@@ -400,17 +402,18 @@ func (x *executor) ready(ctx context.Context) error {
 
 // stop ends the live stage after a recorded stop. A frozen stage is killed, since it can't act
 // on TERM until thawed, and so is a rescued one. Otherwise the unit gets TERM, then KILL on the
-// next attempt without proof. The durable budget also bounds a paused wait without permitting a wake.
+// next attempt without proof. The shared budget also bounds a paused wait without permitting a wake.
 func (x *executor) stop(ctx context.Context) error {
 	if _, ok := x.r.Stop(); !ok || x.done(task.StepStop) {
 		return nil
 	}
-	force := task.StopRemaining(x.r, x.now()) <= task.StopLimit-task.StopGrace
+	intent, _ := x.last(task.StepStop)
+	force := x.now().Sub(intent.At) >= task.StopGrace
 	for {
 		if err := x.refresh(ctx); err != nil {
 			return err
 		}
-		if task.StopUnproven(x.r, x.now()) {
+		if task.StopUnproven(x.r, x.cfg.StartedAt, x.now()) {
 			if s, live := x.r.LiveStage(); live && x.r.Machine == task.MachineRunning {
 				_, _ = x.exec(ctx, taskguest.Kill(x.id, s), taskguest.ExecTimeout)
 			}
@@ -419,7 +422,7 @@ func (x *executor) stop(ctx context.Context) error {
 			}
 			return x.append(ctx, &task.StopResult{How: "unproven"})
 		}
-		pass, cancel := context.WithTimeout(ctx, task.StopRemaining(x.r, x.now()))
+		pass, cancel := context.WithTimeout(ctx, task.StopRemaining(x.r, x.cfg.StartedAt, x.now()))
 		how, err := x.end(pass, force)
 		cancel()
 		if cause := context.Cause(ctx); cause != nil {
@@ -433,7 +436,8 @@ func (x *executor) stop(ctx context.Context) error {
 			return x.append(ctx, &task.StopResult{How: how})
 		}
 		force = true
-		if err := x.cfg.Clock.Sleep(ctx, min(x.poll(), task.StopRemaining(x.r, x.now()))); err != nil {
+		if err := x.cfg.Clock.Sleep(ctx, min(x.poll(),
+			task.StopRemaining(x.r, x.cfg.StartedAt, x.now()))); err != nil {
 			return err
 		}
 	}
@@ -512,7 +516,7 @@ func (x *executor) collect(ctx context.Context) error {
 	if err := x.refresh(ctx); err != nil {
 		return err
 	}
-	reads, cancel := context.WithTimeout(ctx, task.CollectRemaining(x.r, x.now()))
+	reads, cancel := context.WithTimeout(ctx, task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()))
 	defer cancel()
 	res := &task.CollectResult{}
 	for _, s := range task.Stages() {
@@ -525,7 +529,7 @@ func (x *executor) collect(ctx context.Context) error {
 			res.Unread = append(res.Unread, string(s)+": stop unproven; tail not read")
 		case x.r.Machine != task.MachineRunning:
 			res.Unread = append(res.Unread, string(s)+": machine "+string(x.r.Machine)+"; tail not read")
-		case task.CollectRemaining(x.r, x.now()) == 0 || reads.Err() != nil:
+		case task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) == 0 || reads.Err() != nil:
 			res.Unread = append(res.Unread, string(s)+": collect budget exhausted; tail not read")
 		default:
 			seen, err := x.look(reads, s)
@@ -553,7 +557,7 @@ func (x *executor) collect(ctx context.Context) error {
 	}
 	if e, ok := x.exitOf(task.StageFinish); ok && e.OK() && x.r.Machine == task.MachineRunning &&
 		!x.r.UnprovenStop() {
-		if task.CollectRemaining(x.r, x.now()) == 0 || reads.Err() != nil {
+		if task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) == 0 || reads.Err() != nil {
 			res.Unread = append(res.Unread, "publication: collect budget exhausted; not read")
 		} else {
 			p, err := x.publication(reads)

@@ -311,7 +311,8 @@ func (h *harness) start() {
 	h.t.Helper()
 	h.daemons++
 	inst := task.Instance(fmt.Sprintf("d%d", h.daemons))
-	if err := h.store.StartDaemon(context.Background(), inst, h.clock.Now()); err != nil {
+	startedAt := h.clock.Now()
+	if err := h.store.StartDaemon(context.Background(), inst, startedAt); err != nil {
 		h.t.Fatal(err)
 	}
 	life, cancel := context.WithCancel(context.Background())
@@ -320,7 +321,7 @@ func (h *harness) start() {
 	h.logs.mu.Unlock()
 	cfg := Config{
 		Store: h.store, Logs: taskstore.MemoryLogs{M: h.store}, Engine: h.owner,
-		Machines: h.m, Clock: h.clock, Instance: inst, Poll: time.Second,
+		Machines: h.m, Clock: h.clock, Instance: inst, StartedAt: startedAt, Poll: time.Second,
 		Logf: h.logs.logf,
 	}
 	if h.configure != nil {
