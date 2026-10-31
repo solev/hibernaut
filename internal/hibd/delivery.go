@@ -17,6 +17,7 @@ import (
 
 	"github.com/solev/hibernaut/internal/codex"
 	"github.com/solev/hibernaut/internal/engine"
+	"github.com/solev/hibernaut/internal/failurelog"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hostsblock"
 	"github.com/solev/hibernaut/internal/links"
@@ -122,6 +123,11 @@ func updateSetup(ctx context.Context, cfg config, store *codex.Store, linkStore 
 	}
 	hash := setup.Hash()
 	stale, running := setupTargets(ms, hash, written)
+	for _, m := range ms {
+		if w, ok := written[m.ID]; ok && w.hash == hash && w.started.Equal(m.StartedAt) {
+			report("updating "+machines.Name(m), nil)
+		}
+	}
 	writeSetups(ctx, e, setup, stale, hash, written, report)
 	for id := range written {
 		if !running[id] {
@@ -216,7 +222,8 @@ type setupDelivery struct {
 	logf     func(format string, args ...any)
 	looking  chan struct{}
 	written  map[string]delivered
-	problems map[string]string
+	problems map[string]*failurelog.Limiter
+	now      func() time.Time
 	// mark is the push mark the last pass began with.
 	mark string
 }
@@ -229,11 +236,16 @@ type delivered struct {
 func newSetupDelivery(e engine.Engine, cfg config, store *codex.Store, logf func(format string, args ...any)) *setupDelivery {
 	return &setupDelivery{
 		engine: e, cfg: cfg, codex: store, links: links.NewStore(cfg.stateDir), logf: logf,
-		looking: make(chan struct{}, 1), written: map[string]delivered{}, problems: map[string]string{},
+		looking: make(chan struct{}, 1), written: map[string]delivered{},
+		problems: map[string]*failurelog.Limiter{}, now: time.Now,
 	}
 }
 
 func (d *setupDelivery) look(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	life := ctx
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	select {
@@ -242,11 +254,12 @@ func (d *setupDelivery) look(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-	// A problem this pass reported stays reported, so the next pass doesn't log it again.
 	reported := map[string]bool{}
 	report := func(doing string, err error) {
 		reported[doing] = true
-		d.report(doing, err)
+		if life.Err() == nil {
+			d.report(doing, err)
+		}
 	}
 	mark, err := readPushMark(d.cfg.stateDir)
 	report("reading the push mark", err)
@@ -259,24 +272,32 @@ func (d *setupDelivery) look(ctx context.Context) {
 		return
 	}
 	for key := range d.problems {
-		if reported[key] || strings.HasPrefix(key, "updating ") {
+		if reported[key] {
 			continue
 		}
-		d.report(key, nil)
+		if strings.HasPrefix(key, "updating ") {
+			delete(d.problems, key)
+		} else {
+			report(key, nil)
+		}
 	}
 }
 
 func (d *setupDelivery) report(doing string, err error) {
-	msg := ""
+	l := d.problems[doing]
+	var line string
+	var log bool
 	if err != nil {
-		msg = err.Error()
+		if l == nil {
+			l = &failurelog.Limiter{}
+			d.problems[doing] = l
+		}
+		line, log = l.Failure(d.now(), err.Error())
+	} else if l != nil {
+		line, log = l.Success("recovered")
 	}
-	if d.problems[doing] == msg {
-		return
-	}
-	d.problems[doing] = msg
-	if err != nil {
-		d.logf("%s: %v", doing, err)
+	if log {
+		d.logf("%s: %s", doing, line)
 	}
 }
 

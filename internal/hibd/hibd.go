@@ -30,6 +30,7 @@ import (
 	"github.com/solev/hibernaut/internal/cleanup"
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/e2b"
+	"github.com/solev/hibernaut/internal/failurelog"
 	"github.com/solev/hibernaut/internal/github"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/linkadmit"
@@ -1556,6 +1557,7 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	store := a.codexStore(cfg, func(format string, args ...any) { logger.Printf("codex: "+format, args...) })
 	delivery := newSetupDelivery(e, cfg, store, func(format string, args ...any) { logger.Printf("setup: "+format, args...) })
 	delivery.tasks = ts
+	delivery.now = a.now
 	removeLeftoverCodexLogins(cfg.stateDir, logger.Printf)
 	logger.Printf("hibd %s: keeping busy machines running, looking every %v", version.Version, *every)
 	switch changed, err := rebindGitHub(cfg); {
@@ -1577,16 +1579,19 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 	sweeping := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	refresher := &codexRefresher{store: a.codexStore(cfg, nil), logf: func(format string, args ...any) { logger.Printf("codex: "+format, args...) }}
+	refresher.now = a.now
 	wg.Go(func() { refresher.run(ctx, cmp.Or(a.codexEvery, time.Minute), a.awake) })
 	wg.Go(func() { a.startTasks(ctx, cfg, e, m, ts, logger.Printf) })
-	problem := ""
-	for {
-		now := ""
+	var failures failurelog.Limiter
+	state := ""
+	for ctx.Err() == nil {
+		var problem error
+		quiescing := false
 		switch err := a.awake(); {
 		case errors.Is(err, errQuiescing):
-			now = "the host is going to sleep: leaving machines alone"
+			quiescing = true
 		case err != nil:
-			now = err.Error()
+			problem = err
 		default:
 			select {
 			case sweeping <- struct{}{}:
@@ -1598,26 +1603,40 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 			default:
 			}
 			if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
-				now = err.Error()
+				problem = err
 			}
 			delivery.look(ctx)
 		}
-		if now != problem {
-			if now == "" {
-				logger.Printf("looking at machines again")
-			} else {
-				logger.Printf("%s", now)
+		if ctx.Err() == nil {
+			switch {
+			case quiescing:
+				if state != "quiescing" {
+					logger.Printf("the host is going to sleep: leaving machines alone")
+				}
+				state = "quiescing"
+			case problem != nil:
+				if line, log := failures.Failure(a.now(), problem.Error()); log && ctx.Err() == nil {
+					logger.Printf("%s", line)
+				}
+			default:
+				line, recovered := failures.Success("looking at machines again")
+				if recovered {
+					logger.Printf("%s", line)
+				} else if state == "quiescing" {
+					logger.Printf("looking at machines again")
+				}
+				state = ""
 			}
-			problem = now
 		}
 		select {
 		case <-ctx.Done():
-			wg.Wait()
-			logger.Printf("stopping")
-			return 0
+			break
 		case at = <-ticks:
 		}
 	}
+	wg.Wait()
+	logger.Printf("stopping")
+	return 0
 }
 
 func (a *App) version(args []string) int {

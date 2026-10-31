@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
+	"github.com/solev/hibernaut/internal/failurelog"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -96,16 +97,18 @@ func codexRefreshError(err error) error {
 }
 
 type codexRefresher struct {
-	store *codex.Store
-	logf  func(format string, args ...any)
-	seen  codex.Profile
-	said  string
+	store    *codex.Store
+	logf     func(format string, args ...any)
+	seen     codex.Profile
+	said     string
+	now      func() time.Time
+	failures failurelog.Limiter
 }
 
 func (r *codexRefresher) run(ctx context.Context, every time.Duration, awake func() error) {
 	t := time.NewTicker(every)
 	defer t.Stop()
-	for {
+	for ctx.Err() == nil {
 		if awake() == nil {
 			r.look(ctx)
 		}
@@ -126,11 +129,35 @@ func (r *codexRefresher) look(ctx context.Context) {
 	if err == nil {
 		r.logChanges(p)
 	}
-	if now := codexHealthLine(p, err, refreshErr); now != r.said {
-		if now != "" {
-			r.logf("%s", now)
+	health := codexHealthLine(p, err, refreshErr)
+	failed := err != nil && !errors.Is(err, codex.ErrNotConnected) ||
+		err == nil && p.Health == codex.HealthOK && (p.Failures > 0 || refreshErr != nil)
+	if failed {
+		now := time.Now
+		if r.now != nil {
+			now = r.now
 		}
-		r.said = now
+		if line, log := r.failures.Failure(now(), health); log && ctx.Err() == nil {
+			r.logf("%s", line)
+		}
+		return
+	}
+	recovery := health
+	if errors.Is(err, codex.ErrNotConnected) {
+		recovery = "refreshing stopped: no login is connected"
+	}
+	recovered := false
+	if health == "the login is ok" || errors.Is(err, codex.ErrNotConnected) {
+		if line, log := r.failures.Success(recovery); log && ctx.Err() == nil {
+			r.logf("%s", line)
+			recovered = true
+		}
+	}
+	if health != r.said {
+		if health != "" && !recovered && ctx.Err() == nil {
+			r.logf("%s", health)
+		}
+		r.said = health
 	}
 }
 
