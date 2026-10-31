@@ -242,12 +242,18 @@ func ParseLook(out []byte) (Seen, error) {
 	var s Seen
 	var exit task.ExitRecord
 	hasExit := false
+	showFailed := false
 	for line := range strings.Lines(string(out)) {
 		k, v, ok := strings.Cut(strings.TrimRight(line, "\n"), "=")
 		if !ok {
 			return Seen{}, fmt.Errorf("look: bad line %q", line)
 		}
 		switch k {
+		case "show":
+			if v != "failed" {
+				return Seen{}, fmt.Errorf("look: bad show result %q", v)
+			}
+			showFailed = true
 		case "marker":
 			s.Marker = v == "yes"
 		case "exit.result":
@@ -285,6 +291,8 @@ func ParseLook(out []byte) (Seen, error) {
 	}
 	if hasExit {
 		s.Exit = &exit
+	} else if showFailed {
+		return Seen{}, errors.New("look: systemctl show failed without an exit record")
 	}
 	return s, nil
 }

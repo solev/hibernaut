@@ -337,6 +337,51 @@ func TestLookReadsKernelFrozen(t *testing.T) {
 	}
 }
 
+func TestLookKeepsExitWhenShowFails(t *testing.T) {
+	for _, hasExit := range []bool{true, false} {
+		t.Run(strconv.FormatBool(hasExit), func(t *testing.T) {
+			g := newShellGuest(t)
+			writeTestFile(t, filepath.Join(g.bin, "systemctl"), "#!/bin/sh\nexit 1\n")
+			run := t.TempDir()
+			if err := os.Mkdir(filepath.Join(run, "command.started"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if hasExit {
+				writeTestFile(t, filepath.Join(run, "command.exit"),
+					"result=success\ncode=exited\nstatus=0\n")
+			}
+			out, code := g.run(t, []string{"sh", g.runner, "look", run, "command", "stage.service"})
+			if code != 0 || !strings.Contains(out, "show=failed\n") {
+				t.Fatalf("failed show dropped the look reply: exit %d: %q", code, out)
+			}
+			seen, err := ParseLook([]byte(out))
+			if hasExit {
+				if err != nil || seen.Verdict() != Exited {
+					t.Fatalf("failed show hid a present exit: %+v, %v", seen, err)
+				}
+			} else if err == nil {
+				t.Fatalf("failed show without an exit became %s", seen.Verdict())
+			}
+		})
+	}
+}
+
+func TestParseLookFailedShow(t *testing.T) {
+	for _, marker := range []string{"yes", "no"} {
+		t.Run(marker, func(t *testing.T) {
+			out := "marker=" + marker + "\nshow=failed\n"
+			if seen, err := ParseLook([]byte(out)); err == nil {
+				t.Fatalf("failed show without an exit became %s", seen.Verdict())
+			}
+			out += "exit.result=success\nexit.code=exited\nexit.status=0\n"
+			seen, err := ParseLook([]byte(out))
+			if err != nil || seen.Verdict() != Exited || seen.Exit.Result != "success" {
+				t.Fatalf("present exit was lost: %+v, %v", seen, err)
+			}
+		})
+	}
+}
+
 func TestLogIsReadInBoundedRanges(t *testing.T) {
 	run := t.TempDir()
 	content := bytes.Repeat([]byte("0123456789\x00\xff\n"), 1000)
