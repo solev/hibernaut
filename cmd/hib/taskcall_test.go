@@ -293,8 +293,7 @@ func TestTaskCallEveryFailureAfterResendHasLookupHint(t *testing.T) {
 		"version":    {code: 1, text: `{"v":99}`},
 		"unreadable": {text: `{"v":`},
 	}
-	for _, code := range []hibapi.ErrorCode{hibapi.CodeBusy, hibapi.CodeQueueFull,
-		hibapi.CodeInputFull, hibapi.CodeConflict, hibapi.CodeBadRequest} {
+	for _, code := range []hibapi.ErrorCode{hibapi.CodeBusy, hibapi.CodeNoTask} {
 		cases[string(code)] = taskHostReply{code: 1,
 			text: fmt.Sprintf(`{"v":1,"error":"host refuses %s","errorCode":%q}`, code, code)}
 	}
@@ -319,6 +318,80 @@ func TestTaskCallEveryFailureAfterResendHasLookupHint(t *testing.T) {
 					name, len(h.calls), result.requestID, sends)
 			}
 		})
+	}
+}
+
+func TestTaskCallUncertainFailureHasLookupHint(t *testing.T) {
+	for _, code := range []hibapi.ErrorCode{hibapi.CodeBusy, hibapi.CodeNoTask, ""} {
+		for _, path := range []string{"task start", "task cancel", "task rescue", "task rm"} {
+			t.Run(path+"/"+string(code), func(t *testing.T) {
+				h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{code: 1,
+					text: fmt.Sprintf(`{"v":1,"error":"locked","errorCode":%q}`, code)}}}
+				a, out, stderr := taskCallClient(t, h)
+				result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
+					taskCallOptions{path: path, args: []string{"t-abcdefgh"}, requestID: "submit-1", timeout: shortTimeout})
+				if exit := taskCallExit(a, result, err); exit != 1 || out.Len() != 0 ||
+					!strings.Contains(stderr.String(), "hib task show --request 'submit-1'") {
+					t.Errorf("%s = exit %d, stderr %q; want lookup guidance", code, exit, stderr)
+				}
+				sends := 1
+				if code == hibapi.CodeBusy {
+					sends = 4
+				}
+				if len(h.calls) != sends {
+					t.Errorf("%s = %d sends, want %d", code, len(h.calls), sends)
+				}
+			})
+		}
+	}
+}
+
+func TestTaskCallRefusalsHaveNoLookupHint(t *testing.T) {
+	for _, code := range []hibapi.ErrorCode{hibapi.CodeBadRequest, hibapi.CodeConflict,
+		hibapi.CodeQueueFull, hibapi.CodeInputFull, hibapi.CodeRunLive, hibapi.CodeNotLive} {
+		for _, resent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/resent=%v", code, resent), func(t *testing.T) {
+				replies := []taskHostReply{{code: 1,
+					text: fmt.Sprintf(`{"v":1,"error":"refused","errorCode":%q}`, code)}}
+				if resent {
+					replies = append([]taskHostReply{{code: 255}}, replies...)
+				}
+				h := &taskCallHost{features: `["tasks"]`, replies: replies}
+				a, out, stderr := taskCallClient(t, h)
+				result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
+					taskCallOptions{path: "task start", requestID: "submit-1", timeout: shortTimeout})
+				if exit := taskCallExit(a, result, err); exit != 1 || out.Len() != 0 ||
+					!strings.Contains(stderr.String(), "refused") ||
+					strings.Contains(stderr.String(), "hib task show --request") || len(h.calls) != len(replies) {
+					t.Errorf("%s = exit %d, %d sends, stderr %q; want refusal without lookup guidance",
+						code, exit, len(h.calls), stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestTaskCallCancelledBusyWaitHasLookupHint(t *testing.T) {
+	h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
+		{code: 1, text: `{"v":1,"error":"locked","errorCode":"BUSY"}`},
+	}}
+	a, _, stderr := taskCallClient(t, h)
+	ctx, cancel := context.WithCancel(taskCallContext(t))
+	defer cancel()
+	ssh := a.ssh
+	a.ssh = func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) (int, error) {
+		code, err := ssh(ctx, args, in, out, stderr)
+		if len(h.calls) == 1 {
+			cancel()
+		}
+		return code, err
+	}
+	result, err := a.taskCall(ctx, &config{Host: testHost},
+		taskCallOptions{path: "task start", requestID: "submit-1", timeout: shortTimeout})
+	if code := taskCallExit(a, result, err); code != 1 || !errors.Is(err, context.Canceled) ||
+		!strings.Contains(stderr.String(), "hib task show --request 'submit-1'") || len(h.calls) != 1 {
+		t.Errorf("cancelled BUSY wait = exit %d, %d sends, stderr %q; want cancellation and lookup guidance",
+			code, len(h.calls), stderr)
 	}
 }
 

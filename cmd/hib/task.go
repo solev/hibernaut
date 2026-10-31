@@ -180,9 +180,7 @@ func (a *app) taskCall(ctx context.Context, cfg *config, opts taskCallOptions) (
 				continue
 			}
 		}
-		var transport transportFailure
-		lost := errors.As(err, &transport) || resent && err != nil
-		if lost && result.requestID != "" {
+		if err != nil && result.requestID != "" && !reply.Code.RefusedBeforeSave() {
 			id := "'" + strings.ReplaceAll(result.requestID, "'", "'\\''") + "'"
 			err = fmt.Errorf("%w\nThe request may have been recorded. Look it up with hib task show --request %s", err, id)
 		}
