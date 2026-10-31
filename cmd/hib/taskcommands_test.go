@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -81,11 +82,6 @@ func TestTaskHelpIncludesTheDomainDocs(t *testing.T) {
 }
 
 func TestTaskAndRecipeRunnersAreVisibleStubs(t *testing.T) {
-	stubbed := []string{
-		"task start", "task ls", "task show", "task logs", "task wait", "task cancel",
-		"task rescue", "task rm", "recipe put", "recipe ls", "recipe show", "recipe rm",
-		"recipe default",
-	}
 	fixtures := map[string][]string{
 		"task start": nil, "task ls": nil, "task show": {"t-abcdefgh"},
 		"task logs": {"t-abcdefgh"}, "task wait": {"t-abcdefgh"}, "task cancel": {"t-abcdefgh"},
@@ -96,31 +92,48 @@ func TestTaskAndRecipeRunnersAreVisibleStubs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	h := newHost(t)
-	c := newClient(t, h)
-	for _, row := range hibapi.TaskCommands() {
-		if !row.Laptop {
+	c := initClient(t, h)
+	root := commandTable()
+	for _, cmd := range allCommands(root) {
+		if !taskCommandIsStub(cmd) {
 			continue
 		}
-		fixture, ok := fixtures[row.Path]
+		path := cmd.path()
+		fixture, ok := fixtures[path]
 		if !ok {
-			t.Fatalf("%s has no invocation fixture", row.Path)
+			t.Fatalf("%s has no invocation fixture", path)
 		}
-		args := append(strings.Fields(row.Path), fixture...)
+		args := append(strings.Fields(path), fixture...)
 		code := c.hibContext(ctx, args...)
-		want := "hib " + row.Path + " isn't in this build yet"
-		if !slices.Contains(stubbed, row.Path) {
-			if strings.Contains(c.errOut.String(), want) {
-				t.Errorf("%s still runs a stub but is absent from the stub list", row.Path)
-			}
-			continue
-		}
+		want := "hib " + path + " isn't in this build yet"
 		if code != 1 || c.out.Len() != 0 || !strings.Contains(c.errOut.String(), want) {
 			t.Errorf("%s = exit %d, stdout %q, stderr %q; want offline stub %q",
-				row.Path, code, c.out, c.errOut, want)
+				path, code, c.out, c.errOut, want)
+		}
+		if calls := h.takeCalls(); len(calls) != 0 {
+			t.Errorf("%s stub contacted the host: %q", path, calls)
 		}
 	}
-	if calls := h.takeCalls(); len(calls) != 0 {
-		t.Errorf("stubbed runners contacted the host: %q", calls)
+}
+
+func taskCommandIsStub(c *command) bool {
+	if !strings.HasPrefix(c.path(), "task ") && !strings.HasPrefix(c.path(), "recipe ") {
+		return false
+	}
+	var help bytes.Buffer
+	printHelp(&help, c)
+	return strings.Contains(help.String(), "This command isn't in this build yet.")
+}
+
+func TestTaskAndRecipeGroupHelpDescribesTheGroup(t *testing.T) {
+	c, hib := homeless(t, newHost(t))
+	for _, group := range []string{"task", "recipe"} {
+		if code := hib("help", group); code != 0 {
+			t.Fatalf("help %s = exit %d, stderr %q", group, code, c.errOut)
+		}
+		if strings.Contains(c.out.String(), "These commands aren't in this build yet.") {
+			t.Errorf("help %s claims the whole group is unavailable", group)
+		}
 	}
 }
 

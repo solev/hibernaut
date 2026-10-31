@@ -257,10 +257,9 @@ func commandTable() *command {
 				},
 			},
 			taskGroupCommand("task", taskCommands(), "Runs commands in their own machines under hibd's supervision. Tasks stay on the host when\n"+
-				"this laptop disconnects. These commands aren't in this build yet.",
+				"this laptop disconnects.",
 				[]string{"hib task start -- echo hello", "hib task ls", "hib task wait t-abcdefgh"}),
-			taskGroupCommand("recipe", recipeCommands(), "Keeps named commands and their image, size and timeout defaults for hib task start.\n"+
-				"These commands aren't in this build yet.",
+			taskGroupCommand("recipe", recipeCommands(), "Keeps named commands and their image, size and timeout defaults for hib task start.",
 				[]string{"hib recipe put check -- go test ./...", "hib recipe default check"}),
 			{
 				name: "completion", oneLine: true, summary: "print a shell completion script",

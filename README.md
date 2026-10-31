@@ -397,17 +397,6 @@ hib status                     # adds a Codex line: account, plan, token expiry,
   0.160.0 sent no token in it ([research](docs/research/codex-chatgpt-auth.md), §11). Check
   again when a pin moves.
 
-### Tasks and recipes (`hib task`, `hib recipe`)
-
-`hib task` starts commands in their own supervised machines, lists and inspects tasks, reads or
-follows output, waits for an outcome, cancels runs, rescues held machines, and removes tasks.
-These commands are not available in this build yet.
-Every task command exits 1 without contacting the host.
-
-`hib recipe` saves, lists, inspects and removes named commands, and chooses a default for
-`hib task start`. These commands are not available in this build yet. Every recipe command
-exits 1 without contacting the host.
-
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,
 > including a full reinstall, and `make e2e-slow` reboots and deallocates the VM for real.
@@ -435,6 +424,27 @@ export E2B_SANDBOX_URL=http://localhost:3002
 
 The API key is the fixed development key from E2B's `DEV-LOCAL.md`. It is not a secret. Only
 SSH (port 22) is reachable from the internet.
+
+### Tasks and recipes (`hib task`, `hib recipe`)
+
+A task runs a command in its own machine under hibd's supervision. The host keeps the task
+and its output when your laptop disconnects.
+
+`hib task start` starts a command in its own task machine. This command is not available in
+this build yet. It exits 1 without contacting the host.
+
+`hib task ls` lists tasks, and `hib task show` inspects a task or looks up a request.
+`hib task cancel` stops a live run, `hib task rescue` resumes a held machine and stops its
+stage, and `hib task rm` removes a task and its machine after asking.
+These commands are not available in this build yet. Each command exits 1 without contacting the host.
+
+`hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
+These commands are not available in this build yet. Each command exits 1 without contacting the host.
+
+`hib recipe put` saves a named command, `hib recipe ls` lists recipes, and `hib recipe show`
+inspects one. `hib recipe rm` removes a recipe, and `hib recipe default` shows or chooses the
+default for starting tasks. These commands are not available in this build yet.
+Each command exits 1 without contacting the host.
 
 ### Scripts, completion, colour and faces
 
