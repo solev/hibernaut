@@ -129,10 +129,10 @@ func (r *codexRefresher) look(ctx context.Context) {
 	if err == nil {
 		r.logChanges(p)
 	}
-	health := codexHealthLine(p, err, refreshErr)
-	failed := err != nil && !errors.Is(err, codex.ErrNotConnected) ||
-		err == nil && p.Health == codex.HealthOK && (p.Failures > 0 || refreshErr != nil)
-	if failed {
+	health, kind := codexHealthLine(p, err, refreshErr)
+	recovered := false
+	switch kind {
+	case codexHealthFailure:
 		now := time.Now
 		if r.now != nil {
 			now = r.now
@@ -141,13 +141,11 @@ func (r *codexRefresher) look(ctx context.Context) {
 			r.logf("%s", line)
 		}
 		return
-	}
-	recovery := health
-	if errors.Is(err, codex.ErrNotConnected) {
-		recovery = "refreshing stopped: no login is connected"
-	}
-	recovered := false
-	if health == "the login is ok" || errors.Is(err, codex.ErrNotConnected) {
+	case codexHealthNoLogin, codexHealthOK:
+		recovery := health
+		if kind == codexHealthNoLogin {
+			recovery = "refreshing stopped: no login is connected"
+		}
 		if line, log := r.failures.Success(recovery); log && ctx.Err() == nil {
 			r.logf("%s", line)
 			recovered = true
@@ -171,22 +169,31 @@ func (r *codexRefresher) logChanges(p codex.Profile) {
 	r.seen = p
 }
 
-func codexHealthLine(p codex.Profile, err, refreshErr error) string {
+type codexHealthKind uint8
+
+const (
+	codexHealthNoLogin codexHealthKind = iota
+	codexHealthFailure
+	codexHealthState
+	codexHealthOK
+)
+
+func codexHealthLine(p codex.Profile, err, refreshErr error) (string, codexHealthKind) {
 	switch {
 	case errors.Is(err, codex.ErrNotConnected):
-		return ""
+		return "", codexHealthNoLogin
 	case err != nil:
-		return "reading the login failed: " + termsafe.String(err.Error())
+		return "reading the login failed: " + termsafe.String(err.Error()), codexHealthFailure
 	case p.Health != codex.HealthOK:
 		problem := p.Problem
 		if problem == "" {
 			problem = "run hib connect codex"
 		}
-		return fmt.Sprintf("the login is %s: %s", p.Health, termsafe.String(problem))
+		return fmt.Sprintf("the login is %s: %s", p.Health, termsafe.String(problem)), codexHealthState
 	case p.Failures > 0:
-		return "refreshing failed. Trying again after " + p.RetryAt.UTC().Format(time.RFC3339)
+		return "refreshing failed. Trying again after " + p.RetryAt.UTC().Format(time.RFC3339), codexHealthFailure
 	case refreshErr != nil:
-		return "refreshing failed: " + termsafe.String(refreshErr.Error())
+		return "refreshing failed: " + termsafe.String(refreshErr.Error()), codexHealthFailure
 	}
-	return "the login is ok"
+	return "the login is ok", codexHealthOK
 }

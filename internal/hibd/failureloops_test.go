@@ -158,6 +158,91 @@ func TestSetupDeliveryLogsFailuresForADay(t *testing.T) {
 }
 
 func TestCodexRefresherLogsFailuresForADay(t *testing.T) {
+	for _, source := range []string{"reading", "refreshing"} {
+		for _, ending := range []string{"ok", "disconnected"} {
+			t.Run(source+"/"+ending, func(t *testing.T) {
+				a, _, _, _ := newCodexApp(t, nil, testCodexTokens())
+				connectTestCodex(t, a, testCodexTokens())
+				store := codexStoreFor(a)
+				p, err := store.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := loadConfig(a.Getenv)
+				if err != nil {
+					t.Fatal(err)
+				}
+				synctest.Test(t, func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(t.Context(), 48*time.Hour)
+					defer cancel()
+					bad := []codex.Config{
+						{StateDir: cfg.stateDir, VaultPath: cfg.vaultPath, KeyPath: cfg.vaultKeyPath, Now: time.Now},
+						{StateDir: cfg.stateDir, VaultPath: cfg.vaultPath, KeyPath: cfg.vaultKeyPath, Now: time.Now},
+					}
+					var text string
+					switch source {
+					case "reading":
+						bad[0].StateDir, bad[1].StateDir = t.TempDir(), t.TempDir()
+						if err := os.WriteFile(filepath.Join(bad[0].StateDir, codex.ProfileFile), []byte("invalid"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(filepath.Join(bad[1].StateDir, codex.ProfileFile), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						text = "reading the login failed: invalid codex profile: run hib connect codex"
+					case "refreshing":
+						bad[0].VaultPath = filepath.Join(t.TempDir(), "invalid-vault")
+						if err := os.WriteFile(bad[0].VaultPath, []byte("invalid"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						bad[1].KeyPath = filepath.Join(t.TempDir(), "missing-key")
+						text = "refreshing failed: reading codex vault"
+					}
+					var logs lineLog
+					r := &codexRefresher{logf: logs.logf, seen: p}
+					for n := range 1440 {
+						r.store = codex.NewStore(bad[n%2])
+						r.look(ctx)
+						time.Sleep(time.Minute)
+					}
+					lines := logs.take()
+					if len(lines) != 144 {
+						t.Fatalf("%s failed with changed text every minute and logged %d lines, want 144",
+							source, len(lines))
+					}
+					for n, line := range lines {
+						want := text
+						if n > 0 {
+							want += " (9 more since the last line)"
+						}
+						if line != want {
+							t.Fatalf("%s failure %d = %q, want %q", source, n, line, want)
+						}
+					}
+					r.store = store
+					want := "the login is ok (9 more since the last line)"
+					if ending == "disconnected" {
+						if err := os.Remove(filepath.Join(cfg.stateDir, codex.ProfileFile)); err != nil {
+							t.Fatal(err)
+						}
+						want = "refreshing stopped: no login is connected (9 more since the last line)"
+					}
+					r.look(ctx)
+					r.look(ctx)
+					if got := logs.take(); !slices.Equal(got, []string{want}) {
+						t.Fatalf("%s ending a %s failure = %q, want %q", ending, source, got, want)
+					}
+					cancel()
+					r.store = codex.NewStore(bad[0])
+					time.Sleep(10 * time.Minute)
+					r.look(ctx)
+					if got := logs.take(); len(got) != 0 {
+						t.Fatalf("codex logged after shutdown: %q", got)
+					}
+				})
+			})
+		}
+	}
 	a, _, _, _ := newCodexApp(t, nil, testCodexTokens())
 	connectTestCodex(t, a, testCodexTokens())
 	p, err := codexStoreFor(a).Load()
