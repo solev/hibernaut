@@ -579,15 +579,18 @@ func (x *executor) collect(ctx context.Context) error {
 	return x.append(ctx, res)
 }
 
-// publication reads what finish published. A finish that published nothing has no file, which
-// reads as no publication and so no_changes.
+// publication reads the file finish writes even when there are no changes. A missing file after
+// an OK finish is an unread publication, not proof that finish published no changes.
 func (x *executor) publication(ctx context.Context) (*task.Publication, error) {
 	res, err := x.exec(ctx, taskguest.PublicationOf(x.id), taskguest.ExecTimeout)
 	if err != nil {
 		return nil, err
 	}
 	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("publication exited %d: %s", res.ExitCode, res.Stderr)
+		if len(res.Stderr) != 0 {
+			return nil, fmt.Errorf("read exited %d: %s", res.ExitCode, res.Stderr)
+		}
+		return nil, fmt.Errorf("read exited %d", res.ExitCode)
 	}
 	p, err := taskguest.ParsePublication(res.Stdout)
 	if err != nil {
