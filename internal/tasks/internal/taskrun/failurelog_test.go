@@ -100,6 +100,7 @@ func TestRemovalLoggingDoesNotBlockTick(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Error("test did not release the failure logger")
 			}
+
 		}
 		cfg.Machines = removeMachines{Machines: h.m, remove: func(context.Context, task.Run) error {
 			return errors.New("remove failed")
@@ -115,6 +116,78 @@ func TestRemovalLoggingDoesNotBlockTick(t *testing.T) {
 	if err := tickRemoval(t, h); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRemovalLogsRecovery(t *testing.T) {
+	h, id := keptRemoval(t)
+	var recovered atomic.Bool
+	var logs failureLogs
+	h.configure = func(cfg *Config) {
+		cfg.Logf = logs.logf
+		cfg.Machines = removeMachines{Machines: h.m, remove: func(context.Context, task.Run) error {
+			if recovered.Load() {
+				return nil
+			}
+			return errors.New("remove failed")
+		}}
+	}
+	h.request(id, task.RequestRemove)
+	h.start()
+	attempt := func() {
+		t.Helper()
+		if err := tickRemoval(t, h); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() { h.sup.Wait(); close(done) }()
+		receiveRemoval(t, done, "removal attempt did not return")
+	}
+	attempt()
+	h.clock.Advance(5 * time.Second)
+	attempt()
+	h.clock.Advance(5 * time.Second)
+	recovered.Store(true)
+	attempt()
+	want := []string{fmt.Sprintf("task %s removal: remove failed", id.Task),
+		fmt.Sprintf("task %s removal: recovered (1 more since the last line)", id.Task)}
+	logs.check(t, want)
+	h.clock.Advance(10 * time.Minute)
+	attempt()
+	logs.check(t, want)
+}
+
+func TestWorkflowLogsEnd(t *testing.T) {
+	h := newHarness(t, script(0, 0))
+	var recovered atomic.Bool
+	var logs failureLogs
+	h.configure = func(cfg *Config) {
+		cfg.Logf = logs.logf
+		cfg.Machines = failingFind{Machines: h.m, find: func() error {
+			if recovered.Load() {
+				return nil
+			}
+			return errors.New("find failed")
+		}}
+	}
+	h.start()
+	id := h.submit(time.Hour)
+	if err := h.store.Append(t.Context(), task.Checkpoint{
+		Run: id, Seq: 1, At: h.clock.Now(), By: "d1", Body: &task.MachineIntent{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tickRemoval(t, h); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	h.clock.Advance(5 * time.Second)
+	h.settle()
+	recovered.Store(true)
+	h.clock.Advance(5 * time.Second)
+	h.until(30, h.ended(id))
+	h.stop()
+	logs.check(t, []string{fmt.Sprintf("task %s: find failed", id),
+		fmt.Sprintf("task %s: the workflow ended (1 more since the last line)", id)})
 }
 
 type failingFind struct {
