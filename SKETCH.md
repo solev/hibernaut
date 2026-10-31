@@ -757,16 +757,16 @@ is renewed like any other. An exempt machine is neither renewed nor recorded as 
 
 | how.md section 3 place | This design |
 | --- | --- |
-| `case` in `App.Run` | one case for both groups, rows in `taskCommands`, moving to hibapi |
+| `case` in `App.Run` | one case for both groups, rows in `hibapi.TaskCommands()` |
 | usage text | `taskUsage(group)` from the table, test checks every row |
-| the `-json` line | names the groups, every task leaf takes `-json` |
-| `usesE2B` | falls through to `taskUsesE2B`, from the table's `e2b` field |
+| the `-json` line | names every JSON leaf from the shared rows |
+| `usesE2B` | falls through to `taskUsesE2B`, from the table's `E2B` field |
 | `FeatureTasks` | one constant |
 | `version` features | includes `FeatureTasks` because `task start` saves and the daemon runs it |
 | `Response` fields | one embedded `TaskReply`, `TestTaskRunWire` |
-| `cmd/hib` command tree | M14 moves `taskCommands` to hibapi, and hib and hibd share it |
-| `needTasks` gate | one function modeled on `needPorts`, M14 |
-| `callOptions` replay | stdin as a byte slice, replayed with the same request ID |
+| `cmd/hib` command tree | shares paths and summaries, keeps its flags and explicit stubs |
+| `needTasks` gate | one function modeled on `needPorts`, in the task call helper |
+| `callOptions` replay | fresh readers over captured bytes, with the same request ID |
 | `complete.go` | no task ID completion, the cache knows no tasks |
 | README and help tests | stay loud |
 | daemon init | `startTasks` worker ticks every `tasks.Poll` and closes before `stopping` |
@@ -782,8 +782,8 @@ is named in hibd's usage. Within the subsystem every enum is defined once in `ta
   no second list to forget.
 - **hibapi** uses task's types for its enums, and `TaskRun.Check` parses a reply against
   task's lists, so hib refuses a phase it doesn't know.
-- **CLI help** for `hib task ls` and `show` will print `task.Phases()` and each step's `Doc()`
-  in M14, and the README test makes the README follow.
+- **CLI help** for `hib task ls` and `show` prints `task.Phases()`, `task.Outcomes()` and each
+  step's `Doc()`. The README test makes the README follow.
 
 ### 8. The three-file trace
 

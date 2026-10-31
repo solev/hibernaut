@@ -40,6 +40,12 @@ func commandTable() *command {
 		examples: []string{"hib init --host azureuser@203.0.113.7", "hib new app", "ssh app.hib"},
 		flags:    rootFlags,
 		subs: []*command{
+			taskGroupCommand("task", taskCommands(), "Runs commands in their own machines under hibd's supervision. Tasks stay on the host when\n"+
+				"this laptop disconnects. These commands aren't in this build yet.",
+				[]string{"hib task start -- echo hello", "hib task ls", "hib task wait t-abcdefgh"}),
+			taskGroupCommand("recipe", recipeCommands(), "Keeps named commands and their image, size and timeout defaults for hib task start.\n"+
+				"These commands aren't in this build yet.",
+				[]string{"hib recipe put check -- go test ./...", "hib recipe default check"}),
 			{
 				name: "init", opts: "--host USER@HOST [--identity FILE] [--azure-group GROUP --azure-vm VM] [--ssh-config FILE]",
 				summary: "set this laptop up for a host",
@@ -335,6 +341,9 @@ func (c *command) root() *command {
 }
 
 func (c *command) synopsis() string {
+	if c.takesCommand {
+		return joinWords(c.title(), c.opts, c.args, c.choices())
+	}
 	return joinWords(c.title(), c.args, c.opts, c.choices())
 }
 

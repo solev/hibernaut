@@ -73,7 +73,11 @@ func describeFlags(fl *flag.FlagSet) string {
 		default:
 			usage += fmt.Sprintf(" (default %s)", f.DefValue)
 		}
-		fmt.Fprintf(tw, "  --%s%s\t%s\n", f.Name, name, usage)
+		dashes := "--"
+		if fl.Name() == "task logs" && f.Name == "f" {
+			dashes = "-"
+		}
+		fmt.Fprintf(tw, "  %s%s%s\t%s\n", dashes, f.Name, name, usage)
 	})
 	tw.Flush()
 	return b.String()
