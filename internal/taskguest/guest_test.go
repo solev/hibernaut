@@ -270,6 +270,11 @@ func TestFreezerWaitsForCgroupEvents(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("%s exited %d: %s", tt.name, code, out)
 			}
+			if tt.name == "freeze" {
+				if answer, err := ParseFreeze([]byte(out)); err != nil || answer != FreezeFrozen {
+					t.Fatalf("freeze answer = %q, %v", answer, err)
+				}
+			}
 			events, err := os.ReadFile(filepath.Join(cg, "cgroup.events"))
 			if err != nil || !strings.Contains(string(events), "frozen "+tt.to+"\n") {
 				t.Fatalf("%s returned before frozen %s: %q, %v", tt.name, tt.to, events, err)
@@ -294,9 +299,19 @@ func TestFreezerWaitsForCgroupEvents(t *testing.T) {
 
 func TestFreezerWithoutCgroupIsNoop(t *testing.T) {
 	g := newShellGuest(t)
-	for _, argv := range [][]string{Freeze(), Thaw()} {
-		if out, code := g.run(t, argv); code != 0 {
-			t.Fatalf("missing cgroup: exit %d: %s", code, out)
+	out, code := g.run(t, Freeze())
+	if answer, err := ParseFreeze([]byte(out)); code != 0 || err != nil || answer != FreezeEmpty {
+		t.Fatalf("missing cgroup: exit %d, answer %q, %v", code, out, err)
+	}
+	if out, code := g.run(t, Thaw()); code != 0 || out != "" {
+		t.Fatalf("empty thaw: exit %d: %s", code, out)
+	}
+}
+
+func TestParseFreezeRejectsUnconfirmedAnswers(t *testing.T) {
+	for _, out := range []string{"", "freeze=unknown\n", "freeze=frozen\nfreeze=empty\n"} {
+		if _, err := ParseFreeze([]byte(out)); err == nil {
+			t.Fatalf("accepted unconfirmed freeze %q", out)
 		}
 	}
 }
@@ -319,6 +334,51 @@ func TestLookReadsKernelFrozen(t *testing.T) {
 	}
 	if _, err := ParseLook([]byte("frozen=invalid\n")); err == nil {
 		t.Fatal("look accepted a malformed frozen value")
+	}
+}
+
+func TestLookKeepsExitWhenShowFails(t *testing.T) {
+	for _, hasExit := range []bool{true, false} {
+		t.Run(strconv.FormatBool(hasExit), func(t *testing.T) {
+			g := newShellGuest(t)
+			writeTestFile(t, filepath.Join(g.bin, "systemctl"), "#!/bin/sh\nexit 1\n")
+			run := t.TempDir()
+			if err := os.Mkdir(filepath.Join(run, "command.started"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if hasExit {
+				writeTestFile(t, filepath.Join(run, "command.exit"),
+					"result=success\ncode=exited\nstatus=0\n")
+			}
+			out, code := g.run(t, []string{"sh", g.runner, "look", run, "command", "stage.service"})
+			if code != 0 || !strings.Contains(out, "show=failed\n") {
+				t.Fatalf("failed show dropped the look reply: exit %d: %q", code, out)
+			}
+			seen, err := ParseLook([]byte(out))
+			if hasExit {
+				if err != nil || seen.Verdict() != Exited {
+					t.Fatalf("failed show hid a present exit: %+v, %v", seen, err)
+				}
+			} else if err == nil {
+				t.Fatalf("failed show without an exit became %s", seen.Verdict())
+			}
+		})
+	}
+}
+
+func TestParseLookFailedShow(t *testing.T) {
+	for _, marker := range []string{"yes", "no"} {
+		t.Run(marker, func(t *testing.T) {
+			out := "marker=" + marker + "\nshow=failed\n"
+			if seen, err := ParseLook([]byte(out)); err == nil {
+				t.Fatalf("failed show without an exit became %s", seen.Verdict())
+			}
+			out += "exit.result=success\nexit.code=exited\nexit.status=0\n"
+			seen, err := ParseLook([]byte(out))
+			if err != nil || seen.Verdict() != Exited || seen.Exit.Result != "success" {
+				t.Fatalf("present exit was lost: %+v, %v", seen, err)
+			}
+		})
 	}
 }
 
@@ -418,6 +478,17 @@ func TestLaunchPreservesCommand(t *testing.T) {
 	}
 	if !slices.Equal(argv[len(argv)-len(r.Spec.Command):], r.Spec.Command) {
 		t.Fatalf("Launch changed the command: %q", argv)
+	}
+}
+
+func TestLaunchExposesInputs(t *testing.T) {
+	r := task.Run{ID: task.RunID{Task: "t-abcdefgh", N: 2},
+		Spec: task.Spec{Command: []string{"sh", "-c", `cat "$HIB_INPUTS/data"`}}}
+	for _, stage := range task.Stages() {
+		if argv := Launch(r, stage, time.Hour); !slices.Contains(argv,
+			"--setenv=HIB_INPUTS=/var/lib/hib-task/t-abcdefgh/r2/in") {
+			t.Fatalf("%s command cannot find its inputs: %q", stage, argv)
+		}
 	}
 }
 

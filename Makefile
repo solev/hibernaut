@@ -5,7 +5,7 @@ SHELL_SCRIPTS := azure/*.sh vm/*.sh $(filter-out %.go,$(wildcard vm/lib/*)) vm/i
 	images/dev/packages images/dev/configure images/dev/start images/dev/ready images/dev/machine-init \
 	images/dev/hib-term.sh images/dev/trust-ca images/dev/tools
 
-.PHONY: build build-linux lint test test-host test-host-remote test-linux-remote generate deploy up down e2e e2e-slow
+.PHONY: build build-linux lint test test-host test-host-remote test-linux-remote test-guest-build generate deploy up down e2e e2e-slow
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -24,6 +24,9 @@ lint:
 
 test:
 	go test -race ./...
+
+test-guest-build:
+	GOOS=linux GOARCH=amd64 go test -c -tags guest -o bin/linux-amd64/guest.test ./internal/taskguest
 
 # Tests that need root on a Linux host, and a few that need Linux. Every hook test runs under sudo.
 # Of the machines, cleanup, statefile and taskstore tests, only those named TestHost do. The rest

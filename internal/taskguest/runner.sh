@@ -51,8 +51,12 @@ look() {
 	run=$1 stage=$2 unit=$3
 	if [ -d "$run/$stage.started" ]; then echo marker=yes; else echo marker=no; fi
 	if [ -f "$run/$stage.exit" ]; then sed 's/^/exit./' "$run/$stage.exit"; fi
-	properties=$(systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p ControlGroup)
-	printf '%s\n' "$properties"
+	if properties=$(systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p ControlGroup); then
+		printf '%s\n' "$properties"
+	else
+		echo show=failed
+		properties=
+	fi
 	group=$(printf '%s\n' "$properties" | sed -n 's/^ControlGroup=//p')
 	if [ -n "$group" ] && [ -d "/sys/fs/cgroup$group" ]; then
 		sed -n 's/^frozen /frozen=/p' "/sys/fs/cgroup$group/cgroup.events"
@@ -70,7 +74,10 @@ slice_cgroup() {
 freezer() {
 	want=$1
 	cgroup=$(slice_cgroup)
-	[ -n "$cgroup" ] || return 0
+	if [ -z "$cgroup" ]; then
+		[ "$want" != 1 ] || echo freeze=empty
+		return 0
+	fi
 	printf '%s\n' "$want" >"$cgroup/cgroup.freeze"
 	polls=0
 	until grep -qx "frozen $want" "$cgroup/cgroup.events"; do
@@ -78,6 +85,7 @@ freezer() {
 		sleep 0.1
 		polls=$((polls + 1))
 	done
+	[ "$want" != 1 ] || echo freeze=frozen
 }
 
 kill_stage() {

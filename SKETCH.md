@@ -861,6 +861,26 @@ no systemd: `TestStageStartsOnce`, `TestExitRecordIsWrittenOnceByItsInvocation`,
 `TestLaunchKeepsThePromptOutOfArgv` and `TestVerdict`. `guestsim` models what the protocol
 promises, and these tests hold `runner.sh` to it.
 
+`TestPauseWithoutCgroupIsHeld` keeps an empty freezer answer from authorizing a wake.
+`TestPauseCreatesSliceBeforeFirstStage` covers Owner's slice preparation before freeze.
+`TestLookKeepsExitWhenShowFails` and `TestParseLookFailedShow` keep a present exit readable
+when systemctl cannot show the unit. Without an exit, that observation remains an error.
+`TestLaunchExposesInputs` checks every stage receives `HIB_INPUTS=RUN/in`.
+
+**The real guest** (`internal/taskguest/real_guest_test.go`, build tag `guest`) drives the same
+root argv as hibd against systemd and cgroup v2 in one dev machine. `make test-guest-build`
+cross-builds `bin/linux-amd64/guest.test`. Copy it into the machine, then run it as root with
+`-test.v -test.count=1`. `TestGuestRunner` checks the absent cgroup before any stage runs.
+It skips that case with the existing cgroup's path when the machine is not fresh.
+The other cases prove the frozen counter across daemon-reload, thaw, TERM then KILL after
+15 s, a frozen kill's exit record, empty stage cgroups, launch refusal with exit 76,
+RuntimeMaxSec, input reads and a real failed systemctl show.
+
+Run `20261031T220821Z-52af5e` keeps `006-guest-test.txt`. Every case passed, including the
+absent cgroup. `008-guest-test-broken.txt` failed with the freezer's cgroup write removed
+from the embedded runner through a build overlay. Its real-guest freeze exited 2 because
+the kernel never reached frozen 1. The checkout's runner was unchanged.
+
 ### 10. Platform facts
 
 | Fact | Where the design depends on it | Spike |
@@ -886,8 +906,11 @@ promises, and these tests hold `runner.sh` to it.
    are done in M13b, with failing-first tests and a rerun of the real guest argv.
    - Done. `Freeze` and `Thaw` write the slice's `cgroup.freeze` and wait, bounded, for its
      `cgroup.events` to say `frozen 1` or `frozen 0`. The slice has no cgroup until a stage has
-     run since boot, and then there is nothing to freeze. `look` reports the `frozen` line of the
-     unit's `cgroup.events`, and `Seen.Frozen` reads it instead of `FreezerState`.
+     run since boot or root starts the slice. Without it, `Freeze` reports `freeze=empty`.
+     With it, `Freeze` reports `freeze=frozen` only after the kernel confirms the freeze.
+     Owner starts the slice before freezing. A failed start or empty answer records unfrozen
+     with a detail, so a live stage remains held. `look` reports the unit's `cgroup.events`
+     frozen line, and `Seen.Frozen` reads it instead of `FreezerState`.
    - Done. `Launch` passes `--expand-environment=no`. Without it systemd rewrote `$$` and
      `${HIB_RUN}` in the task's command.
    - Done. `Kill` thaws after it kills a frozen stage. A kill alone left `ExecStopPost` frozen, the
@@ -901,6 +924,23 @@ promises, and these tests hold `runner.sh` to it.
      freeze not yet recorded. On that code the executor calls `Owner.Thaw` and re-enters
      through the stop and deadline boundary. Only `Owner.Thaw` permits a pre-launch thaw,
      after its locked stop checks and unfrozen record.
+   M14's real guest test measured systemd 255.4-1ubuntu8.17 on Linux 6.1.158+, with one CPU.
+   Run `20261031T220821Z-52af5e`, `006-guest-test.txt`, first found no slice cgroup.
+   Root's `systemctl start hib-task.slice` created `/hib.slice/hib-task.slice` before any
+   stage launched. Freezing that empty cgroup held, and the first launch exited 76.
+   Owner prepares this cgroup rather than recording an empty freeze as held. This preserves
+   automatic wake before the first stage without an Exec lock or an image change.
+   A launch that passed its check before freeze joins the slice that pause holds.
+   The same run measured these raw exit records with the real Launch properties:
+   - RuntimeMaxSec ended `sleep 60` after a 2 s limit with `result=timeout`, `code=killed`
+     and `status=TERM`.
+   - A TERM-ignoring shell stopped after TimeoutStopSec with `result=timeout`,
+     `code=killed` and `status=KILL`. Stop to reading the exit record took 15.115297043 s.
+   - `runner kill` ended a frozen `sleep 60` with `result=signal`, `code=killed` and
+     `status=KILL`. Kill to reading the exit record took 28.461416 ms.
+   Each timing is one functional sample, including command and observation overhead.
+   The guest checked TERM delivery and the exit contents, then confirmed each stage cgroup
+   was empty or removed. These are systemd values for unit 7 to map, not inferred outcomes.
 3. **A frozen unit across a memory pause.** The spike froze the slice, then ran `hib pause` and
    an ssh wake 30 s later. The slice still said `frozen 1`. Its counter held while a control
    counter outside the slice ran on, and it resumed on thaw.
