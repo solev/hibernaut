@@ -399,25 +399,41 @@ func (x *executor) ready(ctx context.Context) error {
 }
 
 // stop ends the live stage after a recorded stop. A frozen stage is killed, since it can't act
-// on TERM until thawed, and so is a rescued one. Otherwise the unit gets TERM, then KILL after
-// task.StopGrace. A stage held paused without the freeze waits for rescue or rm: hibd never
-// wakes it on its own.
+// on TERM until thawed, and so is a rescued one. Otherwise the unit gets TERM, then KILL on the
+// next attempt without proof. The durable budget also bounds a paused wait without permitting a wake.
 func (x *executor) stop(ctx context.Context) error {
 	if _, ok := x.r.Stop(); !ok || x.done(task.StepStop) {
 		return nil
 	}
+	force := task.StopRemaining(x.r, x.now()) <= task.StopLimit-task.StopGrace
 	for {
 		if err := x.refresh(ctx); err != nil {
 			return err
 		}
-		how, err := x.end(ctx)
-		if err != nil {
+		if task.StopUnproven(x.r, x.now()) {
+			if s, live := x.r.LiveStage(); live && x.r.Machine == task.MachineRunning {
+				_, _ = x.exec(ctx, taskguest.Kill(x.id, s), taskguest.ExecTimeout)
+			}
+			if err := context.Cause(ctx); err != nil {
+				return err
+			}
+			return x.append(ctx, &task.StopResult{How: "unproven"})
+		}
+		pass, cancel := context.WithTimeout(ctx, task.StopRemaining(x.r, x.now()))
+		how, err := x.end(pass, force)
+		cancel()
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		var guest *guestReplyError
+		if err != nil && !errors.As(err, &guest) {
 			return err
 		}
 		if how != "" {
 			return x.append(ctx, &task.StopResult{How: how})
 		}
-		if err := x.wait(ctx); err != nil {
+		force = true
+		if err := x.cfg.Clock.Sleep(ctx, min(x.poll(), task.StopRemaining(x.r, x.now()))); err != nil {
 			return err
 		}
 	}
@@ -425,7 +441,7 @@ func (x *executor) stop(ctx context.Context) error {
 
 // end tries once to end the live stage. It returns how the stage ended, or "" to try again
 // after a poll.
-func (x *executor) end(ctx context.Context) (string, error) {
+func (x *executor) end(ctx context.Context, force bool) (string, error) {
 	s, live := x.r.LiveStage()
 	switch {
 	case !live:
@@ -447,24 +463,28 @@ func (x *executor) end(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	seen, err := x.look(ctx, s)
-	if err != nil {
-		return "", lookAgain(err)
+	if err != nil && !force {
+		return "", &guestReplyError{err}
 	}
 	how, argv := "term", taskguest.Stop(x.id, s)
-	if seen.Frozen() || x.r.Rescued() {
+	if force || seen.Frozen() || x.r.Rescued() {
 		how, argv = "kill", taskguest.Kill(x.id, s)
 	}
 	// Stopping a unit that never started cancels a start still queued, so this is sent
 	// whatever the look said.
-	if _, err := x.exec(ctx, argv, task.StopGrace+taskguest.ExecTimeout); err != nil {
-		return "", lookAgain(err)
+	timeout := taskguest.ExecTimeout
+	if how == "term" {
+		timeout += task.StopGrace
+	}
+	if _, err := x.exec(ctx, argv, timeout); err != nil {
+		return "", &guestReplyError{err}
 	}
 	if seen, err = x.look(ctx, s); err != nil {
-		return "", lookAgain(err)
+		return "", &guestReplyError{err}
 	}
 	switch seen.Verdict() {
 	case taskguest.Exited:
-		return how, x.copyLog(ctx, s, seen.LogSize)
+		return how, nil
 	case taskguest.NotStarted:
 		return "not-started", nil
 	case taskguest.Vanished:
@@ -473,13 +493,9 @@ func (x *executor) end(ctx context.Context) (string, error) {
 	return "", nil
 }
 
-// lookAgain turns the errors a poll recovers from into nil.
-func lookAgain(err error) error {
-	if errors.Is(err, engine.ErrNotRunning) || errors.Is(err, engine.ErrConnectionLost) {
-		return nil
-	}
-	return err
-}
+type guestReplyError struct{ error }
+
+func (e *guestReplyError) Unwrap() error { return e.error }
 
 // collect copies new bytes of launched stages without a StageExit, within task.MaxLogBytes,
 // and reads what finish published. An exited stage's host copy is final. A machine that is
@@ -496,23 +512,37 @@ func (x *executor) collect(ctx context.Context) error {
 	if err := x.refresh(ctx); err != nil {
 		return err
 	}
+	reads, cancel := context.WithTimeout(ctx, task.CollectRemaining(x.r, x.now()))
+	defer cancel()
 	res := &task.CollectResult{}
 	for _, s := range task.Stages() {
 		if !x.launched(s) {
 			continue
 		}
 		var size int64
-		if x.r.Machine == task.MachineRunning {
-			seen, err := x.look(ctx, s)
+		switch {
+		case x.r.UnprovenStop():
+			res.Unread = append(res.Unread, string(s)+": stop unproven; tail not read")
+		case x.r.Machine != task.MachineRunning:
+			res.Unread = append(res.Unread, string(s)+": machine "+string(x.r.Machine)+"; tail not read")
+		case task.CollectRemaining(x.r, x.now()) == 0 || reads.Err() != nil:
+			res.Unread = append(res.Unread, string(s)+": collect budget exhausted; tail not read")
+		default:
+			seen, err := x.look(reads, s)
 			if err != nil {
-				return err
-			}
-			if _, exited := x.exitOf(s); !exited {
-				if err := x.copyLog(ctx, s, seen.LogSize); err != nil {
-					return err
+				res.Unread = append(res.Unread, string(s)+": "+err.Error())
+			} else {
+				size = seen.LogSize
+				if _, exited := x.exitOf(s); !exited {
+					if err := x.copyLog(reads, s, size); err != nil {
+						var guest *guestReplyError
+						if !errors.As(err, &guest) {
+							return err
+						}
+						res.Unread = append(res.Unread, string(s)+": "+err.Error())
+					}
 				}
 			}
-			size = seen.LogSize
 		}
 		n, err := x.cfg.Logs.Size(x.id, s)
 		if err != nil {
@@ -521,12 +551,21 @@ func (x *executor) collect(ctx context.Context) error {
 		res.LogBytes += n
 		res.Dropped += max(size-n, 0)
 	}
-	if e, ok := x.exitOf(task.StageFinish); ok && e.OK() && x.r.Machine == task.MachineRunning {
-		p, err := x.publication(ctx)
-		if err != nil {
-			return err
+	if e, ok := x.exitOf(task.StageFinish); ok && e.OK() && x.r.Machine == task.MachineRunning &&
+		!x.r.UnprovenStop() {
+		if task.CollectRemaining(x.r, x.now()) == 0 || reads.Err() != nil {
+			res.Unread = append(res.Unread, "publication: collect budget exhausted; not read")
+		} else {
+			p, err := x.publication(reads)
+			if err != nil {
+				res.Unread = append(res.Unread, "publication: "+err.Error())
+			} else {
+				res.Publication = p
+			}
 		}
-		res.Publication = p
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
 	}
 	return x.append(ctx, res)
 }
@@ -535,8 +574,11 @@ func (x *executor) collect(ctx context.Context) error {
 // reads as no publication and so no_changes.
 func (x *executor) publication(ctx context.Context) (*task.Publication, error) {
 	res, err := x.exec(ctx, taskguest.PublicationOf(x.id), taskguest.ExecTimeout)
-	if err != nil || res.ExitCode != 0 {
+	if err != nil {
 		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("publication exited %d: %s", res.ExitCode, res.Stderr)
 	}
 	p, err := taskguest.ParsePublication(res.Stdout)
 	if err != nil {
@@ -729,9 +771,14 @@ func (x *executor) copyLog(ctx context.Context, s task.Stage, size int64) error 
 		data = append(data, chunk...)
 	}
 	if len(data) != 0 {
-		return errors.Join(readErr, x.cfg.Logs.Append(x.id, s, have, data))
+		if err := x.cfg.Logs.Append(x.id, s, have, data); err != nil {
+			return errors.Join(readErr, err)
+		}
 	}
-	return readErr
+	if readErr != nil {
+		return &guestReplyError{readErr}
+	}
+	return nil
 }
 
 func (x *executor) exec(ctx context.Context, argv []string, timeout time.Duration) (engine.ExecResult, error) {

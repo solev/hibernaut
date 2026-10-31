@@ -449,7 +449,8 @@ nudge.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
 - **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
-  can't cut them short, only nudge them to re-enter.
+  can't cut them short, only nudge them to re-enter. Stop's proof budget and collect's read budget
+  start at their durable intent checkpoints, so retries and daemon restarts do not reset them.
 
 ### Module map
 
@@ -668,8 +669,11 @@ under `/var/lib/hib-task/RUN`.
   `MaxLogChunk`, 1 MiB, from a byte offset. Collect stops at `MaxLogBytes`, 50 MiB, per run, summed
   over the stages in order. The executor's copy loop and `FileLogs.Append` both enforce the sum.
   An exited stage's host copy is final. Collect copies only launched stages without a `StageExit`.
-  It counts kept bytes and reports all uncopied guest bytes as `Dropped` while the machine runs.
-  `Dropped` can understate when the machine is not running at collect.
+  `Dropped` counts reported guest bytes not kept, even below the cap. `Unread` names tails or
+  publication that could not be read. Both can miss output written later. `Dropped` can understate
+  when the machine is not running, a size could not be read, or the guest reports a false size.
+  All collect reads share `CollectLimit`, 60 s, from its durable intent. Guest read errors become
+  `Unread`, not workflow retries. An unproven stop reads nothing from the guest.
 - **Lost replies.** Launch is idempotent by unit name and by a start marker made with `mkdir`.
   A second start exits 75 without acting. The executor launches only when a look says
   `NotStarted`, ignores `ErrConnectionLost` and judges the launch by the next look, never the
@@ -678,7 +682,12 @@ under `/var/lib/hib-task/RUN`.
   host file's length, the only cursor, so a lost chunk is read again and never appended twice.
 - **Deadlines may kill.** Every Exec is short and bounded by `ExecTimeout`, 10 s. Long work runs
   in systemd units, which an Exec's death can't touch. A killed `systemd-run` either queued the
-  unit or didn't, and the look tells which.
+  unit or didn't, and the look tells which. A systemd exit result of `timeout` reads `timed_out`
+  unless an earlier recorded stop supplies the outcome.
+  Stop attempts share `StopLimit`, 60 s, from the stop intent, then send one final KILL bounded
+  by 10 s. A failed proof escalates TERM to KILL on the next attempt. At expiry, `unproven` warns
+  that the stage may still run when the machine wakes. Keep still pauses it, even if freeze fails.
+  A paused stop waiting for room or rescue has the same limit, without KILL or an automatic wake.
 - **Exec races a pause.** `ErrNotRunning` and `ErrConnectionLost` mean look again after a poll.
   Exec never wakes, and `collect` never resumes a paused or gone machine.
 - **Main-line readiness.** Every pass through `upload`, a stage launch or `await` checks
