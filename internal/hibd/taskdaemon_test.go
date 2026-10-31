@@ -355,7 +355,7 @@ func TestTaskDaemonRetriesUnreadableStoreWithoutStoppingOtherWork(t *testing.T) 
 }
 
 func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
-	for _, mode := range []string{"changing", "alternating", "successes"} {
+	for _, mode := range []string{"changing", "alternating", "successes", "recovering"} {
 		t.Run(mode, func(t *testing.T) {
 			a, _ := taskDaemonApp(t)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -371,7 +371,13 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 				err error
 			}
 			readings := make(chan reading)
+			waiting := make(chan struct{})
 			a.ReadRoom = func() (room.Host, error) {
+				select {
+				case waiting <- struct{}{}:
+				case <-ctx.Done():
+					return room.Host{}, ctx.Err()
+				}
 				select {
 				case r := <-readings:
 					at.Store(r.at.UnixNano())
@@ -412,6 +418,7 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 				}
 			}
 			first := "tasks: checking the room on the host: failure 0"
+			initial := []string{first}
 			for n, elapsed := range []time.Duration{0, 5 * time.Second, 10 * time.Second,
 				15 * time.Second, 10 * time.Minute} {
 				text := fmt.Sprintf("failure %d", n)
@@ -419,17 +426,21 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 					text = fmt.Sprintf("failure %d", n%2)
 				}
 				err := errors.New(text)
-				if mode == "successes" && n%2 != 0 {
+				if mode == "successes" && n%2 != 0 || mode == "recovering" && n == 4 {
 					err = nil
 				}
+				waitTaskSignal(t, waiting, "start reading admission")
 				select {
 				case readings <- reading{at: base.Add(elapsed), err: err}:
 				case <-ctx.Done():
 					t.Fatal("daemon did not read admission before its deadline")
 				}
 				sendTaskTick(t, ticks, base.Add(elapsed))
+				if mode == "successes" && n == 1 {
+					initial = append(initial, "tasks: recovered")
+				}
 				if n < 4 {
-					check([]string{first})
+					check(initial)
 				}
 			}
 			latest, count := "failure 4", 3
@@ -439,9 +450,14 @@ func TestTaskDaemonLogsFailuresByTime(t *testing.T) {
 			if mode == "successes" {
 				count = 1
 			}
-			want := []string{first,
-				fmt.Sprintf("tasks: checking the room on the host: %s (%d more since the last line)", latest, count)}
+			want := append(initial,
+				fmt.Sprintf("tasks: checking the room on the host: %s (%d more since the last line)", latest, count))
+			if mode == "recovering" {
+				want = append(initial, "tasks: recovered (3 more since the last line)")
+			}
 			check(want)
+			waitTaskSignal(t, waiting, "start the final admission read")
+			at.Store(base.Add(30 * time.Minute).UnixNano())
 			stop()
 			check(want)
 		})

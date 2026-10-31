@@ -576,14 +576,15 @@ func TestSetupDeliveryWarnsWhenItCantNameMachines(t *testing.T) {
 	if got := guests["app1"].hostsFile(); !strings.HasSuffix(got, "198.18.0.8 app.hib\n# END hibernaut machines\n") {
 		t.Errorf("app's /etc/hosts = %q, want the block, though bad's doesn't take it", got)
 	}
-	if len(logs) != 1 || !strings.HasPrefix(logs[0], "updating bad: ") || !strings.Contains(logs[0], hostsblock.ErrUnterminated.Error()) {
-		t.Errorf("logs = %q, want bad's unterminated block once", logs)
+	if len(logs) != 2 || logs[0] != "building the hosts block: recovered (1 more since the last line)" ||
+		!strings.HasPrefix(logs[1], "updating bad: ") || !strings.Contains(logs[1], hostsblock.ErrUnterminated.Error()) {
+		t.Errorf("logs = %q, want the hosts block recovery and bad's unterminated block once", logs)
 	}
 
 	logs = nil
 	store.set(links.Doc{}, errors.New("test: links.json unreadable"))
 	d.look(ctx)
-	if len(logs) != 1 || !strings.HasPrefix(logs[0], "building the hosts block: ") {
-		t.Errorf("logs = %q, want the failure again once it came back", logs)
+	if want := []string{"updating bad: recovered (1 more since the last line)"}; !slices.Equal(logs, want) {
+		t.Errorf("logs = %q, want bad's recovery without resetting the hosts block's interval", logs)
 	}
 }

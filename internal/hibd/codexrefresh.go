@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/solev/hibernaut/internal/codex"
+	"github.com/solev/hibernaut/internal/failurelog"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -96,16 +97,18 @@ func codexRefreshError(err error) error {
 }
 
 type codexRefresher struct {
-	store *codex.Store
-	logf  func(format string, args ...any)
-	seen  codex.Profile
-	said  string
+	store    *codex.Store
+	logf     func(format string, args ...any)
+	seen     codex.Profile
+	said     string
+	now      func() time.Time
+	failures failurelog.Limiter
 }
 
 func (r *codexRefresher) run(ctx context.Context, every time.Duration, awake func() error) {
 	t := time.NewTicker(every)
 	defer t.Stop()
-	for {
+	for ctx.Err() == nil {
 		if awake() == nil {
 			r.look(ctx)
 		}
@@ -126,11 +129,33 @@ func (r *codexRefresher) look(ctx context.Context) {
 	if err == nil {
 		r.logChanges(p)
 	}
-	if now := codexHealthLine(p, err, refreshErr); now != r.said {
-		if now != "" {
-			r.logf("%s", now)
+	health, kind := codexHealthLine(p, err, refreshErr)
+	recovered := false
+	switch kind {
+	case codexHealthFailure:
+		now := time.Now
+		if r.now != nil {
+			now = r.now
 		}
-		r.said = now
+		if line, log := r.failures.Failure(now(), health); log && ctx.Err() == nil {
+			r.logf("%s", line)
+		}
+		return
+	case codexHealthNoLogin, codexHealthOK:
+		recovery := health
+		if kind == codexHealthNoLogin {
+			recovery = "refreshing stopped: no login is connected"
+		}
+		if line, log := r.failures.Success(recovery); log && ctx.Err() == nil {
+			r.logf("%s", line)
+			recovered = true
+		}
+	}
+	if health != r.said {
+		if health != "" && !recovered && ctx.Err() == nil {
+			r.logf("%s", health)
+		}
+		r.said = health
 	}
 }
 
@@ -144,22 +169,31 @@ func (r *codexRefresher) logChanges(p codex.Profile) {
 	r.seen = p
 }
 
-func codexHealthLine(p codex.Profile, err, refreshErr error) string {
+type codexHealthKind uint8
+
+const (
+	codexHealthNoLogin codexHealthKind = iota
+	codexHealthFailure
+	codexHealthState
+	codexHealthOK
+)
+
+func codexHealthLine(p codex.Profile, err, refreshErr error) (string, codexHealthKind) {
 	switch {
 	case errors.Is(err, codex.ErrNotConnected):
-		return ""
+		return "", codexHealthNoLogin
 	case err != nil:
-		return "reading the login failed: " + termsafe.String(err.Error())
+		return "reading the login failed: " + termsafe.String(err.Error()), codexHealthFailure
 	case p.Health != codex.HealthOK:
 		problem := p.Problem
 		if problem == "" {
 			problem = "run hib connect codex"
 		}
-		return fmt.Sprintf("the login is %s: %s", p.Health, termsafe.String(problem))
+		return fmt.Sprintf("the login is %s: %s", p.Health, termsafe.String(problem)), codexHealthState
 	case p.Failures > 0:
-		return "refreshing failed. Trying again after " + p.RetryAt.UTC().Format(time.RFC3339)
+		return "refreshing failed. Trying again after " + p.RetryAt.UTC().Format(time.RFC3339), codexHealthFailure
 	case refreshErr != nil:
-		return "refreshing failed: " + termsafe.String(refreshErr.Error())
+		return "refreshing failed: " + termsafe.String(refreshErr.Error()), codexHealthFailure
 	}
-	return "the login is ok"
+	return "the login is ok", codexHealthOK
 }

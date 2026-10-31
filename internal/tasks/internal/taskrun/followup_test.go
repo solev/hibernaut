@@ -115,7 +115,8 @@ func TestKeptUnfrozenFollowUpDoesNotBlockQueue(t *testing.T) {
 			if freeze.delivered {
 				// The unfrozen row cannot prove a lost freeze did not land; ExitFrozen is the backstop.
 				wantLogs = []string{fmt.Sprintf(
-					"task %s: launch command of %s: slice thawed; retry launch", followUp, followUp)}
+					"task %s: launch command of %s: slice thawed; retry launch", followUp, followUp),
+					fmt.Sprintf("task %s: the workflow ended", followUp)}
 			}
 			if !slices.Equal(logs, wantLogs) {
 				t.Errorf("supervisor log=%q, want %q", logs, wantLogs)
