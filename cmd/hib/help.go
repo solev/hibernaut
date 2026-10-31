@@ -73,14 +73,17 @@ func describeFlags(fl *flag.FlagSet) string {
 		default:
 			usage += fmt.Sprintf(" (default %s)", f.DefValue)
 		}
-		dashes := "--"
-		if fl.Name() == "task logs" && f.Name == "f" {
-			dashes = "-"
-		}
-		fmt.Fprintf(tw, "  %s%s%s\t%s\n", dashes, f.Name, name, usage)
+		fmt.Fprintf(tw, "  %s%s%s\t%s\n", flagPrefix(f.Name), f.Name, name, usage)
 	})
 	tw.Flush()
 	return b.String()
+}
+
+func flagPrefix(name string) string {
+	if len(name) == 1 {
+		return "-"
+	}
+	return "--"
 }
 
 func (a *app) mistake(msg string) int {
@@ -101,21 +104,26 @@ func unknownCommand(name string, group *command) string {
 const quoted = `("(?:[^"\\]|\\.)*")`
 
 var flagErrors = []struct {
-	re   *regexp.Regexp
-	with string
+	re        *regexp.Regexp
+	with      string
+	flagGroup int
 }{
-	{regexp.MustCompile(`^flag provided but not defined: -(.*)$`), "unknown flag --$1"},
-	{regexp.MustCompile(`^flag needs an argument: -(.*)$`), "--$1 needs a value"},
-	{regexp.MustCompile(`^invalid (?:boolean )?value ` + quoted + ` for (?:flag )?-(.*?): (.*)$`), "invalid value $1 for --$2: $3"},
-	{regexp.MustCompile(`^bad flag syntax: (.*)$`), "bad flag $1"},
+	{regexp.MustCompile(`^flag provided but not defined: -(.*)$`), "unknown flag --$1", 1},
+	{regexp.MustCompile(`^flag needs an argument: -(.*)$`), "--$1 needs a value", 1},
+	{regexp.MustCompile(`^invalid (?:boolean )?value ` + quoted + ` for (?:flag )?-(.*?): (.*)$`), "invalid value $1 for --$2: $3", 2},
+	{regexp.MustCompile(`^bad flag syntax: (.*)$`), "bad flag $1", 0},
 }
 
-// flagMessage rewrites the errors of Go's flag package, which spell flags with one dash.
 func flagMessage(err error) string {
 	msg := err.Error()
 	for _, e := range flagErrors {
-		if e.re.MatchString(msg) {
-			return e.re.ReplaceAllString(msg, e.with)
+		if match := e.re.FindStringSubmatch(msg); match != nil {
+			with := e.with
+			if e.flagGroup != 0 {
+				placeholder := fmt.Sprintf("$%d", e.flagGroup)
+				with = strings.ReplaceAll(with, "--"+placeholder, flagPrefix(match[e.flagGroup])+placeholder)
+			}
+			return e.re.ReplaceAllString(msg, with)
 		}
 	}
 	return msg

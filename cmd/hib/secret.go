@@ -69,7 +69,7 @@ func (a *app) secretRM(ctx context.Context, cfg *config, args []string) int {
 // log prints the audit log: the secret log, or with links the link log.
 func (a *app) log(ctx context.Context, cfg *config, n int, links bool) int {
 	if n < 0 {
-		return a.mistake("--n must be non-negative")
+		return a.mistake("-n must be non-negative")
 	}
 	if links {
 		return a.logLinks(ctx, cfg, n)

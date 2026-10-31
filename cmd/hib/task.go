@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"text/tabwriter"
 	"time"
 	"unicode/utf8"
 
@@ -58,9 +59,11 @@ func taskDocs() string {
 		fmt.Fprintf(&b, "  %s\n", o)
 	}
 	b.WriteString("\nsteps:\n")
+	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
 	for _, s := range task.Steps() {
-		fmt.Fprintf(&b, "  %s  %s\n", s, s.Doc())
+		fmt.Fprintf(tw, "  %s\t%s\n", s, s.Doc())
 	}
+	tw.Flush()
 	return strings.TrimSuffix(b.String(), "\n")
 }
 

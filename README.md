@@ -399,14 +399,14 @@ hib status                     # adds a Codex line: account, plan, token expiry,
 
 ### Tasks and recipes (`hib task`, `hib recipe`)
 
-`hib task` declares commands to start a command in its own supervised machine, list and inspect
-tasks, read or follow output, wait for an outcome, cancel a run, rescue a held machine, and remove
-a task. Every laptop task command in this build prints that it is not available yet and exits 1
-without contacting the host.
+`hib task` starts commands in their own supervised machines, lists and inspects tasks, reads or
+follows output, waits for an outcome, cancels runs, rescues held machines, and removes tasks.
+These commands are not available in this build yet.
+Every task command exits 1 without contacting the host.
 
-`hib recipe` declares commands to save, list, inspect and remove named commands, and choose a
-default for `hib task start`. Every laptop recipe command is also unavailable in this build.
-The help describes their arguments and flags for the units that implement them.
+`hib recipe` saves, lists, inspects and removes named commands, and chooses a default for
+`hib task start`. These commands are not available in this build yet. Every recipe command
+exits 1 without contacting the host.
 
 > `create-vm.sh` mirrors the steps that were done by hand on the current VM. It has been
 > linted but not yet run from scratch. `up.sh` and `install-e2b.sh` have been run for real,
@@ -522,19 +522,6 @@ hib makes machines on your Hibernaut host and runs them, over SSH. ssh NAME.hib 
 one, waking it if it's paused.
 
 commands:
-  task start [-- CMD ARG...]       start a command in its own task machine
-  task ls                          list tasks and their latest runs
-  task show TASK | --request ID    show a task or look up a request
-  task logs TASK                   read or follow a task run's output
-  task wait TASK                   wait for a task run and print its outcome
-  task cancel TASK                 stop a task's live run
-  task rescue TASK                 resume a held task machine and stop its stage
-  task rm TASK                     delete a task and its machine after asking
-  recipe put NAME -- CMD [ARG...]  save a named command
-  recipe ls                        list saved recipes
-  recipe show NAME                 show a saved recipe
-  recipe rm NAME                   remove a saved recipe
-  recipe default [NAME]            show or set the default recipe
   init                             set this laptop up for a host
   new NAME                         make a machine
   ls                               list machines, and when each pauses unless it's busy
@@ -558,6 +545,19 @@ commands:
   image save MACHINE NAME          save a machine as an image, memory included
   image ls                         list built-in and saved images
   image rm NAME                    remove a saved image no machine uses
+  task start [-- CMD ARG...]       start a command in its own task machine
+  task ls                          list tasks and their latest runs
+  task show TASK | --request ID    show a task or look up a request
+  task logs TASK                   read or follow a task run's output
+  task wait TASK                   wait for a task run and print its outcome
+  task cancel TASK                 stop a task's live run
+  task rescue TASK                 resume a held task machine and stop its stage
+  task rm TASK                     delete a task and its machine after asking
+  recipe put NAME -- CMD [ARG...]  save a named command
+  recipe ls                        list saved recipes
+  recipe show NAME                 show a saved recipe
+  recipe rm NAME                   remove a saved recipe
+  recipe default [NAME]            show or set the default recipe
   completion bash|zsh|fish         print a shell completion script
   bridge NAME.hib                  connect to a machine's SSH server; ssh runs this for you
   version                          print the version

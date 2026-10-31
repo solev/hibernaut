@@ -48,9 +48,6 @@ func TestTaskHelpIncludesTheDomainDocs(t *testing.T) {
 	for _, o := range task.Outcomes() {
 		lines = append(lines, fmt.Sprintf("  %s\n", o))
 	}
-	for _, s := range task.Steps() {
-		lines = append(lines, fmt.Sprintf("  %s  %s\n", s, s.Doc()))
-	}
 	for _, name := range []string{"ls", "show"} {
 		if code := hib("help", "task", name); code != 0 {
 			t.Errorf("help task %s = exit %d, stderr %q", name, code, c.errOut)
@@ -59,6 +56,25 @@ func TestTaskHelpIncludesTheDomainDocs(t *testing.T) {
 		for _, line := range lines {
 			if !strings.Contains(c.out.String(), line) {
 				t.Errorf("help task %s lacks %q", name, line)
+			}
+		}
+		_, section, _ := strings.Cut(c.out.String(), "\nsteps:\n")
+		section, _, _ = strings.Cut(section, "\nflags:\n")
+		stepLines := strings.Split(strings.TrimSuffix(section, "\n"), "\n")
+		if len(stepLines) != len(task.Steps()) {
+			t.Errorf("help task %s has %d step lines, want %d", name, len(stepLines), len(task.Steps()))
+			continue
+		}
+		column := -1
+		for i, s := range task.Steps() {
+			line := stepLines[i]
+			pos := strings.Index(line, s.Doc())
+			if pos < 0 || strings.TrimSpace(line[:pos]) != fmt.Sprint(s) {
+				t.Errorf("help task %s lacks step %s and its doc %q", name, s, s.Doc())
+			} else if column >= 0 && pos != column {
+				t.Errorf("help task %s step %s doc starts at column %d, want %d", name, s, pos+1, column+1)
+			} else {
+				column = pos
 			}
 		}
 	}

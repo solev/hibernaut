@@ -15,8 +15,8 @@ type taskStartOptions struct {
 func taskStartCommand() *command {
 	return &command{
 		args: "[-- CMD ARG...]", takesCommand: true,
-		opts: "[--prompt TEXT | --prompt-file F] [--file PATH] [--image I] [--size S] " +
-			"[--timeout D] [--recipe NAME] [--request-id ID]",
+		opts: "[--prompt TEXT | --prompt-file F] [--file PATH] [--image IMAGE] [--size SIZE] " +
+			"[--timeout DURATION] [--recipe NAME] [--request-id ID]",
 		about: "Starts CMD in its own machine and saves the task before answering. The host supervises it\n" +
 			"after this laptop disconnects. Without CMD, uses --recipe or the default recipe.\n" +
 			"--prompt and --prompt-file are alternatives. --file may repeat. Inputs total at most\n" +
@@ -37,9 +37,9 @@ func taskStartFlags(fl *flag.FlagSet) runner {
 		o.files = append(o.files, path)
 		return nil
 	})
-	fl.StringVar(&o.image, "image", "", "machine `I`mage (default recipe's image or dev)")
-	fl.StringVar(&o.size, "size", "", "machine `S`ize (default recipe's size or medium)")
-	fl.DurationVar(&o.timeout, "timeout", 0, "run time limit `D` (default recipe's timeout or 24h)")
+	fl.StringVar(&o.image, "image", "", "the `image` to make the task machine from (default recipe's image or dev)")
+	fl.StringVar(&o.size, "size", "", "small, medium or large (default recipe's `size` or medium)")
+	fl.DurationVar(&o.timeout, "timeout", 0, "stop the run after this long, such as 1h (default recipe's timeout or 24h)")
 	fl.StringVar(&o.recipe, "recipe", "", "use the named recipe `NAME`")
 	fl.StringVar(&o.requestID, "request-id", "", "idempotency `ID` (default a generated ID)")
 	return withTaskJSON(fl, o.run)

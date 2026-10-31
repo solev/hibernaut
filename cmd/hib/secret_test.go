@@ -400,8 +400,8 @@ func TestLogRefusesBadArgumentsWithoutAskingTheHost(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"-n", "-1"}, "hib log: --n must be non-negative"},
-		{[]string{"extra"}, "log [--n N]"},
+		{[]string{"-n", "-1"}, "hib log: -n must be non-negative"},
+		{[]string{"extra"}, "log [-n N]"},
 		{[]string{"-n", "many"}, "invalid value"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {

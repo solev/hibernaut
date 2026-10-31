@@ -41,7 +41,7 @@ func homeless(t *testing.T, h *host) (*client, func(args ...string) int) {
 	}
 }
 
-var singleDashFlag = regexp.MustCompile(`(^|[\s\[(|])-[a-z]`)
+var helpFlag = regexp.MustCompile(`(^|[\s\[(|])(-{1,2})([a-z][a-z0-9-]*)`)
 
 func TestEveryCommandHasHelpBeforeInit(t *testing.T) {
 	h := newHost(t)
@@ -70,23 +70,25 @@ func TestEveryCommandHasHelpBeforeInit(t *testing.T) {
 		if !strings.HasPrefix(first, "usage: hib "+cmd.path()) || !strings.Contains(first, "\nexamples:\n  ") {
 			t.Errorf("help for %s lacks a synopsis or an example:\n%s", cmd.path(), first)
 		}
-		check := first
-		if cmd.path() == "task logs" {
-			check = strings.ReplaceAll(check, "-f", "--f")
-		}
-		if line := singleDashFlag.FindString(check); line != "" {
-			t.Errorf("help for %s spells a flag with one dash:\n%s", cmd.path(), first)
+		for _, match := range helpFlag.FindAllStringSubmatch(first, -1) {
+			dashes := "--"
+			if len(match[3]) == 1 {
+				dashes = "-"
+			}
+			if match[2] != dashes {
+				t.Errorf("help for %s spells %s%s; want %s%s", cmd.path(), match[2], match[3], dashes, match[3])
+			}
 		}
 		for _, f := range declaredFlags(cmd) {
 			spelling := "--" + f.Name
-			if cmd.path() == "task logs" && f.Name == "f" {
-				spelling = "-f"
+			if len(f.Name) == 1 {
+				spelling = "-" + f.Name
 			}
 			if !strings.Contains(first, "\n  "+spelling+" ") && !strings.HasSuffix(first, "\n  "+spelling+"\n") {
-				t.Errorf("help for %s lacks --%s:\n%s", cmd.path(), f.Name, first)
+				t.Errorf("help for %s lacks %s:\n%s", cmd.path(), spelling, first)
 			}
 			if f.Name != "json" && !strings.Contains(joinWords(cmd.args, cmd.opts), spelling) {
-				t.Errorf("synopsis of %s lacks --%s: %s", cmd.path(), f.Name, cmd.opts)
+				t.Errorf("synopsis of %s lacks %s: %s", cmd.path(), spelling, cmd.opts)
 			}
 		}
 	}
@@ -100,7 +102,7 @@ func TestHelpShowsFlagsWithTheirDefaults(t *testing.T) {
 	c := newClient(t, h)
 	for cmd, want := range map[string][]string{
 		"new":         {"usage: hib new NAME [--image IMAGE] [--size SIZE] [--idle 15m]\n", "  --image IMAGE ", "(default dev)", "  --idle DURATION "},
-		"log":         {"usage: hib log [--n N] [--links]\n", "  --n N ", "(default 50)", "  --links ", "  --json "},
+		"log":         {"usage: hib log [-n N] [--links]\n", "  -n N ", "(default 50)", "  --links ", "  --json "},
 		"fork":        {"(default 1)", "pauses for a few seconds", "a secret you typed in yourself goes into the image too"},
 		"image build": {"usage: hib image build NAME [--force] [--verbose]\n", "  --force ", "  --verbose "},
 		"rm":          {"usage: hib rm NAME [--yes]\n", "  --yes "},
@@ -128,6 +130,18 @@ func TestGeneralHelpListsCommandsAndExitCodes(t *testing.T) {
 		t.Fatalf("hib help = %d, stderr %q", code, c.errOut)
 	}
 	help := c.out.String()
+	_, commands, _ := strings.Cut(help, "\ncommands:\n")
+	if first := strings.Fields(commands)[0]; first != "init" {
+		t.Errorf("hib help lists %s first, want init", first)
+	}
+	last := -1
+	for _, path := range []string{"image rm", "task start", "task rm", "recipe put", "recipe default", "completion"} {
+		pos := strings.Index(help, "\n  "+path+" ")
+		if pos <= last {
+			t.Errorf("hib help lists %s out of order; want image, task, recipe, completion", path)
+		}
+		last = pos
+	}
 	for _, part := range []string{
 		"usage: hib [--config DIR] COMMAND [ARG...]\n",
 		"\n  new NAME ", "\n  image build NAME ", "\n  image save MACHINE NAME ", "\n  ssh NAME [-- CMD] ",
@@ -152,6 +166,47 @@ func TestGeneralHelpListsCommandsAndExitCodes(t *testing.T) {
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
 		t.Errorf("help reached the host: %q", calls)
+	}
+}
+
+func TestFlagMetavariablesAreConsistent(t *testing.T) {
+	c, hib := homeless(t, newHost(t))
+	seen := map[string]string{}
+	flagLine := regexp.MustCompile(`^  --?([a-z][a-z0-9-]*)(?: ([A-Z][A-Z0-9_@]*))? {2,}(.*)$`)
+	midWordCapital := regexp.MustCompile(`[a-z][A-Z]`)
+	for _, cmd := range allCommands(commandTable()) {
+		if code := hib(append([]string{"help"}, strings.Fields(cmd.path())...)...); code != 0 {
+			t.Fatalf("hib help %s = exit %d", cmd.path(), code)
+		}
+		_, section, _ := strings.Cut(c.out.String(), "\nflags:\n")
+		section, _, _ = strings.Cut(section, "\nexamples:\n")
+		count := 0
+		for _, line := range strings.Split(section, "\n") {
+			match := flagLine.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			count++
+			name, metavar, doc := match[1], match[2], match[3]
+			if want, ok := seen[name]; ok && metavar != want {
+				t.Errorf("flag %s metavariable = %s in %s, want %s", name, metavar, cmd.path(), want)
+			} else {
+				seen[name] = metavar
+			}
+			if midWordCapital.MatchString(doc) {
+				t.Errorf("hib help %s has a capital in mid-word: %s", cmd.path(), line)
+			}
+			if name == "image" || name == "size" || name == "timeout" {
+				for _, word := range strings.Fields(doc) {
+					if word == metavar {
+						t.Errorf("hib help %s repeats its %s metavariable in the description: %s", cmd.path(), name, line)
+					}
+				}
+			}
+		}
+		if want := len(declaredFlags(cmd)); count != want {
+			t.Errorf("hib help %s has %d readable flag lines, want %d", cmd.path(), count, want)
+		}
 	}
 }
 

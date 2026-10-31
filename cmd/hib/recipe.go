@@ -10,7 +10,7 @@ func recipeCommands() map[string]*command {
 	return map[string]*command{
 		"put": {
 			args: "NAME -- CMD [ARG...]", nargs: 1, takesCommand: true,
-			opts: "[--image I] [--size S] [--timeout D]",
+			opts: "[--image IMAGE] [--size SIZE] [--timeout DURATION]",
 			about: "Saves CMD as NAME, with optional image, size and timeout defaults for hib task start.\n" +
 				"Replaces a recipe with the same name. This command isn't in this build yet.",
 			examples: []string{"hib recipe put check -- go test ./...",
@@ -51,9 +51,9 @@ type recipePutOptions struct {
 
 func recipePutFlags(fl *flag.FlagSet) runner {
 	var o recipePutOptions
-	fl.StringVar(&o.image, "image", "", "default machine `I`mage")
-	fl.StringVar(&o.size, "size", "", "default machine `S`ize")
-	fl.DurationVar(&o.timeout, "timeout", 0, "default run time limit `D`")
+	fl.StringVar(&o.image, "image", "", "the default `image` to make the task machine from")
+	fl.StringVar(&o.size, "size", "", "the default machine `size` (small, medium or large)")
+	fl.DurationVar(&o.timeout, "timeout", 0, "stop the run after this long, such as 1h")
 	return withTaskJSON(fl, o.put)
 }
 
