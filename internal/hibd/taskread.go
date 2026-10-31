@@ -78,10 +78,10 @@ func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full 
 }
 
 func (a *App) recordTaskRequest(ctx context.Context, c taskCommand, args []string) int {
-	fl := a.flags(c.path)
+	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
 	requestID := fl.String("request-id", "", "UTF-8 idempotency key of 1 to 128 bytes")
-	rest, ok := a.parse(fl, args, 1, c.path+" "+c.args)
+	rest, ok := a.parse(fl, args, 1, c.Path+" "+c.Args)
 	if !ok {
 		return 2
 	}
@@ -93,16 +93,16 @@ func (a *App) recordTaskRequest(ctx context.Context, c taskCommand, args []strin
 	})
 	id, err := task.ParseID(rest[0])
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, *requestID, fmt.Errorf("%w: %w", errBadTaskRequest, err))
+		return a.taskFail(*asJSON, c.Path, *requestID, fmt.Errorf("%w: %w", errBadTaskRequest, err))
 	}
 	if supplied && (*requestID == "" || len(*requestID) > 128 || !utf8.ValidString(*requestID)) {
-		return a.taskFail(*asJSON, c.path, *requestID, fmt.Errorf("%w: a UTF-8 request ID of 1 to 128 bytes is required", errBadTaskRequest))
+		return a.taskFail(*asJSON, c.Path, *requestID, fmt.Errorf("%w: a UTF-8 request ID of 1 to 128 bytes is required", errBadTaskRequest))
 	}
 	if !supplied {
 		*requestID = rand.Text()
 	}
 	var kind task.RequestKind
-	switch c.path {
+	switch c.Path {
 	case "task cancel":
 		kind = task.RequestCancel
 	case "task rescue":
@@ -110,26 +110,25 @@ func (a *App) recordTaskRequest(ctx context.Context, c taskCommand, args []strin
 	case "task rm":
 		kind = task.RequestRemove
 	default:
-		return a.taskFail(*asJSON, c.path, *requestID, fmt.Errorf("%w: unknown request %q", errBadTaskRequest, c.path))
+		return a.taskFail(*asJSON, c.Path, *requestID, fmt.Errorf("%w: unknown request %q", errBadTaskRequest, c.Path))
 	}
 	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, *requestID, err)
+		return a.taskFail(*asJSON, c.Path, *requestID, err)
 	}
 	st := a.tasks(cfg)
 	defer st.Close()
-	user := cmp.Or(a.Getenv("SUDO_USER"), "root")
 	q, err := st.Request(ctx, tasks.Request{RequestID: *requestID, Task: id, Kind: kind,
-		Actor: task.Actor{Owner: user, Name: user, Source: "cli"}, At: a.now()})
+		Actor: a.taskActor(), At: a.now()})
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, *requestID, err)
+		return a.taskFail(*asJSON, c.Path, *requestID, err)
 	}
 	out := hibapi.RequestOf(q)
 	if *asJSON {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{RequestID: *requestID, Request: &out}})
 	}
 	if _, err := fmt.Fprintf(a.Stdout, "recorded %s for %s run %d\nrequest %s\n", out.Kind, id, out.Run, termsafe.Line(*requestID)); err != nil {
-		return a.taskFail(false, c.path, *requestID, err)
+		return a.taskFail(false, c.Path, *requestID, err)
 	}
 	return 0
 }

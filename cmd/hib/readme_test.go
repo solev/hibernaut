@@ -28,3 +28,21 @@ func TestREADMEHasTheCommandReference(t *testing.T) {
 		t.Errorf("README.md's command reference differs from hib help. Paste this in:\n%s", want)
 	}
 }
+
+func TestREADMEExplainsUnavailableTasksAndRecipes(t *testing.T) {
+	data, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range []string{"task", "recipe"} {
+		_, paragraph, ok := strings.Cut(string(data), "\n`hib "+group+"` ")
+		paragraph, _, _ = strings.Cut(paragraph, "\n\n")
+		if !ok || !strings.Contains(paragraph, "this build") ||
+			!strings.Contains(paragraph, "exits 1") || !strings.Contains(paragraph, "without contacting the host") {
+			t.Errorf("README's hib %s paragraph must say this build exits 1 without contacting the host", group)
+		}
+		if strings.Contains(paragraph, "declares commands") || strings.Contains(paragraph, "units") {
+			t.Errorf("README's hib %s paragraph uses implementation jargon", group)
+		}
+	}
+}

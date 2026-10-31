@@ -114,6 +114,9 @@ func (a *app) remoteSudo(ctx context.Context, cfg *config, timeout time.Duration
 
 type callOptions struct {
 	secret    []byte
+	input     func() (io.ReadCloser, error)
+	raw       io.Writer
+	resend    func() bool
 	holdStdin bool
 	sudo      bool
 	mayWake   bool
@@ -121,9 +124,24 @@ type callOptions struct {
 }
 
 func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshArgs []string, opts callOptions) (hibapi.Response, error) {
+	if opts.input != nil && (opts.secret != nil || opts.holdStdin) {
+		return hibapi.Response{}, errors.New("replayable input can't be combined with secret or held stdin")
+	}
 	for woke := false; ; woke = true {
 		var out bytes.Buffer
 		var in io.Reader
+		var replay io.ReadCloser
+		if opts.input != nil {
+			var err error
+			replay, err = opts.input()
+			if err != nil {
+				return hibapi.Response{}, fmt.Errorf("opening hibd's input: %w", err)
+			}
+			if replay == nil {
+				return hibapi.Response{}, errors.New("hibd's input factory returned no reader")
+			}
+			in = replay
+		}
 		if opts.secret != nil {
 			in = bytes.NewReader(opts.secret)
 		}
@@ -145,12 +163,31 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 		}
 		code, err := a.runSSH(runCtx, timeout, sshArgs, in, stdout)
 		cancelRun()
+		if replay != nil {
+			if closeErr := replay.Close(); closeErr != nil {
+				return hibapi.Response{}, fmt.Errorf("closing hibd's input: %w", errors.Join(err, closeErr))
+			}
+		}
 		if opts.holdStdin {
 			inW.Close()
 			inR.Close()
 		}
 		if events != nil {
 			err = events.end(err)
+		}
+		if opts.resend != nil && (err != nil || code == 255) {
+			if ctx.Err() == nil && opts.resend() {
+				if code == 255 && !woke && opts.mayWake && !events.heard() {
+					if wakeErr := a.wake(ctx, cfg); wakeErr != nil && !errors.Is(wakeErr, errAwake) {
+						return hibapi.Response{}, transportFailure{wakeErr}
+					}
+				}
+				continue
+			}
+			if err == nil {
+				err = a.exitError(cfg, code)
+			}
+			return hibapi.Response{}, transportFailure{err}
 		}
 		if err != nil {
 			return hibapi.Response{}, err
@@ -170,10 +207,15 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 		if opts.sudo && code != 0 && out.Len() == 0 {
 			return hibapi.Response{}, errors.New("hibd needs passwordless sudo on the host: run hib init --host USER@HOST with a user that has it")
 		}
+		if opts.raw != nil {
+			if _, err := opts.raw.Write(out.Bytes()); err != nil {
+				return hibapi.Response{}, err
+			}
+		}
 		r, err := hibapi.DecodeResponse(out.Bytes())
 		var remote *hibapi.RemoteError
 		if err != nil && !errors.As(err, &remote) && !errors.Is(err, hibapi.ErrVersion) {
-			if opts.secret != nil {
+			if opts.secret != nil || opts.input != nil {
 				err = errors.New("unreadable reply from hibd")
 			}
 			err = fmt.Errorf("%w: %s", err, a.checkHost())
@@ -181,6 +223,11 @@ func (a *app) call(ctx context.Context, cfg *config, timeout time.Duration, sshA
 		return r, err
 	}
 }
+
+type transportFailure struct{ err error }
+
+func (e transportFailure) Error() string { return e.err.Error() }
+func (e transportFailure) Unwrap() error { return e.err }
 
 func (a *app) runSSH(ctx context.Context, timeout time.Duration, args []string, stdin io.Reader, stdout io.Writer) (int, error) {
 	if timeout > 0 {
