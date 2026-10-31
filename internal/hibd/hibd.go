@@ -1630,7 +1630,6 @@ func (a *App) daemon(ctx context.Context, args []string) int {
 		}
 		select {
 		case <-ctx.Done():
-			break
 		case at = <-ticks:
 		}
 	}
