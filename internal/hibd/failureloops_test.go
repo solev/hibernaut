@@ -236,10 +236,10 @@ func TestSetupDeliveryKeepsKeysIndependentAndForgetsAbsentMachines(t *testing.T)
 	}
 	var logs lineLog
 	d := newSetupDelivery(e, cfg, a.codexStore(cfg, nil), logs.logf)
-	d.report("updating gone", errors.New("first"))
-	d.report("listing machines", errors.New("second"))
+	d.report(t.Context(), "updating gone", errors.New("first"))
+	d.report(t.Context(), "listing machines", errors.New("second"))
 	d.look(t.Context())
-	d.report("updating gone", errors.New("third"))
+	d.report(t.Context(), "updating gone", errors.New("third"))
 	if got, want := logs.take(), []string{"updating gone: first", "listing machines: second",
 		"listing machines: recovered", "updating gone: third"}; !slices.Equal(got, want) {
 		t.Fatalf("independent keys and absent-machine replacement logs = %q, want %q", got, want)
@@ -269,4 +269,37 @@ func TestMainLoopLogsRecovery(t *testing.T) {
 			t.Fatalf("watcher recovery logged %d counted lines, want 1; log %q", n, logs.String())
 		}
 	})
+}
+
+func TestSetupDeliveryUsesItsClockAndChecksLifeAfterReadingIt(t *testing.T) {
+	e := fake.New()
+	a, _, _ := newApp(t, e)
+	withSecretConfig(t, a)
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs lineLog
+	d := newSetupDelivery(e, cfg, a.codexStore(cfg, nil), logs.logf)
+	clock := &testClock{now: time.Time{}}
+	d.now = clock.Now
+	d.report(t.Context(), "listing machines", errors.New("first"))
+	clock.add(5 * time.Second)
+	d.report(t.Context(), "listing machines", errors.New("second"))
+	clock.add(10*time.Minute - 5*time.Second)
+	d.report(t.Context(), "listing machines", errors.New("third"))
+	if got, want := logs.take(), []string{"listing machines: first",
+		"listing machines: third (1 more since the last line)"}; !slices.Equal(got, want) {
+		t.Fatalf("injected clock logs = %q, want %q", got, want)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	d.now = func() time.Time {
+		cancel()
+		return clock.Now().Add(10 * time.Minute)
+	}
+	d.report(ctx, "listing machines", errors.New("after shutdown"))
+	if got := logs.take(); len(got) != 0 {
+		t.Fatalf("setup logged after its clock ended daemon life: %q", got)
+	}
 }

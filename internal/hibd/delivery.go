@@ -257,9 +257,7 @@ func (d *setupDelivery) look(ctx context.Context) {
 	reported := map[string]bool{}
 	report := func(doing string, err error) {
 		reported[doing] = true
-		if life.Err() == nil {
-			d.report(doing, err)
-		}
+		d.report(life, doing, err)
 	}
 	mark, err := readPushMark(d.cfg.stateDir)
 	report("reading the push mark", err)
@@ -283,7 +281,10 @@ func (d *setupDelivery) look(ctx context.Context) {
 	}
 }
 
-func (d *setupDelivery) report(doing string, err error) {
+func (d *setupDelivery) report(ctx context.Context, doing string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
 	l := d.problems[doing]
 	var line string
 	var log bool
@@ -296,7 +297,7 @@ func (d *setupDelivery) report(doing string, err error) {
 	} else if l != nil {
 		line, log = l.Success("recovered")
 	}
-	if log {
+	if log && ctx.Err() == nil {
 		d.logf("%s: %s", doing, line)
 	}
 }
