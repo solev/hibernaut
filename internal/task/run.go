@@ -223,17 +223,33 @@ var ErrHeld = errors.New("paused without the freeze: hib task rescue TASK or hib
 // wakes the machine until the daemon records the stop.
 var ErrPastDeadline = errors.New("the run's deadline passed while it was paused")
 
+// UnprovenStop reports whether the stop ended without proof from the guest.
+func (r Run) UnprovenStop() bool {
+	for _, c := range r.Log {
+		if b, ok := c.Body.(*StopResult); ok {
+			return b.How == "unproven"
+		}
+	}
+	return false
+}
+
 // Status derives what users see. daemon is the current daemon instance, as the store records it
 // at daemon start. An intent another instance left open shows as recovering until this one
 // closes it.
 func (r Run) Status(daemon Instance) Status {
+	var detail string
+	if s, ok := r.Stop(); ok {
+		detail = s.Detail
+	}
+	if r.UnprovenStop() {
+		if detail != "" {
+			detail += "; "
+		}
+		detail += "stop unproven: the stage may still run when the machine wakes"
+	}
 	if r.Ended() {
 		o, stage := r.Outcome()
-		st := Status{Outcome: o, Stage: stage}
-		if s, ok := r.Stop(); ok {
-			st.Detail = s.Detail
-		}
-		return st
+		return Status{Outcome: o, Stage: stage, Detail: detail}
 	}
 	last, ok := r.Last()
 	if !ok {
@@ -244,8 +260,8 @@ func (r Run) Status(daemon Instance) Status {
 	if m, ok := last.Body.(*MachineResult); ok && m.Refused != "" {
 		st.Phase, st.Detail = PhaseQueued, m.Refused
 	}
-	if s, ok := r.Stop(); ok {
-		st.Detail = s.Detail
+	if _, ok := r.Stop(); ok {
+		st.Detail = detail
 	} else if len(r.Requests) > 0 {
 		st.Phase = PhaseStopping
 	}
@@ -270,6 +286,9 @@ func (r Run) Outcome() (Outcome, Stage) {
 	}
 	for _, c := range r.Log {
 		if b, ok := c.Body.(*StageExit); ok && !b.Exit.OK() {
+			if b.Exit.Result == "timeout" {
+				return TimedOut, b.Stage
+			}
 			return Failed, b.Stage
 		}
 	}
