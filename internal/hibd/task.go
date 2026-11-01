@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/engine"
@@ -145,58 +146,61 @@ func (a *App) taskStart(ctx context.Context, c taskCommand, args []string) int {
 
 var errBadTaskRequest = errors.New("bad task request")
 
-// submissionOf checks a start request at the boundary and resolves its defaults. It is pure.
-// Recipe names are resolved by the caller, which reads recipes.json, before it calls this.
 func submissionOf(req hibapi.TaskStart, actor task.Actor, at time.Time) (task.Submission, error) {
 	bad := func(format string, args ...any) (task.Submission, error) {
 		return task.Submission{}, fmt.Errorf("%w: %s", errBadTaskRequest, fmt.Sprintf(format, args...))
 	}
-	if req.RequestID == "" || len(req.RequestID) > 128 {
-		return bad("a request ID of 1 to 128 bytes is required")
+	if req.RequestID == "" || len(req.RequestID) > 128 || !utf8.ValidString(req.RequestID) {
+		return bad("a UTF-8 request ID of 1 to 128 bytes is required")
+	}
+	if req.Repo != "" || req.Branch != "" || (req.Publish != "" && req.Publish != task.PublishNone) {
+		return bad("repository, branch and publication support comes in a later build")
+	}
+	if req.Recipe != "" {
+		return bad("recipes come in a later build")
+	}
+	if req.TimeoutSeconds < 0 || req.TimeoutSeconds > int64((1<<63-1)/time.Second) {
+		return bad("timeout must be non-negative and fit in a duration")
 	}
 	if req.Task != "" {
 		if _, err := task.ParseID(string(req.Task)); err != nil {
 			return bad("%v", err)
 		}
 	}
-	spec := task.Spec{Base: req.Branch, Command: req.Command, Recipe: req.Recipe,
-		Image: req.Image, Size: req.Size, Publish: req.Publish,
+	spec := task.Spec{Command: req.Command,
+		Image: req.Image, Size: req.Size, Publish: task.PublishNone,
 		Timeout: time.Duration(req.TimeoutSeconds) * time.Second}
-	if req.Repo != "" {
-		owner, name, ok := strings.Cut(req.Repo, "/")
-		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-			return bad("repo %q isn't OWNER/NAME", req.Repo)
-		}
-		spec.Repo = task.Repo{Owner: owner, Name: name}
-	}
 	if len(spec.Command) == 0 {
-		return bad("no command: give -- CMD ARG... or --recipe NAME")
+		return bad("no command: give -- CMD ARG...")
+	}
+	for i, arg := range spec.Command {
+		if !utf8.ValidString(arg) || strings.ContainsRune(arg, 0) || (i == 0 && arg == "") {
+			return bad("command must have a non-empty executable and UTF-8 arguments without NUL")
+		}
 	}
 	spec.Image = cmp.Or(spec.Image, images.Default)
 	spec.Size = cmp.Or(spec.Size, images.DefaultSize().Name())
+	if err := hibapi.CheckName(spec.Image); err != nil {
+		return bad("%v", err)
+	}
 	if _, err := images.SizeNamed(spec.Size); err != nil {
 		return bad("%v", err)
 	}
 	if spec.Timeout <= 0 {
 		spec.Timeout = task.DefaultTimeout
 	}
-	switch spec.Publish {
-	case "":
-		spec.Publish = task.PublishDraftPR
-		if spec.Repo == (task.Repo{}) {
-			spec.Publish = task.PublishNone
-		}
-	case task.PublishDraftPR, task.PublishNone:
-	default:
-		return bad("publish %q isn't draft-pr or none", spec.Publish)
-	}
-	if spec.Publish == task.PublishDraftPR && spec.Repo == (task.Repo{}) {
-		return bad("--publish draft-pr needs --repo")
-	}
 	var total int64
+	names := make(map[string]bool)
 	add := func(f hibapi.TaskFile) error {
 		if f.Size < 0 {
 			return fmt.Errorf("file %q has a negative size", f.Name)
+		}
+		if names[f.Name] {
+			return fmt.Errorf("duplicate file name %q", f.Name)
+		}
+		names[f.Name] = true
+		if f.Size > task.MaxInputBytes-total {
+			return fmt.Errorf("the prompt and files exceed %d bytes", task.MaxInputBytes)
 		}
 		total += f.Size
 		spec.Inputs = append(spec.Inputs, task.File{Name: f.Name, Size: f.Size})
@@ -217,9 +221,6 @@ func submissionOf(req hibapi.TaskStart, actor task.Actor, at time.Time) (task.Su
 		if err := add(f); err != nil {
 			return bad("%v", err)
 		}
-	}
-	if total > task.MaxInputBytes {
-		return bad("the prompt and files are %d bytes, more than %d", total, task.MaxInputBytes)
 	}
 	return task.Submission{RequestID: req.RequestID, Task: req.Task, Spec: spec, Actor: actor,
 		At: at}, nil
