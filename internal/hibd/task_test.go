@@ -36,13 +36,6 @@ func TestPauseAndRmAskTheTaskRules(t *testing.T) {
 
 func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 	a, out, errOut := newApp(t, fake.New())
-	if !strings.Contains(taskUsage("task"), "  wait TASK [-run N]\n") {
-		t.Error("hibd task usage lacks wait TASK [-run N]")
-	}
-	code, reply, err := runJSON(t, a, out, "task", "wait", "t-aaaaaaaa", "-run", "2", "-json")
-	if code != 1 || err == nil || reply.Error != "tasks are not implemented yet" {
-		t.Errorf("hibd task wait = exit %d, %+v, %v; want the not-yet reply", code, reply, err)
-	}
 	seen := map[string]bool{}
 	for _, c := range hibapi.TaskCommands() {
 		if taskUsesE2B(c.Path) != c.E2B {
@@ -71,7 +64,7 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 			if code != 0 || err != nil || len(r.Tasks) != 0 {
 				t.Errorf("hibd %v = exit %d, %+v, %v; want no tasks", args, code, r, err)
 			}
-		case "task show", "task logs", "task cancel", "task rescue", "task rm":
+		case "task show", "task logs", "task wait", "task cancel", "task rescue", "task rm":
 			if code != 1 || err == nil || r.Code != hibapi.CodeNoTask {
 				t.Errorf("hibd %v = exit %d, code %s, %v; want NO_TASK", args, code, r.Code, err)
 			}

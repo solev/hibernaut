@@ -191,6 +191,8 @@ type App struct {
 	ProxyListen func(network, address string) (net.Listener, error)
 	// Now supplies hibd's clock. If it's nil, App uses time.Now.
 	Now func() time.Time
+	// TaskHoldWait replaces a logs or wait poll's cancellable timer. Nil uses a one-second timer.
+	TaskHoldWait func(context.Context, time.Duration) error
 	// DaemonTicks supplies the daemon's ticks. If it's nil, App uses a ticker at -every.
 	DaemonTicks <-chan time.Time
 	// TaskTicks supplies task supervisor ticks. Nil uses tasks.Poll.
