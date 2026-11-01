@@ -433,10 +433,14 @@ and its output when your laptop disconnects.
 `hib task start` starts a command in its own task machine. This command is not available in
 this build yet. It exits 1 without contacting the host.
 
-`hib task ls` lists tasks, and `hib task show` inspects a task or looks up a request.
-`hib task cancel` stops a live run, `hib task rescue` resumes a held machine and stops its
-stage, and `hib task rm` removes a task and its machine after asking.
-These commands are not available in this build yet. Each command exits 1 without contacting the host.
+`hib task ls` lists tasks newest first and explains why a run waits. `hib task show` shows
+every run, command, step, request, and removal. Use `--request ID` instead of a task ID to
+look up a submission whose reply was lost. `hib task cancel` asks hibd to stop a live run.
+`hib task rescue` lets hibd resume a machine paused without proof its command froze, then
+stop the task's command running inside it. `hib task rm` asks hibd to remove the task and
+its machine after asking you first. Without a terminal, pass `--yes`. These requests survive
+your laptop disconnecting. Reuse `--request-id ID` to retry the same request, and use `--json`
+on any of these five commands to print hibd's reply unchanged.
 
 `hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
 These commands are not available in this build yet. Each command exits 1 without contacting the host.
