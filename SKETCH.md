@@ -70,7 +70,9 @@ failed in.
 ### Call site 1: a one-shot records, and nothing else
 
 `hib task start` sends one JSON line, then the file bytes, to `sudo -n hibd task start`. The
-handler parses at the boundary and saves. It never touches a machine.
+laptop validates every input and freezes the stream in a private, unlinked spool before any
+host call. Retries read the same spool with the same request ID. The handler checks names,
+sizes and unsupported fields at the boundary and saves. It never touches a machine.
 
 ```go
 // internal/hibd/task.go
