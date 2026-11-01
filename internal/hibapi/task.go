@@ -39,6 +39,27 @@ const (
 // Retryable reports whether the same request may be sent again with the same request ID.
 func (c ErrorCode) Retryable() bool { return c == CodeQueueFull || c == CodeBusy }
 
+// RefusedBeforeSave reports whether hibd refused without recording this request.
+// BUSY, NO_TASK and uncoded errors can also come from reads after Submit commits.
+func (c ErrorCode) RefusedBeforeSave() bool {
+	switch c {
+	case CodeBadRequest:
+		// The handler validates the input before calling Submit or Request.
+		return true
+	case CodeConflict:
+		// Submit and Request compare the ID's saved request before inserting another.
+		return true
+	case CodeQueueFull, CodeInputFull, CodeRunLive:
+		// Submit checks queue space, input budget and live runs before its inserts.
+		return true
+	case CodeNotLive:
+		// Request checks for a live run before inserting cancel or rescue.
+		return true
+	default:
+		return false
+	}
+}
+
 // TaskReply is what every task command adds to a Response: the request ID it answered, and the
 // task or the tasks. The fields are on Response through embedding, so a task reply is still one
 // JSON object.

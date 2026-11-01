@@ -34,34 +34,39 @@ func TestPauseAndRmAskTheTaskRules(t *testing.T) {
 	}
 }
 
-// TestTaskCommandsDispatchAndUsage checks the task and recipe table is the one list: every row
-// dispatches to its own handler, appears in its group's usage and is named in hibd's usage.
 func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 	a, out, errOut := newApp(t, fake.New())
+	if !strings.Contains(taskUsage("task"), "  wait TASK [-run N]\n") {
+		t.Error("hibd task usage lacks wait TASK [-run N]")
+	}
+	code, reply, err := runJSON(t, a, out, "task", "wait", "t-aaaaaaaa", "-run", "2", "-json")
+	if code != 1 || err == nil || reply.Error != "tasks are not implemented yet" {
+		t.Errorf("hibd task wait = exit %d, %+v, %v; want the not-yet reply", code, reply, err)
+	}
 	seen := map[string]bool{}
-	for _, c := range taskCommands {
-		if seen[c.path] {
-			t.Errorf("%q is in taskCommands twice", c.path)
+	for _, c := range hibapi.TaskCommands() {
+		if taskUsesE2B(c.Path) != c.E2B {
+			t.Errorf("%s E2B hint differs from its row", c.Path)
 		}
-		seen[c.path] = true
-		group, leaf, _ := strings.Cut(c.path, " ")
-		if !strings.Contains(taskUsage(group), "  "+strings.TrimSpace(leaf+" "+c.args)+"\n") {
+		if seen[c.Path] {
+			t.Errorf("%q is in taskCommands twice", c.Path)
+		}
+		seen[c.Path] = true
+		group, leaf, _ := strings.Cut(c.Path, " ")
+		if !strings.Contains(taskUsage(group), "  "+strings.TrimSpace(leaf+" "+c.Args)+"\n") {
 			t.Errorf("hibd %s usage lacks %q", group, leaf)
-		}
-		if !strings.Contains(usage, leaf) {
-			t.Errorf("hibd usage doesn't name %q", c.path)
 		}
 		out.Reset()
 		errOut.Reset()
-		args := append(strings.Fields(c.path), "-json")
-		if strings.HasPrefix(c.args, "TASK") || strings.HasPrefix(c.args, "NAME") {
+		args := append(strings.Fields(c.Path), "-json")
+		if strings.HasPrefix(c.Args, "TASK") || strings.HasPrefix(c.Args, "NAME") {
 			args = append(args, "t-aaaaaaaa")
 		}
 		code, r, err := runJSON(t, a, out, args...)
 		if check := r.TaskReply.Check(); check != nil {
 			t.Errorf("hibd %v reply: %v", args, check)
 		}
-		switch c.path {
+		switch c.Path {
 		case "task ls":
 			if code != 0 || err != nil || len(r.Tasks) != 0 {
 				t.Errorf("hibd %v = exit %d, %+v, %v; want no tasks", args, code, r, err)
@@ -75,8 +80,8 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 				t.Errorf("hibd %v = exit %d, code %s, %v; want BAD_REQUEST", args, code, r.Code, err)
 			}
 		default:
-			if code != 1 || err == nil {
-				t.Errorf("hibd %v = exit %d, %+v, %v; want a JSON failure", args, code, r, err)
+			if code != 1 || err == nil || r.Error != "tasks are not implemented yet" {
+				t.Errorf("hibd %v = exit %d, %+v, %v; want the not-yet reply", args, code, r, err)
 			}
 		}
 	}

@@ -94,7 +94,7 @@ commands:
                     are paused first and stay paused (-image NAME, -canary, -json)
   cleanup           delete unused build directories and trim old snapshot bodies, as root
                     (-n only says what it would delete or trim, and why it keeps the others)
-  task start|run|ls|show|logs|cancel|rescue|rm|cleanup
+  task start|run|ls|show|logs|wait|cancel|rescue|rm|cleanup
                     save and look after tasks the daemon runs in their own machines. hibd
                     task prints each command's usage
   recipe put|ls|show|rm|default

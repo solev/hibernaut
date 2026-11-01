@@ -177,7 +177,7 @@ func TestCompleteNeverPrintsBadCachedNames(t *testing.T) {
 		if got := completions(t, c, "rm", ""); len(got) != 0 {
 			t.Errorf("cache %q gave %q", content, got)
 		}
-		if got := completions(t, c, "r"); !slices.Equal(got, []string{"rm"}) {
+		if got := completions(t, c, "r"); !slices.Equal(got, []string{"rm", "recipe"}) {
 			t.Errorf("cache %q broke command completion: %q", content, got)
 		}
 	}

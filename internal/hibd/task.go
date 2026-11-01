@@ -20,65 +20,32 @@ import (
 	"github.com/solev/hibernaut/internal/termsafe"
 )
 
-// taskCommand is one leaf of hibd's task and recipe groups. taskCommands is the only list of
-// them: Run's dispatch, the groups' usage, usesE2B and the -json line all read it, so a new
-// leaf is one row.
-type taskCommand struct {
-	// path is the group and leaf, like "task start".
-	path string
-	// args is what follows path in the usage.
-	args string
-	help string
-	// e2b says the leaf reads machine state from E2B, for withNextStep's hint.
-	e2b bool
-	run func(a *App, ctx context.Context, c taskCommand, args []string) int
-}
+type taskCommand = hibapi.TaskCommand
 
-// taskCommands lists every task and recipe leaf in usage order. Every leaf takes -json. init
-// fills it, since usesE2B reads it and the handlers reach usesE2B through fail.
-var taskCommands []taskCommand
-
-func init() { taskCommands = taskLeaves() }
-
-func taskLeaves() []taskCommand {
-	return []taskCommand{
-		{path: "task start", run: (*App).taskStart,
-			help: "save a task and its first run from the request and files on stdin. Nothing " +
-				"runs until the daemon starts it"},
-		{path: "task run", args: "TASK", run: (*App).taskStart,
-			help: "save a follow-up run of TASK on its machine the same way"},
-		{path: "task ls", e2b: true, run: (*App).taskLs,
-			help: "read tasks newest first, with each latest run and machine state"},
-		{path: "task show", args: "TASK | -request ID", e2b: true, run: (*App).taskShow,
-			help: "read every run, hold, request and removal of a task or submission"},
-		{path: "task logs", args: "TASK [-run N] [-from BYTE]", run: (*App).taskLogs,
-			help: "print the run's setup, command and finish output; -from counts bytes already read. JSON reads at most 1 MiB"},
-		{path: "task cancel", args: "TASK [-request-id ID]", run: (*App).taskRequest,
-			help: "record a request for the daemon to stop the live run"},
-		{path: "task rescue", args: "TASK [-request-id ID]", run: (*App).taskRequest,
-			help: "record consent for the daemon to resume a held machine and kill its stage"},
-		{path: "task rm", args: "TASK [-request-id ID]", run: (*App).taskRequest,
-			help: "record a request for the daemon to stop the live run and remove the task"},
-		{path: "task cleanup", args: "[-n]", run: (*App).taskCleanup,
-			help: "delete inputs and logs no task refers to"},
-		{path: "recipe put", args: "NAME", run: (*App).recipe,
-			help: "save a recipe from the JSON on stdin"},
-		{path: "recipe ls", run: (*App).recipe, help: "list recipes"},
-		{path: "recipe show", args: "NAME", run: (*App).recipe, help: "show a recipe"},
-		{path: "recipe rm", args: "NAME", run: (*App).recipe, help: "remove a recipe"},
-		{path: "recipe default", args: "[NAME]", run: (*App).recipe,
-			help: "show or set the recipe hib task start uses without -- CMD or --recipe"},
+func taskHandlers() map[string]func(*App, context.Context, taskCommand, []string) int {
+	return map[string]func(*App, context.Context, taskCommand, []string) int{
+		"task start": (*App).taskStart, "task run": (*App).taskStart,
+		"task ls": (*App).taskLs, "task show": (*App).taskShow,
+		"task logs": (*App).taskLogs, "task wait": (*App).taskWaitNotYet,
+		"task cancel": (*App).taskRequest, "task rescue": (*App).taskRequest,
+		"task rm": (*App).taskRequest, "task cleanup": (*App).taskCleanup,
+		"recipe put": (*App).recipe, "recipe ls": (*App).recipe,
+		"recipe show": (*App).recipe, "recipe rm": (*App).recipe,
+		"recipe default": (*App).recipe,
 	}
 }
 
 var errTasksNotImplemented = errors.New("tasks are not implemented yet")
 
-// taskGroup runs hibd task or hibd recipe: group is args[0] of Run.
 func (a *App) taskGroup(ctx context.Context, group string, args []string) int {
 	if len(args) > 0 {
-		for _, c := range taskCommands {
-			if c.path == group+" "+args[0] {
-				return c.run(a, ctx, c, args[1:])
+		for _, c := range hibapi.TaskCommands() {
+			if c.Path == group+" "+args[0] {
+				run := taskHandlers()[c.Path]
+				if run == nil {
+					return a.taskFail(true, c.Path, "", fmt.Errorf("no handler for %s", c.Path))
+				}
+				return run(a, ctx, c, args[1:])
 			}
 		}
 	}
@@ -86,71 +53,83 @@ func (a *App) taskGroup(ctx context.Context, group string, args []string) int {
 	return 2
 }
 
-// taskUsage is the usage of one group, made from taskCommands.
 func taskUsage(group string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "usage: hibd %s <command> [-json]\n\ncommands:\n", group)
-	for _, c := range taskCommands {
-		leaf, ok := strings.CutPrefix(c.path, group+" ")
+	for _, c := range hibapi.TaskCommands() {
+		leaf, ok := strings.CutPrefix(c.Path, group+" ")
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "  %s\n      %s\n", strings.TrimSpace(leaf+" "+c.args), c.help)
+		fmt.Fprintf(&b, "  %s\n      %s\n", strings.TrimSpace(leaf+" "+c.Args), c.Help)
 	}
 	return b.String()
 }
 
-// taskUsesE2B is usesE2B for the task and recipe leaves.
 func taskUsesE2B(cmd string) bool {
-	for _, c := range taskCommands {
-		if c.path == cmd {
-			return c.e2b
+	for _, c := range hibapi.TaskCommands() {
+		if c.Path == cmd {
+			return c.E2B
 		}
 	}
 	return false
+}
+
+func (a *App) taskWaitNotYet(_ context.Context, c taskCommand, args []string) int {
+	fl := a.flags(c.Path)
+	asJSON := fl.Bool("json", false, "print JSON")
+	fl.Int("run", 0, "run number")
+	if _, ok := a.parse(fl, args, 1, c.Path+" "+c.Args); !ok {
+		return 2
+	}
+	return a.taskFail(*asJSON, c.Path, "", errTasksNotImplemented)
+}
+
+func (a *App) taskActor() task.Actor {
+	user := cmp.Or(a.Getenv("SUDO_USER"), "root")
+	return task.Actor{Owner: user, Name: user, Source: "cli"}
 }
 
 // taskStart is hibd task start and hibd task run TASK. stdin holds one hibapi.TaskStart line,
 // then each file's bytes. It answers once the task and its inputs are saved. Nothing else runs:
 // the daemon's Supervisor picks the run up on its next tick.
 func (a *App) taskStart(ctx context.Context, c taskCommand, args []string) int {
-	fl := a.flags(c.path)
+	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
-	n := strings.Count(c.args, "TASK")
-	rest, ok := a.parse(fl, args, n, c.path+" "+c.args)
+	n := strings.Count(c.Args, "TASK")
+	rest, ok := a.parse(fl, args, n, c.Path+" "+c.Args)
 	if !ok {
 		return 2
 	}
 	in := newLineReader(a.Stdin)
 	var req hibapi.TaskStart
 	if err := json.Unmarshal(in.line(), &req); err != nil {
-		return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: %w", errBadTaskRequest, err))
+		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: %w", errBadTaskRequest, err))
 	}
 	if n == 1 {
 		req.Task = task.ID(rest[0])
 	}
-	user := cmp.Or(a.Getenv("SUDO_USER"), "root")
-	sub, err := submissionOf(req, task.Actor{Owner: user, Name: user, Source: "cli"}, a.now())
+	sub, err := submissionOf(req, a.taskActor(), a.now())
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
 	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
 	st := a.tasks(cfg)
 	defer st.Close()
 	receipt, err := st.Submit(ctx, sub, in.rest())
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
 	t, err := st.Task(ctx, receipt.Run.Task)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
 	instance, err := st.Instance(ctx)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, req.RequestID, err)
+		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
 	run := t.Runs[receipt.Run.N-1]
 	reply := hibapi.Task{ID: t.ID, Repo: run.Spec.Repo.String(), Created: t.Created,
@@ -289,24 +268,24 @@ func (l *lineReader) line() []byte {
 
 // taskLs is hibd task ls.
 func (a *App) taskLs(ctx context.Context, c taskCommand, args []string) int {
-	fl := a.flags(c.path)
+	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
-	if _, ok := a.parse(fl, args, 0, c.path); !ok {
+	if _, ok := a.parse(fl, args, 0, c.Path); !ok {
 		return 2
 	}
 	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	st := a.tasks(cfg)
 	defer st.Close()
 	records, err := st.List(ctx)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	instance, ms, err := a.taskReadState(ctx, st)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	out := make([]hibapi.Task, len(records))
 	for i, record := range records {
@@ -316,14 +295,14 @@ func (a *App) taskLs(ctx context.Context, c taskCommand, args []string) int {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Tasks: out}})
 	}
 	if err := a.printTaskList(out); err != nil {
-		return a.taskFail(false, c.path, "", err)
+		return a.taskFail(false, c.Path, "", err)
 	}
 	return 0
 }
 
 // taskShow is hibd task show TASK and hibd task show -request ID.
 func (a *App) taskShow(ctx context.Context, c taskCommand, args []string) int {
-	fl := a.flags(c.path)
+	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
 	request := fl.String("request", "", "show the task a submission made")
 	rest, ok := a.parseAny(fl, args)
@@ -336,39 +315,39 @@ func (a *App) taskShow(ctx context.Context, c taskCommand, args []string) int {
 		var err error
 		id, err = task.ParseID(rest[0])
 		if err != nil {
-			return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: %w", errBadTaskRequest, err))
+			return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: %w", errBadTaskRequest, err))
 		}
 	case len(rest) == 0 && *request != "":
 	default:
-		return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: give TASK or -request ID", errBadTaskRequest))
+		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: give TASK or -request ID", errBadTaskRequest))
 	}
 	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	st := a.tasks(cfg)
 	defer st.Close()
 	if *request != "" {
 		rec, err := st.Receipt(ctx, *request)
 		if err != nil {
-			return a.taskFail(*asJSON, c.path, "", err)
+			return a.taskFail(*asJSON, c.Path, "", err)
 		}
 		id = rec.Run.Task
 	}
 	record, err := st.Task(ctx, id)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	instance, ms, err := a.taskReadState(ctx, st)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	out := taskReadOf(record, instance, ms, true)
 	if *asJSON {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Task: &out}})
 	}
 	if err := a.printTask(out); err != nil {
-		return a.taskFail(false, c.path, "", err)
+		return a.taskFail(false, c.Path, "", err)
 	}
 	return 0
 }
@@ -376,34 +355,34 @@ func (a *App) taskShow(ctx context.Context, c taskCommand, args []string) int {
 // taskLogs is hibd task logs. The cursor is a byte offset in the host's copy, so -f on the
 // laptop is a loop of calls that each pass the last reply's Next.
 func (a *App) taskLogs(ctx context.Context, c taskCommand, args []string) int {
-	fl := a.flags(c.path)
+	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
 	n := fl.Int("run", 0, "run number, latest by default")
 	from := fl.Int64("from", 0, "number of stream bytes already read")
-	rest, ok := a.parse(fl, args, 1, c.path+" "+c.args)
+	rest, ok := a.parse(fl, args, 1, c.Path+" "+c.Args)
 	if !ok {
 		return 2
 	}
 	id, err := task.ParseID(rest[0])
 	if err != nil || *n < 0 || *from < 0 {
-		return a.taskFail(*asJSON, c.path, "", fmt.Errorf("%w: want a task ID and nonnegative run and cursor", errBadTaskRequest))
+		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: want a task ID and nonnegative run and cursor", errBadTaskRequest))
 	}
 	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
-		return a.taskFail(*asJSON, c.path, "", err)
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	st := a.tasks(cfg)
 	defer st.Close()
 	for {
 		out, err := st.Logs(ctx, id, *n, *from)
 		if err != nil {
-			return a.taskFail(*asJSON, c.path, "", err)
+			return a.taskFail(*asJSON, c.Path, "", err)
 		}
 		if *asJSON {
 			return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{TaskLog: &out}})
 		}
 		if _, err := a.Stdout.Write(out.Data); err != nil {
-			return a.taskFail(false, c.path, "", err)
+			return a.taskFail(false, c.Path, "", err)
 		}
 		if len(out.Data) == 0 || out.Done {
 			return 0
@@ -431,12 +410,12 @@ func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
 }
 
 func (a *App) taskNotYet(c taskCommand, args []string) int {
-	fl := a.flags(c.path)
+	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
 	if _, ok := a.parseAny(fl, args); !ok {
 		return 2
 	}
-	return a.taskFail(*asJSON, c.path, "", errTasksNotImplemented)
+	return a.taskFail(*asJSON, c.Path, "", errTasksNotImplemented)
 }
 
 // tasks returns the task records in cfg's state directory. tasks.db opens only when a method

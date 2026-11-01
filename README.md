@@ -425,6 +425,27 @@ export E2B_SANDBOX_URL=http://localhost:3002
 The API key is the fixed development key from E2B's `DEV-LOCAL.md`. It is not a secret. Only
 SSH (port 22) is reachable from the internet.
 
+### Tasks and recipes (`hib task`, `hib recipe`)
+
+A task runs a command in its own machine under hibd's supervision. The host keeps the task
+and its output when your laptop disconnects.
+
+`hib task start` starts a command in its own task machine. This command is not available in
+this build yet. It exits 1 without contacting the host.
+
+`hib task ls` lists tasks, and `hib task show` inspects a task or looks up a request.
+`hib task cancel` stops a live run, `hib task rescue` resumes a held machine and stops its
+stage, and `hib task rm` removes a task and its machine after asking.
+These commands are not available in this build yet. Each command exits 1 without contacting the host.
+
+`hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
+These commands are not available in this build yet. Each command exits 1 without contacting the host.
+
+`hib recipe put` saves a named command, `hib recipe ls` lists recipes, and `hib recipe show`
+inspects one. `hib recipe rm` removes a recipe, and `hib recipe default` shows or chooses the
+default for starting tasks. These commands are not available in this build yet.
+Each command exits 1 without contacting the host.
+
 ### Scripts, completion, colour and faces
 
 `--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one JSON
@@ -511,33 +532,46 @@ hib makes machines on your Hibernaut host and runs them, over SSH. ssh NAME.hib 
 one, waking it if it's paused.
 
 commands:
-  init                       set this laptop up for a host
-  new NAME                   make a machine
-  ls                         list machines, and when each pauses unless it's busy
-  rm NAME                    delete a machine and its disk for good
-  pause NAME                 pause a machine; logging in wakes it
-  fork MACHINE               copy a machine
-  ssh NAME [-- CMD]          log in to a machine, or run CMD there
-  exec NAME -- CMD [ARG...]  run CMD on a machine
-  port add NAME PORT...      publish a machine's port to your other machines
-  port rm NAME PORT...       stop publishing a port
-  port ls                    list published ports
-  connect github             give machines your GitHub login
-  connect codex              give machines your Codex login on a ChatGPT plan
-  disconnect codex|github    remove a login from the host
-  status                     show the health of the host, E2B, each secret and the Codex login
-  secret add NAME            store a bound secret
-  secret ls                  list bound secrets
-  secret rm NAME             remove a bound secret
-  log                        show secret swap or link audit entries
-  image build NAME           build an image on the host, in every size
-  image save MACHINE NAME    save a machine as an image, memory included
-  image ls                   list built-in and saved images
-  image rm NAME              remove a saved image no machine uses
-  completion bash|zsh|fish   print a shell completion script
-  bridge NAME.hib            connect to a machine's SSH server; ssh runs this for you
-  version                    print the version
-  help [COMMAND [SUB]]       show help for hib or a command
+  init                             set this laptop up for a host
+  new NAME                         make a machine
+  ls                               list machines, and when each pauses unless it's busy
+  rm NAME                          delete a machine and its disk for good
+  pause NAME                       pause a machine; logging in wakes it
+  fork MACHINE                     copy a machine
+  ssh NAME [-- CMD]                log in to a machine, or run CMD there
+  exec NAME -- CMD [ARG...]        run CMD on a machine
+  port add NAME PORT...            publish a machine's port to your other machines
+  port rm NAME PORT...             stop publishing a port
+  port ls                          list published ports
+  connect github                   give machines your GitHub login
+  connect codex                    give machines your Codex login on a ChatGPT plan
+  disconnect codex|github          remove a login from the host
+  status                           show the health of the host, E2B, each secret and the Codex login
+  secret add NAME                  store a bound secret
+  secret ls                        list bound secrets
+  secret rm NAME                   remove a bound secret
+  log                              show secret swap or link audit entries
+  image build NAME                 build an image on the host, in every size
+  image save MACHINE NAME          save a machine as an image, memory included
+  image ls                         list built-in and saved images
+  image rm NAME                    remove a saved image no machine uses
+  task start [-- CMD ARG...]       start a command in its own task machine
+  task ls                          list tasks and their latest runs
+  task show TASK | --request ID    show a task or look up a request
+  task logs TASK                   read or follow a task run's output
+  task wait TASK                   wait for a task run and print its outcome
+  task cancel TASK                 stop a task's live run
+  task rescue TASK                 resume a held task machine and stop its stage
+  task rm TASK                     delete a task and its machine after asking
+  recipe put NAME -- CMD [ARG...]  save a named command
+  recipe ls                        list saved recipes
+  recipe show NAME                 show a saved recipe
+  recipe rm NAME                   remove a saved recipe
+  recipe default [NAME]            show or set the default recipe
+  completion bash|zsh|fish         print a shell completion script
+  bridge NAME.hib                  connect to a machine's SSH server; ssh runs this for you
+  version                          print the version
+  help [COMMAND [SUB]]             show help for hib or a command
 
 flags:
   --config DIR  the settings directory (default ~/.config/hibernaut)
