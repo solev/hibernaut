@@ -188,8 +188,10 @@ type Engine interface {
 	Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error)
 	// Upload writes files into a running machine as user, replacing any at the same paths. It
 	// returns ErrNotRunning for a paused machine and never wakes it. An error may leave some
-	// files written: the caller checks what arrived by hash. It never carries file contents in an
-	// ExecRequest, which engines may log.
+	// files written: the caller checks what arrived by hash. A broken connection or incomplete
+	// upload wraps ErrConnectionLost. Cancellation returns the context's error. Local source
+	// errors alone do not wrap ErrConnectionLost. File contents never enter an ExecRequest,
+	// which engines may log.
 	Upload(ctx context.Context, id, user string, files []File) error
 	// DialWebSocket connects to the WebSocket server listening on port inside the machine and
 	// returns the connection as a byte stream carried in binary messages. It resumes a paused
