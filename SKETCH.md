@@ -529,9 +529,11 @@ through a field.
 
 **Freeze before pause.** `Owner.Pause` reads the label. For a task machine it takes
 `task-machine-TASK.lock` and reads the machine again, since another process may have paused it
-meanwhile. If it is still running it writes 1 to the slice's `cgroup.freeze`, waits for `frozen 1`
-in `cgroup.events` and records whether the freeze held, then pauses. A failed freeze still pauses.
-The row says unfrozen, so the run is held until a rescue, which is TASK.md's hung guest case.
+meanwhile. If it is still running, it tries to start the slice, then tries the freeze even if
+the start fails. The freeze writes 1 to `cgroup.freeze` and waits for `frozen 1` in `cgroup.events`.
+Only that confirmation records frozen, with no detail. One `taskguest.ExecTimeout` bounds the
+start and freeze. A failed or empty freeze still pauses and records unfrozen, so the run is held
+until rescue or rm. A start error joins the freeze's detail only when the row is unfrozen.
 A lost row reads as the row before it, which never says frozen while the stage runs, so it too
 fails toward held. It covers:
 
@@ -850,6 +852,9 @@ promises, and these tests hold `runner.sh` to it.
 
 `TestPauseWithoutCgroupIsHeld` keeps an empty freezer answer from authorizing a wake.
 `TestPauseCreatesSliceBeforeFirstStage` covers Owner's slice preparation before freeze.
+`TestPauseFreezesAfterFailedSliceStart` covers a live slice after start exits or fails to exec.
+`TestPauseWithFailedSliceStartIsHeld` keeps both start and freeze evidence for an unfrozen row.
+`TestPauseFreezeUsesOneTimeout` bounds a hanging start and freeze within one exec timeout.
 `TestLookKeepsExitWhenShowFails` and `TestParseLookFailedShow` keep a present exit readable
 when systemctl cannot show the unit. Without an exit, that observation remains an error.
 `TestLaunchExposesInputs` checks every stage receives `HIB_INPUTS=RUN/in`.
@@ -895,9 +900,12 @@ the kernel never reached frozen 1. The checkout's runner was unchanged.
      `cgroup.events` to say `frozen 1` or `frozen 0`. The slice has no cgroup until a stage has
      run since boot or root starts the slice. Without it, `Freeze` reports `freeze=empty`.
      With it, `Freeze` reports `freeze=frozen` only after the kernel confirms the freeze.
-     Owner starts the slice before freezing. A failed start or empty answer records unfrozen
-     with a detail, so a live stage remains held. `look` reports the unit's `cgroup.events`
-     frozen line, and `Seen.Frozen` reads it instead of `FreezerState`.
+     Owner starts the slice before freezing, and tries the freeze even when the start fails.
+     Only `FreezeFrozen` records frozen with no detail. A failed or empty freeze records
+     unfrozen, so a live stage remains held. A start error joins the freeze's detail only for
+     an unfrozen row. One `taskguest.ExecTimeout` bounds the start and freeze.
+     `look` reports the unit's `cgroup.events` frozen line, and `Seen.Frozen` reads it instead
+     of `FreezerState`.
    - Done. `Launch` passes `--expand-environment=no`. Without it systemd rewrote `$$` and
      `${HIB_RUN}` in the task's command.
    - Done. `Kill` thaws after it kills a frozen stage. A kill alone left `ExecStopPost` frozen, the
