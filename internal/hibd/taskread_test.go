@@ -64,6 +64,62 @@ func TestTaskLsEmpty(t *testing.T) {
 	if code != 0 || r.Error != "" || r.Tasks == nil || len(r.Tasks) != 0 {
 		t.Fatalf("empty task ls = exit %d, %+v; want tasks []", code, r)
 	}
+
+}
+
+func TestTaskShowFullText(t *testing.T) {
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	done := at.Add(time.Hour)
+	record := hibapi.Task{ID: "t-aaaaaaaa", Created: at, Machine: task.MachinePaused,
+		Runs: []hibapi.TaskRun{{N: 2, Phase: task.PhasePaused, Step: task.StepUpload,
+			Command: []string{"echo", "hello world"}, Submitted: at, Deadline: &done,
+			Detail: "waiting for consent", Held: "no freeze proof"}},
+		Requests: []hibapi.TaskRequest{{ID: 7, Kind: task.RequestRemove, Run: 2, At: at,
+			Actor: hibapi.TaskActor{Name: "martin", Source: "cli"}}},
+		Removal: &hibapi.TaskRemoval{Why: "rm", At: at, Done: &done}}
+	var out bytes.Buffer
+	a := &App{Stdout: &out}
+	if err := a.printTask(record); err != nil {
+		t.Fatal(err)
+	}
+	want := `task t-aaaaaaaa
+repo -
+machine paused
+run 2 paused -
+command "echo" "hello world"
+recipe -
+submitted 2026-10-28T12:00:00Z
+deadline 2026-10-28T13:00:00Z
+detail waiting for consent
+held no freeze proof
+step upload
+  machine: wait for room, then create or resume
+  upload: upload inputs and runner, check hashes
+  setup: clone and branch (skipped: follow-up or no repo)
+  command: run the command
+  finish: commit, push, draft PR (skipped: no repo)
+  stop: kill the live stage, prove it gone
+  collect: copy last logs and the publication
+  keep: pause and keep, or remove on rm
+request 7 remove run 2 by martin via cli at 2026-10-28T12:00:00Z
+removal rm at 2026-10-28T12:00:00Z done at 2026-10-28T13:00:00Z
+`
+	if out.String() != want {
+		t.Fatalf("full show differs\nwant:\n%s\ngot:\n%s", want, &out)
+	}
+}
+
+func TestTaskShowEscapesDetail(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{Stdout: &out}
+	record := hibapi.Task{ID: "t-aaaaaaaa", Runs: []hibapi.TaskRun{
+		{N: 1, Phase: task.PhaseQueued, Detail: "guest\x1b]0;title\x07\n"}}}
+	if err := a.printTask(record); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `detail guest\x1b]0;title\x07\x0a`) {
+		t.Fatalf("show omitted safe detail: %q", &out)
+	}
 }
 
 type taskReadEngine struct {
