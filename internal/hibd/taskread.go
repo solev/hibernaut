@@ -1,7 +1,6 @@
 package hibd
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -15,7 +14,6 @@ import (
 	"github.com/solev/hibernaut/internal/links"
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/tasks"
-	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 func (a *App) taskReadState(ctx context.Context, st *tasks.Tasks) (task.Instance, []hibapi.Machine, error) {
@@ -31,7 +29,18 @@ func (a *App) taskReadState(ctx context.Context, st *tasks.Tasks) (task.Instance
 	return inst, ms, err
 }
 
-func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full bool) hibapi.Task {
+func taskQueue(records []task.Task, now time.Time) task.Queue {
+	var unfinished []task.Run
+	for _, record := range records {
+		if r, live := record.Live(); live {
+			unfinished = append(unfinished, r)
+		}
+	}
+	return task.QueueOf(unfinished, now)
+}
+
+func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full bool,
+	queue task.Queue, now time.Time) hibapi.Task {
 	out := hibapi.Task{ID: record.ID, Created: record.Created, Runs: []hibapi.TaskRun{}}
 	runs := record.Runs
 	if len(runs) > 0 {
@@ -59,7 +68,11 @@ func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full 
 			if i == len(runs)-1 {
 				r = last
 			}
-			out.Runs = append(out.Runs, hibapi.RunOf(r, inst))
+			run := hibapi.RunOf(r, inst)
+			if run.Detail == "" && run.Phase != task.PhaseStopping {
+				run.Detail = task.WaitReason(r, queue, now)
+			}
+			out.Runs = append(out.Runs, run)
 		}
 	}
 	if full {
@@ -127,60 +140,18 @@ func (a *App) recordTaskRequest(ctx context.Context, c taskCommand, args []strin
 	if *asJSON {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{RequestID: *requestID, Request: &out}})
 	}
-	if _, err := fmt.Fprintf(a.Stdout, "recorded %s for %s run %d\nrequest %s\n", out.Kind, id, out.Run, termsafe.Line(*requestID)); err != nil {
+	if err := hibapi.PrintTaskRequest(a.Stdout, id, *requestID, out); err != nil {
 		return a.taskFail(false, c.Path, *requestID, err)
 	}
 	return 0
 }
 
 func (a *App) printTaskList(records []hibapi.Task) error {
-	tw := hibapi.NewTable(a.Stdout, nil)
-	fmt.Fprintln(tw, "TASK\tRUN\tPHASE\tSTAGE\tREPO\tAGE")
-	for _, record := range records {
-		var n int
-		var phase, stage string
-		if len(record.Runs) > 0 {
-			r := record.Runs[len(record.Runs)-1]
-			n, phase, stage = r.N, cmp.Or(string(r.Outcome), string(r.Phase)), string(r.Stage)
-		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", record.ID, n, orDash(phase),
-			orDash(stage), orDash(termsafe.Line(record.Repo)), shortDuration(a.now().Sub(record.Created)))
-	}
-	return tw.Flush()
+	return hibapi.PrintTaskList(a.Stdout, records, a.now())
 }
 
 func (a *App) printTask(record hibapi.Task) error {
-	if _, err := fmt.Fprintf(a.Stdout, "task %s\nrepo %s\nmachine %s\n", record.ID,
-		orDash(termsafe.Line(record.Repo)), orDash(string(record.Machine))); err != nil {
-		return err
-	}
-	for _, r := range record.Runs {
-		if _, err := fmt.Fprintf(a.Stdout, "run %d %s %s\n", r.N,
-			cmp.Or(string(r.Outcome), string(r.Phase)), orDash(string(r.Stage))); err != nil {
-			return err
-		}
-		if r.Held != "" {
-			if _, err := fmt.Fprintln(a.Stdout, termsafe.Line(r.Held)); err != nil {
-				return err
-			}
-		}
-	}
-	for _, q := range record.Requests {
-		if _, err := fmt.Fprintf(a.Stdout, "request %d %s run %d by %s via %s at %s\n",
-			q.ID, q.Kind, q.Run, termsafe.Line(q.Actor.Name), termsafe.Line(q.Actor.Source),
-			q.At.UTC().Format(time.RFC3339)); err != nil {
-			return err
-		}
-	}
-	if r := record.Removal; r != nil {
-		done := ""
-		if r.Done != nil {
-			done = " done at " + r.Done.UTC().Format(time.RFC3339)
-		}
-		_, err := fmt.Fprintf(a.Stdout, "removal %s at %s%s\n", termsafe.Line(r.Why), r.At.UTC().Format(time.RFC3339), done)
-		return err
-	}
-	return nil
+	return hibapi.PrintTask(a.Stdout, record)
 }
 
 func (a *App) dropRemovedLink(ctx context.Context, cfg config, id, name string) {
