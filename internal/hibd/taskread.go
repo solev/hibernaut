@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"github.com/solev/hibernaut/internal/engine"
@@ -28,7 +29,18 @@ func (a *App) taskReadState(ctx context.Context, st *tasks.Tasks) (task.Instance
 	return inst, ms, err
 }
 
-func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full bool) hibapi.Task {
+func taskQueue(records []task.Task, now time.Time) task.Queue {
+	var unfinished []task.Run
+	for _, record := range records {
+		if r, live := record.Live(); live {
+			unfinished = append(unfinished, r)
+		}
+	}
+	return task.QueueOf(unfinished, now)
+}
+
+func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full bool,
+	queue task.Queue, now time.Time) hibapi.Task {
 	out := hibapi.Task{ID: record.ID, Created: record.Created, Runs: []hibapi.TaskRun{}}
 	runs := record.Runs
 	if len(runs) > 0 {
@@ -56,7 +68,11 @@ func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full 
 			if i == len(runs)-1 {
 				r = last
 			}
-			out.Runs = append(out.Runs, hibapi.RunOf(r, inst))
+			run := hibapi.RunOf(r, inst)
+			if run.Detail == "" && run.Phase != task.PhaseStopping && run.Phase != task.PhaseRecovering {
+				run.Detail = task.WaitReason(r, queue, now)
+			}
+			out.Runs = append(out.Runs, run)
 		}
 	}
 	if full {

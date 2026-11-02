@@ -3,10 +3,12 @@ package hibd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -22,6 +24,154 @@ import (
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/tasks"
 )
+
+func TestTaskReadsExplainQueue(t *testing.T) {
+	e := &taskReadEngine{Engine: fake.New()}
+	a, out, _ := newApp(t, e)
+	st := taskReadStore(t, a)
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	a.Now = func() time.Time { return at.Add(time.Hour) }
+	old := submitReadTask(t, st, "older", at)
+	newer := submitReadTask(t, st, "newer", at.Add(time.Minute))
+	e.onList = func() {
+		e.onList = nil
+		submitReadTask(t, st, "after-snapshot", at.Add(2*time.Minute))
+	}
+	code, reply := taskReadReply(t, a, out, "task", "ls")
+	if code != 0 || len(reply.Tasks) != 2 {
+		t.Fatalf("ls = exit %d, %+v, want two stored tasks", code, reply)
+	}
+	want := "waiting for room or its turn; 1 run ahead; expires at 2026-11-03T12:01:00Z"
+	if got := reply.Tasks[0].Runs[0].Detail; got != want {
+		t.Fatalf("queued ls detail = %q, want %q", got, want)
+	}
+	if reply.Tasks[1].ID != old.Run.Task ||
+		reply.Tasks[1].Runs[0].Detail != "waiting for room or its turn; 0 runs ahead; expires at 2026-11-03T12:00:00Z" {
+		t.Fatalf("oldest queued run = %+v, want no runs ahead", reply.Tasks[1])
+	}
+	for _, args := range [][]string{{"task", "show", string(newer.Run.Task)},
+		{"task", "show", "-request", "newer"}} {
+		code, reply = taskReadReply(t, a, out, args...)
+		if code != 0 || reply.Task == nil || reply.Task.Runs[0].Detail != want {
+			t.Fatalf("queued show = exit %d, %+v, want %q", code, reply, want)
+		}
+		out.Reset()
+		if code := a.Run(t.Context(), args); code != 0 || !strings.Contains(out.String(), want) {
+			t.Fatalf("plain queued show = exit %d, %q", code, out)
+		}
+	}
+	out.Reset()
+	if code := a.Run(t.Context(), []string{"task", "ls"}); code != 0 || !strings.Contains(out.String(), want) {
+		t.Fatalf("plain queued ls = exit %d, %q", code, out)
+	}
+}
+
+func taskReadDB(t *testing.T, a *App) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(a.Getenv("HIBD_STATE_DIR"), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return db
+}
+
+func TestTaskReadsExplainPausedWithoutStage(t *testing.T) {
+	e := fake.New()
+	a, out, _ := newApp(t, e)
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	a.Now = func() time.Time { return at.Add(time.Minute) }
+	rec := submitReadTask(t, taskReadStore(t, a), "paused", at)
+	db := taskReadDB(t, a)
+	for i, body := range []task.Body{&task.MachineIntent{}, &task.MachineResult{ID: "paused-machine"}} {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kind := []task.Kind{task.Intent, task.Result}[i]
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO checkpoints
+			(task, n, seq, step, kind, at, by, body) VALUES (?, 1, ?, 'machine', ?, ?, '', ?)`,
+			rec.Run.Task, i+1, kind, at.UnixMilli(), string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Add(engine.Machine{ID: "paused-machine", State: engine.Paused,
+		Metadata: map[string]string{"hib.name": string(rec.Run.Task), task.Label: string(rec.Run.Task)}})
+	for _, args := range [][]string{{"task", "ls"}, {"task", "show", string(rec.Run.Task)}} {
+		code, reply := taskReadReply(t, a, out, args...)
+		var run hibapi.TaskRun
+		if reply.Task != nil {
+			run = reply.Task.Runs[0]
+		} else if len(reply.Tasks) == 1 {
+			run = reply.Tasks[0].Runs[0]
+		}
+		want := "machine paused without recorded freeze proof; no live stage is recorded"
+		if code != 0 || run.Phase != task.PhasePreparing || run.Detail != want {
+			t.Fatalf("paused read = exit %d, %+v, want preparing and %q", code, run, want)
+		}
+		out.Reset()
+		if code := a.Run(t.Context(), args); code != 0 || !strings.Contains(out.String(), want) {
+			t.Fatalf("plain paused read = exit %d, %q", code, out)
+		}
+	}
+}
+
+func TestTaskReadWaitReasonsPreserveStatus(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		log    []task.Checkpoint
+		reqs   []task.Request
+		phase  task.Phase
+		detail string
+	}{
+		{"refused", []task.Checkpoint{{Body: &task.MachineIntent{}},
+			{Body: &task.MachineResult{Refused: "no room on the host: 0 running"}}}, nil,
+			task.PhaseQueued, "no room on the host: 0 running"},
+		{"stopping", []task.Checkpoint{{Body: &task.MachineIntent{}},
+			{By: "daemon", Body: &task.StopIntent{Outcome: task.Cancelled, Detail: "stop not proved"}}}, nil,
+			task.PhaseStopping, "stop not proved"},
+		{"requested", []task.Checkpoint{{Body: &task.MachineResult{ID: "machine"}}},
+			[]task.Request{{Kind: task.RequestCancel, At: now}}, task.PhaseStopping, ""},
+		{"recovering", []task.Checkpoint{{By: "old", Body: &task.MachineIntent{}}}, nil,
+			task.PhaseRecovering, ""},
+		{"ended", []task.Checkpoint{{Body: &task.KeepResult{}}}, nil, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := task.Run{ID: task.RunID{Task: "t-aaaaaaaa", N: 1}, Submitted: now,
+				Spec: task.Spec{Publish: task.PublishNone, Timeout: time.Hour},
+				Log:  tc.log, Requests: tc.reqs, Kept: "machine"}
+			out := taskReadOf(task.Task{ID: r.ID.Task, Runs: []task.Run{r}}, "daemon",
+				[]hibapi.Machine{{ID: "machine", State: "paused"}}, true, task.QueueOf([]task.Run{r}, now), now)
+			if got := out.Runs[0]; got.Phase != tc.phase || got.Detail != tc.detail {
+				t.Fatalf("read changed existing status: %+v, want phase %q, detail %q", got, tc.phase, tc.detail)
+			}
+		})
+	}
+}
+
+func TestTaskShowDoesNotReadOtherTasksWhenNotQueued(t *testing.T) {
+	a, out, _ := newApp(t, fake.New())
+	st := taskReadStore(t, a)
+	rec := submitReadTask(t, st, "shown", time.Now())
+	other := submitReadTask(t, st, "unrelated", time.Now())
+	db := taskReadDB(t, a)
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO checkpoints
+		(task,n,seq,step,kind,at,by,body) VALUES (?,1,1,'keep','result',0,'','{}')`, rec.Run.Task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `UPDATE runs SET spec = '{broken' WHERE task = ?`, other.Run.Task); err != nil {
+		t.Fatal(err)
+	}
+	if code, reply := taskReadReply(t, a, out, "task", "show", string(rec.Run.Task)); code != 0 ||
+		reply.Task == nil || reply.Task.Runs[0].Outcome == "" {
+		t.Fatalf("nonqueued show read unrelated history: exit %d, %+v", code, reply)
+	}
+}
 
 func taskReadReply(t *testing.T, a *App, out *bytes.Buffer, args ...string) (int, hibapi.Response) {
 	t.Helper()
@@ -198,7 +348,7 @@ func TestTaskReadOfMachineStates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := task.Task{ID: id.Task, Runs: []task.Run{tc.run}}
-			out := taskReadOf(record, "daemon", tc.ms, true)
+			out := taskReadOf(record, "daemon", tc.ms, true, task.Queue{}, time.Now())
 			if err := out.Check(); err != nil {
 				t.Fatal(err)
 			}
@@ -234,7 +384,7 @@ func TestTaskReadOfHistoryAndRemoval(t *testing.T) {
 					record.Removal.Done = at.Add(2 * time.Hour)
 				}
 			}
-			out := taskReadOf(record, "current-daemon", nil, true)
+			out := taskReadOf(record, "current-daemon", nil, true, task.Queue{}, at)
 			if err := out.Check(); err != nil {
 				t.Fatal(err)
 			}
@@ -258,13 +408,13 @@ func TestTaskReadOfHistoryAndRemoval(t *testing.T) {
 			if state == "done" && !out.Removal.Done.Equal(record.Removal.Done) {
 				t.Fatalf("removal done = %v, want %v", out.Removal.Done, record.Removal.Done)
 			}
-			listed := taskReadOf(record, "current-daemon", nil, false)
+			listed := taskReadOf(record, "current-daemon", nil, false, task.Queue{}, at)
 			if len(listed.Runs) != 1 || listed.Runs[0].N != 2 || len(listed.Requests) != 0 || listed.Removal != nil {
 				t.Fatalf("ls history = %+v, want only latest run", listed)
 			}
 			var outText bytes.Buffer
 			a := &App{Stdout: &outText, Now: func() time.Time { return at.Add(time.Minute) }}
-			if err := a.printTaskList([]hibapi.Task{taskReadOf(task.Task{ID: id, Created: at, Runs: []task.Run{first}}, "", nil, false)}); err != nil {
+			if err := a.printTaskList([]hibapi.Task{taskReadOf(task.Task{ID: id, Created: at, Runs: []task.Run{first}}, "", nil, false, task.Queue{}, at)}); err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(outText.String(), "succeeded") {
@@ -504,7 +654,7 @@ func TestTaskShowPlainRemovalDone(t *testing.T) {
 			if finished {
 				record.Removal.Done = at.Add(time.Hour)
 			}
-			if err := a.printTask(taskReadOf(record, "", nil, true)); err != nil {
+			if err := a.printTask(taskReadOf(record, "", nil, true, task.Queue{}, at)); err != nil {
 				t.Fatal(err)
 			}
 			want := "removal rm at 2026-10-28T12:00:00Z"
@@ -612,9 +762,14 @@ func TestTaskReadsPlain(t *testing.T) {
 		}
 		if cmd == "ls" {
 			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-			if len(lines) != 2 || strings.Join(strings.Fields(lines[0]), " ") != "TASK RUN PHASE STAGE REPO AGE" ||
-				!slices.Equal(strings.Fields(lines[1])[:5], []string{string(rec.Run.Task), "1", "queued", "-", "acme/read"}) {
+			if len(lines) != 2 || strings.Join(strings.Fields(lines[0]), " ") != "TASK RUN PHASE STAGE REPO AGE" {
 				t.Fatalf("task table = %q, want TASK RUN PHASE STAGE REPO AGE and queued row", out)
+			}
+			row := strings.Fields(lines[1])
+			if len(row) < 6 || !slices.Equal(row[:2], []string{string(rec.Run.Task), "1"}) ||
+				!strings.Contains(lines[1], "queued (waiting for room or its turn; 0 runs ahead; expires at ") ||
+				!slices.Equal(row[len(row)-3:len(row)-1], []string{"-", "acme/read"}) {
+				t.Fatalf("task table = %q, want a queued row with its wait reason", out)
 			}
 		}
 	}
