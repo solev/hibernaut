@@ -25,7 +25,113 @@ import (
 	"github.com/solev/hibernaut/internal/tasks"
 )
 
+func TestTaskReadScale(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	e := fake.New()
+	a, out, _ := newApp(t, e)
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	a.Now = func() time.Time { return at.Add(time.Hour) }
+	if _, err := taskReadStore(t, a).Instance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db := taskReadDB(t, a)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	spec, err := json.Marshal(task.Spec{Repo: task.Repo{Owner: "acme", Name: "scale"},
+		Command: []string{"true"}, Image: "dev", Size: "small", Timeout: time.Hour,
+		Publish: task.PublishNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newestQueued task.ID
+	for i := range 1000 {
+		id, err := task.NewID(bytes.NewReader([]byte{0, 0, byte(i >> 16), byte(i >> 8), byte(i)}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		when := at.Add(time.Duration(i) * time.Second).UnixMilli()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks
+			(id,owner,actor,source,created_at) VALUES (?,'martin','martin','cli',?)`, id, when); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO runs
+			(task,n,spec,actor,source,submitted_at) VALUES (?,1,?,'martin','cli',?)`,
+			id, string(spec), when); err != nil {
+			t.Fatal(err)
+		}
+		if i%2 == 0 {
+			newestQueued = id
+			continue
+		}
+		for j, checkpoint := range []struct {
+			step task.Step
+			kind task.Kind
+			body task.Body
+		}{{task.StepMachine, task.Intent, &task.MachineIntent{}},
+			{task.StepMachine, task.Result, &task.MachineResult{ID: string(id)}},
+			{task.StepKeep, task.Result, &task.KeepResult{}}} {
+			raw, err := json.Marshal(checkpoint.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO checkpoints
+				(task,n,seq,step,kind,at,by,body) VALUES (?,1,?,?,?,?, '',?)`,
+				id, j+1, checkpoint.step, checkpoint.kind, when, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e.Add(engine.Machine{ID: string(id), State: engine.Paused,
+			Metadata: map[string]string{"hib.name": string(id), task.Label: string(id)}})
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		for _, args := range [][]string{{"task", "ls", "-json"},
+			{"task", "show", string(newestQueued), "-json"}} {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			out.Reset()
+			start := time.Now()
+			code := a.Run(ctx, args)
+			elapsed := time.Since(start)
+			cancel()
+			var reply hibapi.Response
+			if err := json.Unmarshal(out.Bytes(), &reply); err != nil {
+				t.Fatal(err)
+			}
+			if err := reply.TaskReply.Check(); err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || reply.Error != "" {
+				t.Fatalf("scale read failed: exit %d, %+v", code, reply)
+			}
+			if args[1] == "ls" {
+				queued := 0
+				for _, record := range reply.Tasks {
+					if record.Runs[0].Phase == task.PhaseQueued {
+						queued++
+					}
+				}
+				if len(reply.Tasks) != 1000 || queued != 500 {
+					t.Fatalf("scale ls returned %d tasks, %d queued", len(reply.Tasks), queued)
+				}
+			} else if reply.Task == nil || reply.Task.ID != newestQueued ||
+				!strings.Contains(reply.Task.Runs[0].Detail, "; 499 runs ahead;") {
+				t.Fatalf("scale show did not read the newest queued run: %+v", reply.Task)
+			}
+			t.Logf("%s tasks=1000 queued=500 elapsed=%s bytes=%d errors=0",
+				args[1], elapsed, out.Len())
+		}
+	}
+}
+
 func TestTaskReadsExplainQueue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	e := &taskReadEngine{Engine: fake.New()}
 	a, out, _ := newApp(t, e)
 	st := taskReadStore(t, a)
@@ -56,12 +162,12 @@ func TestTaskReadsExplainQueue(t *testing.T) {
 			t.Fatalf("queued show = exit %d, %+v, want %q", code, reply, want)
 		}
 		out.Reset()
-		if code := a.Run(t.Context(), args); code != 0 || !strings.Contains(out.String(), want) {
+		if code := a.Run(ctx, args); code != 0 || !strings.Contains(out.String(), want) {
 			t.Fatalf("plain queued show = exit %d, %q", code, out)
 		}
 	}
 	out.Reset()
-	if code := a.Run(t.Context(), []string{"task", "ls"}); code != 0 || !strings.Contains(out.String(), want) {
+	if code := a.Run(ctx, []string{"task", "ls"}); code != 0 || !strings.Contains(out.String(), want) {
 		t.Fatalf("plain queued ls = exit %d, %q", code, out)
 	}
 }
@@ -81,6 +187,8 @@ func taskReadDB(t *testing.T, a *App) *sql.DB {
 }
 
 func TestTaskReadsExplainPausedWithoutStage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	e := fake.New()
 	a, out, _ := newApp(t, e)
 	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
@@ -93,7 +201,7 @@ func TestTaskReadsExplainPausedWithoutStage(t *testing.T) {
 			t.Fatal(err)
 		}
 		kind := []task.Kind{task.Intent, task.Result}[i]
-		if _, err := db.ExecContext(t.Context(), `INSERT INTO checkpoints
+		if _, err := db.ExecContext(ctx, `INSERT INTO checkpoints
 			(task, n, seq, step, kind, at, by, body) VALUES (?, 1, ?, 'machine', ?, ?, '', ?)`,
 			rec.Run.Task, i+1, kind, at.UnixMilli(), string(raw)); err != nil {
 			t.Fatal(err)
@@ -114,7 +222,7 @@ func TestTaskReadsExplainPausedWithoutStage(t *testing.T) {
 			t.Fatalf("paused read = exit %d, %+v, want preparing and %q", code, run, want)
 		}
 		out.Reset()
-		if code := a.Run(t.Context(), args); code != 0 || !strings.Contains(out.String(), want) {
+		if code := a.Run(ctx, args); code != 0 || !strings.Contains(out.String(), want) {
 			t.Fatalf("plain paused read = exit %d, %q", code, out)
 		}
 	}
@@ -155,16 +263,18 @@ func TestTaskReadWaitReasonsPreserveStatus(t *testing.T) {
 }
 
 func TestTaskShowDoesNotReadOtherTasksWhenNotQueued(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	a, out, _ := newApp(t, fake.New())
 	st := taskReadStore(t, a)
 	rec := submitReadTask(t, st, "shown", time.Now())
 	other := submitReadTask(t, st, "unrelated", time.Now())
 	db := taskReadDB(t, a)
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO checkpoints
+	if _, err := db.ExecContext(ctx, `INSERT INTO checkpoints
 		(task,n,seq,step,kind,at,by,body) VALUES (?,1,1,'keep','result',0,'','{}')`, rec.Run.Task); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `UPDATE runs SET spec = '{broken' WHERE task = ?`, other.Run.Task); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE runs SET spec = '{broken' WHERE task = ?`, other.Run.Task); err != nil {
 		t.Fatal(err)
 	}
 	if code, reply := taskReadReply(t, a, out, "task", "show", string(rec.Run.Task)); code != 0 ||

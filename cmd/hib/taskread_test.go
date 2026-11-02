@@ -4,15 +4,61 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
+	"github.com/solev/hibernaut/internal/hibd"
+	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/task"
+	"github.com/solev/hibernaut/internal/tasks"
 )
+
+func TestTaskCompleteCLIPrinterParity(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h, true)
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return at.Add(time.Hour) }
+	h.sudoApp = func(a *hibd.App) { a.Now = c.now }
+	st := tasks.Open(statefile.Dir{Path: h.env["HIBD_STATE_DIR"], EUID: os.Geteuid}, c.now)
+	defer st.Close()
+	rec, err := st.Submit(taskCallContext(t), task.Submission{RequestID: "parity", At: at,
+		Spec: task.Spec{Repo: task.Repo{Owner: "acme", Name: "api"}, Command: []string{"echo", "hi"},
+			Image: "dev", Size: "small", Timeout: time.Hour, Publish: task.PublishNone},
+		Actor: task.Actor{Owner: "martin", Name: "martin", Source: "cli"}}, strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"task", "ls"}, {"task", "show", string(rec.Run.Task)},
+		{"task", "show", "--request", "parity"}} {
+		var plain, raw, diagnostics bytes.Buffer
+		a := &hibd.App{Stdin: strings.NewReader(""), Stdout: &raw, Stderr: &diagnostics,
+			Getenv: func(k string) string { return h.env[k] }, Now: c.now,
+			NewEngine: func() (engine.Engine, error) { return h.engine, nil }, ReadRoom: h.readRoom}
+		if code := a.Run(taskCallContext(t), append(slices.Clone(args), "-json")); code != 0 {
+			t.Fatalf("hibd JSON = exit %d, %q, %q", code, &raw, &diagnostics)
+		}
+		a.Stdout = &plain
+		if code := a.Run(taskCallContext(t), args); code != 0 {
+			t.Fatalf("hibd plain = exit %d, %q, %q", code, &plain, &diagnostics)
+		}
+		if code := c.hibContext(taskCallContext(t), args...); code != 0 ||
+			c.out.String() != plain.String() || c.errOut.Len() != 0 {
+			t.Fatalf("%v parity = exit %d, hib %q, hibd %q, stderr %q", args, code, c.out, &plain, c.errOut)
+		}
+		h.mu.Lock()
+		gotRaw := h.sudoRuns[len(h.sudoRuns)-1].stdout.String()
+		h.mu.Unlock()
+		if gotRaw != raw.String() {
+			t.Fatalf("parity used different replies: host %q, hibd %q", gotRaw, &raw)
+		}
+	}
+}
 
 func taskReadClient(t *testing.T, h *taskCallHost) (*app, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
