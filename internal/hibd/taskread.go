@@ -69,7 +69,7 @@ func taskReadOf(record task.Task, inst task.Instance, ms []hibapi.Machine, full 
 				r = last
 			}
 			run := hibapi.RunOf(r, inst)
-			if run.Detail == "" && run.Phase != task.PhaseStopping && run.Phase != task.PhaseRecovering {
+			if run.Detail == "" && run.Phase != task.PhaseStopping {
 				run.Detail = task.WaitReason(r, queue, now)
 			}
 			out.Runs = append(out.Runs, run)

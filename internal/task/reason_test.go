@@ -29,6 +29,8 @@ func TestWaitReason(t *testing.T) {
 			"waiting for room or its turn; 0 runs ahead; expires at 2026-11-03T12:00:00Z"},
 		{"running", granted, now, ""},
 		{"paused no stage", paused, now, "machine paused without recorded freeze proof; no live stage is recorded"},
+		{"paused no stage past deadline", paused, now.Add(2 * time.Hour),
+			"machine paused without recorded freeze proof; no live stage is recorded"},
 		{"paused frozen no stage", Run{ID: paused.ID, Spec: paused.Spec, Log: paused.Log,
 			Machine: MachinePaused, Freeze: Freeze{Frozen: true}}, now,
 			"machine paused with recorded freeze proof; no live stage is recorded"},

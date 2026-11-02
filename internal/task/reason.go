@@ -39,14 +39,14 @@ func WaitReason(r Run, q Queue, now time.Time) string {
 	if _, stopped := r.Stop(); stopped {
 		return ""
 	}
-	if stop, stopping := StopFor(r, now); stopping {
-		if stop.Outcome == Expired {
-			return "queue limit passed at " + r.QueueLimit().UTC().Format(time.RFC3339) +
-				"; waiting for hibd to record the stop"
-		}
-		return ""
-	}
 	if r.Queued() {
+		if stop, stopping := StopFor(r, now); stopping {
+			if stop.Outcome == Expired {
+				return "queue limit passed at " + r.QueueLimit().UTC().Format(time.RFC3339) +
+					"; waiting for hibd to record the stop"
+			}
+			return ""
+		}
 		position := "queue position unavailable"
 		if ahead, ok := q.ahead[r.ID]; ok {
 			word := "runs"

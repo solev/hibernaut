@@ -246,7 +246,7 @@ func TestTaskReadWaitReasonsPreserveStatus(t *testing.T) {
 		{"requested", []task.Checkpoint{{Body: &task.MachineResult{ID: "machine"}}},
 			[]task.Request{{Kind: task.RequestCancel, At: now}}, task.PhaseStopping, ""},
 		{"recovering", []task.Checkpoint{{By: "old", Body: &task.MachineIntent{}}}, nil,
-			task.PhaseRecovering, ""},
+			task.PhaseRecovering, "machine paused without recorded freeze proof; no live stage is recorded"},
 		{"ended", []task.Checkpoint{{Body: &task.KeepResult{}}}, nil, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
