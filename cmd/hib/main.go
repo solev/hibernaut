@@ -118,6 +118,7 @@ type app struct {
 	command     *command
 	configFlag  string
 	json        bool
+	tasksReady  bool
 }
 
 func (a *app) run(ctx context.Context, args []string) int {

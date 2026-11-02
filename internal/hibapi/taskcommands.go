@@ -29,7 +29,7 @@ func TaskCommands() []TaskCommand {
 		{Path: "task logs", Args: "TASK [-run N] [-from BYTE] [-hold D]", Laptop: true,
 			Summary: "read or follow a task run's output",
 			Help:    "print setup, command and finish output; -from counts bytes. JSON reads at most 1 MiB. -hold waits up to 60s for bytes or end"},
-		{Path: "task wait", Args: "TASK [-run N] [-hold D]", Laptop: true,
+		{Path: "task wait", Args: "TASK [-run N] [-hold D]", Laptop: true, E2B: true,
 			Summary: "wait for a task run and print its outcome",
 			Help:    "report the selected run when it ends or after -hold, default and maximum 60s"},
 		{Path: "task cancel", Args: "TASK [-request-id ID]", Laptop: true, RequestID: true,

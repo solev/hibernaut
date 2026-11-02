@@ -2,9 +2,11 @@ package hibd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/task"
 )
@@ -67,6 +69,8 @@ func (a *App) taskWait(ctx context.Context, c taskCommand, args []string) int {
 	st := a.tasks(cfg)
 	defer st.Close()
 	var out hibapi.Task
+	var selected task.Run
+	var daemon task.Instance
 	err = a.holdTask(ctx, *hold, func(ctx context.Context) (bool, error) {
 		record, err := st.Task(ctx, id)
 		if err != nil {
@@ -84,6 +88,7 @@ func (a *App) taskWait(ctx context.Context, c taskCommand, args []string) int {
 				return false, err
 			}
 			r := hibapi.RunOf(run, instance)
+			selected, daemon = run, instance
 			out = hibapi.Task{ID: id, Repo: run.Spec.Repo.String(), Created: record.Created,
 				Runs: []hibapi.TaskRun{r}}
 			return r.Outcome != "", nil
@@ -92,6 +97,27 @@ func (a *App) taskWait(ctx context.Context, c taskCommand, args []string) int {
 	})
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, "", err)
+	}
+	if _, live := selected.LiveStage(); live && !selected.Ended() && selected.MachineID() != "" {
+		e, err := a.engine()
+		if err != nil {
+			return a.taskFail(*asJSON, c.Path, "", err)
+		}
+		machineCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		m, err := e.Get(machineCtx, selected.MachineID())
+		switch {
+		case errors.Is(err, engine.ErrNotFound):
+			selected.Machine = task.MachineGone
+		case err != nil:
+			return a.taskFail(*asJSON, c.Path, "", err)
+		case m.State == engine.Paused:
+			selected.Machine = task.MachinePaused
+		case m.State == engine.Running:
+			selected.Machine = task.MachineRunning
+		}
+		out.Machine = selected.Machine
+		out.Runs[0] = hibapi.RunOf(selected, daemon)
 	}
 	if *asJSON {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Task: &out}})

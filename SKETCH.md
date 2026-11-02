@@ -50,9 +50,9 @@ $ hib task ls
 TASK        RUN  PHASE    STAGE    REPO      AGE
 t-k3x9q2ab  1    running  command  acme/api  4m
 
-$ hib task logs t-k3x9q2ab -f          # copied output, from a byte cursor
+$ hib task logs t-k3x9q2ab -f          # 60s holds, pinned run and byte cursor
 $ hib task show t-k3x9q2ab             # runs, stage, deadline, holds, requests, PR
-$ hib task wait t-k3x9q2ab             # returns when the run ends, prints its outcome
+$ hib task wait t-k3x9q2ab             # bounded holds until outcome, reconnects after drops
 succeeded  https://github.com/acme/api/pull/412
 
 $ hib task run t-k3x9q2ab --prompt "also fix the flaky test" --recipe codex
@@ -249,7 +249,7 @@ The dominant access patterns, traced through that structure:
 4. **A pause, wake or check anywhere.** The Owner's `Engine.Get` reads the label, and
    `Tasks.Check` reads it from the machine its caller looked up. Only a task machine costs a
    `Store.Task` read.
-5. **Logs.** The host file's length is the cursor for copying and for `hib task logs -f`.
+5. **Logs.** A byte cursor pins each run. Logs and wait hold at most 60s, polling once a second.
 6. **Removal.** `Store.Removing` finds tasks with an rm request or an open removal, oldest
    first. It builds merged views only for those tasks, not other tasks' runs or checkpoints.
    The tick never scans `Store.Tasks`. Age-based retention waits for M16.

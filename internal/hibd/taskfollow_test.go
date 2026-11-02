@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/engine/fake"
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/task"
@@ -44,6 +45,12 @@ func TestTaskLogsHold(t *testing.T) {
 			code, _ = taskReadReply(t, a, out, "task", "logs", string(rec.Run.Task))
 			if code != 0 || *clock != 0 {
 				t.Fatalf("F3 no hold = exit %d, elapsed %v; want immediate", code, *clock)
+			}
+			if event != "none" {
+				code, _ = taskReadReply(t, a, out, "task", "logs", string(rec.Run.Task), "-hold", "60s")
+				if code != 0 || *clock != 0 {
+					t.Fatalf("F3 ready hold = exit %d, elapsed %v; want immediate", code, *clock)
+				}
 			}
 		})
 	}
@@ -111,10 +118,11 @@ func TestTaskFollowValidationAndCancellation(t *testing.T) {
 				t.Fatalf("%s %v = exit %d, %+v; want %s", cmd, tc.args, code, r, tc.code)
 			}
 		}
-		clock := followClock(t, a, nil)
+		polls := 0
+		clock := followClock(t, a, func(int) { polls++ })
 		code, _ := taskReadReply(t, a, out, "task", cmd, string(rec.Run.Task), "-hold", "60s")
-		if code != 0 || *clock != 60*time.Second {
-			t.Fatalf("%s cap = exit %d, elapsed %v; want 60s", cmd, code, *clock)
+		if code != 0 || *clock != 60*time.Second || polls != 60 {
+			t.Fatalf("%s cap = exit %d, elapsed %v, %d polls; want 60s and 60 one-second sleeps", cmd, code, *clock, polls)
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		a.TaskHoldWait = func(context.Context, time.Duration) error {
@@ -199,5 +207,34 @@ func TestTaskHoldContextStopsRead(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled hold = %v", err)
+	}
+
+}
+
+func TestTaskWaitHeldMachine(t *testing.T) {
+	e := fake.New()
+	a, out, _ := newApp(t, e)
+	rec := submitReadTask(t, taskReadStore(t, a), "held", time.Now())
+	e.Add(engine.Machine{ID: "held-machine", State: engine.Paused})
+	db, err := sql.Open("sqlite", filepath.Join(a.Getenv("HIBD_STATE_DIR"), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	_, err = db.ExecContext(ctx, `INSERT INTO checkpoints
+			(task,n,seq,step,kind,at,by,body) VALUES
+			(?,1,1,'machine','intent',0,'fixture','{}'),
+			(?,1,2,'machine','result',0,'fixture','{"ID":"held-machine"}'),
+			(?,1,3,'command','intent',0,'fixture','{"Stage":"command"}'),
+			(?,1,4,'command','result',0,'fixture','{"Stage":"command"}')`,
+		rec.Run.Task, rec.Run.Task, rec.Run.Task, rec.Run.Task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, r := taskReadReply(t, a, out, "task", "wait", string(rec.Run.Task), "-hold", "0s")
+	if code != 0 || r.Task == nil || r.Task.Runs[0].Held != task.ErrHeld.Error() {
+		t.Fatalf("F8 waited machine = exit %d, %+v; want the rescue reason", code, r.Task)
 	}
 }
