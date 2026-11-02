@@ -430,8 +430,11 @@ SSH (port 22) is reachable from the internet.
 A task runs a command in its own machine under hibd's supervision. The host keeps the task
 and its output when your laptop disconnects.
 
-`hib task start` starts a command in its own task machine. This command is not available in
-this build yet. It exits 1 without contacting the host.
+`hib task start -- CMD ARG...` saves a command and its inputs on the host, then prints
+`TASK  queued`. Use `--prompt` or `--prompt-file` and repeat `--file` for up to 100 MiB.
+Inputs are checked and copied locally before contacting the host. Retries reuse the same
+request ID and bytes, even if you edit a file. If the reply is lost, hib gives a request lookup
+command. `--json` prints hibd's reply unchanged. Recipes come in a later build.
 
 `hib task ls` lists tasks, and `hib task show` inspects a task or looks up a request.
 `hib task cancel` stops a live run, `hib task rescue` resumes a held machine and stops its

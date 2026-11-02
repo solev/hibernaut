@@ -101,7 +101,7 @@ func TestTaskStartSavesInputs(t *testing.T) {
 	a, _, _ := newApp(t, fake.New())
 	a.Now = func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }
 	prompt, file := []byte("fix this\n\x00\xff"), []byte{0, 1, '\n', 255}
-	req := hibapi.TaskStart{RequestID: "save-inputs", Repo: "solev/hibernaut", Command: []string{"true"},
+	req := hibapi.TaskStart{RequestID: "save-inputs", Command: []string{"true"},
 		Prompt: &hibapi.TaskFile{Size: int64(len(prompt))},
 		Files:  []hibapi.TaskFile{{Name: "data.bin", Size: int64(len(file))}}}
 	code, r := submitTaskJSON(t, a, req, bytes.NewReader(append(prompt, file...)))
@@ -130,6 +130,49 @@ func TestTaskStartNeverOpensEngine(t *testing.T) {
 	requireTaskReply(t, code, r, req.RequestID, 1)
 }
 
+func TestTaskStartRefusesUnsupportedInputsBeforeReading(t *testing.T) {
+	for name, edit := range map[string]func(*hibapi.TaskStart){
+		"duplicate": func(r *hibapi.TaskStart) {
+			r.Files = []hibapi.TaskFile{{Name: "note", Size: 1}, {Name: "note", Size: 1}}
+		},
+		"repo":   func(r *hibapi.TaskStart) { r.Repo = "solev/hibernaut" },
+		"branch": func(r *hibapi.TaskStart) { r.Branch = "main" },
+		"draft PR": func(r *hibapi.TaskStart) {
+			r.Repo, r.Publish = "solev/hibernaut", task.PublishDraftPR
+		},
+		"recipe": func(r *hibapi.TaskStart) { r.Recipe = "review" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, out, errOut := newApp(t, nil)
+			req := hibapi.TaskStart{RequestID: "refuse", Command: []string{"true"}}
+			edit(&req)
+			data := &taskUnreadInput{}
+			a.Stdin = taskRequestInput(t, req, data)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			code := a.Run(ctx, []string{"task", "start", "-json"})
+			var reply hibapi.Response
+			if err := json.Unmarshal(out.Bytes(), &reply); err != nil {
+				t.Fatal(err)
+			}
+			requireTaskError(t, code, reply, req.RequestID, hibapi.CodeBadRequest, false)
+			if data.reads != 0 || errOut.Len() != 0 {
+				t.Errorf("refusal read inputs %d times, stderr %q; want neither", data.reads, errOut)
+			}
+			all, err := savedTasks(t, a).List(ctx)
+			if err != nil || len(all) != 0 {
+				t.Errorf("refused request left tasks %+v, %v", all, err)
+			}
+		})
+	}
+}
+
+type taskUnreadInput struct{ reads int }
+
+func (r *taskUnreadInput) Read([]byte) (int, error) {
+	r.reads++
+	return 0, errors.New("refused start must not read inputs")
+}
 func TestTaskStartReplaysReceipt(t *testing.T) {
 	a, _, _ := newApp(t, fake.New())
 	req := hibapi.TaskStart{RequestID: "replay", Command: []string{"true"},
