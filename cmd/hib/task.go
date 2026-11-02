@@ -109,6 +109,9 @@ func taskRequestID(given string) (string, error) {
 var errNoTasks = errors.New("this host's hibd is too old for hib task and hib recipe. Update the host")
 
 func (a *app) needTasks(ctx context.Context, cfg *config) error {
+	if a.tasksReady {
+		return nil
+	}
 	features, err := a.features(ctx, cfg)
 	if err != nil {
 		return err
@@ -116,6 +119,7 @@ func (a *app) needTasks(ctx context.Context, cfg *config) error {
 	if !slices.Contains(features, hibapi.FeatureTasks) {
 		return errNoTasks
 	}
+	a.tasksReady = true
 	return nil
 }
 

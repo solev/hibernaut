@@ -26,7 +26,7 @@ func taskHandlers() map[string]func(*App, context.Context, taskCommand, []string
 	return map[string]func(*App, context.Context, taskCommand, []string) int{
 		"task start": (*App).taskStart, "task run": (*App).taskStart,
 		"task ls": (*App).taskLs, "task show": (*App).taskShow,
-		"task logs": (*App).taskLogs, "task wait": (*App).taskWaitNotYet,
+		"task logs": (*App).taskLogs, "task wait": (*App).taskWait,
 		"task cancel": (*App).taskRequest, "task rescue": (*App).taskRequest,
 		"task rm": (*App).taskRequest, "task cleanup": (*App).taskCleanup,
 		"recipe put": (*App).recipe, "recipe ls": (*App).recipe,
@@ -73,16 +73,6 @@ func taskUsesE2B(cmd string) bool {
 		}
 	}
 	return false
-}
-
-func (a *App) taskWaitNotYet(_ context.Context, c taskCommand, args []string) int {
-	fl := a.flags(c.Path)
-	asJSON := fl.Bool("json", false, "print JSON")
-	fl.Int("run", 0, "run number")
-	if _, ok := a.parse(fl, args, 1, c.Path+" "+c.Args); !ok {
-		return 2
-	}
-	return a.taskFail(*asJSON, c.Path, "", errTasksNotImplemented)
 }
 
 func (a *App) taskActor() task.Actor {
@@ -352,20 +342,19 @@ func (a *App) taskShow(ctx context.Context, c taskCommand, args []string) int {
 	return 0
 }
 
-// taskLogs is hibd task logs. The cursor is a byte offset in the host's copy, so -f on the
-// laptop is a loop of calls that each pass the last reply's Next.
 func (a *App) taskLogs(ctx context.Context, c taskCommand, args []string) int {
 	fl := a.flags(c.Path)
 	asJSON := fl.Bool("json", false, "print JSON")
 	n := fl.Int("run", 0, "run number, latest by default")
 	from := fl.Int64("from", 0, "number of stream bytes already read")
+	hold := fl.Duration("hold", 0, "wait for output or end, at most 60s")
 	rest, ok := a.parse(fl, args, 1, c.Path+" "+c.Args)
 	if !ok {
 		return 2
 	}
 	id, err := task.ParseID(rest[0])
-	if err != nil || *n < 0 || *from < 0 {
-		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: want a task ID and nonnegative run and cursor", errBadTaskRequest))
+	if err != nil || *n < 0 || *from < 0 || *hold < 0 || *hold > taskHoldMax {
+		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: want a task ID, nonnegative run and cursor, and hold from 0 to 60s", errBadTaskRequest))
 	}
 	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
@@ -374,7 +363,15 @@ func (a *App) taskLogs(ctx context.Context, c taskCommand, args []string) int {
 	st := a.tasks(cfg)
 	defer st.Close()
 	for {
-		out, err := st.Logs(ctx, id, *n, *from)
+		var out hibapi.TaskLog
+		err := a.holdTask(ctx, *hold, func(ctx context.Context) (bool, error) {
+			var err error
+			out, err = st.Logs(ctx, id, *n, *from)
+			if err == nil {
+				*n = out.Run
+			}
+			return len(out.Data) > 0 || out.Done, err
+		})
 		if err != nil {
 			return a.taskFail(*asJSON, c.Path, "", err)
 		}

@@ -439,7 +439,10 @@ stage, and `hib task rm` removes a task and its machine after asking.
 These commands are not available in this build yet. Each command exits 1 without contacting the host.
 
 `hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
-These commands are not available in this build yet. Each command exits 1 without contacting the host.
+Use `logs -f` to follow until the run ends. Both commands reconnect after a dropped connection
+and keep the selected run. Terminal logs escape controls; pipes and files keep the original bytes.
+Logs `--json` prints each range reply unchanged. Wait `--json` prints only the final reply.
+Wait exits 0 for `succeeded` or `no_changes`, 1 for another outcome or error, and 2 for a usage error.
 
 `hib recipe put` saves a named command, `hib recipe ls` lists recipes, and `hib recipe show`
 inspects one. `hib recipe rm` removes a recipe, and `hib recipe default` shows or chooses the
