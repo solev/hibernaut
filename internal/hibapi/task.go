@@ -157,6 +157,7 @@ type TaskRun struct {
 	Held        string            `json:"held,omitempty"`
 	Detail      string            `json:"detail,omitempty"`
 	Command     []string          `json:"command"`
+	Recipe      string            `json:"recipe,omitempty"`
 	Submitted   time.Time         `json:"submitted"`
 	Deadline    *time.Time        `json:"deadline,omitempty"`
 	Publication *task.Publication `json:"publication,omitempty"`
@@ -246,7 +247,7 @@ func RunOf(r task.Run, daemon task.Instance) TaskRun {
 	st := r.Status(daemon)
 	out := TaskRun{N: r.ID.N, Phase: st.Phase, Outcome: st.Outcome, Stage: st.Stage,
 		Held: st.Held, Detail: st.Detail, Command: r.Spec.Command, Submitted: r.Submitted,
-		Publication: r.Publication()}
+		Publication: r.Publication(), Recipe: r.Spec.Recipe}
 	if c, ok := r.Last(); ok {
 		out.Step = c.Step()
 	}

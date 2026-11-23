@@ -442,14 +442,16 @@ nudge.
   The store rejects a stale removal decision while a run is live.
 - **Repeated failures.** Each workflow, removal, task tick, watcher, setup key and codex refresh
   logs a failure at most once per 10 minutes with the latest text and suppressed count. A
-  workflow logs one counted end line when it ends. Other successes log one counted recovery per
-  failure line. Neither resets the interval. States log on change. Nothing logs after daemon
-  life ends; `ErrNotRunning` stays silent. Run and removal state leaves on completion, absent
-  setup keys after a full pass, and loop state on exit.
+  workflow that logged a failure logs one counted end line when it ends. Other successes log one
+  counted recovery per failure line. Neither resets the interval. States log on change. Nothing
+  logs after daemon life ends; `ErrNotRunning` stays silent. Run and removal state leaves on
+  completion, absent setup keys after a full pass, and loop state on exit.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
 - **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
-  can't cut them short, only nudge them to re-enter.
+  can't cut them short, only nudge them to re-enter. Stop's proof budget and collect's read budget
+  count from the later of their intent and this daemon's recorded start. Retries share a budget.
+  Downtime spends no guest-call budget, so a restart of any length gives the same chance of proof.
 
 ### Module map
 
@@ -529,9 +531,11 @@ through a field.
 
 **Freeze before pause.** `Owner.Pause` reads the label. For a task machine it takes
 `task-machine-TASK.lock` and reads the machine again, since another process may have paused it
-meanwhile. If it is still running it writes 1 to the slice's `cgroup.freeze`, waits for `frozen 1`
-in `cgroup.events` and records whether the freeze held, then pauses. A failed freeze still pauses.
-The row says unfrozen, so the run is held until a rescue, which is TASK.md's hung guest case.
+meanwhile. If it is still running, it tries to start the slice, then tries the freeze even if
+the start fails. The freeze writes 1 to `cgroup.freeze` and waits for `frozen 1` in `cgroup.events`.
+Only that confirmation records frozen, with no detail. One `taskguest.ExecTimeout` bounds the
+start and freeze. A failed or empty freeze still pauses and records unfrozen, so the run is held
+until rescue or rm. A start error joins the freeze's detail only when the row is unfrozen.
 A lost row reads as the row before it, which never says frozen while the stage runs, so it too
 fails toward held. It covers:
 
@@ -668,8 +672,13 @@ under `/var/lib/hib-task/RUN`.
   `MaxLogChunk`, 1 MiB, from a byte offset. Collect stops at `MaxLogBytes`, 50 MiB, per run, summed
   over the stages in order. The executor's copy loop and `FileLogs.Append` both enforce the sum.
   An exited stage's host copy is final. Collect copies only launched stages without a `StageExit`.
-  It counts kept bytes and reports all uncopied guest bytes as `Dropped` while the machine runs.
-  `Dropped` can understate when the machine is not running at collect.
+  `Dropped` counts reported guest bytes not kept, even below the cap. `Unread` names unread tails
+  only for launched stages without a `StageExit`, or unread publication. Both can miss later output.
+  `Dropped` can understate when the machine is not running, a size could not be read, or the guest
+  reports a false size.
+  All collect reads share `CollectLimit`, 60 s, from the later of its intent and daemon start.
+  Downtime is not a guest read. Guest read errors become `Unread`, not workflow retries.
+  An unproven stop reads nothing from the guest.
 - **Lost replies.** Launch is idempotent by unit name and by a start marker made with `mkdir`.
   A second start exits 75 without acting. The executor launches only when a look says
   `NotStarted`, ignores `ErrConnectionLost` and judges the launch by the next look, never the
@@ -678,7 +687,13 @@ under `/var/lib/hib-task/RUN`.
   host file's length, the only cursor, so a lost chunk is read again and never appended twice.
 - **Deadlines may kill.** Every Exec is short and bounded by `ExecTimeout`, 10 s. Long work runs
   in systemd units, which an Exec's death can't touch. A killed `systemd-run` either queued the
-  unit or didn't, and the look tells which.
+  unit or didn't, and the look tells which. A systemd exit result of `timeout` reads `timed_out`
+  unless an earlier recorded stop supplies the outcome.
+  Stop attempts share `StopLimit`, 60 s, from the later of the stop intent and daemon start.
+  Downtime is not a guest call. Expiry sends one final KILL bounded by 10 s.
+  A failed proof escalates TERM to KILL on the next attempt. At expiry, `unproven` warns
+  that the stage may still run when the machine wakes. Keep still pauses it, even if freeze fails.
+  A paused stop waiting for room or rescue has the same limit, without KILL or an automatic wake.
 - **Exec races a pause.** `ErrNotRunning` and `ErrConnectionLost` mean look again after a poll.
   Exec never wakes, and `collect` never resumes a paused or gone machine.
 - **Main-line readiness.** Every pass through `upload`, a stage launch or `await` checks
@@ -850,6 +865,9 @@ promises, and these tests hold `runner.sh` to it.
 
 `TestPauseWithoutCgroupIsHeld` keeps an empty freezer answer from authorizing a wake.
 `TestPauseCreatesSliceBeforeFirstStage` covers Owner's slice preparation before freeze.
+`TestPauseFreezesAfterFailedSliceStart` covers a live slice after start exits or fails to exec.
+`TestPauseWithFailedSliceStartIsHeld` keeps both start and freeze evidence for an unfrozen row.
+`TestPauseFreezeUsesOneTimeout` bounds a hanging start and freeze within one exec timeout.
 `TestLookKeepsExitWhenShowFails` and `TestParseLookFailedShow` keep a present exit readable
 when systemctl cannot show the unit. Without an exit, that observation remains an error.
 `TestLaunchExposesInputs` checks every stage receives `HIB_INPUTS=RUN/in`.
@@ -895,9 +913,12 @@ the kernel never reached frozen 1. The checkout's runner was unchanged.
      `cgroup.events` to say `frozen 1` or `frozen 0`. The slice has no cgroup until a stage has
      run since boot or root starts the slice. Without it, `Freeze` reports `freeze=empty`.
      With it, `Freeze` reports `freeze=frozen` only after the kernel confirms the freeze.
-     Owner starts the slice before freezing. A failed start or empty answer records unfrozen
-     with a detail, so a live stage remains held. `look` reports the unit's `cgroup.events`
-     frozen line, and `Seen.Frozen` reads it instead of `FreezerState`.
+     Owner starts the slice before freezing, and tries the freeze even when the start fails.
+     Only `FreezeFrozen` records frozen with no detail. A failed or empty freeze records
+     unfrozen, so a live stage remains held. A start error joins the freeze's detail only for
+     an unfrozen row. One `taskguest.ExecTimeout` bounds the start and freeze.
+     `look` reports the unit's `cgroup.events` frozen line, and `Seen.Frozen` reads it instead
+     of `FreezerState`.
    - Done. `Launch` passes `--expand-environment=no`. Without it systemd rewrote `$$` and
      `${HIB_RUN}` in the task's command.
    - Done. `Kill` thaws after it kills a frozen stage. A kill alone left `ExecStopPost` frozen, the

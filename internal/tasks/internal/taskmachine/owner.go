@@ -117,10 +117,10 @@ func Check(ctx context.Context, s Store, now time.Time, m engine.Machine, op tas
 }
 
 // Pause freezes the stage slice of a running task machine, records the freeze, then pauses it.
-// It pauses even when the freeze fails: the row then says unfrozen, so the run is held and
-// nothing wakes it until rescue or rm. Every pause hibd makes reaches this method, through
-// Manager.Pause, pauseall and Wake's pause again, and none is refused here: hib pause and
-// leakscan ask Check first, and the daemon's own pauses must always land.
+// It tries the freeze even if starting the slice fails. A failed freeze still pauses the machine
+// and records unfrozen, so the run is held until rescue or rm. Every pause hibd makes reaches
+// this method, through Manager.Pause, pauseall and Wake's pause again. None is refused here.
+// hib pause and leakscan ask Check first. The daemon's own pauses must always land.
 func (o *Owner) Pause(ctx context.Context, id string) error {
 	m, err := o.inner.Get(ctx, id)
 	if err != nil {
@@ -145,17 +145,14 @@ func (o *Owner) Pause(ctx context.Context, id string) error {
 	return o.inner.Pause(ctx, id)
 }
 
-// freeze freezes and records the result. The row says frozen only after the freeze is
-// confirmed, so a failure anywhere leaves the run held rather than wakeable.
+// freeze tries the slice start and freeze within one taskguest.ExecTimeout and records the
+// result. Only FreezeFrozen records frozen. A failed start does not skip the freeze, and its
+// error joins the freeze's detail only when the row is unfrozen.
 func (o *Owner) freeze(ctx context.Context, tid task.ID, id string) {
 	f := task.Freeze{At: o.now(), By: o.by}
 	fctx, cancel := context.WithTimeout(ctx, taskguest.ExecTimeout)
 	defer cancel()
-	if err := execOK(fctx, o.inner, id, []string{"systemctl", "start", taskguest.Slice}); err != nil {
-		f.Detail = "prepare freeze failed: " + err.Error()
-		_ = o.store.RecordFreeze(context.WithoutCancel(ctx), tid, f)
-		return
-	}
+	startErr := execOK(fctx, o.inner, id, []string{"systemctl", "start", taskguest.Slice})
 	res, err := o.inner.Exec(fctx, id, root(taskguest.Freeze()))
 	switch {
 	case err != nil:
@@ -170,8 +167,11 @@ func (o *Owner) freeze(ctx context.Context, tid task.ID, id string) {
 		case answer == taskguest.FreezeEmpty:
 			f.Detail = "freeze held nothing: hib-task.slice has no cgroup"
 		default:
-			f.Frozen = true
+			f.Frozen = answer == taskguest.FreezeFrozen
 		}
+	}
+	if startErr != nil && !f.Frozen {
+		f.Detail = "prepare freeze failed: " + startErr.Error() + "; " + f.Detail
 	}
 	// A lost row reads as the row before it. Thaw writes unfrozen before it thaws, so that row
 	// never says frozen while the stage runs.

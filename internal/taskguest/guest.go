@@ -148,13 +148,19 @@ func Look(r task.RunID, s task.Stage) []string {
 // so it can't act on the network when its machine resumes. ParseFreeze reads its answer.
 func Freeze() []string { return control("freeze") }
 
+// FreezeResult is Freeze's answer about the stage slice's cgroup. Only FreezeFrozen lets
+// Owner record a frozen row.
 type FreezeResult string
 
 const (
+	// FreezeFrozen means the kernel confirmed the stage slice is frozen.
 	FreezeFrozen FreezeResult = "frozen"
-	FreezeEmpty  FreezeResult = "empty"
+	// FreezeEmpty means the stage slice has no cgroup, so nothing was frozen.
+	FreezeEmpty FreezeResult = "empty"
 )
 
+// ParseFreeze reads Freeze's answer and rejects malformed output. Only FreezeFrozen permits
+// Owner to record a frozen row. FreezeEmpty does not confirm a freeze.
 func ParseFreeze(out []byte) (FreezeResult, error) {
 	switch string(out) {
 	case "freeze=frozen\n":
