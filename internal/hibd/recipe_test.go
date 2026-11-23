@@ -154,6 +154,16 @@ func TestRecipeRetryAfterEdit(t *testing.T) {
 				code, r = submitTaskJSON(t, a, req, strings.NewReader(""))
 			}
 			requireTaskError(t, code, r, req.RequestID, hibapi.CodeConflict, false)
+			if mode == "rm" || mode == "default-rm" || mode == "damage" {
+				if !strings.Contains(r.Error, "saved task cannot be rechecked") ||
+					strings.Contains(r.Error, "a different request") || strings.Contains(r.Error, "give -- CMD") {
+					t.Errorf("unresolved resend = %q; want saved-task recheck failure without new-start advice", r.Error)
+				}
+				if mode == "damage" && !strings.Contains(r.Error, "unexpected end") ||
+					mode != "damage" && !strings.Contains(r.Error, "no ") {
+					t.Errorf("unresolved resend lost recipe cause: %q", r.Error)
+				}
+			}
 			code, r = taskReadReply(t, a, out, "task", "show", "-request", req.RequestID)
 			if code != 0 || r.Task == nil || r.Task.ID != first.ID ||
 				len(r.Task.Runs) != 1 || r.Task.Runs[0].Recipe != "check" {
@@ -216,7 +226,7 @@ func TestRecipeNamesAndLimits(t *testing.T) {
 }
 
 func TestRecipeDamagedStoreDoesNotBlockExplicitCommand(t *testing.T) {
-	for _, damage := range []string{"json", "version", "missing-version", "missing-recipes", "null-recipes", "oversized", "symlink", "directory", "mode"} {
+	for _, damage := range []string{"json", "version", "missing-version", "zero-version", "missing-recipes", "null-recipes", "oversized", "symlink", "directory", "mode"} {
 		t.Run(damage, func(t *testing.T) {
 			a, _, _ := newApp(t, nil)
 			keepRecipe(t, a, "check", recipeBody)
@@ -239,6 +249,8 @@ func TestRecipeDamagedStoreDoesNotBlockExplicitCommand(t *testing.T) {
 				err = os.WriteFile(path, []byte(`{"v":2,"recipes":{}}`), 0o600)
 			case "missing-version":
 				err = os.WriteFile(path, []byte(`{"recipes":{}}`), 0o600)
+			case "zero-version":
+				err = os.WriteFile(path, []byte(`{"v":0,"recipes":{}}`), 0o600)
 			case "missing-recipes":
 				err = os.WriteFile(path, []byte(`{"v":1}`), 0o600)
 			case "null-recipes":
@@ -260,13 +272,35 @@ func TestRecipeDamagedStoreDoesNotBlockExplicitCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, args := range [][]string{{"ls"}, {"show", "check"}, {"put", "new"}, {"rm", "check"}, {"default"}} {
-				if code, out := callRecipe(t, a, recipeBody, args...); code != 1 ||
-					!strings.Contains(out, "recipes.json") || !strings.Contains(out, "move it aside") {
-					t.Fatalf("damaged %v = %d, %s; want file-specific failure and move-aside recovery", args, code, out)
+				code, out := callRecipe(t, a, recipeBody, args...)
+				if code != 1 ||
+					!strings.Contains(out, path) || strings.Count(out, "recipes.json") != 1 ||
+					strings.Contains(out, "bad task request") {
+					t.Errorf("damaged %v = %d, %s; want one file path and recipe-specific failure", args, code, out)
+				}
+				advice := "move it aside"
+				if damage == "mode" {
+					advice = "chmod 600 " + path
+				} else if damage == "symlink" || damage == "directory" {
+					advice = "regular file"
+				}
+				if !strings.Contains(out, advice) ||
+					(advice != "move it aside" && strings.Contains(out, "move it aside")) {
+					t.Errorf("%s recovery = %s; want %q only", damage, out, advice)
+				}
+				if damage == "missing-version" || damage == "zero-version" {
+					if !strings.Contains(out, "damaged") || strings.Contains(out, "update") {
+						t.Errorf("version damage = %s; want damaged file, not a host update", out)
+					}
+				} else if damage == "version" && !strings.Contains(out, "update hibd") {
+					t.Errorf("newer version = %s; want update hibd or start over", out)
 				}
 			}
-			code, r := submitTaskJSON(t, a, hibapi.TaskStart{RequestID: "damaged"}, &taskUnreadInput{})
+			code, r := submitTaskJSON(t, a, hibapi.TaskStart{RequestID: "damaged", Recipe: "check"}, &taskUnreadInput{})
 			requireTaskError(t, code, r, "damaged", hibapi.CodeBadRequest, false)
+			if strings.Count(r.Error, "recipes.json") != 1 {
+				t.Errorf("recipe start = %q; want file named once", r.Error)
+			}
 			code, r = submitTaskJSON(t, a, hibapi.TaskStart{RequestID: "explicit", Command: []string{"true"}}, strings.NewReader(""))
 			requireTaskReply(t, code, r, "explicit", 1)
 		})
@@ -340,8 +374,9 @@ func TestRecipeConcurrentWritersAndCap(t *testing.T) {
 	}
 	path := filepath.Join(dir, "recipes.json")
 	before, _ := os.ReadFile(path)
-	if code, out := callRecipe(t, a, recipeBody, "put", "overflow"); code != 1 {
-		t.Fatalf("257th recipe = %d, %s; want refusal", code, out)
+	if code, out := callRecipe(t, a, recipeBody, "put", "overflow"); code != 1 ||
+		strings.Contains(out, "recipes.json") || strings.Contains(out, "bad task request") {
+		t.Fatalf("257th recipe = %d, %s; want refusal without file blame", code, out)
 	}
 	after, _ := os.ReadFile(path)
 	if !bytes.Equal(before, after) {
@@ -350,7 +385,7 @@ func TestRecipeConcurrentWritersAndCap(t *testing.T) {
 }
 
 func TestRecipeTempRecovery(t *testing.T) {
-	for _, mode := range []string{"foreign-mode", "symlink"} {
+	for _, mode := range []string{"foreign-mode", "symlink", "directory"} {
 		t.Run(mode, func(t *testing.T) {
 			a, _, _ := newApp(t, nil)
 			keepRecipe(t, a, "old", recipeBody)
@@ -364,6 +399,13 @@ func TestRecipeTempRecovery(t *testing.T) {
 				if err := os.Symlink(target, stale); err != nil {
 					t.Fatal(err)
 				}
+			} else if mode == "directory" {
+				if err := os.Mkdir(stale, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(stale, "keep"), []byte("keep"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			} else {
 				if err := os.WriteFile(stale, []byte("{"), 0o600); err != nil {
 					t.Fatal(err)
@@ -373,7 +415,14 @@ func TestRecipeTempRecovery(t *testing.T) {
 				}
 			}
 			keepRecipe(t, a, "next", recipeBody)
-			if stale, err := filepath.Glob(filepath.Join(dir, ".recipes.json.tmp-*")); err != nil || len(stale) != 0 {
+			left := 0
+			if mode == "directory" {
+				left = 1
+				if data, err := os.ReadFile(filepath.Join(stale, "keep")); err != nil || string(data) != "keep" {
+					t.Fatalf("sweep changed directory contents %q, %v", data, err)
+				}
+			}
+			if stale, err := filepath.Glob(filepath.Join(dir, ".recipes.json.tmp-*")); err != nil || len(stale) != left {
 				t.Fatalf("put left unpublished document temps %v, %v", stale, err)
 			}
 			if code, out := callRecipe(t, a, "", "ls"); code != 0 ||

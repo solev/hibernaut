@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/solev/hibernaut/images"
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -23,6 +24,72 @@ import (
 
 const maxRecipes = 256
 const maxRecipeState = 5 << 20
+
+var recipeLockWait = 10 * time.Second
+
+var (
+	errRecipeRequest = errors.New("recipe request failed")
+	errRecipeBusy    = errors.New("recipe lock busy")
+	errRecipeRecheck = errors.New("saved task cannot be rechecked")
+)
+
+type recipeErrorKind int
+
+const (
+	recipeIO recipeErrorKind = iota
+	recipeDamage
+	recipeNewer
+	recipeMode
+	recipeOwner
+	recipeNotRegular
+	recipeBusy
+)
+
+type recipeError struct {
+	path  string
+	kind  recipeErrorKind
+	cause error
+	owner statefile.Owner
+}
+
+func (e *recipeError) Error() string {
+	switch e.kind {
+	case recipeMode:
+		return fmt.Sprintf("recipe file needs mode 0600; run chmod 600 %s", e.path)
+	case recipeOwner:
+		return fmt.Sprintf("recipe file has the wrong owner; run sudo chown %d:%d %s", e.owner.UID, e.owner.GID, e.path)
+	case recipeNotRegular:
+		return fmt.Sprintf("%s: restore a regular file owned by uid %d and gid %d with mode 0600",
+			e.path, e.owner.UID, e.owner.GID)
+	case recipeDamage:
+		return fmt.Sprintf("%s: damaged recipe file: %v; move it aside to recover recipes", e.path, e.cause)
+	case recipeNewer:
+		return fmt.Sprintf("%s: %v; update hibd, or move it aside to start over", e.path, e.cause)
+	case recipeBusy:
+		return fmt.Sprintf("%s: %v; retry the recipe change", e.path, e.cause)
+	default:
+		return fmt.Sprintf("%s: %v; retry after checking the I/O failure", e.path, e.cause)
+	}
+}
+
+func (e *recipeError) Unwrap() error { return e.cause }
+
+func recipeFileError(root *os.Root, name string, kind recipeErrorKind, err error) *recipeError {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		err = fmt.Errorf("%s: %w", pathErr.Op, pathErr.Err)
+	}
+	return &recipeError{path: filepath.Join(root.Name(), name), kind: kind, cause: err}
+}
+
+type missingRecipeError struct{ name string }
+
+func (e missingRecipeError) Error() string {
+	if e.name == "" {
+		return "no default recipe"
+	}
+	return fmt.Sprintf("no recipe %q", e.name)
+}
 
 type recipeDoc struct {
 	V       int                      `json:"v"`
@@ -49,7 +116,7 @@ func (s recipeStore) read() (recipeDoc, error) {
 		return recipeDoc{V: 1, Recipes: map[string]hibapi.Recipe{}}, nil
 	}
 	if err != nil {
-		return recipeDoc{}, err
+		return recipeDoc{}, fmt.Errorf("%w; retry after checking the state directory", err)
 	}
 	defer root.Close()
 	return readRecipes(root, owner)
@@ -58,20 +125,27 @@ func (s recipeStore) read() (recipeDoc, error) {
 func recipeFile(root *os.Root, name string, owner statefile.Owner) (fs.FileInfo, error) {
 	fi, err := root.Lstat(name)
 	if err != nil {
-		return nil, err
+		return nil, recipeFileError(root, name, recipeIO, err)
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !fi.Mode().IsRegular() || !ok || int(st.Uid) != owner.UID || int(st.Gid) != owner.GID ||
-		fi.Mode().Perm() != 0o600 {
-		return nil, fmt.Errorf("%s needs a regular 0600 file owned by uid %d and gid %d", name, owner.UID, owner.GID)
+	kind := recipeNotRegular
+	switch {
+	case !fi.Mode().IsRegular() || !ok:
+	case int(st.Uid) != owner.UID || int(st.Gid) != owner.GID:
+		kind = recipeOwner
+	case fi.Mode().Perm() != 0o600:
+		kind = recipeMode
+	default:
+		return fi, nil
 	}
-	return fi, nil
+	return nil, &recipeError{path: filepath.Join(root.Name(), name), kind: kind, owner: owner}
 }
 
 func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error) {
 	defer func() {
-		if err != nil {
-			err = fmt.Errorf("%w; move it aside to recover recipes", err)
+		var classified *recipeError
+		if err != nil && !errors.As(err, &classified) {
+			err = recipeFileError(root, "recipes.json", recipeDamage, err)
 		}
 	}()
 	doc = recipeDoc{V: 1, Recipes: map[string]hibapi.Recipe{}}
@@ -84,22 +158,22 @@ func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error
 	}
 	f, err := root.OpenFile("recipes.json", os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return doc, err
+		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil {
-		return doc, err
+		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
 	}
 	if !os.SameFile(named, opened) {
-		return doc, errors.New("recipes.json changed while opening")
+		return doc, recipeFileError(root, "recipes.json", recipeIO, errors.New("changed while opening"))
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxRecipeState+1))
 	if err != nil {
-		return doc, err
+		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
 	}
 	if len(data) > maxRecipeState {
-		return doc, fmt.Errorf("recipes.json exceeds %d bytes", maxRecipeState)
+		return doc, fmt.Errorf("exceeds %d bytes", maxRecipeState)
 	}
 	var probe struct {
 		V int `json:"v"`
@@ -107,8 +181,11 @@ func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return doc, err
 	}
-	if probe.V != 1 {
-		return doc, fmt.Errorf("recipes.json version %d is unsupported; update the host for a newer version", probe.V)
+	if probe.V < 1 {
+		return doc, fmt.Errorf("missing or invalid version %d", probe.V)
+	}
+	if probe.V > 1 {
+		return doc, recipeFileError(root, "recipes.json", recipeNewer, fmt.Errorf("version %d is unsupported", probe.V))
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -117,10 +194,10 @@ func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error
 		return doc, err
 	}
 	if doc.Recipes == nil {
-		return doc, errors.New("recipes.json needs a recipes object")
+		return doc, errors.New("needs a recipes object")
 	}
 	if len(doc.Recipes) > maxRecipes {
-		return doc, fmt.Errorf("recipes.json exceeds %d recipes", maxRecipes)
+		return doc, fmt.Errorf("exceeds %d recipes", maxRecipes)
 	}
 	for name, r := range doc.Recipes {
 		if err := hibapi.CheckName(name); err != nil {
@@ -147,17 +224,28 @@ func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error
 func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Recipe) (recipeDoc, error) {
 	root, owner, err := s.owned.Root()
 	if err != nil {
-		return recipeDoc{}, err
+		return recipeDoc{}, fmt.Errorf("%w; retry after checking the state directory", err)
 	}
 	defer root.Close()
 	if _, err := recipeFile(root, "recipes.lock", owner); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return recipeDoc{}, err
 	}
-	unlock, err := s.owned.WaitLock(ctx, "recipes.lock", "recipes")
+	wait, cancel := context.WithTimeout(ctx, recipeLockWait)
+	defer cancel()
+	lockFailure := func(err error) error {
+		if wait.Err() != nil {
+			return recipeFileError(root, "recipes.lock", recipeBusy, fmt.Errorf("%w: %w", errRecipeBusy, wait.Err()))
+		}
+		return recipeFileError(root, "recipes.lock", recipeIO, err)
+	}
+	unlock, err := s.owned.WaitLock(wait, "recipes.lock", "recipes")
 	if err != nil {
-		return recipeDoc{}, err
+		return recipeDoc{}, lockFailure(err)
 	}
 	defer unlock()
+	if err := wait.Err(); err != nil {
+		return recipeDoc{}, lockFailure(err)
+	}
 	dir, err := root.Open(".")
 	if err != nil {
 		return recipeDoc{}, err
@@ -172,8 +260,8 @@ func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Rec
 		if _, err := hex.DecodeString(token); !ok || len(token) != 32 || err != nil {
 			continue
 		}
-		if err := root.Remove(file); err != nil {
-			return recipeDoc{}, err
+		if fi, err := root.Lstat(file); err == nil && (fi.Mode().IsRegular() || fi.Mode()&fs.ModeSymlink != 0) {
+			_ = root.Remove(file)
 		}
 	}
 	doc, err := readRecipes(root, owner)
@@ -188,7 +276,7 @@ func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Rec
 		doc.Recipes[name] = r
 	case "rm", "default":
 		if _, exists := doc.Recipes[name]; !exists {
-			return doc, fmt.Errorf("no recipe %q", name)
+			return doc, missingRecipeError{name: name}
 		}
 		if leaf == "default" {
 			doc.Default = name
@@ -204,13 +292,19 @@ func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Rec
 		return doc, err
 	}
 	if len(data)+1 > maxRecipeState {
-		return doc, fmt.Errorf("recipes.json exceeds %d bytes", maxRecipeState)
+		return doc, fmt.Errorf("saved recipes would exceed %d bytes", maxRecipeState)
+	}
+	if err := wait.Err(); err != nil {
+		return doc, lockFailure(err)
 	}
 	f, err := s.owned.PublishOwned(root, "recipes.json", append(data, '\n'), owner, true)
 	if err != nil {
-		return doc, err
+		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
 	}
-	return doc, f.Close()
+	if err := f.Close(); err != nil {
+		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
+	}
+	return doc, nil
 }
 
 func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
@@ -221,15 +315,18 @@ func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
 		return 2
 	}
 	leaf := strings.TrimPrefix(c.Path, "recipe ")
+	fail := func(err error) int {
+		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: %w", errRecipeRequest, err))
+	}
 	n := 1
 	if leaf == "ls" || (leaf == "default" && len(rest) == 0) {
 		n = 0
 	}
 	if len(rest) != n {
-		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: expected %d names", errBadTaskRequest, n))
-	}
-	fail := func(err error) int {
-		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: recipes.json: %w", errBadTaskRequest, err))
+		if n == 1 {
+			return fail(errors.New("expected one recipe name"))
+		}
+		return fail(errors.New("expected no recipe names"))
 	}
 	name := ""
 	if n == 1 {
@@ -276,7 +373,7 @@ func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
 		doc, err = s.read()
 	}
 	if err != nil {
-		return fail(fmt.Errorf("%s: %w", filepath.Join(cfg.stateDir, "recipes.json"), err))
+		return fail(err)
 	}
 	reply := hibapi.RecipeReply{DefaultRecipe: doc.Default}
 	switch leaf {
@@ -285,7 +382,7 @@ func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
 	case "show":
 		found, ok := doc.Recipes[name]
 		if !ok {
-			return fail(fmt.Errorf("no recipe %q", name))
+			return fail(missingRecipeError{name: name})
 		}
 		reply.Recipe = &found
 	case "ls":
@@ -325,18 +422,14 @@ func resolveRecipe(req hibapi.TaskStart, stateDir string) (hibapi.TaskStart, err
 	}
 	doc, err := (recipeStore{owned: statefile.Dir{Path: stateDir}}).read()
 	if err != nil {
-		return req, fmt.Errorf("%s: %w", filepath.Join(stateDir, "recipes.json"), err)
+		return req, err
 	}
 	if req.Recipe == "" {
 		req.Recipe = doc.Default
 	}
 	r, ok := doc.Recipes[req.Recipe]
 	if !ok {
-		missing := fmt.Sprintf("no recipe %q", req.Recipe)
-		if req.Recipe == "" {
-			missing = "no default recipe"
-		}
-		return req, fmt.Errorf("%s: give -- CMD, --recipe NAME, or set hib recipe default NAME", missing)
+		return req, missingRecipeError{name: req.Recipe}
 	}
 	if len(req.Command) == 0 {
 		req.Command = r.Command

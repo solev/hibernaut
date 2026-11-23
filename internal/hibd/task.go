@@ -111,8 +111,12 @@ func (a *App) taskStart(ctx context.Context, c taskCommand, args []string) int {
 			_, lookupErr := st.Receipt(ctx, req.RequestID)
 			st.Close()
 			if lookupErr == nil {
-				return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", task.ErrConflict, err))
+				return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", errRecipeRecheck, err))
 			}
+		}
+		var missing missingRecipeError
+		if errors.As(err, &missing) {
+			err = fmt.Errorf("%w: give -- CMD, --recipe NAME, or set hib recipe default NAME", err)
 		}
 		return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", errBadTaskRequest, err))
 	}
@@ -238,6 +242,12 @@ func (a *App) taskFail(asJSON bool, cmd, requestID string, err error) int {
 	}
 	code := hibapi.CodeOf(err)
 	switch {
+	case errors.Is(err, errRecipeBusy):
+		code = hibapi.CodeBusy
+	case errors.Is(err, errRecipeRecheck):
+		code = hibapi.CodeConflict
+	case errors.Is(err, errRecipeRequest):
+		code = hibapi.CodeBadRequest
 	case errors.Is(err, errBadTaskRequest), errors.Is(err, tasks.ErrLogRange):
 		code = hibapi.CodeBadRequest
 	case errors.Is(err, tasks.ErrNoReceipt):
