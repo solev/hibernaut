@@ -12,6 +12,24 @@ import (
 )
 
 func TestTaskCommandsStayInSync(t *testing.T) {
+	for group, commands := range map[string]map[string]*command{"task": taskCommands(), "recipe": recipeCommands()} {
+		for _, row := range hibapi.TaskCommands() {
+			name, ok := strings.CutPrefix(row.Path, group+" ")
+			if !ok || !row.Laptop {
+				continue
+			}
+			if commands[name] == nil {
+				t.Errorf("laptop row %s has no hib command", row.Path)
+			}
+			delete(commands, name)
+		}
+		for name := range commands {
+			t.Errorf("hib %s %s has no laptop row", group, name)
+		}
+	}
+	if t.Failed() {
+		t.Fatal("command table drift")
+	}
 	root := commandTable()
 	want := map[string]bool{}
 	for _, row := range hibapi.TaskCommands() {

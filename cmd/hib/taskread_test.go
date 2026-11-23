@@ -207,7 +207,8 @@ func TestTaskRequestFailures(t *testing.T) {
 					args = append(args, "--yes")
 				}
 				exit := a.run(taskCallContext(t), args)
-				hint := strings.Contains(stderr.String(), "hib task show --request 'used-1'")
+				hint := strings.Contains(stderr.String(), "hib task "+kind+" 't-aaaaaaaa'") &&
+					strings.Contains(stderr.String(), "--request-id 'used-1'")
 				wantHint := code == hibapi.CodeNoTask || code == ""
 				if exit != 1 || out.Len() != 0 || hint != wantHint ||
 					code != "" && !strings.Contains(stderr.String(), "hibd refuses this request") {
@@ -300,7 +301,7 @@ func TestTaskJSONRefusalIsUnchanged(t *testing.T) {
 	a, out, stderr := taskReadClient(t, h)
 	args := []string{"task", "cancel", "t-aaaaaaaa", "--request-id", "used-1", "--json"}
 	if code := a.run(taskCallContext(t), args); code != 1 || out.String() != raw ||
-		!strings.Contains(stderr.String(), "hib task show --request 'used-1'") {
+		!strings.Contains(stderr.String(), "hib task cancel 't-aaaaaaaa' --request-id 'used-1' --json") {
 		t.Fatalf("JSON refusal = exit %d, stdout %q, stderr %q", code, out, stderr)
 	}
 }
@@ -317,7 +318,7 @@ func TestTaskGeneratedRequestHintUsesSentID(t *testing.T) {
 	}
 	id := h.calls[0][i+1]
 	if id == "" || !slices.Equal(h.calls[0], h.calls[1]) ||
-		!strings.Contains(stderr.String(), "hib task show --request '"+id+"'") {
+		!strings.Contains(stderr.String(), "hib task cancel 't-aaaaaaaa' --request-id '"+id+"'") {
 		t.Fatalf("hint did not identify the replayed request: %q, %q", h.calls, stderr)
 	}
 }
