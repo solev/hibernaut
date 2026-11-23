@@ -314,8 +314,13 @@ func (r Run) outcome() (Outcome, Stage, string) {
 	}
 	pub := r.Publication()
 	if pub == nil && r.finishOK() {
-		return Failed, StageFinish,
-			"the host could not read what finish published; the work is in the kept machine"
+		detail := "the work was not kept"
+		if c, ok := r.Last(); ok {
+			if k, ok := c.Body.(*KeepResult); ok && !k.Gone && !k.Removed {
+				detail = "the work is in the kept machine"
+			}
+		}
+		return Failed, StageFinish, "the host could not read what finish published; " + detail
 	}
 	if pub != nil && pub.Changes {
 		return Succeeded, "", ""
