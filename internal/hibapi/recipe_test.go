@@ -33,7 +33,9 @@ func TestPrintRecipeDefaults(t *testing.T) {
 		want   []string
 	}{
 		{"unset", Recipe{Name: "check", Command: []string{"true"}},
-			[]string{"  image default\n", "  size default\n", "  timeout default\n"}},
+			[]string{"  image (default)\n", "  size (default)\n", "  timeout (default)\n"}},
+		{"named-default", Recipe{Name: "check", Command: []string{"true"}, Image: "default"},
+			[]string{"  image default\n", "  size (default)\n", "  timeout (default)\n"}},
 		{"set", Recipe{Name: "check", Command: []string{"true"}, Image: "custom", Size: "large", TimeoutSeconds: 3600},
 			[]string{"  image custom\n", "  size large\n", "  timeout 1h0m0s\n"}},
 	} {
