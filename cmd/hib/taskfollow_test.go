@@ -182,8 +182,10 @@ func TestTaskFollowRetriesAcknowledgedCursor(t *testing.T) {
 	}}
 	a, out, stderr := followClient(t, h)
 	code := a.run(taskCallContext(t), []string{"task", "logs", "t-abcdefgh", "-f"})
-	if code != 0 || out.String() != "onetwothree" || strings.Count(stderr.String(), "reconnecting") != 1 {
-		t.Fatalf("F6 follow = exit %d, stdout %q, stderr %q; want exact bytes and one retry notice", code, out, stderr)
+	wantNotices := strings.Repeat("hib: host temporarily unavailable; reconnecting from the last received reply\n"+
+		"hib: host available; resumed from the last received reply\n", 2)
+	if code != 0 || out.String() != "onetwothree" || stderr.String() != wantNotices {
+		t.Fatalf("F6 follow = exit %d, stdout %q, stderr %q; want exact bytes and two outage pairs", code, out, stderr)
 	}
 	if len(h.calls) != 7 {
 		t.Fatalf("F6 calls = %d; want 7 including taskCall's immediate resends", len(h.calls))
@@ -199,11 +201,14 @@ func TestTaskFollowRetriesAcknowledgedCursor(t *testing.T) {
 
 func TestTaskWaitRetriesPinnedRun(t *testing.T) {
 	h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
-		followWaitReply(t, "", ""), {code: 255}, {code: 255}, followWaitReply(t, task.Succeeded, ""),
+		followWaitReply(t, "", ""), {code: 255}, {code: 255}, followWaitReply(t, "", ""),
+		{code: 255}, {code: 255}, followWaitReply(t, task.Succeeded, ""),
 	}}
 	a, out, stderr := followClient(t, h)
 	code := a.run(taskCallContext(t), []string{"task", "wait", "t-abcdefgh"})
-	if code != 0 || out.String() != "succeeded\n" || strings.Count(stderr.String(), "reconnecting") != 1 || len(h.calls) != 4 {
+	wantNotices := strings.Repeat("hib: host temporarily unavailable; reconnecting from the last received reply\n"+
+		"hib: host available; resumed from the last received reply\n", 2)
+	if code != 0 || out.String() != "succeeded\n" || stderr.String() != wantNotices || len(h.calls) != 7 {
 		t.Fatalf("F6 wait = exit %d, stdout %q, stderr %q, %d calls", code, out, stderr, len(h.calls))
 	}
 	for i, call := range h.calls {
@@ -385,6 +390,7 @@ func checkFollowTransient(t *testing.T, cmd, errorCode string, before bool, refu
 	a.taskFollowSleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	code := a.run(taskCallContext(t), args)
 	if code != 0 || out.String() != want || strings.Count(stderr.String(), "reconnecting") != 1 ||
+		strings.Count(stderr.String(), "resumed") != 1 ||
 		len(h.calls) != len(h.replies) || h.versions != 1 {
 		t.Fatalf("transient %s = exit %d, stdout %q, stderr %q, %d calls; want %q and %d calls",
 			errorCode, code, out, stderr, len(h.calls), want, len(h.replies))
@@ -545,11 +551,85 @@ func TestTaskFollowBackoffCap(t *testing.T) {
 		30 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second}
 	code := a.run(taskCallContext(t), []string{"task", "wait", "t-abcdefgh"})
 	if code != 0 || out.String() != "succeeded\n" || strings.Count(stderr.String(), "reconnecting") != 1 ||
+		strings.Count(stderr.String(), "resumed") != 1 ||
 		len(h.calls) != 25 || !slices.Equal(sleeps, want) {
 		t.Fatalf("R5 = exit %d, stdout %q, stderr %q, %d calls, delays %v; want %v",
 			code, out, stderr, len(h.calls), sleeps, want)
 	}
 	for _, call := range h.calls {
 		followCall(t, call, "wait", 0, 0, true)
+	}
+}
+
+func TestTaskFollowHelpExplainsRecovery(t *testing.T) {
+	h := newHost(t)
+	c, hib := homeless(t, h)
+	for _, cmd := range []string{"logs", "wait"} {
+		t.Run(cmd, func(t *testing.T) {
+			if code := hib("help", "task", cmd); code != 0 || c.errOut.Len() != 0 {
+				t.Fatalf("help = exit %d, stderr %q", code, c.errOut)
+			}
+			for _, text := range []string{
+				"interrupted holds during host restarts",
+				"retryable host replies such as a busy database",
+				"selected run", "last received cursor", "idle auto-off",
+				"hib: host temporarily unavailable; reconnecting from the last received reply",
+				"hib: host available; resumed from the last received reply",
+			} {
+				if !strings.Contains(c.out.String(), text) {
+					t.Errorf("%s help lacks %q:\n%s", cmd, text, c.out)
+				}
+			}
+			want := []string{"at most about one login a second", "original bytes", "each range reply"}
+			if cmd == "wait" {
+				want = []string{"only the final reply", "detail on stderr", "Exits 0", "and 2"}
+			}
+			for _, text := range want {
+				if !strings.Contains(c.out.String(), text) {
+					t.Errorf("%s help lacks %q:\n%s", cmd, text, c.out)
+				}
+			}
+		})
+	}
+	if calls := h.takeCalls(); len(calls) != 0 {
+		t.Fatalf("help contacted host: %q", calls)
+	}
+}
+
+func TestTaskFollowOutageDoesNotResumeOnFailure(t *testing.T) {
+	for _, cmd := range []string{"logs", "wait"} {
+		for _, end := range []string{"fault", "cancel"} {
+			t.Run(cmd+"/"+end, func(t *testing.T) {
+				h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
+					{code: 1, text: `{"v":1,"error":"hold interrupted","errorCode":"INTERRUPTED","retryable":true}`},
+					{code: 1, text: `{"v":1,"error":"no such task","errorCode":"NO_TASK"}`},
+				}}
+				a, out, stderr := followClient(t, h)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				a.taskFollowSleep = func(context.Context, time.Duration) error {
+					if end == "cancel" {
+						cancel()
+					}
+					return ctx.Err()
+				}
+				args := []string{"task", cmd, "t-abcdefgh"}
+				if cmd == "logs" {
+					args = append(args, "-f")
+				}
+				code := a.run(ctx, args)
+				wantCalls := 2
+				wantError := "no such task"
+				if end == "cancel" {
+					wantCalls, wantError = 1, "context canceled"
+				}
+				if code != 1 || out.Len() != 0 || len(h.calls) != wantCalls ||
+					strings.Count(stderr.String(), "reconnecting") != 1 ||
+					strings.Contains(stderr.String(), "resumed") || !strings.Contains(stderr.String(), wantError) {
+					t.Fatalf("outage then %s = exit %d, stdout %q, stderr %q, %d calls",
+						end, code, out, stderr, len(h.calls))
+				}
+			})
+		}
 	}
 }

@@ -18,9 +18,9 @@ func taskFollowCommands() map[string]*command {
 		"logs": {
 			args: "TASK", opts: "[--run N] [-f]", nargs: 1,
 			about: "Prints a run's setup, command and finish output. --run selects a run instead of the latest.\n" +
-				"-f follows output until the run ends, reconnecting after a dropped connection.\n" +
-				"Terminal output escapes controls. Pipes receive the original bytes. --json prints each\n" +
-				"range reply unchanged on its own line.",
+				"-f follows output until the run ends, with at most about one login a second.\n" +
+				"Terminal output escapes controls. Pipes and files receive the original bytes.\n" +
+				"--json prints each range reply unchanged on its own line.\n" + taskFollowRecoveryHelp,
 			examples: []string{"hib task logs t-abcdefgh", "hib task logs t-abcdefgh --run 1 -f"},
 			flags:    taskLogsFlags,
 		},
@@ -28,13 +28,23 @@ func taskFollowCommands() map[string]*command {
 			args: "TASK", opts: "[--run N]", nargs: 1,
 			about: "Waits for the selected run to end, or the latest run if --run is absent. Prints its outcome.\n" +
 				"Exits 0 for succeeded or no_changes, 1 for every other outcome or error, and 2 for a usage\n" +
-				"error. --json prints hibd's final reply unchanged, including the outcome.\n" +
-				"Reconnects after a dropped connection. A held run's reason is printed once on stderr.",
+				"error. --json prints only the final reply unchanged, including the outcome.\n" +
+				"Text wait prints the run's detail on stderr when present, including an unproven-stop warning.\n" +
+				"A held run's reason is printed once on stderr.\n" + taskFollowRecoveryHelp,
 			examples: []string{"hib task wait t-abcdefgh", "hib task wait t-abcdefgh --run 1 --json"},
 			flags:    taskWaitFlags,
 		},
 	}
 }
+
+const taskFollowRecoveryHelp = "Follows and waits retry dropped connections, interrupted holds during host restarts,\n" +
+	"and retryable host replies such as a busy database. They keep the selected run and\n" +
+	"last received cursor. Each outage prints these lines on stderr, the second on the next\n" +
+	"successful reply, which can take up to 60 seconds after the host returns:\n" +
+	"  hib: host temporarily unavailable; reconnecting from the last received reply\n" +
+	"  hib: host available; resumed from the last received reply\n" +
+	"An open follow or wait prevents idle auto-off because each login counts as activity.\n" +
+	"A login after the nightly stop starts the VM again."
 
 type taskLogsOptions struct {
 	run    int
@@ -192,6 +202,10 @@ func (f *taskFollow) call(ctx context.Context, a *app, cfg *config, path string,
 		var transport transportFailure
 		var remote *hibapi.RemoteError
 		retryable := errors.As(err, &transport) || errors.As(err, &remote) && result.reply.Code.Retryable()
+		if err == nil && f.reconnecting {
+			fmt.Fprintln(a.stderr, "hib: host available; resumed from the last received reply")
+			f.reconnecting = false
+		}
 		if err == nil || !follow || !retryable || ctx.Err() != nil {
 			return result, err
 		}

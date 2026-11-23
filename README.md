@@ -449,7 +449,10 @@ on any of these five commands to print hibd's reply unchanged.
 `hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
 Use `logs -f` to follow until the run ends. Follows and waits retry dropped connections,
 interrupted holds during host restarts, and retryable host replies such as a busy database.
-They keep the selected run and last received cursor. A live log follow makes at most about
+They keep the selected run and last received cursor. Each outage prints
+`hib: host temporarily unavailable; reconnecting from the last received reply` on stderr.
+The next successful reply prints `hib: host available; resumed from the last received reply`.
+That reply can take up to 60 seconds after the host returns. A live log follow makes at most about
 one login a second. Terminal logs escape controls; pipes and files keep the original bytes.
 Logs `--json` prints each range reply unchanged. Wait `--json` prints only the final reply.
 Wait exits 0 for `succeeded` or `no_changes`, 1 for another outcome or error, and 2 for a usage error.
