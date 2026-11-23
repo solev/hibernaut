@@ -65,8 +65,12 @@ type Store interface {
 	// The same RequestID with the same digest returns the first receipt, with a different one
 	// task.ErrConflict. It fails with task.ErrQueueFull when task.MaxQueuedRuns runs are queued,
 	// task.ErrInputFull when the task's inputs across its runs would exceed task.MaxInputBytes,
-	// and for a follow-up with task.ErrNoTask or task.ErrRunLive. A task with an rm request or
-	// a recorded removal refuses follow-ups with task.ErrNoTask before saving any run or blob.
+	// and for a follow-up with task.ErrNoTask, task.ErrTaskSpec or task.ErrRunLive.
+	// A follow-up inherits omitted repo, base and publish from its first run. Changing a
+	// nonempty value fails with task.ErrTaskSpec, before queue, input or live checks.
+	// The receipt digest remains the submitted spec's, not the inherited one.
+	// A task with an rm request or a recorded removal refuses follow-ups with task.ErrNoTask
+	// before saving any run or blob.
 	// Receipt replays precede these checks and limits.
 	Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error)
 	// Receipt returns the answer a submission got, or ErrNoReceipt.

@@ -30,7 +30,7 @@ func TestPublicationMissingAfterOKFinish(t *testing.T) {
 				want := task.Succeeded
 				var unread []string
 				if !publish {
-					want = task.NoChanges
+					want = task.Failed
 					unread = []string{"publication: read exited 1"}
 				}
 				if got := unreadResult(t, r); !slices.Equal(got, unread) {

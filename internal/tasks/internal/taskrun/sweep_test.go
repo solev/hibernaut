@@ -427,10 +427,10 @@ func TestExecBoundarySweep(t *testing.T) {
 							want = task.Succeeded
 							if call.step == task.StepCollect &&
 								(strings.HasPrefix(event, "host-pause") || strings.HasPrefix(event, "engine-pause")) {
-								want = task.NoChanges
+								want = task.Failed
 							}
 							if call.step == task.StepCollect && call.name != "cat" && event == "deadline" {
-								want = task.NoChanges
+								want = task.Failed
 								if len(unreadResult(t, r)) == 0 {
 									t.Error("elapsed collect budget did not report an unread tail")
 								}

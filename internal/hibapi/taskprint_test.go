@@ -40,9 +40,10 @@ step keep
   upload: upload inputs and runner, check hashes
   setup: clone and branch (skipped: follow-up or no repo)
   command: run the command
-  finish: commit, push, draft PR
+  finish: commit and push
   stop: kill the live stage, prove it gone
   collect: copy last logs and the publication
+  publish: find or open the draft PR (skipped: publish none)
   keep: pause and keep, or remove on rm
 request 7 remove run 0 by martin via cli at 2026-10-28T12:00:00Z
 removal rm at 2026-10-28T12:00:00Z done at 2026-10-28T13:00:00Z

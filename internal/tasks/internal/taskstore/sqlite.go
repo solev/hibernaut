@@ -360,6 +360,10 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		if t.Removal != nil || t.Removing() {
 			return task.Receipt{}, task.ErrNoTask
 		}
+		sub.Spec, err = task.Inherit(t.Runs[0].Spec, sub.Spec)
+		if err != nil {
+			return task.Receipt{}, err
+		}
 	}
 	runs, err := readUnfinished(ctx, tx)
 	if err != nil {

@@ -200,7 +200,8 @@ func TestStatus(t *testing.T) {
 			want: Status{Outcome: NoChanges}},
 		{name: "setup failed", repo: true, log: cat(prepared(), launched(StageSetup),
 			[]Body{exited(StageSetup, false)}, wrapUp(nil)),
-			want: Status{Outcome: Failed, Stage: StageSetup}},
+			want: Status{Outcome: Failed, Stage: StageSetup,
+				Detail: "setup failed; see hib task logs t-abcdefgh"}},
 		{name: "timed out", log: cat(prepared(), launched(StageCommand),
 			[]Body{&StopIntent{Outcome: TimedOut}, &StopResult{How: "term"}}, wrapUp(nil)),
 			want: Status{Outcome: TimedOut, Stage: StageCommand}},
@@ -379,7 +380,7 @@ func TestBodiesRoundTrip(t *testing.T) {
 
 func TestStepOrderIsTheTable(t *testing.T) {
 	want := []Step{StepMachine, StepUpload, StepSetup, StepCommand, StepFinish, StepStop,
-		StepCollect, StepKeep}
+		StepCollect, StepPublish, StepKeep}
 	if got := Steps(); !slicesEqual(got, want) {
 		t.Fatalf("Steps = %v, want %v", got, want)
 	}

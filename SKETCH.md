@@ -274,6 +274,7 @@ and its intent and result bodies.
 | finish | running | stage began | `runner look` | launched, then exit |
 | stop | stopping | the cause | `runner look` | how the stage ended |
 | collect | collecting | collect began | host log length | log bytes, publication |
+| publish | collecting | publish began | GitHub branch and PR | publication or error |
 | keep | collecting | keep began | E2B state | paused, removed or gone |
 
 Phases and outcomes are derived, never stored (`Run.Status`, `Run.Outcome`):
@@ -284,8 +285,26 @@ Phases and outcomes are derived, never stored (`Run.Status`, `Run.Outcome`):
 - A live stage on a paused machine shows paused, with `Held` set when the latest freeze row
   isn't frozen.
 - An open intent written by another daemon instance shows recovering.
-- The outcome is the stop's outcome if one is recorded, else failed at the first failed stage,
-  else succeeded or no_changes from the publication.
+- The outcome is the recorded stop's outcome, then the first failed stage's outcome.
+  A systemd timeout gives timed_out. A host publication error fails at finish.
+  Without a repo the run succeeds. A successful finish with no publication fails at finish.
+  Otherwise changes give succeeded, and no changes give no_changes.
+
+Publish runs after collect only for `draft-pr`. It records a no-op result unless finish
+exited OK with no stop or failed stage. No request cuts the wrap-up short.
+The host verifies the guest's publication against GitHub before finding or opening a draft.
+The publication file requires unique `changes`, `commit`, `pushed` and `author` keys.
+The optional `start` key names HEAD before command, so an unchanged follow-up cannot claim
+an earlier run's push. Commit and start are empty or 40 lowercase hex digits.
+Booleans are `true` or `false`. Author is at most 256 bytes. Unknown keys, including `pr`,
+are refused. Only the host records the PR. The PR body contains no prompt.
+`Publication.AtRef` compares GitHub's task branch with `start` and the run's pushed commit.
+An unchanged ref gives no_changes. A different, unverified push is an error.
+Failed setup and finish point to `hib task logs TASK`. A stop in draft-pr finish warns
+that `hib/TASK` may already be on GitHub without a PR. Removing a task leaves that branch.
+`FinishReserve(Spec)` leaves at most two minutes, or a quarter of timeout, for repo finish.
+`StageRuntimeMax` reserves it only for command. `PublishRemaining` gives the host five minutes
+from the later of publish intent and daemon start, following the collect budget's restart rule.
 
 The diagram below is `task.Mermaid()`, generated from the table. `TestMermaidGolden` fails when
 this file or `testdata/steps.mmd` differs from it. Solid edges are the main line. Dotted edges
@@ -298,9 +317,10 @@ flowchart TD
     upload["upload: upload inputs and runner, check hashes"]
     setup["setup: clone and branch"]
     command["command: run the command"]
-    finish["finish: commit, push, draft PR"]
+    finish["finish: commit and push"]
     stop["stop: kill the live stage, prove it gone"]
     collect["collect: copy last logs and the publication"]
+    publish["publish: find or open the draft PR"]
     keep["keep: pause and keep, or remove on rm"]
     ended(["ended"])
     submitted --> machine
@@ -321,7 +341,9 @@ flowchart TD
     finish --> collect
     finish -.->|ends early| stop
     stop --> collect
-    collect --> keep
+    collect --> publish
+    collect -.->|publish none| keep
+    publish --> keep
     keep --> ended
 ```
 
@@ -1036,11 +1058,11 @@ rubric, the two were close, about 18 for A and 19.5 for B.
 - [x] The 50 MiB log cap counts per run in the executor's copy loop, not per stage. Input limits
   apply per task, summed over its runs.
 - `CommitAuthor` and `PRAuthor` are separate.
-- A follow-up inherits the task's repo and workdir and can't change them.
+- [x] A follow-up inherits the task's repo, base and publish mode and cannot change them.
 - A machine with unknown vCPUs is charged the default size's. Covered by the room unit.
 - The duplicate create sweep in question 3.
 - Fork copy creates hold `room.lock`; SaveTemplate checks its plan but does not block wakes.
-- hibapi gets its own wire structs rather than exporting `task.Publication`.
+- [x] hibapi owns the publication wire struct, including lowercase keys and the pushed branch.
 
 **Rejected:**
 
@@ -1080,8 +1102,8 @@ rubric, the two were close, about 18 for A and 19.5 for B.
 - We accept one `Engine.Get` per live run per poll in exchange for never storing machine state.
 - We accept that a run held past its deadline shows stopping until rescue or rm in exchange for
   hibd never waking an unfrozen agent on its own.
-- We accept that collect on a paused or gone machine records no publication, so the run reads as
-  no_changes, in exchange for collect never waking a machine.
+- We accept that collect never wakes a paused or gone machine. If successful finish's publication
+  cannot be read, the run fails at finish and says the work is in the kept machine.
 - We accept that `room.lock` makes a person's `hib new` wait for a task's create in exchange for
   admission that holds across processes.
 - We accept a schema with no enum checks in exchange for `task` being the only list.

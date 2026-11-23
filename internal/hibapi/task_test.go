@@ -97,6 +97,7 @@ func TestTaskReplyCheckEveryEnum(t *testing.T) {
 		"run outcome":          {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Outcome: "maybe"}}}},
 		"run stage":            {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Phase: task.PhaseRunning, Stage: "other"}}}},
 		"run step":             {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Phase: task.PhaseRunning, Step: "other"}}}},
+		"run publish":          {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Phase: task.PhaseRunning, Publish: "other"}}}},
 		"request kind":         {Request: &hibapi.TaskRequest{Kind: "wake"}},
 		"history request kind": {Task: &hibapi.Task{Requests: []hibapi.TaskRequest{{Kind: "wake"}}}},
 		"log stage":            {TaskLog: &hibapi.TaskLog{Run: 1, Stage: "other"}},
@@ -120,14 +121,65 @@ func TestTaskReplyCheckEveryEnum(t *testing.T) {
 }
 
 func TestCodes(t *testing.T) {
+	if c := hibapi.CodeOf(fmt.Errorf("submit: %w", task.ErrTaskSpec)); c != hibapi.CodeBadRequest ||
+		c.Retryable() || !c.RefusedBeforeSave() {
+		t.Errorf("follow-up spec conflict is %q, want BAD_REQUEST refused before save", c)
+	}
 	if c := hibapi.CodeOf(fmt.Errorf("submit: %w", task.ErrInputFull)); c != hibapi.CodeInputFull || c.Retryable() {
 		t.Errorf("input full is %q, retryable %v, want INPUT_FULL and false", c, c.Retryable())
 	}
+
 	if c := hibapi.CodeOf(task.ErrQueueFull); c != hibapi.CodeQueueFull || !c.Retryable() {
 		t.Errorf("queue full is %q, retryable %v", c, c.Retryable())
 	}
 	if c := hibapi.CodeOf(task.ErrConflict); c.Retryable() {
 		t.Error("a conflict must not be retried")
+	}
+}
+
+func TestPublicationWire(t *testing.T) {
+	for _, pushed := range []bool{false, true} {
+		r := task.Run{ID: task.RunID{Task: "t-aaaaaaaa", N: 2},
+			Spec: task.Spec{Publish: task.PublishDraftPR},
+			Log: []task.Checkpoint{{Body: &task.CollectResult{Publication: &task.Publication{
+				Changes: true, Commit: "abcdef0123456789abcdef0123456789abcdef01",
+				Start: "1111111111111111111111111111111111111111", Pushed: pushed,
+				PR: "https://github.com/acme/api/pull/1", Author: "bot"}}},
+				{Body: &task.KeepResult{}}}}
+		data, err := json.Marshal(hibapi.RunOf(r, "d1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(data, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if string(wire["publish"]) != `"draft-pr"` {
+			t.Errorf("run omits its publish mode: %s", data)
+		}
+		var publication map[string]json.RawMessage
+		if err := json.Unmarshal(wire["publication"], &publication); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{
+			"changes": "true", "commit": `"abcdef0123456789abcdef0123456789abcdef01"`,
+			"pushed": fmt.Sprint(pushed), "author": `"bot"`,
+			"pr": `"https://github.com/acme/api/pull/1"`,
+		}
+		if pushed {
+			want["branch"] = `"hib/t-aaaaaaaa"`
+		}
+		if len(publication) != len(want) {
+			t.Errorf("publication has unexpected keys: %s", wire["publication"])
+		}
+		for key, value := range want {
+			if string(publication[key]) != value {
+				t.Errorf("publication %s = %s, want %s", key, publication[key], value)
+			}
+		}
+		if !pushed && publication["branch"] != nil {
+			t.Errorf("unpublished work claims a branch: %s", data)
+		}
 	}
 }
 

@@ -336,22 +336,49 @@ func PublicationOf(r task.RunID) []string {
 // ParsePublication parses PublicationOf's output.
 func ParsePublication(out []byte) (task.Publication, error) {
 	var p task.Publication
+	seen := map[string]bool{}
 	for line := range strings.Lines(string(out)) {
-		k, v, ok := strings.Cut(strings.TrimRight(line, "\n"), "=")
+		k, v, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
 		if !ok {
 			return task.Publication{}, fmt.Errorf("publish: bad line %q", line)
 		}
+		if seen[k] {
+			return task.Publication{}, fmt.Errorf("publish: repeated key %q", k)
+		}
+		seen[k] = true
 		switch k {
-		case "changes":
-			p.Changes = v == "true"
-		case "commit":
-			p.Commit = v
-		case "pushed":
-			p.Pushed = v == "true"
-		case "pr":
-			p.PR = v
+		case "changes", "pushed":
+			if v != "true" && v != "false" {
+				return task.Publication{}, fmt.Errorf("publish: bad %s boolean %q", k, v)
+			}
+			if k == "changes" {
+				p.Changes = v == "true"
+			} else {
+				p.Pushed = v == "true"
+			}
+		case "commit", "start":
+			if v != "" && (len(v) != 40 || strings.ContainsFunc(v, func(c rune) bool {
+				return !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f')
+			})) {
+				return task.Publication{}, fmt.Errorf("publish: bad %s %q", k, v)
+			}
+			if k == "commit" {
+				p.Commit = v
+			} else {
+				p.Start = v
+			}
 		case "author":
+			if len(v) > 256 {
+				return task.Publication{}, errors.New("publish: author exceeds 256 bytes")
+			}
 			p.Author = v
+		default:
+			return task.Publication{}, fmt.Errorf("publish: unknown key %q", k)
+		}
+	}
+	for _, k := range []string{"changes", "commit", "pushed", "author"} {
+		if !seen[k] {
+			return task.Publication{}, fmt.Errorf("publish: missing key %q", k)
 		}
 	}
 	return p, nil
@@ -359,6 +386,10 @@ func ParsePublication(out []byte) (task.Publication, error) {
 
 // FormatPublication is how finish writes the publish file. guestsim writes it the same way.
 func FormatPublication(p task.Publication) []byte {
-	return fmt.Appendf(nil, "changes=%t\ncommit=%s\npushed=%t\npr=%s\nauthor=%s\n",
-		p.Changes, p.Commit, p.Pushed, p.PR, p.Author)
+	out := fmt.Appendf(nil, "changes=%t\ncommit=%s\npushed=%t\nauthor=%s\n",
+		p.Changes, p.Commit, p.Pushed, p.Author)
+	if p.Start != "" {
+		out = fmt.Appendf(out, "start=%s\n", p.Start)
+	}
+	return out
 }
