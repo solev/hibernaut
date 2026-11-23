@@ -146,6 +146,10 @@ func recipeCall(ctx context.Context, a *app, leaf string, args []string, recipe 
 	}
 	var raw bytes.Buffer
 	opts.raw = &raw
+	var runs requestRuns
+	ssh := a.ssh
+	a.ssh = runs.observe(ssh)
+	defer func() { a.ssh = ssh }()
 	r, err := a.remoteSudo(ctx, cfg, shortTimeout, opts,
 		append(append([]string{"recipe", leaf}, args...), "-json")...)
 	if a.json && (err == nil || r.Error != "") {
@@ -157,7 +161,7 @@ func recipeCall(ctx context.Context, a *app, leaf string, args []string, recipe 
 		}
 	}
 	if err != nil {
-		if r.Error == "" && (leaf == "put" || leaf == "rm" || leaf == "default" && len(args) == 1) {
+		if runs.mayHaveRun && r.Error == "" && (leaf == "put" || leaf == "rm" || leaf == "default" && len(args) == 1) {
 			check := "hib recipe default"
 			if leaf != "default" {
 				check = "hib recipe show " + args[0]

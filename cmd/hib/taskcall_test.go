@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
@@ -565,8 +566,78 @@ func TestTaskCallSurfacesInputErrorsWithoutResending(t *testing.T) {
 		a, _, stderr := taskCallClient(t, h)
 		result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
 			taskCallOptions{path: "task start", requestID: "input-1", input: input, timeout: shortTimeout})
-		if code := taskCallExit(a, result, err); code != 1 || stderr.Len() == 0 || len(h.calls) != 0 {
+		if code := taskCallExit(a, result, err); code != 1 || stderr.Len() == 0 || len(h.calls) != 0 ||
+			strings.Contains(stderr.String(), "may have been recorded") {
 			t.Errorf("input error = exit %d, %q, %d sends; want a visible local failure", code, stderr, len(h.calls))
 		}
+	}
+}
+
+func TestTaskRequestNeverRanHasNoHint(t *testing.T) {
+	for _, kind := range []string{"start", "cancel", "rescue", "rm"} {
+		for _, asJSON := range []bool{false, true} {
+			for name, failure := range map[string]taskHostReply{
+				"sudo":   {code: 1},
+				"shell":  {code: 127},
+				"lookup": {code: -1, err: &exec.Error{Name: "ssh", Err: exec.ErrNotFound}},
+				"fork":   {code: -1, err: &os.PathError{Op: "fork/exec", Path: "ssh", Err: os.ErrPermission}},
+			} {
+				t.Run(fmt.Sprintf("%s/json=%v/%s", kind, asJSON, name), func(t *testing.T) {
+					h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{failure}}
+					a, out, stderr := taskStartClient(t, h)
+					args := []string{"task", kind, "--request-id", "r1"}
+					if asJSON {
+						args = append(args, "--json")
+					}
+					if kind == "start" {
+						args = append(args, "--", "true")
+					} else {
+						args = append(args, "t-abcdefgh")
+						if kind == "rm" {
+							args = append(args, "--yes")
+						}
+					}
+					code := a.run(taskCallContext(t), args)
+					if code != 1 || len(h.calls) != 1 || strings.Contains(out.String()+stderr.String(), "may have been recorded") {
+						t.Fatalf("never ran = exit %d, %d sends, stdout %q, stderr %q; want one send without uncertainty",
+							code, len(h.calls), out, stderr)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestTaskCallLostReplyThenNeverRanHasHint(t *testing.T) {
+	for name, last := range map[string]taskHostReply{
+		"sudo":   {code: 1},
+		"shell":  {code: 127},
+		"lookup": {code: -1, err: &exec.Error{Name: "ssh", Err: exec.ErrNotFound}},
+		"fork":   {code: -1, err: &os.PathError{Op: "fork/exec", Path: "ssh", Err: os.ErrPermission}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{code: 255}, last}}
+			a, _, stderr := taskCallClient(t, h)
+			result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
+				taskCallOptions{path: "task start", requestID: "r1", timeout: shortTimeout})
+			if code := taskCallExit(a, result, err); code != 1 || len(h.calls) != 2 ||
+				!strings.Contains(stderr.String(), "hib task show --request 'r1'") {
+				t.Fatalf("lost then never ran = exit %d, %d sends, stderr %q; want lookup advice", code, len(h.calls), stderr)
+			}
+		})
+	}
+}
+
+func TestTaskCallSpoolReadFailureHasHint(t *testing.T) {
+	h := &taskCallHost{features: `["tasks"]`}
+	a, _, stderr := taskCallClient(t, h)
+	result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
+		taskCallOptions{path: "task start", requestID: "r1", timeout: shortTimeout,
+			input: func() (io.ReadCloser, error) {
+				return io.NopCloser(iotest.ErrReader(&os.PathError{Op: "read", Path: "spool", Err: os.ErrClosed})), nil
+			}})
+	if code := taskCallExit(a, result, err); code != 1 || len(h.calls) != 2 ||
+		!strings.Contains(stderr.String(), "hib task show --request 'r1'") {
+		t.Fatalf("spool read = exit %d, %d sends, stderr %q; want lookup advice", code, len(h.calls), stderr)
 	}
 }
