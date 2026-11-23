@@ -15,9 +15,8 @@ import (
 )
 
 func PrintTaskList(w io.Writer, records []Task, now time.Time) error {
-	var table strings.Builder
-	tw := NewTable(&table, nil)
-	fmt.Fprintln(tw, "TASK\tRUN\tPHASE\tSTAGE\tREPO\tAGE")
+	rows := make([][6]string, len(records)+1)
+	rows[0] = [6]string{"TASK", "RUN", "PHASE", "STAGE", "REPO", "AGE"}
 	reasons := make([][]string, len(records))
 	for i, record := range records {
 		var n int
@@ -33,15 +32,32 @@ func PrintTaskList(w io.Writer, records []Task, now time.Time) error {
 			}
 		}
 		age := int64(now.Sub(record.Created) / time.Second)
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", field(string(record.ID)), n,
-			field(phase), field(stage), field(record.Repo), FormatIdle(&age))
+		rows[i+1] = [6]string{field(string(record.ID)), fmt.Sprint(n),
+			field(phase), field(stage), field(record.Repo), FormatIdle(&age)}
 	}
-	if err := tw.Flush(); err != nil {
-		return err
+	var widths [6]int
+	for _, row := range rows {
+		for column, cell := range row {
+			widths[column] = max(widths[column], displaywidth.String(cell))
+		}
 	}
+	repoBudget := 80 - 2*(len(widths)-1)
+	for column, width := range widths {
+		if column != 4 {
+			repoBudget -= width
+		}
+	}
+	widths[4] = min(widths[4], max(len(rows[0][4]), repoBudget))
 	var out strings.Builder
-	for i, row := range strings.Split(strings.TrimSuffix(table.String(), "\n"), "\n") {
-		fmt.Fprintln(&out, row)
+	for i, row := range rows {
+		row[4] = taskCell(row[4], widths[4])
+		for column, cell := range row {
+			out.WriteString(cell)
+			if column < len(row)-1 {
+				out.WriteString(strings.Repeat(" ", widths[column]-displaywidth.String(cell)+2))
+			}
+		}
+		out.WriteByte('\n')
 		if i > 0 {
 			for _, reason := range reasons[i-1] {
 				printTaskReason(&out, reason)
@@ -61,7 +77,7 @@ func printTaskReason(out *strings.Builder, reason string) {
 			word = strings.Join(words[i:i+4], " ")
 			i += 3
 		}
-		word = taskReasonWord(word)
+		word = taskCell(word, 78)
 		if line != "" && displaywidth.String(line)+1+displaywidth.String(word) > 78 {
 			fmt.Fprintln(out, "  "+line)
 			line = ""
@@ -76,8 +92,8 @@ func printTaskReason(out *strings.Builder, reason string) {
 	}
 }
 
-func taskReasonWord(word string) string {
-	if displaywidth.String(word) <= 78 {
+func taskCell(word string, budget int) string {
+	if displaywidth.String(word) <= budget {
 		return word
 	}
 	end, columns := 0, 0
@@ -94,7 +110,7 @@ func taskReasonWord(word string) string {
 			}
 		}
 		width := displaywidth.String(word[end : end+size])
-		if columns+width > 75 {
+		if columns+width > budget-3 {
 			break
 		}
 		columns += width
