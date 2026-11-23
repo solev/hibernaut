@@ -118,6 +118,9 @@ type app struct {
 	command     *command
 	configFlag  string
 	json        bool
+	tasksReady  bool
+
+	taskFollowSleep func(context.Context, time.Duration) error
 }
 
 func (a *app) run(ctx context.Context, args []string) int {

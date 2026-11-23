@@ -33,11 +33,14 @@ const (
 	// CodeBadRequest means the request didn't parse. Never retry.
 	CodeBadRequest ErrorCode = "BAD_REQUEST"
 	// CodeBusy means tasks.db stayed locked past its busy timeout. Retry with the same ID.
-	CodeBusy ErrorCode = "BUSY"
+	CodeBusy        ErrorCode = "BUSY"
+	CodeInterrupted ErrorCode = "INTERRUPTED"
 )
 
 // Retryable reports whether the same request may be sent again with the same request ID.
-func (c ErrorCode) Retryable() bool { return c == CodeQueueFull || c == CodeBusy }
+func (c ErrorCode) Retryable() bool {
+	return c == CodeQueueFull || c == CodeBusy || c == CodeInterrupted
+}
 
 // RefusedBeforeSave reports whether hibd refused without recording this request.
 // BUSY, NO_TASK and uncoded errors can also come from reads after Submit commits.
@@ -179,7 +182,7 @@ type TaskLog struct {
 func (r TaskReply) Check() error {
 	switch r.Code {
 	case "", CodeConflict, CodeQueueFull, CodeInputFull, CodeNoTask, CodeRunLive,
-		CodeNotLive, CodeBadRequest, CodeBusy:
+		CodeNotLive, CodeBadRequest, CodeBusy, CodeInterrupted:
 	default:
 		return fmt.Errorf("unknown error code %q", r.Code)
 	}
