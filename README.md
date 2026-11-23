@@ -450,8 +450,8 @@ a draft PR. The PR title uses the prompt's first line when a prompt is present. 
 does not include the prompt. No changes gives `no_changes`, with no new commit, push, or PR.
 A failed or timed-out command publishes nothing. A GitHub refusal, including a refused draft,
 fails the run with GitHub's error text. If the branch was already pushed, it stays on GitHub.
-`--publish none` leaves edits in the kept machine, with no commit, push, or PR. Without a repo,
-`none` is the default and is the only allowed mode. `--branch` needs `--repo`.
+`--publish none` commits the edits on `hib/TASK` in the kept machine, with no push or PR.
+Without a repo, `none` is the default and is the only allowed mode. `--branch` needs `--repo`.
 
 A task's command gets the `github` token's full reach through the proxy, not just access to
 the repo named by `--repo`. The device login grants `repo`, `read:org`, and `workflow`.
@@ -462,6 +462,7 @@ fine-grained token limited to the task repos. Grant Contents read-write for clon
 and Pull requests read-write for finding and opening drafts. Metadata read access, granted
 automatically, covers the default-branch lookup. No Workflows permission is needed unless
 the command changes `.github/workflows/`; GitHub refuses those pushes without it.
+The `github` secret is shared by every machine, so narrowing it also limits your dev machines.
 
 `hib task ls` lists tasks newest first and explains why a run waits. `hib task show` shows
 every run, command, step, publication, request, and removal. Long repo names are shortened in

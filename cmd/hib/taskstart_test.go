@@ -160,7 +160,6 @@ func TestTaskStartSendsRepoOptions(t *testing.T) {
 		}
 	}
 }
-
 func TestTaskStartLostReply(t *testing.T) {
 	for _, twice := range []bool{false, true} {
 		t.Run(fmt.Sprint(twice), func(t *testing.T) {
@@ -661,7 +660,6 @@ func TestTaskStartHelpAndUsageFit100Columns(t *testing.T) {
 		if args[0] == "task" {
 			wantExit = 2
 		}
-
 		if code := hib(args...); code != wantExit {
 			t.Fatalf("hib %v = exit %d; want %d", args, code, wantExit)
 		}
@@ -679,7 +677,6 @@ func TestTaskStartHelpAndUsageFit100Columns(t *testing.T) {
 		t.Fatalf("help or usage contacted host: %q", calls)
 	}
 }
-
 func TestTaskStartSynopsisFits80Columns(t *testing.T) {
 	c, hib := homeless(t, newHost(t))
 	if code := hib("help", "task", "start"); code != 0 {
