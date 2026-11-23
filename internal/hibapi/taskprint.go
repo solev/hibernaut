@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"charm.land/lipgloss/v2"
+	"github.com/clipperhouse/displaywidth"
 
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/termsafe"
@@ -62,7 +62,7 @@ func printTaskReason(out *strings.Builder, reason string) {
 			i += 3
 		}
 		word = taskReasonWord(word)
-		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(word) > 78 {
+		if line != "" && displaywidth.String(line)+1+displaywidth.String(word) > 78 {
 			fmt.Fprintln(out, "  "+line)
 			line = ""
 		}
@@ -77,7 +77,7 @@ func printTaskReason(out *strings.Builder, reason string) {
 }
 
 func taskReasonWord(word string) string {
-	if lipgloss.Width(word) <= 78 {
+	if displaywidth.String(word) <= 78 {
 		return word
 	}
 	end, columns := 0, 0
@@ -93,7 +93,7 @@ func taskReasonWord(word string) string {
 				size = min(10, len(word)-end)
 			}
 		}
-		width := lipgloss.Width(word[end : end+size])
+		width := displaywidth.String(word[end : end+size])
 		if columns+width > 75 {
 			break
 		}
