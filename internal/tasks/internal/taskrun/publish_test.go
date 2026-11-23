@@ -431,7 +431,11 @@ func TestPublishEligibility(t *testing.T) {
 				want = task.Cancelled
 			}
 			o, gotStage := r.Outcome()
-			if o != want || gotStage != stage || (calls == 1) != (mode == "success") {
+			wantCalls := 0
+			if mode == "success" {
+				wantCalls = 1
+			}
+			if o != want || gotStage != stage || calls != wantCalls {
 				t.Fatalf("%s calls=%d outcome=%s at %s, want %s at %s", mode, calls, o, gotStage, want, stage)
 			}
 			if mode == "missing" && r.Status("").Detail !=
