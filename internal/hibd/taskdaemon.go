@@ -36,20 +36,30 @@ func (a *App) startTasks(ctx context.Context, cfg config, e engine.Engine, m *ma
 		ticks = t.C
 	}
 	var d *tasks.Daemon
-	defer func() {
-		if d != nil {
-			d.Close()
-		}
-	}()
+	closeDaemon := func() {}
+	defer func() { closeDaemon() }()
 	var failures failurelog.Limiter
 	for ctx.Err() == nil {
-		if a.awake() == nil {
+		if a.awake() != nil {
+			closeDaemon()
+		} else {
 			var err error
 			if d == nil {
-				d, err = ts.Daemon(ctx, tasks.DaemonConfig{
+				life, cancel := context.WithCancel(ctx)
+				d, err = ts.Daemon(life, tasks.DaemonConfig{
 					Engine: e, Machines: taskMachines{a, cfg, e, m}, Logf: logf,
 					Clock: taskDaemonClock{a.now}, Poll: a.taskPoll,
 				})
+				if err != nil {
+					cancel()
+				} else {
+					closeDaemon = func() {
+						cancel()
+						d.Close()
+						d = nil
+						closeDaemon = func() {}
+					}
+				}
 			}
 			if err == nil {
 				err = d.Tick(ctx)

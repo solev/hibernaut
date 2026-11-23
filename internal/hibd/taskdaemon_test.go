@@ -504,6 +504,217 @@ func TestTaskDaemonDoesNotTickWhileQuiescing(t *testing.T) {
 	}
 }
 
+func TestTaskDaemonStopAcrossQuiesce(t *testing.T) {
+	a, e := taskDaemonApp(t)
+	var at atomic.Int64
+	at.Store(a.now().UnixNano())
+	a.Now = func() time.Time { return time.Unix(0, at.Load()).UTC() }
+	e.Script = func(_ task.RunID, s task.Stage) guestsim.Behavior {
+		if s == task.StageCommand {
+			return guestsim.Behavior{Runs: time.Hour, Output: []byte("last line\n")}
+		}
+		return guestsim.Behavior{}
+	}
+	first := seedTask(t, a, hibapi.TaskStart{RequestID: "stop-quiesce",
+		Command: []string{"work"}}, strings.NewReader(""))
+	st := savedTasks(t, a)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var block sync.Once
+	var allowed atomic.Bool
+	e.beforeExec = func(ctx context.Context, _ string, req engine.ExecRequest) error {
+		if len(req.Args) < 2 || req.Args[1] != "look" || allowed.Load() {
+			return nil
+		}
+		record, err := st.Task(ctx, first.Run.Task)
+		if err != nil {
+			return err
+		}
+		if _, stopping := record.Runs[0].Stop(); !stopping {
+			return nil
+		}
+		block.Do(func() {
+			close(entered)
+			select {
+			case <-ctx.Done():
+			case <-release:
+			}
+		})
+		return engine.ErrConnectionLost
+	}
+	ticks := make(chan time.Time)
+	a.TaskTicks = ticks
+	runTaskDaemon(t, a)
+	live := waitTask(t, a, first.Run.Task, "the command starts", func(r task.Run) bool {
+		c, ok := r.Last()
+		return ok && c.Step() == task.StepCommand && c.Kind() == task.Result
+	})
+	if _, err := st.Request(t.Context(), tasks.Request{Task: first.Run.Task,
+		Kind: task.RequestCancel, At: a.now()}); err != nil {
+		t.Fatal(err)
+	}
+	sendTaskTick(t, ticks, a.now())
+	waitTaskSignal(t, entered, "try the recorded stop")
+	marker := a.Getenv("HIBD_QUIESCING")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sendTaskTick(t, ticks, a.now())
+	sendTaskTick(t, ticks, a.now())
+	close(release)
+	if err := st.Guard(e, "test quiesce").Pause(t.Context(), live.MachineID()); err != nil {
+		t.Fatal(err)
+	}
+	at.Add(int64(2 * task.StopLimit))
+	sendTaskTick(t, ticks, a.now())
+	sendTaskTick(t, ticks, a.now())
+	dir := statefile.Dir{Path: a.Getenv("HIBD_STATE_DIR"), EUID: a.EUID}
+	waitFor(t, a.Stderr.(*syncBuffer), "quiescing releases task ownership or the stop ends", func() bool {
+		unlock, acquired, err := dir.TryLock(tasks.DaemonLock, "test quiesce")
+		if acquired {
+			unlock()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := st.Task(t.Context(), first.Run.Task)
+		return acquired || err == nil && record.Runs[0].Ended()
+	})
+	record, err := st.Task(t.Context(), first.Run.Task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range record.Runs[0].Log {
+		if b, ok := c.Body.(*task.StopResult); ok {
+			t.Fatalf("stop spent the quiescing budget: how=%q, want an open stop", b.How)
+		}
+	}
+	allowed.Store(true)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	sendTaskTick(t, ticks, a.now())
+	r := waitTaskEnded(t, a, first.Run.Task)
+	checkTaskDaemonCancelled(t, st, r)
+}
+
+func checkTaskDaemonCancelled(t *testing.T, st *tasks.Tasks, r task.Run) {
+	t.Helper()
+	if out, _ := r.Outcome(); out != task.Cancelled {
+		t.Fatalf("outcome=%s, want cancelled", out)
+	}
+	var how string
+	for _, c := range r.Log {
+		switch b := c.Body.(type) {
+		case *task.StopResult:
+			how = b.How
+		case *task.CollectResult:
+			if len(b.Unread) != 0 {
+				t.Fatalf("cancelled task has unread tails: %q", b.Unread)
+			}
+		}
+	}
+	if how != "term" && how != "kill" {
+		t.Fatalf("cancelled task stop=%q, want term or kill", how)
+	}
+	log, err := st.Logs(t.Context(), r.ID.Task, r.ID.N, 0)
+	if err != nil || string(log.Data) != "last line\n" || !log.Done {
+		t.Fatalf("cancelled task tail=%q, done=%v, error=%v", log.Data, log.Done, err)
+	}
+}
+
+func TestTaskDaemonTwentyQuiesceCycles(t *testing.T) {
+	a, e := taskDaemonApp(t)
+	e.Script = func(_ task.RunID, s task.Stage) guestsim.Behavior {
+		if s == task.StageCommand {
+			return guestsim.Behavior{Runs: time.Hour, Output: []byte("last line\n")}
+		}
+		return guestsim.Behavior{}
+	}
+	first := seedTask(t, a, hibapi.TaskStart{RequestID: "twenty-quiesces",
+		Command: []string{"work"}}, strings.NewReader(""))
+	st := savedTasks(t, a)
+	ticks := make(chan time.Time)
+	a.TaskTicks = ticks
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded := st.Guard(e, "test cycles")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.startTasks(ctx, cfg, guarded, a.taskManager(cfg, guarded), st,
+			func(format string, args ...any) { fmt.Fprintf(a.Stderr, format+"\n", args...) })
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("task loop did not stop within its deadline")
+		}
+	})
+	waitTask(t, a, first.Run.Task, "the command starts", func(r task.Run) bool {
+		c, ok := r.Last()
+		return ok && c.Step() == task.StepCommand && c.Kind() == task.Result
+	})
+	baseline := runtime.NumGoroutine()
+	instance, err := st.Instance(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := statefile.Dir{Path: a.Getenv("HIBD_STATE_DIR"), EUID: a.EUID}
+	marker := a.Getenv("HIBD_QUIESCING")
+	for cycle := range 20 {
+		if err := os.WriteFile(marker, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sendTaskTick(t, ticks, a.now())
+		sendTaskTick(t, ticks, a.now())
+		unlock, acquired, err := dir.TryLock(tasks.DaemonLock, "test idle task daemon")
+		if acquired {
+			unlock()
+		}
+		if err != nil || !acquired {
+			t.Fatalf("cycle %d retained task ownership while quiescing: acquired=%v, error=%v",
+				cycle+1, acquired, err)
+		}
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		sendTaskTick(t, ticks, a.now())
+		waitFor(t, a.Stderr.(*syncBuffer), "a fresh task daemon owns the live run", func() bool {
+			current, err := st.Instance(t.Context())
+			if err != nil || current == instance {
+				return false
+			}
+			instance = current
+			return true
+		})
+		unlock, acquired, err = dir.TryLock(tasks.DaemonLock, "test active task daemon")
+		if acquired {
+			unlock()
+		}
+		if err != nil || acquired {
+			t.Fatalf("cycle %d has no task owner: acquired=%v, error=%v", cycle+1, acquired, err)
+		}
+	}
+	waitFor(t, a.Stderr.(*syncBuffer), "quiesce goroutines return to the live-run baseline", func() bool {
+		return runtime.NumGoroutine() <= baseline
+	})
+	if _, err := st.Request(t.Context(), tasks.Request{Task: first.Run.Task,
+		Kind: task.RequestCancel, At: a.now()}); err != nil {
+		t.Fatal(err)
+	}
+	sendTaskTick(t, ticks, a.now())
+	r := waitTaskEnded(t, a, first.Run.Task)
+	checkTaskDaemonCancelled(t, st, r)
+	if e.created.Load() != 1 || e.Starts(r.MachineID(), r.ID, task.StageCommand) != 1 {
+		t.Fatal("quiesce cycles recreated the machine or relaunched its command")
+	}
+}
+
 func TestTaskDaemonBlockedTickDoesNotBlockBusyOrSweep(t *testing.T) {
 	a, e := taskDaemonApp(t)
 	addTaskPerson(a, e)
