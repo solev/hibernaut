@@ -69,8 +69,8 @@ type Store interface {
 	// A follow-up inherits omitted repo, base and publish from its first run. Changing a
 	// nonempty value fails with task.ErrTaskSpec, before queue, input or live checks.
 	// The receipt digest remains the submitted spec's, not the inherited one.
-	// A task with an rm request or
-	// a recorded removal refuses follow-ups with task.ErrNoTask before saving any run or blob.
+	// A task with an rm request or a recorded removal refuses follow-ups with task.ErrNoTask
+	// before saving any run or blob.
 	// Receipt replays precede these checks and limits.
 	Submit(ctx context.Context, sub task.Submission, inputs io.Reader) (task.Receipt, error)
 	// Receipt returns the answer a submission got, or ErrNoReceipt.

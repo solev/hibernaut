@@ -274,7 +274,7 @@ and its intent and result bodies.
 | finish | running | stage began | `runner look` | launched, then exit |
 | stop | stopping | the cause | `runner look` | how the stage ended |
 | collect | collecting | collect began | host log length | log bytes, publication |
-| publish | collecting | publication began | GitHub task branch and draft PR | publication or error |
+| publish | collecting | publish began | GitHub branch and PR | publication or error |
 | keep | collecting | keep began | E2B state | paused, removed or gone |
 
 Phases and outcomes are derived, never stored (`Run.Status`, `Run.Outcome`):
@@ -293,11 +293,18 @@ Phases and outcomes are derived, never stored (`Run.Status`, `Run.Outcome`):
 Publish runs after collect only for `draft-pr`. It records a no-op result unless finish
 exited OK with no stop or failed stage. No request cuts the wrap-up short.
 The host verifies the guest's publication against GitHub before finding or opening a draft.
-The publication file has unique `changes`, `commit`, `pushed` and `author` keys.
+The publication file requires unique `changes`, `commit`, `pushed` and `author` keys.
 The optional `start` key names HEAD before command, so an unchanged follow-up cannot claim
 an earlier run's push. Commit and start are empty or 40 lowercase hex digits.
 Booleans are `true` or `false`. Author is at most 256 bytes. Unknown keys, including `pr`,
 are refused. Only the host records the PR. The PR body contains no prompt.
+`Publication.AtRef` compares GitHub's task branch with `start` and the run's pushed commit.
+An unchanged ref gives no_changes. A different, unverified push is an error.
+Failed setup and finish point to `hib task logs TASK`. A stop in draft-pr finish warns
+that `hib/TASK` may already be on GitHub without a PR. Removing a task leaves that branch.
+`FinishReserve(Spec)` leaves at most two minutes, or a quarter of timeout, for repo finish.
+`StageRuntimeMax` reserves it only for command. `PublishRemaining` gives the host five minutes
+from the later of publish intent and daemon start, following the collect budget's restart rule.
 
 The diagram below is `task.Mermaid()`, generated from the table. `TestMermaidGolden` fails when
 this file or `testdata/steps.mmd` differs from it. Solid edges are the main line. Dotted edges

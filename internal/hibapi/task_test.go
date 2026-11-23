@@ -97,6 +97,7 @@ func TestTaskReplyCheckEveryEnum(t *testing.T) {
 		"run outcome":          {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Outcome: "maybe"}}}},
 		"run stage":            {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Phase: task.PhaseRunning, Stage: "other"}}}},
 		"run step":             {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Phase: task.PhaseRunning, Step: "other"}}}},
+		"run publish":          {Task: &hibapi.Task{Runs: []hibapi.TaskRun{{Phase: task.PhaseRunning, Publish: "other"}}}},
 		"request kind":         {Request: &hibapi.TaskRequest{Kind: "wake"}},
 		"history request kind": {Task: &hibapi.Task{Requests: []hibapi.TaskRequest{{Kind: "wake"}}}},
 		"log stage":            {TaskLog: &hibapi.TaskLog{Run: 1, Stage: "other"}},

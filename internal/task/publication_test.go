@@ -166,6 +166,11 @@ func TestM14UpgradeLogs(t *testing.T) {
 				if r.Publishable() {
 					t.Fatal("M14 run allowed publication")
 				}
+				if step == StepCollect && kind == Result {
+					if err := CheckNext(r.ID, r.Spec, r.Log, &PublishIntent{}); err == nil {
+						t.Error("unrequested publication was accepted")
+					}
+				}
 				if step == StepCollect || step == StepKeep {
 					st := r.Status(me)
 					switch {
