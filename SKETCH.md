@@ -457,6 +457,8 @@ nudge.
 
 ### Module map
 
+hibd keeps recipes and their default in `recipes.json`, beside `recipes.lock` in its state dir.
+
 ```mermaid
 flowchart TD
     hib["cmd/hib: hib task, hib recipe"] -->|"ssh, sudo -n hibd task"| hibd["internal/hibd"]

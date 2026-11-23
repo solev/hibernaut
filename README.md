@@ -434,7 +434,8 @@ and its output when your laptop disconnects.
 `TASK  queued`. Use `--prompt` or `--prompt-file` and repeat `--file` for up to 100 MiB.
 Inputs are checked and copied locally before contacting the host. Retries reuse the same
 request ID and bytes, even if you edit a file. If the reply is lost, hib gives a request lookup
-command. `--json` prints hibd's reply unchanged. Recipes come in a later build.
+command. `--json` prints hibd's reply unchanged. Use `--recipe NAME` or a default recipe
+instead of `-- CMD`; explicit flags and commands override recipe defaults.
 
 `hib task ls` lists tasks newest first and explains why a run waits. `hib task show` shows
 every run, command, step, request, and removal. Use `--request ID` instead of a task ID to
@@ -448,10 +449,12 @@ on any of these five commands to print hibd's reply unchanged.
 `hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
 These commands are not available in this build yet. Each command exits 1 without contacting the host.
 
-`hib recipe put` saves a named command, `hib recipe ls` lists recipes, and `hib recipe show`
-inspects one. `hib recipe rm` removes a recipe, and `hib recipe default` shows or chooses the
-default for starting tasks. These commands are not available in this build yet.
-Each command exits 1 without contacting the host.
+`hib recipe put` saves a command with `NAME [--image I] [--size S] [--timeout D] -- CMD`.
+`hib recipe ls` lists recipes, and `hib recipe show` prints one. `hib recipe rm` removes one
+and clears its default. `hib recipe default` shows the default; add `NAME` to choose it for
+starts without a command or recipe. The host keeps at most 256 recipes in `recipes.json`.
+Command JSON is limited to 16 KiB per recipe. Edits never change saved tasks.
+These commands support `--json` and require a host with recipe support.
 
 ### Scripts, completion, colour and faces
 

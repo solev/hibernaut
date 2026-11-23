@@ -107,8 +107,12 @@ func readRecipes(root *os.Root, owner statefile.Owner) (recipeDoc, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
+	doc = recipeDoc{}
 	if err := dec.Decode(&doc); err != nil {
 		return doc, err
+	}
+	if doc.Recipes == nil {
+		return doc, errors.New("recipes.json needs a recipes object")
 	}
 	if len(doc.Recipes) > maxRecipes {
 		return doc, fmt.Errorf("recipes.json exceeds %d recipes", maxRecipes)
@@ -175,9 +179,6 @@ func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Rec
 	doc, err := readRecipes(root, owner)
 	if err != nil {
 		return doc, err
-	}
-	if doc.Recipes == nil {
-		doc.Recipes = map[string]hibapi.Recipe{}
 	}
 	switch leaf {
 	case "put":

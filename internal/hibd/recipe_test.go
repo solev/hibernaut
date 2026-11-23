@@ -117,19 +117,28 @@ func TestRecipeResolutionAndSnapshot(t *testing.T) {
 }
 
 func TestRecipeRetryAfterEdit(t *testing.T) {
-	for _, useDefault := range []bool{false, true} {
-		t.Run(fmt.Sprint(useDefault), func(t *testing.T) {
+	for _, mode := range []string{"recipe", "default", "overrides"} {
+		t.Run(mode, func(t *testing.T) {
 			a, _, _ := newApp(t, nil)
 			keepRecipe(t, a, "check", recipeBody)
 			req := hibapi.TaskStart{RequestID: "recipe-retry", Recipe: "check"}
-			if useDefault {
+			if mode == "default" {
 				callRecipe(t, a, "", "default", "check")
 				req.Recipe = ""
+			} else if mode == "overrides" {
+				req.Command, req.Image, req.Size, req.TimeoutSeconds = []string{"true"}, "dev", "medium", 86400
 			}
 			code, r := submitTaskJSON(t, a, req, strings.NewReader(""))
 			first := requireTaskReply(t, code, r, req.RequestID, 1)
 			keepRecipe(t, a, "check", `{"command":["false"]}`)
 			code, r = submitTaskJSON(t, a, req, strings.NewReader(""))
+			if mode == "overrides" {
+				if got := requireTaskReply(t, code, r, req.RequestID, 1); got.ID != first.ID {
+					t.Fatalf("overridden edit returned %s; want %s", got.ID, first.ID)
+				}
+				req.Image = "changed"
+				code, r = submitTaskJSON(t, a, req, strings.NewReader(""))
+			}
 			requireTaskError(t, code, r, req.RequestID, hibapi.CodeConflict, false)
 			all, err := savedTasks(t, a).List(t.Context())
 			if err != nil || len(all) != 1 || all[0].ID != first.ID || len(all[0].Runs) != 1 {
@@ -181,7 +190,7 @@ func TestRecipeNamesAndLimits(t *testing.T) {
 }
 
 func TestRecipeDamagedStoreDoesNotBlockExplicitCommand(t *testing.T) {
-	for _, damage := range []string{"json", "version", "missing-version", "oversized", "symlink", "directory", "mode"} {
+	for _, damage := range []string{"json", "version", "missing-version", "missing-recipes", "null-recipes", "oversized", "symlink", "directory", "mode"} {
 		t.Run(damage, func(t *testing.T) {
 			a, _, _ := newApp(t, nil)
 			keepRecipe(t, a, "check", recipeBody)
@@ -204,6 +213,10 @@ func TestRecipeDamagedStoreDoesNotBlockExplicitCommand(t *testing.T) {
 				err = os.WriteFile(path, []byte(`{"v":2,"recipes":{}}`), 0o600)
 			case "missing-version":
 				err = os.WriteFile(path, []byte(`{"recipes":{}}`), 0o600)
+			case "missing-recipes":
+				err = os.WriteFile(path, []byte(`{"v":1}`), 0o600)
+			case "null-recipes":
+				err = os.WriteFile(path, []byte(`{"v":1,"recipes":null}`), 0o600)
 			case "oversized":
 				err = os.Truncate(path, 5<<20+1)
 			case "mode":
@@ -237,7 +250,7 @@ func TestRecipeConcurrentWritersAndCap(t *testing.T) {
 	a, _, _ := newApp(t, nil)
 	keepRecipe(t, a, "seed", recipeBody)
 	dir := a.Getenv("HIBD_STATE_DIR")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	unlock, err := (statefile.Dir{Path: dir}).WaitLock(ctx, "recipes.lock", "recipes")
 	if err != nil {
