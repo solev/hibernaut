@@ -117,6 +117,9 @@ func (a *app) needRecipes(ctx context.Context, cfg *config) error {
 	if !slices.Contains(features, hibapi.FeatureRecipes) {
 		return errors.New("this host's hibd is too old for recipes. Update the host")
 	}
+	if slices.Contains(features, hibapi.FeatureTasks) {
+		a.tasksReady = true
+	}
 	return nil
 }
 
@@ -149,8 +152,18 @@ func recipeCall(ctx context.Context, a *app, leaf string, args []string, recipe 
 		if _, writeErr := a.stdout.Write(raw.Bytes()); writeErr != nil {
 			return a.fail(writeErr)
 		}
+		if err != nil {
+			return 1
+		}
 	}
 	if err != nil {
+		if r.Error == "" && (leaf == "put" || leaf == "rm" || leaf == "default" && len(args) == 1) {
+			check := "hib recipe default"
+			if leaf != "default" {
+				check = "hib recipe show " + args[0]
+			}
+			err = fmt.Errorf("%w\nThe recipe change may have landed. Check it with %s", err, check)
+		}
 		return a.fail(err)
 	}
 	if a.json {

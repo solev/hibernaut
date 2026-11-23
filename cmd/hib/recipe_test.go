@@ -132,13 +132,93 @@ func TestRecipeStartWireAndCalls(t *testing.T) {
 		if code := startTask(t, a, args...); code != 0 || stderr.Len() != 0 || out.Len() == 0 {
 			t.Fatalf("recipe start = %d, %s, %s", code, out, stderr)
 		}
-		if h.versions != 2 || len(h.calls) != 1 {
-			t.Fatalf("recipe start made %d version calls, %v; want three SSH calls", h.versions, h.calls)
+		if h.versions != 1 || len(h.calls) != 1 {
+			t.Fatalf("recipe start made %d version calls, %v; want two SSH calls", h.versions, h.calls)
 		}
 		req, _ := startWire(t, h.inputs[0])
 		if req.Image != "other" || req.Size != "large" || req.TimeoutSeconds != 86400 ||
 			(useRecipe && (req.Recipe != "check" || !slices.Equal(req.Command, []string{"echo", "override"}))) {
 			t.Fatalf("recipe request %+v; want explicit overrides", req)
+		}
+	}
+}
+
+func TestRecipeStartResendCalls(t *testing.T) {
+	for _, args := range [][]string{{}, {"--recipe", "check"}} {
+		h := &taskCallHost{features: `["tasks","recipes"]`, replies: []taskHostReply{
+			{err: errors.New("reply lost")}, {text: startReceipt},
+		}}
+		a, _, stderr := taskStartClient(t, h)
+		if code := startTask(t, a, append([]string{"--request-id", "start-1"}, args...)...); code != 0 || stderr.Len() != 0 ||
+			h.versions != 1 || len(h.calls) != 2 {
+			t.Fatalf("resend %v = %d, %s, %d versions, %d sends; want one version and two sends",
+				args, code, stderr, h.versions, len(h.calls))
+		}
+	}
+}
+
+func TestRecipeFeatureCacheStillRequiresTasks(t *testing.T) {
+	h := &taskCallHost{features: `["recipes"]`}
+	a, _, stderr := taskStartClient(t, h)
+	if code := startTask(t, a, "--recipe", "check"); code != 1 ||
+		!strings.Contains(stderr.String(), "Update the host") || h.versions != 2 || len(h.calls) != 0 {
+		t.Fatalf("recipes without tasks = %d, %s, %d versions, %d sends; want task feature refusal",
+			code, stderr, h.versions, len(h.calls))
+	}
+}
+
+func TestRecipeExplicitCommandCalls(t *testing.T) {
+	for _, features := range []string{`["tasks"]`, `["tasks","recipes"]`} {
+		h := &taskCallHost{features: features, replies: []taskHostReply{{text: startReceipt}}}
+		a, _, stderr := taskStartClient(t, h)
+		if code := startTask(t, a, "--request-id", "start-1", "--", "true"); code != 0 || h.versions != 1 || len(h.calls) != 1 {
+			t.Fatalf("explicit start = %d, %s, %d versions, %d sends; want two SSH calls",
+				code, stderr, h.versions, len(h.calls))
+		}
+	}
+}
+
+func TestRecipeLostChangeReplyHint(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		show string
+	}{
+		{[]string{"put", "check", "--", "true"}, "hib recipe show check"},
+		{[]string{"rm", "check"}, "hib recipe show check"},
+		{[]string{"default", "check"}, "hib recipe default"},
+		{[]string{"show", "check"}, ""},
+		{[]string{"ls"}, ""},
+		{[]string{"default"}, ""},
+	} {
+		for _, asJSON := range []bool{false, true} {
+			for _, failure := range []taskHostReply{
+				{err: errors.New("reply dropped")},
+				{err: context.DeadlineExceeded},
+				{code: 255},
+				{code: 1, text: `{"v":`},
+				{code: 1, text: `{"v":1,"error":"host refused","errorCode":"BAD_REQUEST"}`},
+			} {
+				h := &taskCallHost{features: `["tasks","recipes"]`, replies: []taskHostReply{failure}}
+				a, out, stderr := taskStartClient(t, h)
+				args := append([]string{"recipe"}, tc.args...)
+				if asJSON {
+					args = append([]string{"recipe", "--json"}, tc.args...)
+				}
+				code := a.run(taskCallContext(t), args)
+				uncertain := tc.show != "" && !strings.Contains(failure.text, "host refused")
+				message := out.String() + stderr.String()
+				if code != 1 || strings.Contains(message, "may have landed") != uncertain ||
+					(uncertain && !strings.Contains(message, tc.show)) || len(h.calls) != 1 {
+					t.Errorf("%v json=%v reply=%+v = exit %d, stdout %q, stderr %q; want ambiguity %v and %q",
+						tc.args, asJSON, failure, code, out, stderr, uncertain, tc.show)
+				}
+				if asJSON {
+					var r hibapi.Response
+					if err := json.Unmarshal(out.Bytes(), &r); err != nil || r.Error == "" || stderr.Len() != 0 {
+						t.Errorf("JSON failure = %s, stderr %q, %v; want one error response", out, stderr, err)
+					}
+				}
+			}
 		}
 	}
 }
