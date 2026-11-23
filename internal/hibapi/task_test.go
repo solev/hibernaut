@@ -120,6 +120,10 @@ func TestTaskReplyCheckEveryEnum(t *testing.T) {
 }
 
 func TestCodes(t *testing.T) {
+	if c := hibapi.CodeOf(fmt.Errorf("submit: %w", task.ErrTaskSpec)); c != hibapi.CodeBadRequest ||
+		c.Retryable() || !c.RefusedBeforeSave() {
+		t.Errorf("follow-up spec conflict is %q, want BAD_REQUEST refused before save", c)
+	}
 	if c := hibapi.CodeOf(fmt.Errorf("submit: %w", task.ErrInputFull)); c != hibapi.CodeInputFull || c.Retryable() {
 		t.Errorf("input full is %q, retryable %v, want INPUT_FULL and false", c, c.Retryable())
 	}

@@ -243,4 +243,6 @@ var (
 	// ErrRunLive means the task has a run that hasn't ended. A follow-up waits for it, and once
 	// the run holds its machine, only wake touches the machine.
 	ErrRunLive = errors.New("the task has a run that hasn't ended")
+	// ErrTaskSpec means a follow-up tried to change its task's repo, base or publish mode.
+	ErrTaskSpec = errors.New("a follow-up cannot change the task's repo, base or publish mode")
 )

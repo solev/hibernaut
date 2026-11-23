@@ -96,6 +96,11 @@ func (m *Memory) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		if view.Removing() {
 			return task.Receipt{}, task.ErrNoTask
 		}
+		var err error
+		sub.Spec, err = task.Inherit(view.Runs[0].Spec, sub.Spec)
+		if err != nil {
+			return task.Receipt{}, err
+		}
 	}
 	queued := 0
 	for _, r := range m.unfinished() {

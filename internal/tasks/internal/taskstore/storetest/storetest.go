@@ -32,6 +32,7 @@ func Run(t *testing.T, open func(t *testing.T) taskstore.Store) {
 		{"AppendOrder", appendOrder},
 		{"AppendRetry", appendRetry},
 		{"FollowUp", followUp},
+		{"FollowUpSpec", followUpSpec},
 		{"Requests", requests},
 		{"FreezeRows", freezeRows},
 		{"Unfinished", unfinished},
@@ -196,7 +197,8 @@ func finish(t *testing.T, s taskstore.Store, id task.RunID, sandbox string) {
 }
 
 func followUp(t *testing.T, s taskstore.Store) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	first := submit(t, s, "req-1", spec(), nil).Run
 	sub := task.Submission{RequestID: "req-2", Task: first.Task, Spec: spec(), Actor: alice, At: t0}
 	if _, err := s.Submit(ctx, sub, nil); !errors.Is(err, task.ErrRunLive) {
@@ -210,6 +212,9 @@ func followUp(t *testing.T, s taskstore.Store) {
 	if rec.Run != (task.RunID{Task: first.Task, N: 2}) {
 		t.Fatalf("follow-up is %v", rec.Run)
 	}
+	if replay, err := s.Submit(ctx, sub, nil); err != nil || replay != rec {
+		t.Fatalf("live follow-up replay = %v, %v, want %v", replay, err, rec)
+	}
 	r, _ := s.Run(ctx, rec.Run)
 	if r.Kept != "sbx1" {
 		t.Fatalf("run 2 Kept = %q, want the machine run 1 kept", r.Kept)
@@ -217,6 +222,75 @@ func followUp(t *testing.T, s taskstore.Store) {
 	sub.RequestID, sub.Task = "req-3", "t-zzzzzzzz"
 	if _, err := s.Submit(ctx, sub, nil); !errors.Is(err, task.ErrNoTask) {
 		t.Fatalf("follow-up of no task: got %v, want ErrNoTask", err)
+	}
+}
+
+func followUpSpec(t *testing.T, s taskstore.Store) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sp := spec()
+	sp.Repo, sp.Base, sp.Publish = task.Repo{Owner: "acme", Name: "api"}, "main", task.PublishDraftPR
+	first := submit(t, s, "first", sp, nil).Run
+	end := func(id task.RunID) {
+		appendAll(t, s, id, &task.StopIntent{Outcome: task.Cancelled}, &task.StopResult{},
+			&task.CollectIntent{}, &task.CollectResult{}, &task.PublishIntent{},
+			&task.PublishResult{}, &task.KeepIntent{}, &task.KeepResult{})
+	}
+	end(first)
+	for _, inherit := range []bool{true, false} {
+		input := sp
+		request := "same"
+		if inherit {
+			input.Repo, input.Base, input.Publish = task.Repo{}, "", ""
+			request = "inherit"
+		}
+		sub := task.Submission{RequestID: request, Task: first.Task, Spec: input, Actor: alice, At: t0}
+		rec, err := s.Submit(ctx, sub, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.Run(ctx, rec.Run)
+		if err != nil || run.Spec.Repo != sp.Repo || run.Spec.Base != sp.Base ||
+			run.Spec.Publish != sp.Publish {
+			t.Fatalf("follow-up inherited %+v, %v, want repo, base and publish from %+v", run.Spec, err, sp)
+		}
+		if replay, err := s.Submit(ctx, sub, nil); err != nil || replay != rec {
+			t.Fatalf("inherited live replay = %v, %v, want %v", replay, err, rec)
+		}
+		end(rec.Run)
+	}
+	for _, field := range []string{"repo", "base", "publish"} {
+		input := sp
+		switch field {
+		case "repo":
+			input.Repo.Name = "other"
+		case "base":
+			input.Base = "other"
+		case "publish":
+			input.Publish = task.PublishNone
+		}
+		sub := task.Submission{RequestID: field, Task: first.Task, Spec: input, Actor: alice, At: t0}
+		if _, err := s.Submit(ctx, sub, nil); !errors.Is(err, task.ErrTaskSpec) {
+			t.Errorf("changed %s = %v, want ErrTaskSpec", field, err)
+		}
+		if _, err := s.Receipt(ctx, field); !errors.Is(err, taskstore.ErrNoReceipt) {
+			t.Errorf("refused %s saved a receipt: %v", field, err)
+		}
+	}
+	view, err := s.Task(ctx, first.Task)
+	if err != nil || len(view.Runs) != 3 {
+		t.Fatalf("refused follow-ups changed task: %d runs, %v", len(view.Runs), err)
+	}
+	rec, err := s.Submit(ctx, task.Submission{RequestID: "live", Task: first.Task,
+		Spec: spec(), Actor: alice, At: t0}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := sp
+	other.Base = "different"
+	if _, err := s.Submit(ctx, task.Submission{RequestID: "conflicting-live", Task: first.Task,
+		Spec: other, Actor: alice, At: t0}, nil); !errors.Is(err, task.ErrTaskSpec) {
+		t.Fatalf("conflicting spec during %s = %v, want ErrTaskSpec before ErrRunLive", rec.Run, err)
 	}
 }
 

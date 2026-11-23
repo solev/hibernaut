@@ -316,6 +316,7 @@ func CodeOf(err error) ErrorCode {
 		{task.ErrInputFull, CodeInputFull},
 		{task.ErrNoTask, CodeNoTask},
 		{task.ErrRunLive, CodeRunLive},
+		{task.ErrTaskSpec, CodeBadRequest},
 	} {
 		if errors.Is(err, c.err) {
 			return c.code
