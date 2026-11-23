@@ -219,7 +219,7 @@ func TestSaveAndForkGiveUpOnAFenceHeldTooLong(t *testing.T) {
 				t.Fatal(err)
 			}
 			code, r := runJSONReply(t, a, out, snapshotArgs(op)...)
-			want := "left web as it was: link fencing took longer than 50ms. A pause or rm may be waiting. Retry once it finishes."
+			want := "left web as it was: link fencing took longer than 50ms. A pause or rm may be waiting. Retry once it finishes"
 			if code != 1 || r.Error != want {
 				t.Fatalf("%s = %d, %q, want %q", op, code, r.Error, want)
 			}
@@ -267,7 +267,7 @@ func TestDuplicateRemovalFenceTimeoutMessage(t *testing.T) {
 		ran = true
 		return nil
 	})
-	want := "left web as it was: link fencing took longer than 50ms. A pause or rm may be waiting. Retry once it finishes."
+	want := "left web as it was: link fencing took longer than 50ms. A pause or rm may be waiting. Retry once it finishes"
 	if err == nil || err.Error() != want || ran {
 		t.Fatalf("duplicate removal = %v, ran %v; want %q without removal", err, ran, want)
 	}

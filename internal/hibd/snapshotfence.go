@@ -43,7 +43,7 @@ func (a *App) snapshotFence(cfg config) func(ctx context.Context, id, name, why 
 		ranOut := errors.Is(err, errSnapshotFenceWait) ||
 			errors.Is(err, context.Canceled) && errors.Is(context.Cause(wait), errSnapshotFenceWait)
 		if !started && ranOut {
-			return fmt.Errorf("left %s as it was: link fencing took longer than %v. A pause or rm may be waiting. Retry once it finishes.", name, snapshotFenceWait)
+			return fmt.Errorf("left %s as it was: link fencing took longer than %v. A pause or rm may be waiting. Retry once it finishes", name, snapshotFenceWait)
 		}
 		return err
 	}
