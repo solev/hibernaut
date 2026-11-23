@@ -68,12 +68,12 @@ func (r Recipe) Check() error {
 }
 
 func PrintRecipe(w io.Writer, r Recipe) error {
-	timeout := "default"
+	timeout := "(default)"
 	if r.TimeoutSeconds != 0 {
 		timeout = (time.Duration(r.TimeoutSeconds) * time.Second).String()
 	}
 	_, err := fmt.Fprintf(w, "%s\n  command %s\n  image %s\n  size %s\n  timeout %s\n",
 		termsafe.Line(r.Name), termsafe.Line(fmt.Sprintf("%q", r.Command)),
-		termsafe.Line(cmp.Or(r.Image, "default")), termsafe.Line(cmp.Or(r.Size, "default")), timeout)
+		termsafe.Line(cmp.Or(r.Image, "(default)")), termsafe.Line(cmp.Or(r.Size, "(default)")), timeout)
 	return err
 }

@@ -66,7 +66,7 @@ func TestRecipeShowDefaults(t *testing.T) {
 	if code := c.hibContext(ctx, "recipe", "show", "check"); code != 0 {
 		t.Fatalf("show = %d, %s", code, c.errOut)
 	}
-	for _, want := range []string{"image default\n", "size default\n", "timeout default\n"} {
+	for _, want := range []string{"image (default)\n", "size (default)\n", "timeout (default)\n"} {
 		if !strings.Contains(c.out.String(), want) {
 			t.Errorf("show = %q; want %q", c.out, want)
 		}

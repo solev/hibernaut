@@ -463,16 +463,16 @@ and clears its default. `hib recipe default` shows the default; add `NAME` to ch
 starts without a command or recipe. The host keeps at most 256 recipes in `recipes.json`.
 Command JSON is limited to 16 KiB per recipe. Edits never change saved tasks.
 These commands support `--json` and require a host with recipe support.
-Unset image, size and timeout print as `default`, meaning task start's defaults apply.
+Unset image, size and timeout print as `(default)`, meaning task start's defaults apply.
 
-If `recipes.json` is damaged or from a newer hibd, move it aside to restore recipe commands:
+If `recipes.json` is from a newer hibd, update hibd. To start over with a damaged or newer file:
 
 ```sh
-ssh HOST mv /var/lib/hibernaut/recipes.json /var/lib/hibernaut/recipes.json.bad
+ssh HOST mv --backup=numbered /var/lib/hibernaut/recipes.json /var/lib/hibernaut/recipes.json.bad
 ```
 
 The state directory belongs to the login user, so no sudo is needed. The moved file keeps
-your recipes for you to read back and save again.
+your recipes to read back and save again. Numbered backups preserve every earlier `.bad` file.
 
 ### Scripts, completion, colour and faces
 

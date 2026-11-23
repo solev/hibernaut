@@ -80,9 +80,13 @@ func TestTaskHelpIncludesTheDomainDocs(t *testing.T) {
 
 func TestTaskAndRecipeGroupHelpDescribesTheGroup(t *testing.T) {
 	c, hib := homeless(t, newHost(t))
-	for _, group := range []string{"task", "recipe"} {
-		if code := hib("help", group); code != 0 {
-			t.Fatalf("help %s = exit %d, stderr %q", group, code, c.errOut)
+	for _, tc := range []struct{ group, about string }{
+		{"task", "Runs commands in their own machines under hibd's supervision."},
+		{"recipe", "Keeps named commands and their image, size and timeout defaults for hib task start."},
+	} {
+		if code := hib("help", tc.group); code != 0 || !strings.Contains(c.out.String(), tc.about) {
+			t.Fatalf("help %s = exit %d, stdout %q, stderr %q; want %q",
+				tc.group, code, c.out, c.errOut, tc.about)
 		}
 	}
 }
