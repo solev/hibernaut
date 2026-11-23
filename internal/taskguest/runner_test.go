@@ -441,7 +441,7 @@ func TestRepoFollowUp(t *testing.T) {
 }
 
 func TestRepoFinishGuards(t *testing.T) {
-	for _, kind := range []string{"missing start", "empty policy", "unknown policy", "detached", "other branch", "clone identity"} {
+	for _, kind := range []string{"missing start", "empty policy", "unknown policy", "detached", "other branch", "clone identity", "long author"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newRepoRunner(t, false)
 			f.okStage("setup")
@@ -463,6 +463,9 @@ func TestRepoFinishGuards(t *testing.T) {
 			case "clone identity":
 				f.git(f.work, "config", "user.name", "Agent Choice")
 				failed = false
+			case "long author":
+				f.git(f.work, "config", "user.name", strings.Repeat("x", 300))
+				failed = false
 			}
 			writeTestFile(t, filepath.Join(f.work, "tracked"), "after\n")
 			out, code := f.stage("finish")
@@ -479,6 +482,31 @@ func TestRepoFinishGuards(t *testing.T) {
 			if kind == "clone identity" && !strings.HasPrefix(p.Author, "Agent Choice <") {
 				t.Fatalf("clone identity lost: %q", p.Author)
 			}
+			if kind == "long author" && len(p.Author) != 256 {
+				t.Fatalf("author has %d bytes, want a 256 byte prefix", len(p.Author))
+			}
 		})
+	}
+}
+
+func TestRepoRetrySucceeds(t *testing.T) {
+	f := newRepoRunner(t, false)
+	f.okStage("setup")
+	f.okStage("command", "true")
+	writeTestFile(t, filepath.Join(f.work, "tracked"), "after\n")
+	writeTestFile(t, filepath.Join(f.remote, "hooks", "pre-receive"), "#!/bin/sh\n"+
+		"if [ ! -f '"+filepath.Join(f.root, "retried")+"' ]; then\n"+
+		"  touch '"+filepath.Join(f.root, "retried")+"'\n  exit 1\nfi\n")
+	f.okStage("finish")
+	p := f.publication()
+	if !p.Pushed || p.Commit != f.remoteRef() {
+		t.Fatalf("retry did not publish: %+v", p)
+	}
+	if _, err := p.AtRef(f.remoteRef()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(f.root, "waits"))
+	if err != nil || string(data) != "5\n" {
+		t.Fatalf("retry waits %q, %v; want one 5 second wait", data, err)
 	}
 }

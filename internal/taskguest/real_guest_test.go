@@ -185,7 +185,11 @@ func TestGuestRepoTask(t *testing.T) {
 		t.Fatal("guest test needs root in a Linux dev machine")
 	}
 	for _, base := range []string{"", "topic"} {
-		t.Run(base, func(t *testing.T) {
+		name := base
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
 			f := newRepoRunner(t, false)
 			ref := "trunk"
 			if base != "" {
@@ -215,6 +219,7 @@ func TestGuestRepoTask(t *testing.T) {
 				for i, arg := range argv {
 					if arg == "--" {
 						launch = append(launch, argv[:i]...)
+						launch = append(launch, "--property=EnvironmentFile=")
 						for _, env := range []string{"HOME=" + f.root, "GIT_CONFIG_SYSTEM=" + f.system,
 							"GIT_CONFIG_GLOBAL=" + filepath.Join(f.root, "global"), "GIT_ALLOW_PROTOCOL=file", "GH_TOKEN="} {
 							launch = append(launch, "--setenv="+env)
