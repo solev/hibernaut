@@ -260,8 +260,9 @@ func TestRecipeDamagedStoreDoesNotBlockExplicitCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, args := range [][]string{{"ls"}, {"show", "check"}, {"put", "new"}, {"rm", "check"}, {"default"}} {
-				if code, out := callRecipe(t, a, recipeBody, args...); code != 1 || !strings.Contains(out, "recipes.json") {
-					t.Fatalf("damaged %v = %d, %s; want file-specific failure", args, code, out)
+				if code, out := callRecipe(t, a, recipeBody, args...); code != 1 ||
+					!strings.Contains(out, "recipes.json") || !strings.Contains(out, "move it aside") {
+					t.Fatalf("damaged %v = %d, %s; want file-specific failure and move-aside recovery", args, code, out)
 				}
 			}
 			code, r := submitTaskJSON(t, a, hibapi.TaskStart{RequestID: "damaged"}, &taskUnreadInput{})

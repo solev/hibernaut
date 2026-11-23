@@ -464,6 +464,15 @@ starts without a command or recipe. The host keeps at most 256 recipes in `recip
 Command JSON is limited to 16 KiB per recipe. Edits never change saved tasks.
 These commands support `--json` and require a host with recipe support.
 
+If `recipes.json` is damaged or from a newer hibd, move it aside to restore recipe commands:
+
+```sh
+ssh HOST mv /var/lib/hibernaut/recipes.json /var/lib/hibernaut/recipes.json.bad
+```
+
+The state directory belongs to the login user, so no sudo is needed. The moved file keeps
+your recipes for you to read back and save again.
+
 ### Scripts, completion, colour and faces
 
 `--json` on `ls`, `status`, `secret ls`, `log`, `new`, `fork` and `image ls` prints one JSON

@@ -68,8 +68,13 @@ func recipeFile(root *os.Root, name string, owner statefile.Owner) (fs.FileInfo,
 	return fi, nil
 }
 
-func readRecipes(root *os.Root, owner statefile.Owner) (recipeDoc, error) {
-	doc := recipeDoc{V: 1, Recipes: map[string]hibapi.Recipe{}}
+func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w; move it aside to recover recipes", err)
+		}
+	}()
+	doc = recipeDoc{V: 1, Recipes: map[string]hibapi.Recipe{}}
 	named, err := recipeFile(root, "recipes.json", owner)
 	if errors.Is(err, fs.ErrNotExist) {
 		return doc, nil
