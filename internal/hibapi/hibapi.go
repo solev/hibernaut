@@ -174,6 +174,7 @@ type Response struct {
 	Links []LinkEntry `json:"links,omitzero"`
 	// TaskReply is what task commands reply. Its fields are inline.
 	TaskReply
+	RecipeReply
 }
 
 // Ports is what one machine publishes.

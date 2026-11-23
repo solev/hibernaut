@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"flag"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/task"
@@ -81,58 +78,11 @@ func TestTaskHelpIncludesTheDomainDocs(t *testing.T) {
 	}
 }
 
-func TestTaskAndRecipeRunnersAreVisibleStubs(t *testing.T) {
-	fixtures := map[string][]string{
-		"task start": nil, "task ls": nil, "task show": {"t-abcdefgh"},
-		"task logs": {"t-abcdefgh"}, "task wait": {"t-abcdefgh"}, "task cancel": {"t-abcdefgh"},
-		"task rescue": {"t-abcdefgh"}, "task rm": {"t-abcdefgh"},
-		"recipe put": {"check", "--", "true"}, "recipe ls": nil,
-		"recipe show": {"check"}, "recipe rm": {"check"}, "recipe default": nil,
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	h := newHost(t)
-	c := initClient(t, h)
-	root := commandTable()
-	for _, cmd := range allCommands(root) {
-		if !taskCommandIsStub(cmd) {
-			continue
-		}
-		path := cmd.path()
-		fixture, ok := fixtures[path]
-		if !ok {
-			t.Fatalf("%s has no invocation fixture", path)
-		}
-		args := append(strings.Fields(path), fixture...)
-		code := c.hibContext(ctx, args...)
-		want := "hib " + path + " isn't in this build yet"
-		if code != 1 || c.out.Len() != 0 || !strings.Contains(c.errOut.String(), want) {
-			t.Errorf("%s = exit %d, stdout %q, stderr %q; want offline stub %q",
-				path, code, c.out, c.errOut, want)
-		}
-		if calls := h.takeCalls(); len(calls) != 0 {
-			t.Errorf("%s stub contacted the host: %q", path, calls)
-		}
-	}
-}
-
-func taskCommandIsStub(c *command) bool {
-	if !strings.HasPrefix(c.path(), "task ") && !strings.HasPrefix(c.path(), "recipe ") {
-		return false
-	}
-	var help bytes.Buffer
-	printHelp(&help, c)
-	return strings.Contains(help.String(), "This command isn't in this build yet.")
-}
-
 func TestTaskAndRecipeGroupHelpDescribesTheGroup(t *testing.T) {
 	c, hib := homeless(t, newHost(t))
 	for _, group := range []string{"task", "recipe"} {
 		if code := hib("help", group); code != 0 {
 			t.Fatalf("help %s = exit %d, stderr %q", group, code, c.errOut)
-		}
-		if strings.Contains(c.out.String(), "These commands aren't in this build yet.") {
-			t.Errorf("help %s claims the whole group is unavailable", group)
 		}
 	}
 }

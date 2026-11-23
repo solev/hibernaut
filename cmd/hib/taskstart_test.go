@@ -223,7 +223,7 @@ func TestTaskStartLocalRefusals(t *testing.T) {
 		{"size", []string{"--size", "huge"}, 2, "size"},
 		{"timeout", []string{"--timeout", "-1s"}, 2, "timeout"},
 		{"fractional timeout", []string{"--timeout", "1ms"}, 2, "seconds"},
-		{"recipe", []string{"--recipe", "review"}, 1, "later build"},
+		{"recipe", []string{"--recipe", "../review"}, 2, "bad name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{text: startReceipt}}}
@@ -315,9 +315,8 @@ func TestTaskStartHelpIsAvailable(t *testing.T) {
 	h := &taskCallHost{}
 	a, out, stderr := taskStartClient(t, h)
 	if code := a.run(taskCallContext(t), []string{"help", "task", "start"}); code != 0 ||
-		strings.Contains(out.String(), "This command isn't in this build yet.") ||
-		!strings.Contains(out.String(), "Recipes come in a later build") || stderr.Len() != 0 || h.versions != 0 {
-		t.Errorf("start help stdout %q, stderr %q; want available command and deferred recipes", out, stderr)
+		strings.Contains(out.String(), "later build") || stderr.Len() != 0 || h.versions != 0 {
+		t.Errorf("start help stdout %q, stderr %q; want available commands and recipes", out, stderr)
 	}
 }
 

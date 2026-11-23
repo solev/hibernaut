@@ -32,7 +32,7 @@ func taskStartCommand() *command {
 		opts: "[--prompt TEXT | --prompt-file F] [--file PATH] [--image IMAGE] [--size SIZE] " +
 			"[--timeout DURATION] [--recipe NAME] [--request-id ID]",
 		about: "Starts CMD in its own machine and saves the task before answering. The host supervises it\n" +
-			"after this laptop disconnects. Give a command after --. Recipes come in a later build.\n" +
+			"after this laptop disconnects. Use -- CMD, --recipe NAME, or the default recipe.\n" +
 			"--prompt and --prompt-file are alternatives. --file may repeat. Inputs total at most\n" +
 			"100 MiB. --timeout is the run's time limit, not the ten-minute upload timeout.\n" +
 			"Retries send the same saved inputs. If the reply is lost, look up the request ID.",
@@ -51,10 +51,10 @@ func taskStartFlags(fl *flag.FlagSet) runner {
 		o.files = append(o.files, path)
 		return nil
 	})
-	fl.StringVar(&o.image, "image", "", "the `image` to make the task machine from (default dev; recipes come in a later build)")
-	fl.StringVar(&o.size, "size", "", "small, medium or large (default medium; recipe `size` comes in a later build)")
-	fl.DurationVar(&o.timeout, "timeout", 0, "stop the run after whole seconds, such as 1h (default 24h; recipes come in a later build)")
-	fl.StringVar(&o.recipe, "recipe", "", "recipe `NAME` (recipes come in a later build)")
+	fl.StringVar(&o.image, "image", "", "override the recipe's `image` (otherwise dev)")
+	fl.StringVar(&o.size, "size", "", "override the recipe's `size`: small, medium or large (otherwise medium)")
+	fl.DurationVar(&o.timeout, "timeout", 0, "override the recipe's timeout in whole seconds, such as 1h (otherwise 24h)")
+	fl.StringVar(&o.recipe, "recipe", "", "use recipe `NAME`; flags and -- CMD override its defaults")
 	fl.StringVar(&o.requestID, "request-id", "", "idempotency `ID` (default a generated ID)")
 	return withTaskJSON(fl, func(ctx context.Context, a *app, args []string) int {
 		fl.Visit(func(f *flag.Flag) {
@@ -91,14 +91,20 @@ func (o taskStartOptions) run(ctx context.Context, a *app, args []string) (exit 
 	if o.timeout < 0 || o.timeout%time.Second != 0 {
 		return a.mistake("--timeout must be non-negative whole seconds")
 	}
-	if o.recipe != "" {
-		return a.fail(errors.New("recipes come in a later build"))
+	if o.recipe != "" && !a.checkNames(o.recipe) {
+		return 2
 	}
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}
-	if len(args) == 0 {
-		return a.fail(errors.New("give a command after --. Recipes come in a later build"))
+	if o.recipe != "" || len(args) == 0 {
+		cfg, err := a.settings()
+		if err != nil {
+			return a.fail(err)
+		}
+		if err := a.needRecipes(ctx, cfg); err != nil {
+			return a.fail(err)
+		}
 	}
 	for i, arg := range args {
 		if !utf8.ValidString(arg) || strings.ContainsRune(arg, 0) || (i == 0 && arg == "") {
@@ -122,7 +128,7 @@ func (o taskStartOptions) run(ctx context.Context, a *app, args []string) (exit 
 		}
 		names[name] = true
 	}
-	start, err := o.prepare(hibapi.TaskStart{RequestID: requestID, Command: args,
+	start, err := o.prepare(hibapi.TaskStart{RequestID: requestID, Command: args, Recipe: o.recipe,
 		Image: o.image, Size: o.size, TimeoutSeconds: int64(o.timeout / time.Second)})
 	if err != nil {
 		return a.fail(err)
@@ -158,13 +164,16 @@ func (o taskStartOptions) run(ctx context.Context, a *app, args []string) (exit 
 			return a.fail(fmt.Errorf("%w\n%s", checkErr, lookup))
 		}
 	}
+	if err != nil && result.reply.Code == hibapi.CodeConflict {
+		err = fmt.Errorf("%w\n%s", err, lookup)
+	}
 	var remote *hibapi.RemoteError
 	if a.json && (err == nil || errors.As(err, &remote)) {
 		if _, writeErr := a.stdout.Write(result.raw); writeErr != nil {
 			return a.fail(writeErr)
 		}
 		if err != nil {
-			if !result.reply.Code.RefusedBeforeSave() {
+			if !result.reply.Code.RefusedBeforeSave() || result.reply.Code == hibapi.CodeConflict {
 				fmt.Fprintln(a.stderr, err)
 			}
 			return 1

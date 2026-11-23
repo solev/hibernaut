@@ -29,7 +29,7 @@ func TestREADMEHasTheCommandReference(t *testing.T) {
 	}
 }
 
-func TestREADMEExplainsUnavailableTasksAndRecipes(t *testing.T) {
+func TestREADMEExplainsTasksAndRecipes(t *testing.T) {
 	data, err := os.ReadFile("../../README.md")
 	if err != nil {
 		t.Fatal(err)
@@ -50,26 +50,14 @@ func TestREADMEExplainsUnavailableTasksAndRecipes(t *testing.T) {
 		if !strings.HasPrefix(c.path(), "task ") && !strings.HasPrefix(c.path(), "recipe ") {
 			continue
 		}
-		stub, documented := taskCommandIsStub(c), false
 		for _, paragraph := range paragraphs {
 			paragraph = strings.ReplaceAll(paragraph, "\n", " ")
 			if !strings.Contains(paragraph, "`hib "+c.path()+"`") {
 				continue
 			}
-			unavailable := strings.Contains(paragraph, "not available in this build yet")
-			if unavailable && !stub {
-				t.Errorf("README says hib %s is unavailable but its help does not", c.path())
-			}
-			if unavailable && strings.Contains(paragraph, "exits 1") &&
-				strings.Contains(paragraph, "without contacting the host") {
-				documented = true
-			}
 			if strings.Contains(paragraph, "declares commands") || strings.Contains(paragraph, "units") {
 				t.Errorf("README's hib %s paragraph uses implementation jargon", c.path())
 			}
-		}
-		if stub && !documented {
-			t.Errorf("README must name hib %s in a paragraph saying it is not available in this build yet and exits 1 without contacting the host", c.path())
 		}
 	}
 }

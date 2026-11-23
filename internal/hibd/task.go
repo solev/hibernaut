@@ -100,11 +100,24 @@ func (a *App) taskStart(ctx context.Context, c taskCommand, args []string) int {
 	if n == 1 {
 		req.Task = task.ID(rest[0])
 	}
-	sub, err := submissionOf(req, a.taskActor(), a.now())
+	cfg, err := loadSettings(a.Getenv)
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
-	cfg, err := loadSettings(a.Getenv)
+	resolved, err := resolveRecipe(req, cfg.stateDir)
+	if err != nil {
+		if req.RequestID != "" {
+			st := a.tasks(cfg)
+			_, lookupErr := st.Receipt(ctx, req.RequestID)
+			st.Close()
+			if lookupErr == nil {
+				return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", task.ErrConflict, err))
+			}
+		}
+		return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", errBadTaskRequest, err))
+	}
+	req = resolved
+	sub, err := submissionOf(req, a.taskActor(), a.now())
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
@@ -147,7 +160,9 @@ func submissionOf(req hibapi.TaskStart, actor task.Actor, at time.Time) (task.Su
 		return bad("repository, branch and publication support comes in a later build")
 	}
 	if req.Recipe != "" {
-		return bad("recipes come in a later build")
+		if err := hibapi.CheckName(req.Recipe); err != nil {
+			return bad("%v", err)
+		}
 	}
 	if req.TimeoutSeconds < 0 || req.TimeoutSeconds > int64((1<<63-1)/time.Second) {
 		return bad("timeout must be non-negative and fit in a duration")
@@ -157,7 +172,7 @@ func submissionOf(req hibapi.TaskStart, actor task.Actor, at time.Time) (task.Su
 			return bad("%v", err)
 		}
 	}
-	spec := task.Spec{Command: req.Command,
+	spec := task.Spec{Command: req.Command, Recipe: req.Recipe,
 		Image: req.Image, Size: req.Size, Publish: task.PublishNone,
 		Timeout: time.Duration(req.TimeoutSeconds) * time.Second}
 	if len(spec.Command) == 0 {
@@ -413,11 +428,6 @@ func (a *App) taskCleanup(ctx context.Context, c taskCommand, args []string) int
 	return a.taskNotYet(c, args)
 	// TODO: under cleanup.lock, list blobs and log files, then delete those no task row names,
 	// rechecking references in one short transaction per batch.
-}
-
-// recipe is every hibd recipe leaf. M15 adds recipes.json.
-func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
-	return a.taskNotYet(c, args)
 }
 
 func (a *App) taskNotYet(c taskCommand, args []string) int {

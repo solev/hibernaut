@@ -67,11 +67,6 @@ func taskDocs() string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func taskNotInBuild(_ context.Context, a *app, _ []string) int {
-	fmt.Fprintln(a.stderr, a.command.title()+" isn't in this build yet")
-	return 1
-}
-
 func taskJSONOnly(run runner) func(*flag.FlagSet) runner {
 	return func(fl *flag.FlagSet) runner { return withTaskJSON(fl, run) }
 }
