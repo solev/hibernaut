@@ -21,20 +21,26 @@ import (
 
 type taskStartOptions struct {
 	prompt, promptFile, image, size, recipe, requestID string
+	repo, branch, publish                              string
 	files                                              []string
 	timeout                                            time.Duration
 	promptSet, promptFileSet                           bool
+	repoSet, branchSet, publishSet                     bool
 }
 
 func taskStartCommand() *command {
 	return &command{
 		args: "[-- CMD ARG...]", takesCommand: true,
-		opts: "[--prompt TEXT | --prompt-file F] [--file PATH] [--image IMAGE] [--size SIZE]\n" +
-			"                     [--timeout DURATION] [--recipe NAME] [--request-id ID]",
+		opts: "[--prompt TEXT | --prompt-file F] [--file PATH]\n" +
+			"                     [--repo REPO] [--branch BASE] [--publish MODE]\n" +
+			"                     [--image IMAGE] [--size SIZE] [--timeout DURATION]\n" +
+			"                     [--recipe NAME] [--request-id ID]",
 		about: "Starts CMD in its own machine and saves the task before answering. The host supervises it\n" +
 			"after this laptop disconnects. Use -- CMD, --recipe NAME, or the default recipe.\n" +
 			"--prompt and --prompt-file are alternatives. --file may repeat. Inputs total at most\n" +
 			"100 MiB. --timeout is the run's time limit, not the ten-minute upload timeout.\n" +
+			"--repo clones a GitHub repo. --branch selects the base, otherwise its default.\n" +
+			"Work happens on hib/TASK. --publish defaults to draft-pr with a repo, none without.\n" +
 			"Retries send the same saved inputs. If the reply is lost, look up the request ID.",
 		examples: []string{"hib task start -- echo hello",
 			"hib task start --prompt Review -- codex exec -",
@@ -56,6 +62,9 @@ func taskStartFlags(fl *flag.FlagSet) runner {
 	fl.DurationVar(&o.timeout, "timeout", 0, "override the recipe's timeout in whole seconds, such as 1h (otherwise 24h)")
 	fl.StringVar(&o.recipe, "recipe", "", "use recipe `NAME`; flags and -- CMD override its defaults")
 	fl.StringVar(&o.requestID, "request-id", "", "idempotency `ID` (default a generated ID)")
+	fl.StringVar(&o.repo, "repo", "", "clone `repo` as OWNER/NAME, not a URL or .git suffix")
+	fl.StringVar(&o.branch, "branch", "", "start from `base` (otherwise the repo's default branch)")
+	fl.StringVar(&o.publish, "publish", "", "`mode`: none or draft-pr (otherwise draft-pr with --repo, none without)")
 	return withTaskJSON(fl, func(ctx context.Context, a *app, args []string) int {
 		fl.Visit(func(f *flag.Flag) {
 			switch f.Name {
@@ -63,6 +72,12 @@ func taskStartFlags(fl *flag.FlagSet) runner {
 				o.promptSet = true
 			case "prompt-file":
 				o.promptFileSet = true
+			case "repo":
+				o.repoSet = true
+			case "branch":
+				o.branchSet = true
+			case "publish":
+				o.publishSet = true
 			}
 		})
 		return o.run(ctx, a, args)
@@ -93,6 +108,32 @@ func (o taskStartOptions) run(ctx context.Context, a *app, args []string) (exit 
 	}
 	if o.recipe != "" && !a.checkNames(o.recipe) {
 		return 2
+	}
+	var repo task.Repo
+	if o.repoSet {
+		repo, err = task.ParseRepo(o.repo)
+		if err != nil {
+			return a.mistake(err.Error())
+		}
+	}
+	if err := task.CheckBase(o.branch); err != nil {
+		return a.mistake(err.Error())
+	}
+	publish := task.Publish(o.publish)
+	if !o.publishSet {
+		publish = task.PublishNone
+		if repo != (task.Repo{}) {
+			publish = task.PublishDraftPR
+		}
+	}
+	if publish != task.PublishNone && publish != task.PublishDraftPR {
+		return a.mistake("--publish must be none or draft-pr")
+	}
+	if o.branchSet && repo == (task.Repo{}) {
+		return a.mistake("--branch needs --repo")
+	}
+	if publish == task.PublishDraftPR && repo == (task.Repo{}) {
+		return a.mistake("--publish draft-pr needs --repo")
 	}
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
@@ -129,6 +170,7 @@ func (o taskStartOptions) run(ctx context.Context, a *app, args []string) (exit 
 		names[name] = true
 	}
 	start, err := o.prepare(hibapi.TaskStart{RequestID: requestID, Command: args, Recipe: o.recipe,
+		Repo: repo.String(), Branch: o.branch, Publish: publish,
 		Image: o.image, Size: o.size, TimeoutSeconds: int64(o.timeout / time.Second)})
 	if err != nil {
 		return a.fail(err)

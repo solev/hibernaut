@@ -134,6 +134,8 @@ func TestTaskAndRecipeArgumentsAndFlags(t *testing.T) {
 			"--image", "dev", "--size", "small", "--timeout", "1h",
 			"--recipe", "check", "--request-id", "id", "--json", "--", "echo", "--flag"},
 		{"task", "start", "--prompt-file", "prompt.txt"},
+		{"task", "start", "--repo", "solev/hibernaut"},
+		{"task", "start", "--publish", "none"},
 		{"task", "show", "--request", "id", "--json"},
 		{"task", "logs", "t-abcdefgh", "--run", "2", "-f"},
 		{"task", "logs", "t-abcdefgh", "--json"},
@@ -147,9 +149,7 @@ func TestTaskAndRecipeArgumentsAndFlags(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"task", "start", "--repo", "solev/hibernaut"},
 		{"task", "start", "--branch", "main"},
-		{"task", "start", "--publish", "none"},
 		{"task", "run", "t-abcdefgh"},
 		{"task", "cleanup"},
 	} {
