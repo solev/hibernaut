@@ -41,6 +41,8 @@ const (
 	StopLimit = time.Minute
 	// CollectLimit bounds all guest reads in collect, including publication.
 	CollectLimit = time.Minute
+	// PublishLimit bounds the host's GitHub publication attempts.
+	PublishLimit = 5 * time.Minute
 	// TimeoutMargin is how far past the deadline the machine's E2B timeout is set, so hibd's
 	// stop always comes before E2B's pause.
 	TimeoutMargin = 5 * time.Minute
@@ -106,7 +108,7 @@ func ParseRunID(s string) (RunID, error) {
 	return RunID{Task: id, N: k}, nil
 }
 
-// Publish is what the finish stage does with the branch.
+// Publish is what a run does with the task branch.
 type Publish string
 
 const (

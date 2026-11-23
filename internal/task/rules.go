@@ -121,6 +121,27 @@ func RuntimeMax(r Run, now time.Time) time.Duration {
 	return max(d.Sub(now).Truncate(time.Second), time.Second)
 }
 
+// FinishReserve leaves time for finish after the command stage.
+func FinishReserve(sp Spec) time.Duration {
+	if sp.Repo == (Repo{}) {
+		return 0
+	}
+	return min(2*time.Minute, sp.Timeout/4)
+}
+
+// StageRuntimeMax is RuntimeMax with the command's finish reserve.
+func StageRuntimeMax(r Run, stage Stage, now time.Time) time.Duration {
+	if stage == StageCommand {
+		now = now.Add(FinishReserve(r.Spec))
+	}
+	return RuntimeMax(r, now)
+}
+
+// PublishRemaining measures the host publication budget since intent or daemon start.
+func PublishRemaining(r Run, startedAt, now time.Time) time.Duration {
+	return remaining(r, StepPublish, PublishLimit, startedAt, now)
+}
+
 // StopGraceRemaining measures the TERM grace from the later of the stop intent and daemon start.
 func StopGraceRemaining(r Run, startedAt, now time.Time) time.Duration {
 	return remaining(r, StepStop, StopGrace, startedAt, now)

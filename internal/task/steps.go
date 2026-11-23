@@ -25,12 +25,14 @@ const (
 	StepSetup Step = "setup"
 	// StepCommand runs the command with the prompt on stdin.
 	StepCommand Step = "command"
-	// StepFinish commits, pushes and opens the draft pull request.
+	// StepFinish commits and pushes the task branch.
 	StepFinish Step = "finish"
 	// StepStop ends the run early: it kills the live stage and proves it gone.
 	StepStop Step = "stop"
 	// StepCollect copies the last log bytes and the publication record to the host.
 	StepCollect Step = "collect"
+	// StepPublish finds or opens the draft pull request on the host.
+	StepPublish Step = "publish"
 	// StepKeep pauses the machine and keeps it for follow-ups, or removes it on rm.
 	StepKeep Step = "keep"
 )
@@ -128,7 +130,7 @@ type stepInfo struct {
 	wrapUp bool
 	// early is true for the step entered only when the main line ends early.
 	early bool
-	// skip says when the main line passes over the step, and why, for the diagram.
+	// skip says when the run passes over the step, and why, for the diagram.
 	skip    func(RunID, Spec) bool
 	skipWhy string
 	intent  func() Body
@@ -164,13 +166,19 @@ var steps = []stepInfo{
 		intent:  func() Body { return &StageIntent{Stage: StageFinish} },
 		result:  func() Body { return &StageLaunched{Stage: StageFinish} },
 		exit:    func() Body { return &StageExit{Stage: StageFinish} },
-		doc:     "commit, push, draft PR"},
+		doc:     "commit and push"},
 	{step: StepStop, phase: PhaseStopping, wrapUp: true, early: true,
 		intent: func() Body { return &StopIntent{} }, result: func() Body { return &StopResult{} },
 		doc: "kill the live stage, prove it gone"},
 	{step: StepCollect, phase: PhaseCollecting, wrapUp: true,
 		intent: func() Body { return &CollectIntent{} }, result: func() Body { return &CollectResult{} },
 		doc: "copy last logs and the publication"},
+	{step: StepPublish, phase: PhaseCollecting, wrapUp: true,
+		skip:    func(_ RunID, s Spec) bool { return s.Publish != PublishDraftPR },
+		skipWhy: "publish none",
+		intent:  func() Body { return &PublishIntent{} },
+		result:  func() Body { return &PublishResult{} },
+		doc:     "find or open the draft PR"},
 	{step: StepKeep, phase: PhaseCollecting, wrapUp: true,
 		intent: func() Body { return &KeepIntent{} }, result: func() Body { return &KeepResult{} },
 		doc: "pause and keep, or remove on rm"},
@@ -223,8 +231,7 @@ func (s Step) Stage() Stage { return s.info().stage }
 // WrapUp reports whether s runs after the main line, whatever ended it.
 func (s Step) WrapUp() bool { return s.info().wrapUp }
 
-// Skipped reports whether the main line passes over s for run r with spec sp. Skipping is a pure
-// function of the run, so a skipped step leaves no checkpoint.
+// Skipped reports whether run r with spec sp passes over s. A skipped step leaves no checkpoint.
 func (s Step) Skipped(r RunID, sp Spec) bool {
 	i := s.info()
 	return i.skip != nil && i.skip(r, sp)
@@ -397,11 +404,22 @@ type CollectResult struct {
 // Publication is what the finish stage reports.
 type Publication struct {
 	Changes bool
-	Commit  string `json:",omitempty"`
-	Pushed  bool   `json:",omitempty"`
-	PR      string `json:",omitempty"`
+	// Start is HEAD at command start, so an earlier run's push is not this run's changes.
+	Start  string `json:",omitempty"`
+	Commit string `json:",omitempty"`
+	Pushed bool   `json:",omitempty"`
+	PR     string `json:",omitempty"`
 	// Author is the commit and PR author, recorded apart from the actor.
 	Author string `json:",omitempty"`
+}
+
+// PublishIntent opens StepPublish.
+type PublishIntent struct{}
+
+// PublishResult closes StepPublish.
+type PublishResult struct {
+	Publication *Publication `json:",omitempty"`
+	Failed      string       `json:",omitempty"`
 }
 
 // KeepIntent opens StepKeep.
@@ -426,6 +444,8 @@ func (*StopIntent) checkpoint() (Step, Kind)      { return StepStop, Intent }
 func (*StopResult) checkpoint() (Step, Kind)      { return StepStop, Result }
 func (*CollectIntent) checkpoint() (Step, Kind)   { return StepCollect, Intent }
 func (*CollectResult) checkpoint() (Step, Kind)   { return StepCollect, Result }
+func (*PublishIntent) checkpoint() (Step, Kind)   { return StepPublish, Intent }
+func (*PublishResult) checkpoint() (Step, Kind)   { return StepPublish, Result }
 func (*KeepIntent) checkpoint() (Step, Kind)      { return StepKeep, Intent }
 func (*KeepResult) checkpoint() (Step, Kind)      { return StepKeep, Result }
 

@@ -74,6 +74,9 @@ func Mermaid() string {
 	for i, s := range wrap {
 		if i+1 < len(wrap) {
 			edge(string(s.step), string(wrap[i+1].step), "", false)
+			if i+2 < len(wrap) && wrap[i+1].skip != nil {
+				edge(string(s.step), string(wrap[i+2].step), wrap[i+1].skipWhy, true)
+			}
 		}
 	}
 	edge(string(wrap[len(wrap)-1].step), "ended", "", false)

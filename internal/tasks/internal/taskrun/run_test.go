@@ -394,7 +394,7 @@ func (h *harness) submit(command time.Duration) task.RunID {
 	h.t.Helper()
 	sp := task.Spec{Repo: task.Repo{Owner: "solev", Name: "demo"},
 		Command: []string{"codex", "exec"}, Image: "dev", Size: "dev", Timeout: command,
-		Publish: task.PublishDraftPR}
+		Publish: task.PublishNone}
 	rc, err := h.store.Submit(context.Background(), task.Submission{
 		RequestID: fmt.Sprintf("req-%d", time.Now().UnixNano()), Spec: sp, Actor: alice,
 		At: h.clock.Now()}, nil)
@@ -643,8 +643,8 @@ func TestLostReplies(t *testing.T) {
 	id := h.submit(time.Hour)
 	h.until(40, h.ended(id))
 	h.checkLog(id)
-	if o := outcome(h.run(id)); o != task.NoChanges {
-		t.Fatalf("outcome %s, want no_changes without a proven publication", o)
+	if o := outcome(h.run(id)); o != task.Failed {
+		t.Fatalf("outcome %s, want failed without a proven publication", o)
 	}
 	if unread := strings.Join(unreadResult(t, h.run(id)), "\n"); !strings.Contains(unread, "publication:") || !strings.Contains(unread, engine.ErrConnectionLost.Error()) {
 		t.Fatalf("lost publication was not recorded: %q", unread)

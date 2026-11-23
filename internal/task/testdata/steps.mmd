@@ -4,9 +4,10 @@ flowchart TD
     upload["upload: upload inputs and runner, check hashes"]
     setup["setup: clone and branch"]
     command["command: run the command"]
-    finish["finish: commit, push, draft PR"]
+    finish["finish: commit and push"]
     stop["stop: kill the live stage, prove it gone"]
     collect["collect: copy last logs and the publication"]
+    publish["publish: find or open the draft PR"]
     keep["keep: pause and keep, or remove on rm"]
     ended(["ended"])
     submitted --> machine
@@ -27,5 +28,7 @@ flowchart TD
     finish --> collect
     finish -.->|ends early| stop
     stop --> collect
-    collect --> keep
+    collect --> publish
+    collect -.->|publish none| keep
+    publish --> keep
     keep --> ended

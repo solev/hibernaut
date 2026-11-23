@@ -2,7 +2,9 @@ package task
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -212,7 +214,7 @@ type Status struct {
 	Stage Stage
 	// Held says why a paused run waits for rescue or rm, or is "".
 	Held string
-	// Detail is the stop's detail, or why the last machine intent was refused.
+	// Detail explains a stop, failure or refused machine intent.
 	Detail string
 }
 
@@ -237,10 +239,7 @@ func (r Run) UnprovenStop() bool {
 // at daemon start. An intent another instance left open shows as recovering until this one
 // closes it.
 func (r Run) Status(daemon Instance) Status {
-	var detail string
-	if s, ok := r.Stop(); ok {
-		detail = s.Detail
-	}
+	outcome, failedStage, detail := r.outcome()
 	if r.UnprovenStop() {
 		if detail != "" {
 			detail += "; "
@@ -248,8 +247,7 @@ func (r Run) Status(daemon Instance) Status {
 		detail += "stop unproven: the stage may still run when the machine wakes"
 	}
 	if r.Ended() {
-		o, stage := r.Outcome()
-		return Status{Outcome: o, Stage: stage, Detail: detail}
+		return Status{Outcome: outcome, Stage: failedStage, Detail: detail}
 	}
 	last, ok := r.Last()
 	if !ok {
@@ -277,31 +275,61 @@ func (r Run) Status(daemon Instance) Status {
 	return st
 }
 
-// Outcome derives how the run ended: the stop's outcome if one is recorded, otherwise failed at
-// the first stage that didn't succeed, otherwise succeeded or no_changes from the publication.
-// It is meaningful once the run has ended.
+// Outcome gives a recorded stop precedence over stage failure, publication failure and changes.
+// Missing publication after a successful finish fails. It is meaningful once the run has ended.
 func (r Run) Outcome() (Outcome, Stage) {
+	o, stage, _ := r.outcome()
+	return o, stage
+}
+
+func (r Run) outcome() (Outcome, Stage, string) {
 	if s, ok := r.Stop(); ok {
-		return s.Outcome, r.lastStage()
+		detail := s.Detail
+		stage := r.lastStage()
+		if stage == StageFinish && r.Spec.Publish == PublishDraftPR {
+			detail = strings.TrimPrefix(detail+"; "+r.ID.Task.Branch()+
+				" may already be on GitHub without a PR", "; ")
+		}
+		return s.Outcome, stage, detail
 	}
 	for _, c := range r.Log {
 		if b, ok := c.Body.(*StageExit); ok && !b.Exit.OK() {
 			if b.Exit.Result == "timeout" {
-				return TimedOut, b.Stage
+				return TimedOut, b.Stage, ""
 			}
-			return Failed, b.Stage
+			var detail string
+			if b.Stage == StageSetup || b.Stage == StageFinish {
+				detail = fmt.Sprintf("%s failed; see hib task logs %s", b.Stage, r.ID.Task)
+			}
+			return Failed, b.Stage, detail
 		}
 	}
-	if pub := r.Publication(); StepFinish.Skipped(r.ID, r.Spec) || (pub != nil && pub.Changes) {
-		return Succeeded, ""
+	for _, c := range r.Log {
+		if b, ok := c.Body.(*PublishResult); ok && b.Failed != "" {
+			return Failed, StageFinish, b.Failed
+		}
 	}
-	return NoChanges, ""
+	if r.Spec.Repo == (Repo{}) {
+		return Succeeded, "", ""
+	}
+	pub := r.Publication()
+	if pub == nil && r.finishOK() {
+		return Failed, StageFinish,
+			"the host could not read what finish published; the work is in the kept machine"
+	}
+	if pub != nil && pub.Changes {
+		return Succeeded, "", ""
+	}
+	return NoChanges, "", ""
 }
 
-// Publication is what the finish stage published, as collect read it, or nil.
+// Publication prefers the host's publish result over the file collect read, or is nil.
 func (r Run) Publication() *Publication {
 	for _, c := range slices.Backward(r.Log) {
-		if b, ok := c.Body.(*CollectResult); ok {
+		switch b := c.Body.(type) {
+		case *PublishResult:
+			return b.Publication
+		case *CollectResult:
 			return b.Publication
 		}
 	}
