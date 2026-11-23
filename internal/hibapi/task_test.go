@@ -130,3 +130,26 @@ func TestCodes(t *testing.T) {
 		t.Error("a conflict must not be retried")
 	}
 }
+
+func TestTaskErrorCommandsExist(t *testing.T) {
+	r := task.Run{ID: task.RunID{Task: "t-abcdefgh", N: 1}, Machine: task.MachinePaused,
+		Log: []task.Checkpoint{{Body: &task.MachineIntent{}}, {Body: &task.MachineResult{ID: "machine"}},
+			{Body: &task.StageIntent{Stage: task.StageCommand}}, {Body: &task.StageLaunched{Stage: task.StageCommand}}}}
+	laptop := map[string]bool{}
+	for _, row := range hibapi.TaskCommands() {
+		if row.Laptop {
+			laptop[row.Path] = true
+		}
+	}
+	for _, text := range []string{task.ErrTaskMachine.Error(), task.ErrNoCopy.Error(), r.Status("").Held} {
+		if strings.Contains(text, "TASK") || strings.Contains(text, "hib task run") {
+			t.Errorf("task error has a placeholder or nonexistent command: %q", text)
+		}
+		for _, command := range strings.Split(text, "hib task ")[1:] {
+			words := strings.Fields(command)
+			if len(words) == 0 || !laptop["task "+words[0]] {
+				t.Errorf("task error names no laptop command: %q", text)
+			}
+		}
+	}
+}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/solev/hibernaut/internal/hibapi"
 	"github.com/solev/hibernaut/internal/task"
+	"github.com/solev/hibernaut/internal/termsafe"
 )
 
 func taskCommands() map[string]*command {
@@ -81,6 +82,7 @@ type taskCallOptions struct {
 	path      string
 	args      []string
 	requestID string
+	retry     []string
 	input     func() (io.ReadCloser, error)
 	timeout   time.Duration
 }
@@ -97,6 +99,9 @@ func taskRequestID(given string) (string, error) {
 	}
 	if len(given) > 128 || !utf8.ValidString(given) {
 		return "", errors.New("a UTF-8 request ID of 1 to 128 bytes is required")
+	}
+	if strings.Contains(given, "'") || termsafe.Line(given) != given {
+		return "", errors.New("a request ID must not contain single quotes or terminal controls")
 	}
 	return given, nil
 }
@@ -181,7 +186,22 @@ func (a *app) taskCall(ctx context.Context, cfg *config, opts taskCallOptions) (
 		}
 		if err != nil && result.requestID != "" && !reply.Code.RefusedBeforeSave() {
 			id := "'" + strings.ReplaceAll(result.requestID, "'", "'\\''") + "'"
-			err = fmt.Errorf("%w\nThe request may have been recorded. Look it up with hib task show --request %s", err, id)
+			if len(opts.retry) == 0 {
+				err = fmt.Errorf("%w\nThe request may have been recorded. Look it up with hib task show --request %s", err, id)
+			} else {
+				retry := "hib " + opts.path
+				for _, arg := range opts.retry {
+					retry += " '" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+				}
+				if opts.path == "task rm" {
+					retry += " --yes"
+				}
+				retry += " --request-id " + id
+				if a.json {
+					retry += " --json"
+				}
+				err = fmt.Errorf("%w\nThe request may have been recorded. Retry with:\n%s", err, retry)
+			}
 		}
 		return result, err
 	}

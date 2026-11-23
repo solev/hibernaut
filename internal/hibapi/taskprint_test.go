@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/solev/hibernaut/internal/task"
 )
@@ -52,6 +53,102 @@ removal rm at 2026-10-28T12:00:00Z done at 2026-10-28T13:00:00Z
 	run := task.Run{ID: task.RunID{Task: record.ID, N: 2}, Spec: task.Spec{Recipe: "check"}}
 	if got := RunOf(run, "").Recipe; got != "check" {
 		t.Fatalf("wire recipe = %q, want check", got)
+	}
+}
+
+func TestPrintTaskListFits80Columns(t *testing.T) {
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	held := "paused without the freeze: hib task rescue t-aaaaaaaa or hib task rm t-aaaaaaaa"
+	reasons := []string{held, "stop unproven: the stage may still run when the machine wakes",
+		"hib task cancel by " + strings.Repeat("x", 200) + "\x1b"}
+	var records []Task
+	for i, reason := range reasons {
+		run := TaskRun{N: 1, Phase: task.PhasePaused, Stage: task.StageCommand, Detail: reason}
+		if i == 0 {
+			run.Held = reason
+		}
+		records = append(records, Task{ID: task.ID("t-aaaaaaa" + string(rune('a'+i))), Created: at, Runs: []TaskRun{run}},
+			Task{ID: "t-zzzzzzzz", Created: at, Runs: []TaskRun{{N: 20, Outcome: task.Succeeded}}})
+	}
+	var out bytes.Buffer
+	if err := PrintTaskList(&out, records, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	phaseColumn := strings.Index(lines[0], "PHASE")
+	var columns []int
+	start := 0
+	for _, name := range strings.Fields(lines[0]) {
+		start += strings.Index(lines[0][start:], name)
+		columns = append(columns, start)
+		start += len(name)
+	}
+	rows := 0
+	for i, line := range lines {
+		if n := utf8.RuneCountInString(line); n > 80 {
+			t.Errorf("list line %d has %d columns: %q", i, n, line)
+		}
+		if strings.ContainsRune(line, '\x1b') {
+			t.Errorf("raw terminal control on line %d: %q", i, line)
+		}
+		if i == 0 {
+			continue
+		}
+		if strings.HasPrefix(line, "  ") {
+			continue
+		}
+		phase := "paused"
+		if rows%2 == 1 {
+			phase = "succeeded"
+		}
+		if strings.Index(line, phase) != phaseColumn || len(strings.Fields(line)) != 6 {
+			t.Errorf("list row %d is not aligned or holds its reason: %q", rows, line)
+		}
+		start = 0
+		for column, value := range strings.Fields(line) {
+			start += strings.Index(line[start:], value)
+			if column < len(columns) && start != columns[column] {
+				t.Errorf("list row %d column %d starts at %d, want %d", rows, column, start, columns[column])
+			}
+			start += len(value)
+		}
+		rows++
+	}
+	if rows != 6 || !strings.Contains(out.String(), "\n  paused without the freeze:") {
+		t.Errorf("list omitted rows or separate reasons:\n%s", &out)
+	}
+	for _, command := range []string{"hib task rescue t-aaaaaaaa", "hib task rm t-aaaaaaaa"} {
+		if !strings.Contains(out.String(), command) {
+			t.Errorf("list split the pasteable command %q:\n%s", command, &out)
+		}
+	}
+	out.Reset()
+	if err := PrintTask(&out, records[4]); err != nil || !strings.Contains(out.String(), strings.Repeat("x", 200)+`\x1b`) {
+		t.Fatalf("show cut the full reason: %v, %q", err, &out)
+	}
+}
+
+func TestPrintTaskListCutsBetweenEscapes(t *testing.T) {
+	reason := strings.Repeat("x", 73) + "\x1b" + strings.Repeat("y", 20)
+	record := Task{ID: "t-aaaaaaaa", Runs: []TaskRun{{N: 1, Phase: task.PhaseStopping, Detail: reason}}}
+	var out bytes.Buffer
+	if err := PrintTaskList(&out, []Task{record}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\n  "+strings.Repeat("x", 73)+"...\n") {
+		t.Fatalf("reason cut inside a terminal escape: %q", &out)
+	}
+}
+
+func TestPrintTaskListWideReason(t *testing.T) {
+	record := Task{ID: "t-aaaaaaaa", Runs: []TaskRun{{N: 1, Phase: task.PhaseStopping,
+		Detail: strings.Repeat("界", 40)}}}
+	var out bytes.Buffer
+	if err := PrintTaskList(&out, []Task{record}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\n  "+strings.Repeat("界", 37)+"...\n") {
+		t.Fatalf("reason exceeds 80 terminal columns with wide characters: %q", &out)
 	}
 }
 

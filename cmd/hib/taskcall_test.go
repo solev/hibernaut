@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -56,6 +57,75 @@ func (h *taskCallHost) ssh(ctx context.Context, args []string, in io.Reader, out
 	reply := h.replies[min(len(h.calls)-1, len(h.replies)-1)]
 	io.WriteString(out, reply.text)
 	return reply.code, reply.err
+}
+
+func taskShellArgs(ctx context.Context, script string) ([]string, error) {
+	raw, err := exec.CommandContext(ctx, "/bin/sh", "-c", script).Output()
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00"), nil
+}
+
+func TestTaskCancelRetryHint(t *testing.T) { testTaskRetryHint(t, "cancel") }
+func TestTaskRescueRetryHint(t *testing.T) { testTaskRetryHint(t, "rescue") }
+func TestTaskRMRetryHint(t *testing.T)     { testTaskRetryHint(t, "rm") }
+
+func testTaskRetryHint(t *testing.T, kind string) {
+	for _, id := range []string{"", "given-1", "with a space"} {
+		for _, asJSON := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%q/json=%v", id, asJSON), func(t *testing.T) {
+				h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{code: 255}}}
+				a, out, stderr := taskReadClient(t, h)
+				args := []string{"task", kind, "t-abcdefgh"}
+				if id != "" {
+					args = append(args, "--request-id", id)
+				}
+				if kind == "rm" {
+					args = append(args, "--yes")
+				}
+				if asJSON {
+					args = append(args, "--json")
+				}
+				ctx := taskCallContext(t)
+				if code := a.run(ctx, args); code != 1 || len(h.calls) != 2 {
+					t.Fatalf("lost reply = exit %d, calls %q, stderr %q", code, h.calls, stderr)
+				}
+				_, hint, ok := strings.Cut(stderr.String(), "Retry with:\n")
+				if !ok {
+					t.Fatalf("missing pasteable %s retry: %q", kind, stderr)
+				}
+				t.Logf("%s stderr:\n%s", kind, stderr)
+				pasted, err := taskShellArgs(ctx, "hib() { printf '%s\\000' \"$@\"; }; "+strings.TrimSpace(hint))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if slices.Contains(pasted, "--json") != asJSON {
+					t.Fatalf("retry changed JSON mode: %q", pasted)
+				}
+				first := slices.Clone(h.calls[0])
+				h.replies = []taskHostReply{{text: `{"v":1,"request":{"id":1,"kind":"` +
+					map[string]string{"cancel": "cancel", "rescue": "rescue", "rm": "remove"}[kind] + `","run":1}}`}}
+				out.Reset()
+				stderr.Reset()
+				if code := a.run(ctx, pasted); code != 0 || !slices.Equal(h.calls[len(h.calls)-1], first) {
+					t.Fatalf("pasted retry changed host argv: exit %d, got %q, want %q, stderr %q",
+						code, h.calls[len(h.calls)-1], first, stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestTaskRequestIDControlsStayLocal(t *testing.T) {
+	for _, id := range []string{"quote' and space", "line\nbreak", "escape\x1b", "nul\x00", "bidi\u202e", "\x1b[31mred"} {
+		h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{code: 255}}}
+		a, _, stderr := taskReadClient(t, h)
+		if code := a.run(taskCallContext(t), []string{"task", "cancel", "t-abcdefgh", "--request-id", id}); code == 0 || len(h.calls) != 0 || h.versions != 0 ||
+			strings.ContainsAny(stderr.String(), "\x1b\x00\u202e") {
+			t.Errorf("unsafe ID %q = exit %d, calls %q, stderr %q", id, code, h.calls, stderr)
+		}
+	}
 }
 
 func taskCallClient(t *testing.T, h *taskCallHost) (*app, *bytes.Buffer, *bytes.Buffer) {
@@ -280,9 +350,10 @@ func TestTaskCallSharesOneTransportRetryAcrossBusyReplies(t *testing.T) {
 	}}
 	a, _, stderr := taskCallClient(t, h)
 	result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
-		taskCallOptions{path: "task rm", args: []string{"t-abcdefgh"}, requestID: "remove-1", timeout: shortTimeout})
+		taskCallOptions{path: "task rm", args: []string{"t-abcdefgh"}, retry: []string{"t-abcdefgh"},
+			requestID: "remove-1", timeout: shortTimeout})
 	if code := taskCallExit(a, result, err); code != 1 || len(h.calls) != 3 ||
-		!strings.Contains(stderr.String(), "hib task show --request 'remove-1'") {
+		!strings.Contains(stderr.String(), "hib task rm 't-abcdefgh' --yes --request-id 'remove-1'") {
 		t.Errorf("lost, BUSY, lost = exit %d, %d sends, stderr %q; want one transport resend", code, len(h.calls), stderr)
 	}
 }
@@ -322,16 +393,29 @@ func TestTaskCallEveryFailureAfterResendHasLookupHint(t *testing.T) {
 }
 
 func TestTaskCallUncertainFailureHasLookupHint(t *testing.T) {
-	for _, code := range []hibapi.ErrorCode{hibapi.CodeBusy, hibapi.CodeNoTask, ""} {
+	for _, code := range []hibapi.ErrorCode{hibapi.CodeBusy, hibapi.CodeNoTask, hibapi.CodeInterrupted, ""} {
 		for _, path := range []string{"task start", "task cancel", "task rescue", "task rm"} {
 			t.Run(path+"/"+string(code), func(t *testing.T) {
 				h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{code: 1,
 					text: fmt.Sprintf(`{"v":1,"error":"locked","errorCode":%q}`, code)}}}
 				a, out, stderr := taskCallClient(t, h)
 				result, err := a.taskCall(taskCallContext(t), &config{Host: testHost},
-					taskCallOptions{path: path, args: []string{"t-abcdefgh"}, requestID: "submit-1", timeout: shortTimeout})
+					taskCallOptions{path: path, args: []string{"t-abcdefgh"}, retry: func() []string {
+						if path == "task start" {
+							return nil
+						}
+						return []string{"t-abcdefgh"}
+					}(), requestID: "submit-1", timeout: shortTimeout})
+				hint := "hib task show --request 'submit-1'"
+				if path != "task start" {
+					hint = "hib " + path + " 't-abcdefgh'"
+					if path == "task rm" {
+						hint += " --yes"
+					}
+					hint += " --request-id 'submit-1'"
+				}
 				if exit := taskCallExit(a, result, err); exit != 1 || out.Len() != 0 ||
-					!strings.Contains(stderr.String(), "hib task show --request 'submit-1'") {
+					!strings.Contains(stderr.String(), hint) {
 					t.Errorf("%s = exit %d, stderr %q; want lookup guidance", code, exit, stderr)
 				}
 				sends := 1

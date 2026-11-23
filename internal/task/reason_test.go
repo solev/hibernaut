@@ -1,11 +1,59 @@
 package task
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestHeldReasonNamesItsTask(t *testing.T) {
+	r := Run{ID: RunID{Task: "t-abcdefgh", N: 1}, Machine: MachinePaused,
+		Log: []Checkpoint{{Body: &MachineIntent{}}, {Body: &MachineResult{ID: "machine"}},
+			{Body: &StageIntent{Stage: StageCommand}}, {Body: &StageLaunched{Stage: StageCommand}}}}
+	want := "paused without the freeze: hib task rescue t-abcdefgh or hib task rm t-abcdefgh"
+	for name, got := range map[string]string{
+		"status": r.Status("").Held,
+		"wait":   WaitReason(r, Queue{}, time.Now()),
+	} {
+		if got != want || strings.Contains(got, "TASK") {
+			t.Errorf("%s held reason = %q, want %q", name, got, want)
+		}
+	}
+	if err := AccessOf(r, time.Now()).Allows(OpWake); !errors.Is(err, ErrHeld) {
+		t.Fatalf("held wake = %v, want ErrHeld", err)
+	}
+}
+
+func TestTiedQueueOrder(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	var ordered []Run
+	for i := range 30 {
+		ordered = append(ordered, Run{ID: RunID{Task: ID(fmt.Sprintf("t-aaaaaa%c%c", 'a'+i/26, 'a'+i%26)), N: 1},
+			Submitted: now})
+	}
+	for shift := range 30 {
+		runs := append(slices.Clone(ordered[shift:]), ordered[:shift]...)
+		slices.Reverse(runs)
+		q := QueueOf(runs, now)
+		for i, r := range ordered {
+			word := "runs"
+			if i == 1 {
+				word = "run"
+			}
+			if got := WaitReason(r, q, now); !strings.Contains(got, fmt.Sprintf("; %d %s ahead;", i, word)) {
+				t.Fatalf("shift %d, %s queue position = %q, want %d ahead", shift, r.ID.Task, got, i)
+			}
+			picked, ok := Pick(runs, now, func(Run) error { return nil })
+			if !ok || picked != r.ID {
+				t.Fatalf("shift %d, grant %d = %v, %v, want %v", shift, i, picked, ok, r.ID)
+			}
+			runs = slices.DeleteFunc(runs, func(candidate Run) bool { return candidate.ID == picked })
+		}
+	}
+}
 
 func TestWaitReason(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
@@ -34,7 +82,7 @@ func TestWaitReason(t *testing.T) {
 		{"paused frozen no stage", Run{ID: paused.ID, Spec: paused.Spec, Log: paused.Log,
 			Machine: MachinePaused, Freeze: Freeze{Frozen: true}}, now,
 			"machine paused with recorded freeze proof; no live stage is recorded"},
-		{"held live stage", live, now, ErrHeld.Error()},
+		{"held live stage", live, now, "paused without the freeze: hib task rescue t-aaaaaaaa or hib task rm t-aaaaaaaa"},
 		{"paused frozen live stage", Run{ID: live.ID, Spec: live.Spec, Log: live.Log,
 			Machine: MachinePaused, Freeze: Freeze{Frozen: true}}, now,
 			"machine paused with recorded freeze proof; waiting for hibd to resume or stop the run"},

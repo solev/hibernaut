@@ -11,6 +11,16 @@ type Queue struct {
 	ahead map[RunID]int
 }
 
+// CompareQueue orders runs by submission time, run number, then task ID.
+func CompareQueue(a, b Run) int {
+	return cmp.Or(a.Submitted.Compare(b.Submitted), cmp.Compare(a.ID.N, b.ID.N),
+		cmp.Compare(a.ID.Task, b.ID.Task))
+}
+
+func (r Run) heldReason() string {
+	return fmt.Sprintf("%s: hib task rescue %s or hib task rm %s", ErrHeld, r.ID.Task, r.ID.Task)
+}
+
 func QueueOf(unfinished []Run, now time.Time) Queue {
 	var queued []Run
 	for _, r := range unfinished {
@@ -22,9 +32,7 @@ func QueueOf(unfinished []Run, now time.Time) Queue {
 		}
 		queued = append(queued, r)
 	}
-	slices.SortStableFunc(queued, func(a, b Run) int {
-		return cmp.Or(a.Submitted.Compare(b.Submitted), cmp.Compare(a.ID.N, b.ID.N))
-	})
+	slices.SortFunc(queued, CompareQueue)
 	q := Queue{ahead: make(map[RunID]int, len(queued))}
 	for i, r := range queued {
 		q.ahead[r.ID] = i
@@ -67,7 +75,7 @@ func WaitReason(r Run, q Queue, now time.Time) string {
 			return "machine paused " + proof + "; no live stage is recorded"
 		}
 		if !r.Frozen() {
-			return ErrHeld.Error()
+			return r.heldReason()
 		}
 		return "machine paused with recorded freeze proof; waiting for hibd to resume or stop the run"
 	}

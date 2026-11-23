@@ -180,7 +180,7 @@ func TestStatus(t *testing.T) {
 			want: Status{Phase: PhasePaused, Stage: StageCommand}},
 		{name: "paused by E2B", log: cat(prepared(), launched(StageCommand)),
 			machine: MachinePaused,
-			want:    Status{Phase: PhasePaused, Stage: StageCommand, Held: ErrHeld.Error()}},
+			want:    Status{Phase: PhasePaused, Stage: StageCommand, Held: "paused without the freeze: hib task rescue t-abcdefgh or hib task rm t-abcdefgh"}},
 		{name: "cancel not yet carried out", log: cat(prepared(), launched(StageCommand)),
 			reqs: []Request{{ID: 7, Kind: RequestCancel, At: t0}},
 			want: Status{Phase: PhaseStopping, Stage: StageCommand}},

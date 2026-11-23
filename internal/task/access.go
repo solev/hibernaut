@@ -61,10 +61,10 @@ func Ops() []Op { return []Op{OpWake, OpPause, OpRemove, OpCopy, OpSetup, OpRene
 
 var (
 	// ErrTaskMachine means only the task removes its machine, so its records stay true.
-	ErrTaskMachine = errors.New("only hib task rm TASK removes a task's machine")
+	ErrTaskMachine = errors.New("only hib task rm removes a task's machine")
 	// ErrNoCopy means a task machine is never copied. A copy would carry the task's work and
 	// secrets into a machine no task owns.
-	ErrNoCopy = errors.New("a task's machine is never copied: hib task run TASK works in it again")
+	ErrNoCopy = errors.New("a task's machine is never copied because later runs use it again")
 )
 
 // AccessOf returns the access of run r's machine at now. r is the latest run of the machine's

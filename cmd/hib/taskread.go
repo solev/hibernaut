@@ -153,7 +153,7 @@ func (o taskRequestOptions) record(ctx context.Context, a *app, kind string, arg
 		}
 	}
 	return taskReadCall(ctx, a, taskCallOptions{path: "task " + kind, args: []string{string(id)},
-		requestID: o.requestID, timeout: shortTimeout}, func(r taskCallResult) error {
+		requestID: o.requestID, retry: []string{string(id)}, timeout: shortTimeout}, func(r taskCallResult) error {
 		if r.reply.Request == nil {
 			return errors.New("hibd answered without a recorded task request")
 		}
@@ -173,7 +173,7 @@ func taskReadCall(ctx context.Context, a *app, opts taskCallOptions, print func(
 		}
 	}
 	if err != nil {
-		if a.json && r.reply.Error != "" {
+		if a.json && (r.reply.Error != "" || len(opts.retry) > 0) {
 			fmt.Fprintln(a.stderr, termsafe.String(err.Error()))
 			return 1
 		}

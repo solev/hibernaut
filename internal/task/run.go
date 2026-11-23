@@ -217,7 +217,7 @@ type Status struct {
 }
 
 // ErrHeld is why a run's machine stays paused until rescue or rm.
-var ErrHeld = errors.New("paused without the freeze: hib task rescue TASK or hib task rm TASK")
+var ErrHeld = errors.New("paused without the freeze")
 
 // ErrPastDeadline means a frozen stage's deadline passed while its machine was paused. Nothing
 // wakes the machine until the daemon records the stop.
@@ -268,7 +268,7 @@ func (r Run) Status(daemon Instance) Status {
 	if live && r.Machine == MachinePaused {
 		st.Phase = PhasePaused
 		if !r.Frozen() {
-			st.Held = ErrHeld.Error()
+			st.Held = r.heldReason()
 		}
 	}
 	if last.Kind() == Intent && last.By != daemon {
