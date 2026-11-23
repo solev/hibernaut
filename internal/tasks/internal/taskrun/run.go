@@ -299,7 +299,14 @@ func (x *executor) launch(ctx context.Context, s task.Stage) error {
 	}
 	adopted := seen.Verdict() != taskguest.NotStarted
 	if !adopted {
-		argv := taskguest.Launch(x.r, s, task.RuntimeMax(x.r, x.now()))
+		now := x.now()
+		if deadline, ok := x.r.Deadline(); ok && s == task.StageCommand &&
+			!now.Before(deadline.Add(-task.FinishReserve(x.r.Spec))) {
+			_, err := x.stopNow(ctx, task.StopIntent{Outcome: task.TimedOut,
+				Detail: "no command time remains before the finish reserve"})
+			return err
+		}
+		argv := taskguest.Launch(x.r, s, task.StageRuntimeMax(x.r, s, now))
 		res, err := x.exec(ctx, argv, taskguest.ExecTimeout)
 		if err != nil && !errors.Is(err, engine.ErrConnectionLost) {
 			return err
