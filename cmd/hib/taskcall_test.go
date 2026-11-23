@@ -92,11 +92,22 @@ func testTaskRetryHint(t *testing.T, kind string) {
 				if code := a.run(ctx, args); code != 1 || len(h.calls) != 2 {
 					t.Fatalf("lost reply = exit %d, calls %q, stderr %q", code, h.calls, stderr)
 				}
-				_, hint, ok := strings.Cut(stderr.String(), "Retry with:\n")
-				if !ok {
-					t.Fatalf("missing pasteable %s retry: %q", kind, stderr)
+				message := stderr.String()
+				if asJSON {
+					var reply hibapi.Response
+					if err := json.Unmarshal(out.Bytes(), &reply); err != nil || reply.Error == "" ||
+						strings.Count(out.String(), "\n") != 1 || stderr.Len() != 0 ||
+						!strings.HasSuffix(reply.Error, " --json") {
+						t.Fatalf("lost JSON reply = stdout %q, stderr %q, %v; want one JSON error with retry", out, stderr, err)
+					}
+					message = reply.Error
+				} else if out.Len() != 0 {
+					t.Fatalf("text failure wrote stdout %q", out)
 				}
-				t.Logf("%s stderr:\n%s", kind, stderr)
+				_, hint, ok := strings.Cut(message, "Retry with:\n")
+				if !ok {
+					t.Fatalf("missing pasteable %s retry: %q", kind, message)
+				}
 				pasted, err := taskShellArgs(ctx, "hib() { printf '%s\\000' \"$@\"; }; "+strings.TrimSpace(hint))
 				if err != nil {
 					t.Fatal(err)

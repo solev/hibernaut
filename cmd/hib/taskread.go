@@ -173,7 +173,7 @@ func taskReadCall(ctx context.Context, a *app, opts taskCallOptions, print func(
 		}
 	}
 	if err != nil {
-		if a.json && (r.reply.Error != "" || len(opts.retry) > 0) {
+		if a.json && r.reply.Error != "" {
 			fmt.Fprintln(a.stderr, termsafe.String(err.Error()))
 			return 1
 		}
