@@ -176,22 +176,37 @@ func (f *taskFollow) call(ctx context.Context, a *app, cfg *config, path string,
 		}
 		result, err := a.taskCall(ctx, cfg, taskCallOptions{path: "task " + path,
 			args: args, timeout: shortTimeout})
+		if checkErr := result.reply.TaskReply.Check(); checkErr != nil {
+			return result, fmt.Errorf("unusable reply from hibd: %w", checkErr)
+		}
 		var transport transportFailure
-		if err == nil || !follow || !errors.As(err, &transport) || ctx.Err() != nil {
+		var remote *hibapi.RemoteError
+		retryable := errors.As(err, &transport) || errors.As(err, &remote) && result.reply.Code.Retryable()
+		if err == nil || !follow || !retryable || ctx.Err() != nil {
 			return result, err
 		}
 		if !f.reconnecting {
-			fmt.Fprintln(a.stderr, "hib: connection dropped; reconnecting from the last received reply")
+			fmt.Fprintln(a.stderr, "hib: host temporarily unavailable; reconnecting from the last received reply")
 			f.reconnecting = true
 		}
-		timer := time.NewTimer(backoff)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return result, ctx.Err()
-		case <-timer.C:
+		if err := a.waitTaskFollow(ctx, backoff); err != nil {
+			return result, err
 		}
 		backoff = min(2*backoff, 30*time.Second)
+	}
+}
+
+func (a *app) waitTaskFollow(ctx context.Context, d time.Duration) error {
+	if a.taskFollowSleep != nil {
+		return a.taskFollowSleep(ctx, d)
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
