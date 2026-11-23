@@ -159,8 +159,7 @@ const (
 	FreezeEmpty FreezeResult = "empty"
 )
 
-// ParseFreeze reads Freeze's answer and rejects malformed output. Only FreezeFrozen permits
-// Owner to record a frozen row. FreezeEmpty does not confirm a freeze.
+// ParseFreeze reads Freeze's answer and rejects malformed output.
 func ParseFreeze(out []byte) (FreezeResult, error) {
 	switch string(out) {
 	case "freeze=frozen\n":

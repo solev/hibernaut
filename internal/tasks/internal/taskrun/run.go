@@ -947,7 +947,7 @@ func (s *Supervisor) remove(ctx context.Context) error {
 					line, logLine = l.Success("recovered")
 				}
 				delete(s.removalFailures, t.ID)
-			} else if s.life.Err() == nil && s.cfg.Logf != nil {
+			} else if s.cfg.Logf != nil {
 				l := s.removalFailures[t.ID]
 				if l == nil {
 					l = &failurelog.Limiter{}
@@ -1046,7 +1046,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 			cancel(nil)
 			switch {
 			case err == nil:
-				if s.cfg.Logf != nil && s.life.Err() == nil {
+				if s.cfg.Logf != nil {
 					if line, log := failures.Success("the workflow ended"); log && s.life.Err() == nil {
 						s.cfg.Logf("task %s: %s", r.ID, line)
 					}
@@ -1055,7 +1055,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 			case nudged, errors.Is(err, taskstore.ErrStale):
 				continue
 			}
-			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) {
+			if s.cfg.Logf != nil && !errors.Is(err, engine.ErrNotRunning) {
 				if line, log := failures.Failure(s.cfg.Clock.Now(), err.Error()); log && s.life.Err() == nil {
 					s.cfg.Logf("task %s: %s", r.ID, line)
 				}
