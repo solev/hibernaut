@@ -11,6 +11,12 @@ type Queue struct {
 	ahead map[RunID]int
 }
 
+// CompareQueue orders runs by submission time, run number, then task ID.
+func CompareQueue(a, b Run) int {
+	return cmp.Or(a.Submitted.Compare(b.Submitted), cmp.Compare(a.ID.N, b.ID.N),
+		cmp.Compare(a.ID.Task, b.ID.Task))
+}
+
 func QueueOf(unfinished []Run, now time.Time) Queue {
 	var queued []Run
 	for _, r := range unfinished {
@@ -22,9 +28,7 @@ func QueueOf(unfinished []Run, now time.Time) Queue {
 		}
 		queued = append(queued, r)
 	}
-	slices.SortStableFunc(queued, func(a, b Run) int {
-		return cmp.Or(a.Submitted.Compare(b.Submitted), cmp.Compare(a.ID.N, b.ID.N))
-	})
+	slices.SortFunc(queued, CompareQueue)
 	q := Queue{ahead: make(map[RunID]int, len(queued))}
 	for i, r := range queued {
 		q.ahead[r.ID] = i

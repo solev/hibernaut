@@ -1,7 +1,6 @@
 package task
 
 import (
-	"cmp"
 	"fmt"
 	"slices"
 	"time"
@@ -87,9 +86,7 @@ func DecidePaused(r Run) PausedAction {
 // room and is called oldest first. Runs past their queue limit are left to StopFor.
 func Pick(runs []Run, now time.Time, fits func(Run) error) (RunID, bool) {
 	queued := slices.Clone(runs)
-	slices.SortStableFunc(queued, func(a, b Run) int {
-		return cmp.Or(a.Submitted.Compare(b.Submitted), cmp.Compare(a.ID.N, b.ID.N))
-	})
+	slices.SortFunc(queued, CompareQueue)
 	for _, r := range queued {
 		if !r.Queued() || r.Ended() || !now.Before(r.QueueLimit()) {
 			continue

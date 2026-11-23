@@ -424,10 +424,10 @@ re-enter from the log". The Supervisor restarts the function after a poll, or at
 nudge.
 
 - **The grant.** Admission order lives only in the log. The Supervisor's `Tick` asks `Pick` for
-  the oldest queued run that fits and appends that run's `MachineIntent`. `granted(runs)` is
-  true while some run's last checkpoint is a machine intent, so at most one grant is open at a
-  time, across restarts. A refused create records `MachineResult{Refused}` and the run is queued
-  again.
+  the oldest queued run that fits, ordered by submission time, run number, then task ID,
+  and appends that run's `MachineIntent`. `granted(runs)` is true while some run's last checkpoint
+  is a machine intent, so at most one grant is open across restarts. A refused create records
+  `MachineResult{Refused}` and the run is queued again.
 - **Two writers, one rule.** The executor and the grant both append to a run's log. `Append`
   takes `Seq` as a compare and swap. The loser gets `ErrStale`, rereads and re-enters. Nothing
   else happens.

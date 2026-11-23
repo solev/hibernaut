@@ -35,6 +35,8 @@ func Run(t *testing.T, open func(t *testing.T) taskstore.Store) {
 		{"Requests", requests},
 		{"FreezeRows", freezeRows},
 		{"Unfinished", unfinished},
+		{"TiedQueue", tiedQueue},
+		{"RequestsAfterEnd", requestsAfterEnd},
 		{"TasksAndRetire", tasksAndRetire},
 		{"FollowUpAfterRemove", followUpAfterRemove},
 		{"RetireLive", retireLive},

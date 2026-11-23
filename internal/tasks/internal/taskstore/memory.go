@@ -215,7 +215,12 @@ func (m *Memory) Tasks(ctx context.Context) ([]task.Task, error) {
 			out = append(out, m.view(t))
 		}
 	}
-	slices.SortFunc(out, func(a, b task.Task) int { return b.Created.Compare(a.Created) })
+	slices.SortFunc(out, func(a, b task.Task) int {
+		if n := b.Created.Compare(a.Created); n != 0 {
+			return n
+		}
+		return strings.Compare(string(a.ID), string(b.ID))
+	})
 	return out, nil
 }
 
@@ -270,7 +275,7 @@ func (m *Memory) unfinished() []task.Run {
 			out = append(out, r)
 		}
 	}
-	slices.SortFunc(out, func(a, b task.Run) int { return a.Submitted.Compare(b.Submitted) })
+	slices.SortFunc(out, task.CompareQueue)
 	return out
 }
 

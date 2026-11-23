@@ -164,7 +164,7 @@ func readUnfinished(ctx context.Context, tx *sql.Tx) ([]task.Run, error) {
 			out = append(out, live)
 		}
 	}
-	slices.SortFunc(out, func(a, b task.Run) int { return a.Submitted.Compare(b.Submitted) })
+	slices.SortFunc(out, task.CompareQueue)
 	return out, nil
 }
 

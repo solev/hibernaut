@@ -1,11 +1,40 @@
 package task
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestTiedQueueOrder(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	var ordered []Run
+	for i := range 30 {
+		ordered = append(ordered, Run{ID: RunID{Task: ID(fmt.Sprintf("t-aaaaaa%c%c", 'a'+i/26, 'a'+i%26)), N: 1},
+			Submitted: now})
+	}
+	for shift := range 30 {
+		runs := append(slices.Clone(ordered[shift:]), ordered[:shift]...)
+		slices.Reverse(runs)
+		q := QueueOf(runs, now)
+		for i, r := range ordered {
+			word := "runs"
+			if i == 1 {
+				word = "run"
+			}
+			if got := WaitReason(r, q, now); !strings.Contains(got, fmt.Sprintf("; %d %s ahead;", i, word)) {
+				t.Fatalf("shift %d, %s queue position = %q, want %d ahead", shift, r.ID.Task, got, i)
+			}
+			picked, ok := Pick(runs, now, func(Run) error { return nil })
+			if !ok || picked != r.ID {
+				t.Fatalf("shift %d, grant %d = %v, %v, want %v", shift, i, picked, ok, r.ID)
+			}
+			runs = slices.DeleteFunc(runs, func(candidate Run) bool { return candidate.ID == picked })
+		}
+	}
+}
 
 func TestWaitReason(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
