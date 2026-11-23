@@ -340,16 +340,16 @@ func ParsePublication(out []byte) (task.Publication, error) {
 	for line := range strings.Lines(string(out)) {
 		k, v, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
 		if !ok {
-			return task.Publication{}, fmt.Errorf("publish: bad line %q", line)
+			return task.Publication{}, fmt.Errorf("publish: bad line %q", line[:min(len(line), 200)])
 		}
 		if seen[k] {
-			return task.Publication{}, fmt.Errorf("publish: repeated key %q", k)
+			return task.Publication{}, fmt.Errorf("publish: repeated key %q", k[:min(len(k), 200)])
 		}
 		seen[k] = true
 		switch k {
 		case "changes", "pushed":
 			if v != "true" && v != "false" {
-				return task.Publication{}, fmt.Errorf("publish: bad %s boolean %q", k, v)
+				return task.Publication{}, fmt.Errorf("publish: bad %s boolean %q", k, v[:min(len(v), 200)])
 			}
 			if k == "changes" {
 				p.Changes = v == "true"
@@ -360,7 +360,7 @@ func ParsePublication(out []byte) (task.Publication, error) {
 			if v != "" && (len(v) != 40 || strings.ContainsFunc(v, func(c rune) bool {
 				return !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f')
 			})) {
-				return task.Publication{}, fmt.Errorf("publish: bad %s %q", k, v)
+				return task.Publication{}, fmt.Errorf("publish: bad %s %q", k, v[:min(len(v), 200)])
 			}
 			if k == "commit" {
 				p.Commit = v
@@ -373,7 +373,7 @@ func ParsePublication(out []byte) (task.Publication, error) {
 			}
 			p.Author = v
 		default:
-			return task.Publication{}, fmt.Errorf("publish: unknown key %q", k)
+			return task.Publication{}, fmt.Errorf("publish: unknown key %q", k[:min(len(k), 200)])
 		}
 	}
 	for _, k := range []string{"changes", "commit", "pushed", "author"} {
