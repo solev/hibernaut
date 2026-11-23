@@ -27,7 +27,8 @@ set -euo pipefail
 n=0
 if [[ -f %[1]q ]]; then n=$(cat %[1]q); fi
 n=$((n + 1))
-echo "$n" > %[1]q
+echo "$n" > %[1]q.tmp
+mv %[1]q.tmp %[1]q
 if [[ "$*" != "-w 5 -t nat -S" ]]; then echo "unexpected: $*" >&2; exit 2; fi
 if [[ "$n" == %[2]q ]]; then echo "xtables lock timed out" >&2; exit 4; fi
 if [[ -f %[3]q ]]; then cat <<'END'

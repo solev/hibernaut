@@ -205,11 +205,11 @@ func TestSaveAndForkWithLinksOffArePlainRoundTrips(t *testing.T) {
 // A pause or rm of a machine holds its fence while it waits for hibd.lock, which a save or a
 // fork of the machine holds while it waits for the fence. The save gives up first.
 func TestSaveAndForkGiveUpOnAFenceHeldTooLong(t *testing.T) {
-	wait := snapshotFenceWait
-	snapshotFenceWait = 50 * time.Millisecond
-	t.Cleanup(func() { snapshotFenceWait = wait })
 	for _, op := range []string{"fork", "image save"} {
 		t.Run(op, func(t *testing.T) {
+			wait := snapshotFenceWait
+			snapshotFenceWait = 50 * time.Millisecond
+			t.Cleanup(func() { snapshotFenceWait = wait })
 			f := &fakeLinks{}
 			a, e, out, id := snapshotApp(t, f, true)
 			store := links.NewStore(a.Getenv("HIBD_STATE_DIR"))
@@ -219,7 +219,7 @@ func TestSaveAndForkGiveUpOnAFenceHeldTooLong(t *testing.T) {
 				t.Fatal(err)
 			}
 			code, r := runJSONReply(t, a, out, snapshotArgs(op)...)
-			want := fmt.Sprintf("left web as it was: raising its link fence and closing its links took longer than 50ms. A pause or rm of web may be waiting for this %s: try the %s again once that is done", op, op)
+			want := "left web as it was: link fencing took longer than 50ms. A pause or rm may be waiting. Retry once it finishes"
 			if code != 1 || r.Error != want {
 				t.Fatalf("%s = %d, %q, want %q", op, code, r.Error, want)
 			}
@@ -228,6 +228,7 @@ func TestSaveAndForkGiveUpOnAFenceHeldTooLong(t *testing.T) {
 			}
 			leftAlone(t, e, id)
 			release()
+			snapshotFenceWait = wait
 			if code, r := runJSONReply(t, a, out, snapshotArgs(op)...); code != 0 {
 				t.Fatalf("%s once the fence is down = %d, %s", op, code, r.Error)
 			}
@@ -240,4 +241,35 @@ func TestSaveAndForkGiveUpOnAFenceHeldTooLong(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDuplicateRemovalFenceTimeoutMessage(t *testing.T) {
+	wait := snapshotFenceWait
+	snapshotFenceWait = 50 * time.Millisecond
+	t.Cleanup(func() { snapshotFenceWait = wait })
+	f := &fakeLinks{}
+	a, e, _, id := snapshotApp(t, f, true)
+	cfg, err := loadConfig(a.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := links.NewStore(cfg.stateDir)
+	a.linkParts.store = store
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	release, err := store.Fence(ctx, id, "pause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ran := false
+	err = a.snapshotFence(cfg)(ctx, id, "web", "rm duplicate", func(context.Context) error {
+		ran = true
+		return nil
+	})
+	want := "left web as it was: link fencing took longer than 50ms. A pause or rm may be waiting. Retry once it finishes"
+	if err == nil || err.Error() != want || ran {
+		t.Fatalf("duplicate removal = %v, ran %v; want %q without removal", err, ran, want)
+	}
+	leftAlone(t, e, id)
 }

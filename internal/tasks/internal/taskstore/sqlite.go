@@ -179,6 +179,9 @@ func Open(ctx context.Context, dir statefile.Dir) (*SQLite, error) {
 			return nil, err
 		}
 	}
+	if err := sweepInputs(dir, root, owner); err != nil {
+		fmt.Fprintf(os.Stderr, "hibd: staged input cleanup: %q\n", err.Error())
+	}
 	path, err := filepath.Abs(filepath.Join(dir.Path, DB))
 	if err != nil {
 		return nil, err
@@ -320,6 +323,11 @@ func (s *SQLite) Submit(ctx context.Context, sub task.Submission, inputs io.Read
 		return task.Receipt{}, err
 	}
 	defer root.Close()
+	guard, err := holdStagingInputs(s.dir)
+	if err != nil {
+		return task.Receipt{}, err
+	}
+	defer guard.Close()
 	staged, err := stageInputs(s.dir, root, owner, &sub.Spec, inputs)
 	if err != nil {
 		return task.Receipt{}, err

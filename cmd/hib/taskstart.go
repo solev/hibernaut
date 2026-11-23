@@ -29,8 +29,8 @@ type taskStartOptions struct {
 func taskStartCommand() *command {
 	return &command{
 		args: "[-- CMD ARG...]", takesCommand: true,
-		opts: "[--prompt TEXT | --prompt-file F] [--file PATH] [--image IMAGE] [--size SIZE] " +
-			"[--timeout DURATION] [--recipe NAME] [--request-id ID]",
+		opts: "[--prompt TEXT | --prompt-file F] [--file PATH] [--image IMAGE] [--size SIZE]\n" +
+			"                     [--timeout DURATION] [--recipe NAME] [--request-id ID]",
 		about: "Starts CMD in its own machine and saves the task before answering. The host supervises it\n" +
 			"after this laptop disconnects. Use -- CMD, --recipe NAME, or the default recipe.\n" +
 			"--prompt and --prompt-file are alternatives. --file may repeat. Inputs total at most\n" +

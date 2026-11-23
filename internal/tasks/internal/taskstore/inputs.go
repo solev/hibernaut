@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"syscall"
 
 	"github.com/solev/hibernaut/internal/statefile"
 	"github.com/solev/hibernaut/internal/task"
@@ -16,6 +17,65 @@ import (
 type stagedInput struct {
 	name string
 	hash task.Hash
+}
+
+const stagingLock = "tasks-staging.lock"
+
+func holdStagingInputs(d statefile.Dir) (*os.File, error) {
+	lock, err := d.OpenLock(stagingLock)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_SH); err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return lock, nil
+}
+
+func sweepInputs(d statefile.Dir, root *os.Root, owner statefile.Owner) error {
+	unlock, ok, err := d.TryLock(stagingLock, "staged input cleanup")
+	if err != nil || !ok {
+		return err
+	}
+	defer unlock()
+	dir, err := root.OpenFile(Files+"/staging", os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	removed := false
+	for _, entry := range entries {
+		name := Files + "/staging/" + entry.Name()
+		fi, err := root.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !fi.Mode().IsRegular() || !ok || int(st.Uid) != owner.UID {
+			continue
+		}
+		if err := root.Remove(name); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		} else {
+			removed = true
+		}
+	}
+	if removed {
+		errs = append(errs, syncDirectory(root, Files+"/staging"))
+	}
+	return errors.Join(errs...)
 }
 
 type inputBudget int64

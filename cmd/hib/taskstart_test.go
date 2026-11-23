@@ -602,3 +602,29 @@ func TestTaskStartSizeChangeDuringRead(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskStartHelpAndUsageFit100Columns(t *testing.T) {
+	h := newHost(t)
+	c, hib := homeless(t, h)
+	for _, args := range [][]string{{"help", "task", "start"}, {"task", "start", "--unknown"}} {
+		wantExit := 0
+		if args[0] == "task" {
+			wantExit = 2
+		}
+		if code := hib(args...); code != wantExit {
+			t.Fatalf("hib %v = exit %d; want %d", args, code, wantExit)
+		}
+		text := c.out.String() + c.errOut.String()
+		if !strings.Contains(text, "usage: hib task start") {
+			t.Fatalf("hib %v lacks usage: %q", args, text)
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if len(line) > 100 {
+				t.Errorf("hib %v has a %d-column line: %s", args, len(line), line)
+			}
+		}
+	}
+	if calls := h.takeCalls(); len(calls) != 0 {
+		t.Fatalf("help or usage contacted host: %q", calls)
+	}
+}
