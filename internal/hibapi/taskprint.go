@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/termsafe"
 )
@@ -60,7 +62,7 @@ func printTaskReason(out *strings.Builder, reason string) {
 			i += 3
 		}
 		word = taskReasonWord(word)
-		if line != "" && utf8.RuneCountInString(line)+1+utf8.RuneCountInString(word) > 78 {
+		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(word) > 78 {
 			fmt.Fprintln(out, "  "+line)
 			line = ""
 		}
@@ -75,7 +77,7 @@ func printTaskReason(out *strings.Builder, reason string) {
 }
 
 func taskReasonWord(word string) string {
-	if utf8.RuneCountInString(word) <= 78 {
+	if lipgloss.Width(word) <= 78 {
 		return word
 	}
 	end, columns := 0, 0
@@ -91,10 +93,11 @@ func taskReasonWord(word string) string {
 				size = min(10, len(word)-end)
 			}
 		}
-		if columns+utf8.RuneCountInString(word[end:end+size]) > 75 {
+		width := lipgloss.Width(word[end : end+size])
+		if columns+width > 75 {
 			break
 		}
-		columns += utf8.RuneCountInString(word[end : end+size])
+		columns += width
 		end += size
 	}
 	return word[:end] + "..."

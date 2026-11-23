@@ -140,6 +140,18 @@ func TestPrintTaskListCutsBetweenEscapes(t *testing.T) {
 	}
 }
 
+func TestPrintTaskListWideReason(t *testing.T) {
+	record := Task{ID: "t-aaaaaaaa", Runs: []TaskRun{{N: 1, Phase: task.PhaseStopping,
+		Detail: strings.Repeat("界", 40)}}}
+	var out bytes.Buffer
+	if err := PrintTaskList(&out, []Task{record}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\n  "+strings.Repeat("界", 37)+"...\n") {
+		t.Fatalf("reason exceeds 80 terminal columns with wide characters: %q", &out)
+	}
+}
+
 func TestPrintTaskEscapesFields(t *testing.T) {
 	unsafe := "guest\x1b]0;title\x07\n\t\r\u202e\xff"
 	for _, tc := range []struct {
