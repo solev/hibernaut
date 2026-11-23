@@ -536,7 +536,9 @@ through a field.
 **Freeze before pause.** `Owner.Pause` reads the label. For a task machine it takes
 `task-machine-TASK.lock` and reads the machine again, since another process may have paused it
 meanwhile. If it is still running, it tries to start the slice, then tries the freeze even if
-the start fails. The freeze writes 1 to `cgroup.freeze` and waits for `frozen 1` in `cgroup.events`.
+the start fails. The runner resolves the slice with
+`systemctl show hib-task.slice -p ControlGroup --value`. An empty lookup answers `freeze=empty`.
+Otherwise the freeze writes 1 to `cgroup.freeze` and waits for `frozen 1` in `cgroup.events`.
 Only that confirmation records frozen, with no detail. One `taskguest.ExecTimeout` bounds the
 start and freeze. A failed or empty freeze still pauses and records unfrozen, so the run is held
 until rescue or rm. A start error joins the freeze's detail only when the row is unfrozen.
@@ -681,8 +683,13 @@ under `/var/lib/hib-task/RUN`.
   `Dropped` can understate when the machine is not running, a size could not be read, or the guest
   reports a false size.
   All collect reads share `CollectLimit`, 60 s, from the later of its intent and daemon start.
-  Downtime is not a guest read. Guest read errors become `Unread`, not workflow retries.
+  Downtime is not a guest read. `ErrConnectionLost` in a look or log copy retries after a poll
+  inside that same budget. `ErrNotRunning` and other guest read errors become `Unread`,
+  not workflow retries. Host log failures remain workflow errors.
   An unproven stop reads nothing from the guest.
+  Each run-phase log copy also gets at most `CollectLimit`, shortened to the remaining deadline.
+  A cut retains its partial bytes and yields normally. A stage exit waits until its reported
+  tail is copied or capped, so a cut cannot make an incomplete host copy final.
 - **Lost replies.** Launch is idempotent by unit name and by a start marker made with `mkdir`.
   A second start exits 75 without acting. The executor launches only when a look says
   `NotStarted`, ignores `ErrConnectionLost` and judges the launch by the next look, never the
@@ -694,7 +701,14 @@ under `/var/lib/hib-task/RUN`.
   unit or didn't, and the look tells which. A systemd exit result of `timeout` reads `timed_out`
   unless an earlier recorded stop supplies the outcome.
   Stop attempts share `StopLimit`, 60 s, from the later of the stop intent and daemon start.
-  Downtime is not a guest call. Expiry sends one final KILL bounded by 10 s.
+  The first attempt's `StopGrace`, 15 s, uses that same clock, so a slow restart still sends TERM.
+  A frozen or rescued stage instead gets KILL. Downtime is not a guest call.
+  When the task loop sees the quiescing marker, it cancels and joins its Daemon before releasing
+  ownership. It starts no work while the marker exists. Once the marker is gone, a fresh Daemon
+  restarts the grace, stop budget, and collect budget. A host shutdown cancels workflows like
+  any hibd restart. Quiesce itself creates the marker with links off, but an orchestrator
+  restart with links off does not. That case has no marker to suspend task execution.
+  Expiry sends one final KILL bounded by 10 s.
   A failed proof escalates TERM to KILL on the next attempt. At expiry, `unproven` warns
   that the stage may still run when the machine wakes. Keep still pauses it, even if freeze fails.
   A paused stop waiting for room or rescue has the same limit, without KILL or an automatic wake.

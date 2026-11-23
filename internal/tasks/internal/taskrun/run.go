@@ -353,7 +353,19 @@ func (x *executor) lookAndCopy(ctx context.Context, s task.Stage) (task.ExitReco
 			return task.ExitRecord{}, false, err
 		}
 	}
-	if err := x.copyLog(ctx, s, seen.LogSize); err != nil {
+	budget := task.CollectLimit
+	if deadline, ok := x.r.Deadline(); ok {
+		budget = min(budget, max(deadline.Sub(x.now()), 0))
+	}
+	reads, cancel := context.WithTimeout(ctx, budget)
+	err = x.copyLog(reads, s, seen.LogSize)
+	cut := errors.Is(reads.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancel()
+	if err != nil {
+		var guest *guestReplyError
+		if cut && errors.As(err, &guest) && errors.Is(err, context.DeadlineExceeded) {
+			return task.ExitRecord{}, false, nil
+		}
 		return task.ExitRecord{}, false, err
 	}
 	switch seen.Verdict() {
@@ -407,8 +419,7 @@ func (x *executor) stop(ctx context.Context) error {
 	if _, ok := x.r.Stop(); !ok || x.done(task.StepStop) {
 		return nil
 	}
-	intent, _ := x.last(task.StepStop)
-	force := x.now().Sub(intent.At) >= task.StopGrace
+	force := task.StopGraceRemaining(x.r, x.cfg.StartedAt, x.now()) == 0
 	for {
 		if err := x.refresh(ctx); err != nil {
 			return err
@@ -534,20 +545,27 @@ func (x *executor) collect(ctx context.Context) error {
 		case task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) == 0 || reads.Err() != nil:
 			unread = "collect budget exhausted; tail not read"
 		default:
-			seen, err := x.look(reads, s)
-			if err != nil {
-				unread = err.Error()
-			} else {
-				size = seen.LogSize
-				if !exited {
-					if err := x.copyLog(reads, s, size); err != nil {
+			for {
+				seen, err := x.look(reads, s)
+				if err == nil {
+					size = seen.LogSize
+					if !exited {
+						err = x.copyLog(reads, s, size)
 						var guest *guestReplyError
-						if !errors.As(err, &guest) {
+						if err != nil && !errors.As(err, &guest) {
 							return err
 						}
-						unread = err.Error()
 					}
 				}
+				if errors.Is(err, engine.ErrConnectionLost) {
+					if err = x.cfg.Clock.Sleep(reads, x.poll()); err == nil {
+						continue
+					}
+				}
+				if err != nil {
+					unread = err.Error()
+				}
+				break
 			}
 		}
 		if unread != "" && !exited {
@@ -929,7 +947,7 @@ func (s *Supervisor) remove(ctx context.Context) error {
 					line, logLine = l.Success("recovered")
 				}
 				delete(s.removalFailures, t.ID)
-			} else if s.life.Err() == nil && s.cfg.Logf != nil {
+			} else if s.cfg.Logf != nil {
 				l := s.removalFailures[t.ID]
 				if l == nil {
 					l = &failurelog.Limiter{}
@@ -1028,7 +1046,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 			cancel(nil)
 			switch {
 			case err == nil:
-				if s.cfg.Logf != nil && s.life.Err() == nil {
+				if s.cfg.Logf != nil {
 					if line, log := failures.Success("the workflow ended"); log && s.life.Err() == nil {
 						s.cfg.Logf("task %s: %s", r.ID, line)
 					}
@@ -1037,7 +1055,7 @@ func (s *Supervisor) start(r task.Run) *handle {
 			case nudged, errors.Is(err, taskstore.ErrStale):
 				continue
 			}
-			if s.cfg.Logf != nil && s.life.Err() == nil && !errors.Is(err, engine.ErrNotRunning) {
+			if s.cfg.Logf != nil && !errors.Is(err, engine.ErrNotRunning) {
 				if line, log := failures.Failure(s.cfg.Clock.Now(), err.Error()); log && s.life.Err() == nil {
 					s.cfg.Logf("task %s: %s", r.ID, line)
 				}

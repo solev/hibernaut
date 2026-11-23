@@ -167,7 +167,7 @@ func (o *Owner) freeze(ctx context.Context, tid task.ID, id string) {
 		case answer == taskguest.FreezeEmpty:
 			f.Detail = "freeze held nothing: hib-task.slice has no cgroup"
 		default:
-			f.Frozen = answer == taskguest.FreezeFrozen
+			f.Frozen = true
 		}
 	}
 	if startErr != nil && !f.Frozen {
