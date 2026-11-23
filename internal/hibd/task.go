@@ -523,4 +523,6 @@ func (t taskMachines) Remove(ctx context.Context, r task.Run) error {
 	return nil
 }
 
+func (t taskMachines) Prepare(context.Context, task.Run) error { return nil }
+
 var _ tasks.Machines = taskMachines{}

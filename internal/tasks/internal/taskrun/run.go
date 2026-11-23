@@ -72,6 +72,9 @@ type Machines interface {
 	Find(ctx context.Context, r task.Run) (m engine.Machine, found bool, err error)
 	Create(ctx context.Context, r task.Run, timeout time.Duration) (engine.Machine, error)
 	Resume(ctx context.Context, r task.Run, sandbox string, timeout time.Duration) (engine.Machine, error)
+	// Prepare writes r's machine setup before Upload on every run. It may run again after an
+	// error or restart and must not pass through Tasks.Check, which refuses live runs.
+	Prepare(ctx context.Context, r task.Run) error
 	Pause(ctx context.Context, r task.Run) error
 	Remove(ctx context.Context, r task.Run) error
 }
@@ -240,6 +243,9 @@ func (x *executor) upload(ctx context.Context) error {
 		if err := x.append(ctx, &task.UploadIntent{}); err != nil {
 			return err
 		}
+	}
+	if err := x.cfg.Machines.Prepare(ctx, x.r); err != nil {
+		return err
 	}
 	id := x.r.MachineID()
 	files := taskguest.Uploads(x.r, x.cfg.Store.Blob)

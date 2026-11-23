@@ -245,6 +245,8 @@ func (m *machines) Pause(ctx context.Context, r task.Run) error {
 	return m.h.owner.Pause(ctx, em.ID)
 }
 
+func (m *machines) Prepare(context.Context, task.Run) error { return nil }
+
 func (m *machines) Remove(ctx context.Context, r task.Run) error {
 	em, found, err := m.Find(ctx, r)
 	if err != nil || !found {
