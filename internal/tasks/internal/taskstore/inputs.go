@@ -33,7 +33,7 @@ func holdStagingInputs(d statefile.Dir) (*os.File, error) {
 	return lock, nil
 }
 
-func sweepInputs(d statefile.Dir, root *os.Root, owner statefile.Owner) error {
+func sweepInputs(d statefile.Dir, root *os.Root, _ statefile.Owner) error {
 	unlock, ok, err := d.TryLock(stagingLock, "staged input cleanup")
 	if err != nil || !ok {
 		return err
@@ -60,8 +60,7 @@ func sweepInputs(d statefile.Dir, root *os.Root, owner statefile.Owner) error {
 			errs = append(errs, err)
 			continue
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !fi.Mode().IsRegular() || !ok || int(st.Uid) != owner.UID {
+		if !fi.Mode().IsRegular() {
 			continue
 		}
 		if err := root.Remove(name); err != nil {

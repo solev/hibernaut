@@ -44,14 +44,17 @@ type Locks interface {
 func LockName(id task.ID) string { return "task-machine-" + string(id) + ".lock" }
 
 var (
-	// ErrRefused wraps every op Check and the wake guard refuse. The message names the op and
-	// the task, and the error it wraps says why and what to run.
+	// ErrRefused wraps every op Check and the wake guard refuse. Its message names the op,
+	// task and cause, with rescue and rm commands for a held machine.
 	ErrRefused = errors.New("refused")
 	// ErrStopping refuses a thaw of a run that must stop: the daemon kills the stage instead.
 	ErrStopping = errors.New("the run is stopping")
 )
 
 func refused(op task.Op, tid task.ID, err error) error {
+	if errors.Is(err, task.ErrHeld) {
+		err = fmt.Errorf("%w: hib task rescue %s or hib task rm %s", err, tid, tid)
+	}
 	return fmt.Errorf("%w to %s task machine %s: %w", ErrRefused, op, tid, err)
 }
 

@@ -158,11 +158,15 @@ func (a *app) taskCall(ctx context.Context, cfg *config, opts taskCallOptions) (
 		args = append(args, "-request-id", result.requestID)
 	}
 	args = append(args, "-json")
+	var runs requestRuns
+	ssh := a.ssh
+	a.ssh = runs.observe(ssh)
+	defer func() { a.ssh = ssh }()
 	resent := false
 	var resend func() bool
 	if strings.HasPrefix(opts.path, "task ") {
 		resend = func() bool {
-			if resent {
+			if resent || !runs.mayHaveRun {
 				return false
 			}
 			resent = true
@@ -184,7 +188,7 @@ func (a *app) taskCall(ctx context.Context, cfg *config, opts taskCallOptions) (
 				continue
 			}
 		}
-		if err != nil && result.requestID != "" && !reply.Code.RefusedBeforeSave() {
+		if err != nil && runs.mayHaveRun && result.requestID != "" && !reply.Code.RefusedBeforeSave() {
 			id := "'" + strings.ReplaceAll(result.requestID, "'", "'\\''") + "'"
 			if len(opts.retry) == 0 {
 				err = fmt.Errorf("%w\nThe request may have been recorded. Look it up with hib task show --request %s", err, id)

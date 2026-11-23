@@ -146,9 +146,22 @@ func recipeCall(ctx context.Context, a *app, leaf string, args []string, recipe 
 	}
 	var raw bytes.Buffer
 	opts.raw = &raw
+	var runs requestRuns
+	ssh := a.ssh
+	a.ssh = runs.observe(ssh)
+	defer func() { a.ssh = ssh }()
 	r, err := a.remoteSudo(ctx, cfg, shortTimeout, opts,
 		append(append([]string{"recipe", leaf}, args...), "-json")...)
-	if a.json && (err == nil || r.Error != "") {
+	uncertain := err != nil && runs.mayHaveRun && (r.Error == "" || r.Code == "") &&
+		(leaf == "put" || leaf == "rm" || leaf == "default" && len(args) == 1)
+	if uncertain {
+		check := "hib recipe default"
+		if leaf != "default" {
+			check = "hib recipe show " + args[0]
+		}
+		err = fmt.Errorf("%w\nThe recipe change may have landed. Check it with %s", err, check)
+	}
+	if a.json && (err == nil || r.Error != "" && !uncertain) {
 		if _, writeErr := a.stdout.Write(raw.Bytes()); writeErr != nil {
 			return a.fail(writeErr)
 		}
@@ -157,13 +170,6 @@ func recipeCall(ctx context.Context, a *app, leaf string, args []string, recipe 
 		}
 	}
 	if err != nil {
-		if r.Error == "" && (leaf == "put" || leaf == "rm" || leaf == "default" && len(args) == 1) {
-			check := "hib recipe default"
-			if leaf != "default" {
-				check = "hib recipe show " + args[0]
-			}
-			err = fmt.Errorf("%w\nThe recipe change may have landed. Check it with %s", err, check)
-		}
 		return a.fail(err)
 	}
 	if a.json {
