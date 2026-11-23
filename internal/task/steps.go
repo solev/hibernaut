@@ -369,7 +369,9 @@ func (s *StopIntent) Error() string {
 type StopResult struct {
 	// How says how the stage ended: "term" or "kill" when the stop ended it, "vanished" when its
 	// unit was gone without an exit record, "not-started" when no stage was live, "gone" with
-	// the machine and "removed-paused" when an rm removes it paused.
+	// the machine, "removed-paused" when an rm removes it paused, or "unproven" when the
+	// proof budget expired since the later of the intent and this daemon's start.
+	// An unproven stage may still run when the machine wakes.
 	How string
 }
 
@@ -378,10 +380,13 @@ type CollectIntent struct{}
 
 // CollectResult closes StepCollect.
 type CollectResult struct {
-	// LogBytes is how much of the run's output the host kept, and Dropped how much past
-	// MaxLogBytes it didn't.
+	// LogBytes counts kept output. Dropped counts reported guest bytes not kept, including
+	// unread bytes below MaxLogBytes. It can understate when a guest size is unknown or false.
 	LogBytes int64 `json:",omitempty"`
 	Dropped  int64 `json:",omitempty"`
+	// Unread names tails of launched stages without a StageExit and publication the host could
+	// not read. Their size may be unknown, and output written after collection is not counted.
+	Unread []string `json:",omitempty"`
 	// Publication is what finish published, if it ran.
 	Publication *Publication `json:",omitempty"`
 }
