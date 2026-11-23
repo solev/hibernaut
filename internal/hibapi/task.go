@@ -30,9 +30,9 @@ const (
 	CodeRunLive ErrorCode = "RUN_LIVE"
 	// CodeNotLive means the task has no live run to cancel or rescue.
 	CodeNotLive ErrorCode = "NOT_LIVE"
-	// CodeBadRequest means the request didn't parse. Never retry.
+	// CodeBadRequest means invalid input or a conflicting follow-up spec. Never retry.
 	CodeBadRequest ErrorCode = "BAD_REQUEST"
-	// CodeBusy means tasks.db stayed locked past its busy timeout. Retry with the same ID.
+	// CodeBusy means a database or recipe lock stayed busy. Retry with the same ID.
 	CodeBusy ErrorCode = "BUSY"
 	// CodeInterrupted means a held task read was interrupted. Retry the read.
 	CodeInterrupted ErrorCode = "INTERRUPTED"
@@ -48,7 +48,7 @@ func (c ErrorCode) Retryable() bool {
 func (c ErrorCode) RefusedBeforeSave() bool {
 	switch c {
 	case CodeBadRequest:
-		// The handler validates the input before calling Submit or Request.
+		// The handler or store refuses invalid input before saving it.
 		return true
 	case CodeConflict:
 		// Submit and Request compare the ID's saved request before inserting another.
@@ -158,14 +158,25 @@ type TaskRun struct {
 	// Step is the step of the run's last checkpoint, for show.
 	Step task.Step `json:"step,omitempty"`
 	// Held says why a paused run waits for rescue or rm.
-	Held        string            `json:"held,omitempty"`
-	Detail      string            `json:"detail,omitempty"`
-	Command     []string          `json:"command"`
-	Recipe      string            `json:"recipe,omitempty"`
-	Submitted   time.Time         `json:"submitted"`
-	Deadline    *time.Time        `json:"deadline,omitempty"`
-	Publication *task.Publication `json:"publication,omitempty"`
-	Unread      []string          `json:"unread,omitempty"`
+	Held        string           `json:"held,omitempty"`
+	Detail      string           `json:"detail,omitempty"`
+	Command     []string         `json:"command"`
+	Recipe      string           `json:"recipe,omitempty"`
+	Submitted   time.Time        `json:"submitted"`
+	Deadline    *time.Time       `json:"deadline,omitempty"`
+	Publish     task.Publish     `json:"publish"`
+	Publication *TaskPublication `json:"publication,omitempty"`
+	Unread      []string         `json:"unread,omitempty"`
+}
+
+// TaskPublication is the wire form of one run's publication.
+type TaskPublication struct {
+	Changes bool   `json:"changes"`
+	Commit  string `json:"commit,omitempty"`
+	Pushed  bool   `json:"pushed"`
+	Branch  string `json:"branch,omitempty"`
+	PR      string `json:"pr,omitempty"`
+	Author  string `json:"author,omitempty"`
 }
 
 // TaskLog is a range of a run's setup, command and finish logs in task.Stages order.
@@ -252,7 +263,14 @@ func RunOf(r task.Run, daemon task.Instance) TaskRun {
 	st := r.Status(daemon)
 	out := TaskRun{N: r.ID.N, Phase: st.Phase, Outcome: st.Outcome, Stage: st.Stage,
 		Held: st.Held, Detail: st.Detail, Command: r.Spec.Command, Submitted: r.Submitted,
-		Publication: r.Publication(), Recipe: r.Spec.Recipe}
+		Publish: r.Spec.Publish, Recipe: r.Spec.Recipe}
+	if p := r.Publication(); p != nil {
+		out.Publication = &TaskPublication{Changes: p.Changes, Commit: p.Commit,
+			Pushed: p.Pushed, PR: p.PR, Author: p.Author}
+		if p.Pushed {
+			out.Publication.Branch = r.ID.Task.Branch()
+		}
+	}
 	if c, ok := r.Last(); ok {
 		out.Step = c.Step()
 	}
@@ -281,6 +299,8 @@ func (r TaskRun) Check() error {
 		return fmt.Errorf("unknown stage %q", r.Stage)
 	case r.Step != "" && !r.Step.Valid():
 		return fmt.Errorf("unknown step %q", r.Step)
+	case r.Publish != "" && r.Publish != task.PublishNone && r.Publish != task.PublishDraftPR:
+		return fmt.Errorf("unknown publish mode %q", r.Publish)
 	}
 	return nil
 }
