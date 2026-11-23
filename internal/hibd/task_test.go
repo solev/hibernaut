@@ -79,6 +79,14 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 			if code != 1 || err == nil || r.Code != hibapi.CodeBadRequest {
 				t.Errorf("hibd %v = exit %d, code %s, %v; want BAD_REQUEST", args, code, r.Code, err)
 			}
+		case "recipe ls", "recipe default":
+			if code != 0 || err != nil {
+				t.Errorf("hibd %v = exit %d, %+v, %v; want empty recipes", args, code, r, err)
+			}
+		case "recipe put", "recipe show", "recipe rm":
+			if code != 1 || err == nil || r.Code != hibapi.CodeBadRequest {
+				t.Errorf("hibd %v = exit %d, %+v, %v; want BAD_REQUEST", args, code, r, err)
+			}
 		default:
 			if code != 1 || err == nil || r.Error != "tasks are not implemented yet" {
 				t.Errorf("hibd %v = exit %d, %+v, %v; want the not-yet reply", args, code, r, err)
@@ -123,7 +131,7 @@ func TestSubmissionOf(t *testing.T) {
 		"repo":             func(r *hibapi.TaskStart) { r.Repo = "solev/hibernaut" },
 		"branch":           func(r *hibapi.TaskStart) { r.Branch = "main" },
 		"draft PR":         func(r *hibapi.TaskStart) { r.Repo, r.Publish = "solev/hibernaut", task.PublishDraftPR },
-		"recipe":           func(r *hibapi.TaskStart) { r.Recipe = "review" },
+		"recipe":           func(r *hibapi.TaskStart) { r.Recipe = "../review" },
 		"bad size":         func(r *hibapi.TaskStart) { r.Size = "huge" },
 		"bad image":        func(r *hibapi.TaskStart) { r.Image = "../dev" },
 		"empty command":    func(r *hibapi.TaskStart) { r.Command = []string{""} },
