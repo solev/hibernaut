@@ -127,59 +127,74 @@ func TestRecipeStartWireAndCalls(t *testing.T) {
 }
 
 func TestRecipeStartLostReplyAfterEdit(t *testing.T) {
-	for _, asJSON := range []bool{false, true} {
-		t.Run(map[bool]string{false: "text", true: "json"}[asJSON], func(t *testing.T) {
-			h := newHost(t)
-			c := initClient(t, h, true)
-			ctx := taskCallContext(t)
-			if code := c.hibContext(ctx, "recipe", "put", "check", "--", "echo", "original"); code != 0 {
-				t.Fatalf("seed recipe = %d, %s", code, c.errOut)
-			}
-			ssh, sends, requestID := c.ssh, 0, ""
-			c.ssh = func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) (int, error) {
-				if in == nil {
-					return ssh(ctx, args, in, out, stderr)
-				}
-				input, err := io.ReadAll(in)
-				if err != nil {
-					return -1, err
-				}
-				req, _ := startWire(t, input)
-				requestID = req.RequestID
-				sends++
-				if sends != 1 {
-					return ssh(ctx, args, bytes.NewReader(input), out, stderr)
-				}
-				var saved bytes.Buffer
-				if code, err := ssh(ctx, args, bytes.NewReader(input), &saved, stderr); code != 0 || err != nil {
-					t.Fatalf("first save = %d, %v, %s", code, err, &saved)
-				}
-				edit, err := (&config{Host: testHost}).sudoHibdArgs("recipe", "put", "check", "-json")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if code, err := ssh(ctx, edit, strings.NewReader(`{"command":["false"]}`), io.Discard, stderr); code != 0 || err != nil {
-					t.Fatalf("recipe edit = %d, %v", code, err)
-				}
-				return -1, errors.New("saved but reply lost")
-			}
-			args := []string{"task", "start", "--recipe", "check"}
-			if asJSON {
-				args = append(args, "--json")
-			}
-			code := c.hibContext(ctx, args...)
-			if code != 1 || sends != 2 || requestID == "" ||
-				!strings.Contains(c.errOut.String(), "hib task show --request '"+requestID+"'") {
-				t.Fatalf("recipe resend = %d, stdout %q, stderr %q, sends %d, ID %q; want saved-task lookup",
-					code, c.out, c.errOut, sends, requestID)
-			}
-			if asJSON && !strings.Contains(c.out.String(), `"errorCode":"CONFLICT"`) {
-				t.Fatalf("JSON conflict = %s; want host's coded reply", c.out)
-			}
-			c.ssh = ssh
-			if code := c.hibContext(ctx, "task", "show", "--request", requestID); code != 0 ||
-				!strings.Contains(c.out.String(), "original") || !strings.Contains(c.out.String(), "recipe check") {
-				t.Fatalf("lookup = %d, %s, %s; want original task", code, c.out, c.errOut)
+	for _, change := range []string{"edit", "rm"} {
+		t.Run(change, func(t *testing.T) {
+			for _, asJSON := range []bool{false, true} {
+				t.Run(map[bool]string{false: "text", true: "json"}[asJSON], func(t *testing.T) {
+					h := newHost(t)
+					c := initClient(t, h, true)
+					ctx := taskCallContext(t)
+					if code := c.hibContext(ctx, "recipe", "put", "check", "--", "echo", "original"); code != 0 {
+						t.Fatalf("seed recipe = %d, %s", code, c.errOut)
+					}
+					ssh, sends, requestID := c.ssh, 0, ""
+					c.ssh = func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) (int, error) {
+						if in == nil {
+							return ssh(ctx, args, in, out, stderr)
+						}
+						input, err := io.ReadAll(in)
+						if err != nil {
+							return -1, err
+						}
+						req, _ := startWire(t, input)
+						requestID = req.RequestID
+						sends++
+						if sends != 1 {
+							return ssh(ctx, args, bytes.NewReader(input), out, stderr)
+						}
+						var saved bytes.Buffer
+						if code, err := ssh(ctx, args, bytes.NewReader(input), &saved, stderr); code != 0 || err != nil {
+							t.Fatalf("first save = %d, %v, %s", code, err, &saved)
+						}
+						leaf := "put"
+						if change == "rm" {
+							leaf = "rm"
+						}
+						edit, err := (&config{Host: testHost}).sudoHibdArgs("recipe", leaf, "check", "-json")
+						if err != nil {
+							t.Fatal(err)
+						}
+						if code, err := ssh(ctx, edit, strings.NewReader(`{"command":["false"]}`), io.Discard, stderr); code != 0 || err != nil {
+							t.Fatalf("recipe edit = %d, %v", code, err)
+						}
+						return -1, errors.New("saved but reply lost")
+					}
+					args := []string{"task", "start", "--recipe", "check"}
+					if asJSON {
+						args = append(args, "--json")
+					}
+					code := c.hibContext(ctx, args...)
+					if code != 1 || sends != 2 || requestID == "" ||
+						!strings.Contains(c.errOut.String(), "hib task show --request '"+requestID+"'") {
+						t.Fatalf("recipe resend = %d, stdout %q, stderr %q, sends %d, ID %q; want saved-task lookup",
+							code, c.out, c.errOut, sends, requestID)
+					}
+					if asJSON && !strings.Contains(c.out.String(), `"errorCode":"CONFLICT"`) {
+						t.Fatalf("JSON conflict = %s; want host's coded reply", c.out)
+					}
+					c.ssh = ssh
+					if code := c.hibContext(ctx, "task", "show", "--request", requestID); code != 0 ||
+						!strings.Contains(c.out.String(), "original") || !strings.Contains(c.out.String(), "recipe check") {
+						t.Fatalf("lookup = %d, %s, %s; want original task", code, c.out, c.errOut)
+					}
+					if change == "rm" {
+						if code := c.hibContext(ctx, "task", "start", "--request-id", "new-request", "--recipe", "check"); code != 1 ||
+							!strings.Contains(c.errOut.String(), `no recipe "check"`) ||
+							strings.Contains(c.errOut.String(), "hib task show --request") {
+							t.Fatalf("new request = %d, stdout %q, stderr %q; want recipe error without lookup", code, c.out, c.errOut)
+						}
+					}
+				})
 			}
 		})
 	}

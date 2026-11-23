@@ -117,12 +117,12 @@ func TestRecipeResolutionAndSnapshot(t *testing.T) {
 }
 
 func TestRecipeRetryAfterEdit(t *testing.T) {
-	for _, mode := range []string{"recipe", "default", "overrides"} {
+	for _, mode := range []string{"recipe", "default", "overrides", "rm", "default-rm", "damage"} {
 		t.Run(mode, func(t *testing.T) {
-			a, _, _ := newApp(t, nil)
+			a, out, _ := newApp(t, fake.New())
 			keepRecipe(t, a, "check", recipeBody)
 			req := hibapi.TaskStart{RequestID: "recipe-retry", Recipe: "check"}
-			if mode == "default" {
+			if mode == "default" || mode == "default-rm" {
 				callRecipe(t, a, "", "default", "check")
 				req.Recipe = ""
 			} else if mode == "overrides" {
@@ -130,10 +130,19 @@ func TestRecipeRetryAfterEdit(t *testing.T) {
 			}
 			code, r := submitTaskJSON(t, a, req, strings.NewReader(""))
 			first := requireTaskReply(t, code, r, req.RequestID, 1)
-			if mode == "default" {
+			switch mode {
+			case "default":
 				keepRecipe(t, a, "next", recipeBody)
 				callRecipe(t, a, "", "default", "next")
-			} else {
+			case "rm", "default-rm":
+				if code, out := callRecipe(t, a, "", "rm", "check"); code != 0 {
+					t.Fatalf("remove before retry = %d, %s", code, out)
+				}
+			case "damage":
+				if err := os.WriteFile(filepath.Join(a.Getenv("HIBD_STATE_DIR"), "recipes.json"), []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			default:
 				keepRecipe(t, a, "check", `{"command":["false"]}`)
 			}
 			code, r = submitTaskJSON(t, a, req, strings.NewReader(""))
@@ -145,9 +154,21 @@ func TestRecipeRetryAfterEdit(t *testing.T) {
 				code, r = submitTaskJSON(t, a, req, strings.NewReader(""))
 			}
 			requireTaskError(t, code, r, req.RequestID, hibapi.CodeConflict, false)
+			code, r = taskReadReply(t, a, out, "task", "show", "-request", req.RequestID)
+			if code != 0 || r.Task == nil || r.Task.ID != first.ID ||
+				len(r.Task.Runs) != 1 || r.Task.Runs[0].Recipe != "check" {
+				t.Fatalf("request lookup = %d, %+v; want original recipe task %s", code, r, first.ID)
+			}
 			all, err := savedTasks(t, a).List(t.Context())
 			if err != nil || len(all) != 1 || all[0].ID != first.ID || len(all[0].Runs) != 1 {
 				t.Fatalf("retry saved %+v, %v; want first task only", all, err)
+			}
+			if mode == "rm" || mode == "default-rm" || mode == "damage" {
+				for _, id := range []string{"new-request", ""} {
+					req.RequestID = id
+					code, r = submitTaskJSON(t, a, req, &taskUnreadInput{})
+					requireTaskError(t, code, r, id, hibapi.CodeBadRequest, false)
+				}
 			}
 		})
 	}

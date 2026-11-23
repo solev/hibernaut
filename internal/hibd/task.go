@@ -104,10 +104,19 @@ func (a *App) taskStart(ctx context.Context, c taskCommand, args []string) int {
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
 	}
-	req, err = resolveRecipe(req, cfg.stateDir)
+	resolved, err := resolveRecipe(req, cfg.stateDir)
 	if err != nil {
+		if req.RequestID != "" {
+			st := a.tasks(cfg)
+			_, lookupErr := st.Receipt(ctx, req.RequestID)
+			st.Close()
+			if lookupErr == nil {
+				return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", task.ErrConflict, err))
+			}
+		}
 		return a.taskFail(*asJSON, c.Path, req.RequestID, fmt.Errorf("%w: %w", errBadTaskRequest, err))
 	}
+	req = resolved
 	sub, err := submissionOf(req, a.taskActor(), a.now())
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, req.RequestID, err)
