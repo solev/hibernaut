@@ -40,7 +40,8 @@ func taskFollowCommands() map[string]*command {
 const taskFollowRecoveryHelp = "Follows and waits retry dropped connections, interrupted holds during host restarts,\n" +
 	"and retryable host replies such as a busy database. They keep the selected run and\n" +
 	"last received cursor. Each outage prints these lines on stderr, the second on the next\n" +
-	"successful reply, which can take up to 60 seconds after the host returns:\n" +
+	"successful reply, which can take up to 92 seconds plus SSH login time after the host\n" +
+	"returns, if that call succeeds:\n" +
 	"  hib: host temporarily unavailable; reconnecting from the last received reply\n" +
 	"  hib: host available; resumed from the last received reply\n" +
 	"An open follow or wait prevents idle auto-off because each login counts as activity.\n" +

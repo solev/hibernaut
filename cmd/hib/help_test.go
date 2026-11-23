@@ -87,7 +87,7 @@ func TestEveryCommandHasHelpBeforeInit(t *testing.T) {
 			if !strings.Contains(first, "\n  "+spelling+" ") && !strings.HasSuffix(first, "\n  "+spelling+"\n") {
 				t.Errorf("help for %s lacks %s:\n%s", cmd.path(), spelling, first)
 			}
-			if f.Name != "json" && !strings.Contains(joinWords(cmd.args, cmd.opts), spelling) {
+			if f.Name != "json" && !regexp.MustCompile(`(^|[^a-z0-9-])`+regexp.QuoteMeta(spelling)+`([^a-z0-9-]|$)`).MatchString(joinWords(cmd.args, cmd.opts)) {
 				t.Errorf("synopsis of %s lacks %s: %s", cmd.path(), spelling, cmd.opts)
 			}
 		}

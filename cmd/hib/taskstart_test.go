@@ -661,6 +661,7 @@ func TestTaskStartHelpAndUsageFit100Columns(t *testing.T) {
 		if args[0] == "task" {
 			wantExit = 2
 		}
+
 		if code := hib(args...); code != wantExit {
 			t.Fatalf("hib %v = exit %d; want %d", args, code, wantExit)
 		}
@@ -676,5 +677,18 @@ func TestTaskStartHelpAndUsageFit100Columns(t *testing.T) {
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
 		t.Fatalf("help or usage contacted host: %q", calls)
+	}
+}
+
+func TestTaskStartSynopsisFits80Columns(t *testing.T) {
+	c, hib := homeless(t, newHost(t))
+	if code := hib("help", "task", "start"); code != 0 {
+		t.Fatalf("help = exit %d, stderr %q", code, c.errOut)
+	}
+	synopsis, _, _ := strings.Cut(c.out.String(), "\n\n")
+	for _, line := range strings.Split(synopsis, "\n") {
+		if len(line) > 80 {
+			t.Errorf("start synopsis has %d columns: %s", len(line), line)
+		}
 	}
 }

@@ -437,8 +437,37 @@ request ID and bytes, even if you edit a file. If the reply is lost, hib gives a
 command. `--json` prints hibd's reply unchanged. Use `--recipe NAME` or a default recipe
 instead of `-- CMD`; explicit flags and commands override recipe defaults.
 
+To run against a GitHub repo, add `--repo OWNER/NAME`, not a URL or `.git` suffix:
+
+```bash
+hib task start --repo solev/rocket --branch main --prompt "Fix the failing tests" -- codex exec -
+```
+
+`--branch` selects the base branch, not the work branch. Omit it to use the repo's default
+branch. The task clones the repo and works on `hib/TASK`. With a repo, `--publish` defaults
+to `draft-pr`. A successful command with changes commits and pushes that branch, then opens
+a draft PR. The PR title uses the prompt's first line when a prompt is present. The body
+does not include the prompt. No changes gives `no_changes`, with no new commit, push, or PR.
+A failed or timed-out command publishes nothing. A GitHub refusal, including a refused draft,
+fails the run with GitHub's error text. If the branch was already pushed, it stays on GitHub.
+`--publish none` leaves edits in the kept machine, with no commit, push, or PR. Without a repo,
+`none` is the default and is the only allowed mode. `--branch` needs `--repo`.
+
+A task's command gets the `github` token's full reach through the proxy, not just access to
+the repo named by `--repo`. The device login grants `repo`, `read:org`, and `workflow`.
+The command can push to every repo that login permits, including workflow changes.
+`--from-gh` gives it the existing gh token's repo access and scopes, without narrowing them.
+For untrusted commands, use the `hib connect github --token` option described above with a
+fine-grained token limited to the task repos. Grant Contents read-write for clone and push,
+and Pull requests read-write for finding and opening drafts. Metadata read access, granted
+automatically, covers the default-branch lookup. No Workflows permission is needed unless
+the command changes `.github/workflows/`; GitHub refuses those pushes without it.
+
 `hib task ls` lists tasks newest first and explains why a run waits. `hib task show` shows
-every run, command, step, request, and removal. Use `--request ID` instead of a task ID to
+every run, command, step, publication, request, and removal. Long repo names are shortened in
+`ls`; copy the full name from `show` or `--json`. Publication lines show no changes, or the
+commit, whether it was pushed, the pushed branch, and the draft PR URL when available.
+Use `--request ID` instead of a task ID to
 look up a submission whose reply was lost. `hib task cancel` asks hibd to stop a live run.
 `hib task rescue` lets hibd resume a machine paused without proof its command froze, then
 stop the task's command running inside it. `hib task rm` asks hibd to remove the task and
@@ -446,14 +475,18 @@ its machine after asking you first. Without a terminal, pass `--yes`. These requ
 your laptop disconnecting. Reuse `--request-id ID` to retry the same request, and use `--json`
 on any of these five commands to print hibd's reply unchanged.
 
+Removing a task leaves its branch and PR on GitHub. After merging or closing the PR, delete
+`hib/TASK` yourself on GitHub or run `git push origin --delete hib/TASK` in a local clone.
+
 `hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
 Use `logs -f` to follow until the run ends. Follows and waits retry dropped connections,
 interrupted holds during host restarts, and retryable host replies such as a busy database.
 They keep the selected run and last received cursor. Each outage prints
 `hib: host temporarily unavailable; reconnecting from the last received reply` on stderr.
 The next successful reply prints `hib: host available; resumed from the last received reply`.
-That reply can take up to 60 seconds after the host returns. A live log follow makes at most about
-one login a second. Terminal logs escape controls; pipes and files keep the original bytes.
+That reply can take up to 92 seconds plus SSH login time after the host returns, if that
+call succeeds. A live log follow makes at most about one login a second.
+Terminal logs escape controls; pipes and files keep the original bytes.
 Logs `--json` prints each range reply unchanged. Wait `--json` prints only the final reply.
 Wait exits 0 for `succeeded` or `no_changes`, 1 for another outcome or error, and 2 for a usage error.
 Text wait prints the run's detail on stderr when present, including an unproven-stop warning.
