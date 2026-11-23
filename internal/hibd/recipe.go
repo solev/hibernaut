@@ -168,17 +168,12 @@ func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Rec
 		return recipeDoc{}, err
 	}
 	for _, file := range names {
-		for _, prefix := range []string{".recipes.json.tmp-", ".recipes.lock.tmp-"} {
-			token, ok := strings.CutPrefix(file, prefix)
-			if _, err := hex.DecodeString(token); !ok || len(token) != 32 || err != nil {
-				continue
-			}
-			if _, err := recipeFile(root, file, owner); err != nil {
-				return recipeDoc{}, err
-			}
-			if err := root.Remove(file); err != nil {
-				return recipeDoc{}, err
-			}
+		token, ok := strings.CutPrefix(file, ".recipes.json.tmp-")
+		if _, err := hex.DecodeString(token); !ok || len(token) != 32 || err != nil {
+			continue
+		}
+		if err := root.Remove(file); err != nil {
+			return recipeDoc{}, err
 		}
 	}
 	doc, err := readRecipes(root, owner)

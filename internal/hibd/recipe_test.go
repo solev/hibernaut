@@ -349,6 +349,87 @@ func TestRecipeConcurrentWritersAndCap(t *testing.T) {
 	}
 }
 
+func TestRecipeTempRecovery(t *testing.T) {
+	for _, mode := range []string{"foreign-mode", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			a, _, _ := newApp(t, nil)
+			keepRecipe(t, a, "old", recipeBody)
+			dir := a.Getenv("HIBD_STATE_DIR")
+			target := filepath.Join(t.TempDir(), "keep")
+			if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stale := filepath.Join(dir, ".recipes.json.tmp-"+strings.Repeat("a", 32))
+			if mode == "symlink" {
+				if err := os.Symlink(target, stale); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.WriteFile(stale, []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(stale, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			keepRecipe(t, a, "next", recipeBody)
+			if stale, err := filepath.Glob(filepath.Join(dir, ".recipes.json.tmp-*")); err != nil || len(stale) != 0 {
+				t.Fatalf("put left unpublished document temps %v, %v", stale, err)
+			}
+			if code, out := callRecipe(t, a, "", "ls"); code != 0 ||
+				!strings.Contains(out, `"name":"old"`) || !strings.Contains(out, `"name":"next"`) {
+				t.Fatalf("recovered recipes = %d, %s; want both recipes", code, out)
+			}
+			if data, err := os.ReadFile(target); err != nil || string(data) != "keep" {
+				t.Fatalf("sweep changed link target %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestRecipeLockTempSurvivesSweep(t *testing.T) {
+	a, _, _ := newApp(t, nil)
+	dir := a.Getenv("HIBD_STATE_DIR")
+	name := filepath.Join(dir, ".recipes.lock.tmp-"+strings.Repeat("b", 32))
+	if err := os.WriteFile(name, []byte("lock publication"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keepRecipe(t, a, "check", recipeBody)
+	if data, err := os.ReadFile(name); err != nil || string(data) != "lock publication" {
+		t.Fatalf("put removed an in-flight lock temp %q, %v", data, err)
+	}
+}
+
+func TestRecipeFirstWriters(t *testing.T) {
+	a, _, _ := newApp(t, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	start := make(chan struct{})
+	results := make(chan string, 2)
+	for _, name := range []string{"first", "second"} {
+		go func() {
+			<-start
+			code, out := callRecipe(t, a, recipeBody, "put", name)
+			results <- fmt.Sprintf("%d %s", code, out)
+		}()
+	}
+	close(start)
+	for range 2 {
+		select {
+		case out := <-results:
+			if !strings.HasPrefix(out, "0 ") {
+				t.Fatal(out)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if code, out := callRecipe(t, a, "", "ls"); code != 0 ||
+		!strings.Contains(out, `"name":"first"`) || !strings.Contains(out, `"name":"second"`) {
+		t.Fatalf("first writes = %d, %s; want both recipes", code, out)
+	}
+}
+
 func TestRecipeCrashBeforeRename(t *testing.T) {
 	if dir := os.Getenv("HIB_RECIPE_CRASH_DIR"); dir != "" {
 		s := recipeStore{owned: statefile.Dir{Path: dir, Chown: func(f *os.File, _, _ int) error {
