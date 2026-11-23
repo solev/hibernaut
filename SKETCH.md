@@ -472,10 +472,15 @@ nudge.
   completion, absent setup keys after a full pass, and loop state on exit.
 - **The deadline.** It is the grant's time plus `Spec.Timeout`, so time in the queue doesn't
   count and paused time does. `RuntimeMaxSec` on each stage unit backs it up inside the machine.
-- **The wrap-up.** Stop, collect and keep run after the main line ends, early or not. A request
-  can't cut them short, only nudge them to re-enter. Stop's proof budget and collect's read budget
-  count from the later of their intent and this daemon's recorded start. Retries share a budget.
-  Downtime spends no guest-call budget, so a restart of any length gives the same chance of proof.
+  A repo command reserves `FinishReserve` for finish. With no command time left, a command
+  intent and a timed-out stop record the outcome at command without launching its unit.
+- **The wrap-up.** Stop, collect, publish and keep run after the main line ends, early or not.
+  A request can cancel a call and nudge re-entry, but cannot replace the wrap-up's result.
+  Stop, collect and publish count their budgets from the later of intent and daemon start.
+  Transient publish failures return to Supervisor between polls and use its failure limiter.
+  Only the latest bounded error stays in memory. An open publish intent repeats the Publisher's
+  find-then-create by task branch after a crash. Keep refreshes E2B after publish and leaves an
+  already-paused machine paused, records a gone one, or removes it after rm.
 
 ### Module map
 
@@ -705,8 +710,10 @@ under `/var/lib/hib-task/RUN`.
   `Dropped` can understate when the machine is not running, a size could not be read, or the guest
   reports a false size.
   All collect reads share `CollectLimit`, 60 s, from the later of its intent and daemon start.
-  Downtime is not a guest read. `ErrConnectionLost` in a look or log copy retries after a poll
-  inside that same budget. `ErrNotRunning` and other guest read errors become `Unread`,
+  Downtime is not a guest read. `ErrConnectionLost` in a look, log copy or publication read
+  retries after a poll inside that same budget. Exhaustion keeps the last real read error,
+  not the retry sleep's context error. A failed finish's publication is read when present.
+  `ErrNotRunning` and other guest read errors become `Unread`,
   not workflow retries. Host log failures remain workflow errors.
   An unproven stop reads nothing from the guest.
   Each run-phase log copy also gets at most `CollectLimit`, shortened to the remaining deadline.
@@ -743,6 +750,9 @@ under `/var/lib/hib-task/RUN`.
   a poll without an error log. A successful resume and thaw continue in the same pass.
   `upload` checks even with its intent already recorded. The main line returns after the last
   stage, without another boundary that could turn its durable exit into an early stop.
+  After the upload intent, `Machines.Prepare` writes machine setup before every run's Upload.
+  It repeats after failures or crashes, including for adopted machines and follow-ups, without
+  passing through `Tasks.Check`.
   Wrap-up cannot be interrupted.
 
 `runner look` reports the marker, the exit record, the log size, the unit's `systemctl show`

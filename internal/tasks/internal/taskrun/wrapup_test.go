@@ -123,7 +123,7 @@ func (e wrapGuest) Exec(ctx context.Context, mid string, req engine.ExecRequest)
 			}
 		}
 	}
-	if e.mode == "publication" && req.Cmd == "cat" {
+	if e.mode == "publication" && slices.Equal(argv, taskguest.PublicationOf(r.ID)) {
 		return engine.ExecResult{Stdout: []byte("not a publication\n")}, nil
 	}
 	if e.mode == "hang" && slices.Equal(argv, taskguest.Kill(r.ID, task.StageCommand)) {
@@ -440,6 +440,9 @@ func TestCollectRetriesLostConnection(t *testing.T) {
 				if outcome(r) != task.Cancelled || len(unreadResult(t, r)) == 0 ||
 					r.Machine != task.MachinePaused {
 					t.Fatalf("repeated lost replies did not end cancelled with an unread tail: %+v", r.Status(""))
+				}
+				if got, want := unreadResult(t, r), []string{"command: " + engine.ErrConnectionLost.Error()}; !slices.Equal(got, want) {
+					t.Fatalf("unread=%q, want last real cause %q", got, want)
 				}
 				var started time.Time
 				for _, c := range r.Log {

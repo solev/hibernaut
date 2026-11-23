@@ -190,13 +190,20 @@ func (o ownerStore) RecordFreeze(ctx context.Context, id task.ID, f task.Freeze)
 	return st.RecordFreeze(ctx, id, f)
 }
 
+// Publisher verifies the task branch and finds or opens its draft PR.
+type Publisher = taskrun.Publisher
+
+// ErrPublishRetry marks transient Publisher failures. Other errors are permanent.
+var ErrPublishRetry = taskrun.ErrPublishRetry
+
 // DaemonConfig is what the task daemon runs on.
 type DaemonConfig struct {
 	// Engine must come from Guard, so the executor's own exec, upload and thaw take the same
 	// per-machine lock as every other process's pauses and wakes.
-	Engine   engine.Engine
-	Machines Machines
-	Logf     func(format string, args ...any)
+	Engine    engine.Engine
+	Machines  Machines
+	Publisher Publisher
+	Logf      func(format string, args ...any)
 	// Clock and Poll replace the workflow clock and wait interval. Zero values use wall time
 	// and the package's Poll interval.
 	Clock taskrun.Clock
@@ -254,7 +261,7 @@ func (t *Tasks) startDaemon(life context.Context, cfg DaemonConfig, owner *taskm
 	}
 	sup := taskrun.NewSupervisor(life, taskrun.Config{Store: st, Logs: taskstore.FileLogs{Dir: t.dir},
 		Engine: owner, Machines: cfg.Machines, Clock: clock, Instance: inst, StartedAt: startedAt,
-		Poll: cfg.Poll, Logf: cfg.Logf})
+		Publisher: cfg.Publisher, Poll: cfg.Poll, Logf: cfg.Logf})
 	return &Daemon{sup: sup}, nil
 }
 

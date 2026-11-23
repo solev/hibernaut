@@ -246,10 +246,15 @@ func (g *guest) run(argv []string, now time.Time, script func(task.RunID, task.S
 			g.exit(u, task.ExitRecord{Result: "signal", Code: "killed", Status: -1})
 		}
 		return ok("")
-	case argv[0] == "cat":
-		b, found := g.files[argv[1]]
+	case argv[0] == "sh" && len(argv) == 5 && argv[1] == "-c" && argv[3] == "hib-publication":
+		b, found := g.files[argv[4]]
 		if !found {
-			return engine.ExecResult{ExitCode: 1}
+			for name := range g.files {
+				if strings.HasPrefix(name, argv[4]+"/") {
+					return engine.ExecResult{ExitCode: 1, Stderr: []byte("cat: Is a directory")}
+				}
+			}
+			return engine.ExecResult{ExitCode: taskguest.ExitNoPublication}
 		}
 		return ok(string(b))
 	case argv[0] == "sh" && len(argv) > 2 && argv[2] == "verify":

@@ -64,6 +64,8 @@ func (e sweepEngine) Get(ctx context.Context, id string) (engine.Machine, error)
 func (e sweepEngine) Exec(ctx context.Context, id string, req engine.ExecRequest) (engine.ExecResult, error) {
 	name := req.Cmd
 	switch {
+	case req.Cmd == "sh" && len(req.Args) > 2 && req.Args[2] == "hib-publication":
+		name = "publication"
 	case req.Cmd == "sh" && len(req.Args) > 2 && req.Args[0] == "-c":
 		name = req.Args[3]
 	case req.Cmd == "sh" && len(req.Args) > 1:
@@ -429,7 +431,7 @@ func TestExecBoundarySweep(t *testing.T) {
 								(strings.HasPrefix(event, "host-pause") || strings.HasPrefix(event, "engine-pause")) {
 								want = task.Failed
 							}
-							if call.step == task.StepCollect && call.name != "cat" && event == "deadline" {
+							if call.step == task.StepCollect && call.name != "publication" && event == "deadline" {
 								want = task.Failed
 								if len(unreadResult(t, r)) == 0 {
 									t.Error("elapsed collect budget did not report an unread tail")

@@ -245,6 +245,8 @@ func (m *machines) Pause(ctx context.Context, r task.Run) error {
 	return m.h.owner.Pause(ctx, em.ID)
 }
 
+func (m *machines) Prepare(context.Context, task.Run) error { return nil }
+
 func (m *machines) Remove(ctx context.Context, r task.Run) error {
 	em, found, err := m.Find(ctx, r)
 	if err != nil || !found {
@@ -323,6 +325,13 @@ func (h *harness) start() {
 		Store: h.store, Logs: taskstore.MemoryLogs{M: h.store}, Engine: h.owner,
 		Machines: h.m, Clock: h.clock, Instance: inst, StartedAt: startedAt, Poll: time.Second,
 		Logf: h.logs.logf,
+		Publisher: publisherFunc(func(ctx context.Context, r task.Run, p task.Publication, title string) (task.Publication, error) {
+			p.PR = "https://github.com/solev/demo/pull/42"
+			if h.crash("publish") {
+				return task.Publication{}, fmt.Errorf("%w: reply lost", ErrPublishRetry)
+			}
+			return p, nil
+		}),
 	}
 	if h.configure != nil {
 		h.configure(&cfg)
@@ -394,7 +403,7 @@ func (h *harness) submit(command time.Duration) task.RunID {
 	h.t.Helper()
 	sp := task.Spec{Repo: task.Repo{Owner: "solev", Name: "demo"},
 		Command: []string{"codex", "exec"}, Image: "dev", Size: "dev", Timeout: command,
-		Publish: task.PublishNone}
+		Publish: task.PublishDraftPR}
 	rc, err := h.store.Submit(context.Background(), task.Submission{
 		RequestID: fmt.Sprintf("req-%d", time.Now().UnixNano()), Spec: sp, Actor: alice,
 		At: h.clock.Now()}, nil)
@@ -568,6 +577,9 @@ func TestCrashAtEveryAction(t *testing.T) {
 			if o := outcome(h.run(id)); o != task.Succeeded {
 				t.Fatalf("outcome %s, want %s", o, task.Succeeded)
 			}
+			if p := h.run(id).Publication(); p == nil || p.PR != "https://github.com/solev/demo/pull/42" {
+				t.Fatalf("crashed run did not record the recovered GitHub answer: %+v", p)
+			}
 			ms, _ := h.sim.List(context.Background(), engine.ListOptions{})
 			if len(ms) != 1 {
 				t.Fatalf("%d machines, want 1", len(ms))
@@ -622,8 +634,8 @@ func TestCrashAtEveryAppend(t *testing.T) {
 }
 
 // TestLostReplies loses the first reply of every kind of call. Launches are judged by looks,
-// log chunks by the host copy's length and uploads by the in-machine check. A publication
-// whose reply is lost is an unread wrap-up tail, not an indefinitely retried stage.
+// log chunks by the host copy's length and uploads by the in-machine check. Publication reads
+// retry within collect's shared budget.
 func TestLostReplies(t *testing.T) {
 	h := newHarness(t, script(3*time.Second, 0))
 	lost := map[string]bool{}
@@ -643,11 +655,11 @@ func TestLostReplies(t *testing.T) {
 	id := h.submit(time.Hour)
 	h.until(40, h.ended(id))
 	h.checkLog(id)
-	if o := outcome(h.run(id)); o != task.Failed {
-		t.Fatalf("outcome %s, want failed without a proven publication", o)
+	if o := outcome(h.run(id)); o != task.Succeeded {
+		t.Fatalf("outcome %s, want succeeded after retrying the publication read", o)
 	}
-	if unread := strings.Join(unreadResult(t, h.run(id)), "\n"); !strings.Contains(unread, "publication:") || !strings.Contains(unread, engine.ErrConnectionLost.Error()) {
-		t.Fatalf("lost publication was not recorded: %q", unread)
+	if unread := unreadResult(t, h.run(id)); len(unread) != 0 {
+		t.Fatalf("retried publication left unread data: %q", unread)
 	}
 	launches := 0
 	for k := range lost {
