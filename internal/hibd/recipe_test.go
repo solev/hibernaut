@@ -130,7 +130,12 @@ func TestRecipeRetryAfterEdit(t *testing.T) {
 			}
 			code, r := submitTaskJSON(t, a, req, strings.NewReader(""))
 			first := requireTaskReply(t, code, r, req.RequestID, 1)
-			keepRecipe(t, a, "check", `{"command":["false"]}`)
+			if mode == "default" {
+				keepRecipe(t, a, "next", recipeBody)
+				callRecipe(t, a, "", "default", "next")
+			} else {
+				keepRecipe(t, a, "check", `{"command":["false"]}`)
+			}
 			code, r = submitTaskJSON(t, a, req, strings.NewReader(""))
 			if mode == "overrides" {
 				if got := requireTaskReply(t, code, r, req.RequestID, 1); got.ID != first.ID {
@@ -326,6 +331,9 @@ func TestRecipeCrashBeforeRename(t *testing.T) {
 	if dir := os.Getenv("HIB_RECIPE_CRASH_DIR"); dir != "" {
 		s := recipeStore{owned: statefile.Dir{Path: dir, Chown: func(f *os.File, _, _ int) error {
 			if strings.Contains(f.Name(), ".recipes.json.tmp-") {
+				if _, err := f.Write([]byte(`{"v":1,"recipes":`)); err != nil {
+					return err
+				}
 				p, err := os.FindProcess(os.Getpid())
 				if err != nil {
 					return err
@@ -353,6 +361,9 @@ func TestRecipeCrashBeforeRename(t *testing.T) {
 	stale, _ := filepath.Glob(filepath.Join(dir, ".recipes.json.tmp-*"))
 	if len(stale) != 1 {
 		t.Fatalf("crash left %v; want one unpublished temporary file", stale)
+	}
+	if data, err := os.ReadFile(stale[0]); err != nil || len(data) == 0 {
+		t.Fatalf("crashed write left %q, %v; want unpublished bytes", data, err)
 	}
 	if code, out := callRecipe(t, a, "", "ls"); code != 0 || !strings.Contains(out, "old") || strings.Contains(out, `"name":"new"`) {
 		t.Fatalf("crash changed published recipes = %d, %s", code, out)
