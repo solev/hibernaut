@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +19,7 @@ import (
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/task"
 	"github.com/solev/hibernaut/internal/taskguest"
+	"github.com/solev/hibernaut/internal/taskguest/guestsim"
 	"github.com/solev/hibernaut/internal/tasks/internal/taskstore"
 )
 
@@ -23,7 +27,10 @@ type wrapGuest struct {
 	Engine
 	h    *harness
 	mode string
+	lost *bool
 }
+
+const trickleLog = "0123456789abcdefghijklmnopqrstuvwxyz\n"
 
 type retryStopLookup struct {
 	Engine
@@ -53,6 +60,36 @@ func (e wrapGuest) Exec(ctx context.Context, mid string, req engine.ExecRequest)
 	if strings.HasPrefix(mode, "collect-") {
 		mode = strings.TrimPrefix(mode, "collect-")
 		wrap = last.Step() == task.StepCollect
+	}
+	command := len(req.Args) > 3 && req.Args[3] == string(task.StageCommand)
+	if (e.mode == "run-trickle" || e.mode == "run-slow-exit") && !wrap && command &&
+		last.Step() == task.StepCommand && last.Kind() == task.Result {
+		if look {
+			if e.mode == "run-slow-exit" {
+				return engine.ExecResult{Stdout: []byte(fmt.Sprintf(
+					"marker=yes\nlog=%d\nexit.result=success\nexit.code=exited\nexit.status=0\n",
+					len(trickleLog)))}, nil
+			}
+			return engine.ExecResult{Stdout: []byte("marker=yes\nlog=52428800\n" +
+				"LoadState=loaded\nActiveState=active\nSubState=running\nfrozen=0\n")}, nil
+		}
+		if req.Args[1] == "log" {
+			select {
+			case <-ctx.Done():
+				return engine.ExecResult{}, context.Cause(ctx)
+			case <-time.After(9 * time.Second):
+				offset, _ := strconv.Atoi(req.Args[len(req.Args)-2])
+				return engine.ExecResult{Stdout: []byte("size=52428800\n" +
+					base64.StdEncoding.EncodeToString([]byte{trickleLog[offset%len(trickleLog)]}))}, nil
+			}
+		}
+	}
+	if wrap && command && (look && mode == "lost-look" ||
+		req.Args[1] == "log" && mode == "lost-log" || mode == "lost-always") {
+		if mode == "lost-always" || !*e.lost {
+			*e.lost = true
+			return engine.ExecResult{}, engine.ErrConnectionLost
+		}
 	}
 	if wrap && look {
 		switch mode {
@@ -110,7 +147,8 @@ func bubbleHarness(t *testing.T, mode string) *harness {
 	h.clock.now = time.Now()
 	h.configure = func(cfg *Config) {
 		cfg.Clock = RealClock{}
-		cfg.Engine = wrapGuest{Engine: cfg.Engine, h: h, mode: mode}
+		lost := false
+		cfg.Engine = wrapGuest{Engine: cfg.Engine, h: h, mode: mode, lost: &lost}
 		if mode == "retry" {
 			cfg.Engine = &retryStopLookup{Engine: wrapGuest{Engine: h.owner, h: h, mode: "garbage"}, h: h}
 		}
@@ -277,6 +315,21 @@ func TestStopBudgetSurvivesRestart(t *testing.T) {
 func TestCollectUntrustedGuest(t *testing.T) {
 	for _, mode := range []string{"long", "empty", "bad-log", "publication", "slow-tail"} {
 		t.Run(mode, func(t *testing.T) {
+			const child = "HIB_TEST_COLLECT_EMPTY_CHILD"
+			if mode == "empty" && os.Getenv(child) != "1" {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCollectUntrustedGuest/empty$")
+				cmd.Env = append(os.Environ(), child+"=1")
+				out, err := cmd.CombinedOutput()
+				if ctx.Err() != nil {
+					t.Fatalf("empty-chunk test exceeded its 5s real-time deadline:\n%s", out)
+				}
+				if err != nil {
+					t.Fatalf("empty-chunk subprocess: %v\n%s", err, out)
+				}
+				return
+			}
 			synctest.Test(t, func(t *testing.T) {
 				h := bubbleHarness(t, mode)
 				if mode == "publication" {
@@ -310,6 +363,129 @@ func TestCollectUntrustedGuest(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestRunTrickleRespectsDeadline(t *testing.T) {
+	for _, timeout := range []time.Duration{30 * time.Second, 2 * time.Minute} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := bubbleHarness(t, "run-trickle")
+				h.sim.Script = func(_ task.RunID, s task.Stage) guestsim.Behavior {
+					if s == task.StageCommand {
+						return guestsim.Behavior{Runs: time.Hour, Output: []byte(trickleLog)}
+					}
+					return guestsim.Behavior{}
+				}
+				id := h.submit(timeout)
+				bubbleUntil(t, h, 5*time.Second, h.launched(id, task.StageCommand))
+				logs := taskstore.MemoryLogs{M: h.store}
+				if timeout > task.CollectLimit {
+					bubbleUntil(t, h, task.CollectLimit+DefaultPoll, func() bool {
+						n, err := logs.Size(id, task.StageCommand)
+						if err != nil {
+							t.Fatal(err)
+						}
+						return n > 0
+					})
+					if _, stopping := h.run(id).Stop(); stopping {
+						t.Fatal("copy cut did not yield before the deadline")
+					}
+				}
+				bubbleUntil(t, h, timeout+DefaultPoll, h.ended(id))
+				h.stop()
+				r := h.run(id)
+				deadline, _ := r.Deadline()
+				last, _ := r.Last()
+				if outcome(r) != task.TimedOut || last.At.After(deadline.Add(DefaultPoll)) {
+					t.Fatalf("trickling run ended %s at %s, want timed_out by %s",
+						outcome(r), last.At, deadline.Add(DefaultPoll))
+				}
+				if how := stopResult(t, r).How; how != "term" {
+					t.Fatalf("deadline stop=%q, want term", how)
+				}
+				if unread := unreadResult(t, r); len(unread) != 0 {
+					t.Fatalf("trickling run lost its tail: %q", unread)
+				}
+				rc, err := logs.Open(id, task.StageCommand, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, readErr := io.ReadAll(rc)
+				closeErr := rc.Close()
+				if readErr != nil || closeErr != nil || string(data) != trickleLog {
+					t.Fatalf("copied tail=%q, read=%v, close=%v", data, readErr, closeErr)
+				}
+				h.logs.check(t, nil)
+				h.checkLog(id)
+			})
+		})
+	}
+}
+
+func TestCollectRetriesLostConnection(t *testing.T) {
+	for _, mode := range []string{"lost-look", "lost-log", "lost-always"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := bubbleHarness(t, "collect-"+mode)
+				id := h.submit(2 * time.Hour)
+				bubbleUntil(t, h, 30*time.Second, h.launched(id, task.StageCommand))
+				h.request(id, task.RequestCancel)
+				bubbleUntil(t, h, task.CollectLimit+DefaultPoll, h.ended(id))
+				h.stop()
+				r := h.run(id)
+				if mode != "lost-always" {
+					checkHonestWrapUp(t, h, id)
+					return
+				}
+				if outcome(r) != task.Cancelled || len(unreadResult(t, r)) == 0 ||
+					r.Machine != task.MachinePaused {
+					t.Fatalf("repeated lost replies did not end cancelled with an unread tail: %+v", r.Status(""))
+				}
+				var started time.Time
+				for _, c := range r.Log {
+					if c.Step() != task.StepCollect {
+						continue
+					}
+					if c.Kind() == task.Intent {
+						started = c.At
+					} else if c.At.Sub(started) > task.CollectLimit {
+						t.Fatalf("collection retried for %s, beyond its budget", c.At.Sub(started))
+					}
+				}
+				h.logs.check(t, nil)
+				h.checkLog(id)
+			})
+		})
+	}
+}
+
+func TestRunCopyCutKeepsExitedTail(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := bubbleHarness(t, "run-slow-exit")
+		h.sim.Script = func(r task.RunID, s task.Stage) guestsim.Behavior {
+			if s == task.StageCommand {
+				return guestsim.Behavior{Output: []byte(trickleLog)}
+			}
+			return script(0, 0)(r, s)
+		}
+		id := h.submit(10 * time.Minute)
+		bubbleUntil(t, h, 8*time.Minute, h.ended(id))
+		h.stop()
+		if r := h.run(id); outcome(r) != task.Succeeded || len(unreadResult(t, r)) != 0 {
+			t.Fatalf("slow exited stage did not finish cleanly: %+v", r.Status(""))
+		}
+		rc, err := (taskstore.MemoryLogs{M: h.store}).Open(id, task.StageCommand, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, readErr := io.ReadAll(rc)
+		closeErr := rc.Close()
+		if readErr != nil || closeErr != nil || string(data) != trickleLog {
+			t.Fatalf("exited tail=%q, read=%v, close=%v", data, readErr, closeErr)
+		}
+		h.logs.check(t, nil)
+		h.checkLog(id)
+	})
 }
 
 func TestCollectLookFailure(t *testing.T) {
