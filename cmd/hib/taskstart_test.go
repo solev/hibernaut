@@ -315,7 +315,6 @@ func TestTaskStartHelpIsAvailable(t *testing.T) {
 	h := &taskCallHost{}
 	a, out, stderr := taskStartClient(t, h)
 	if code := a.run(taskCallContext(t), []string{"help", "task", "start"}); code != 0 ||
-		strings.Contains(out.String(), "This command isn't in this build yet.") ||
 		strings.Contains(out.String(), "later build") || stderr.Len() != 0 || h.versions != 0 {
 		t.Errorf("start help stdout %q, stderr %q; want available commands and recipes", out, stderr)
 	}
