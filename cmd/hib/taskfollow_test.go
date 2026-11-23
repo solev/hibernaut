@@ -596,6 +596,46 @@ func TestTaskFollowHelpExplainsRecovery(t *testing.T) {
 	}
 }
 
+func TestTaskFollowReconnectBudget(t *testing.T) {
+	h := &taskCallHost{features: `["tasks"]`}
+	for range 24 {
+		h.replies = append(h.replies, taskHostReply{code: 255})
+	}
+	h.replies = append(h.replies, followWaitReply(t, task.Succeeded, ""))
+	a, _, stderr := followClient(t, h)
+	var backoff time.Duration
+	a.taskFollowSleep = func(ctx context.Context, d time.Duration) error {
+		backoff = max(backoff, d)
+		return ctx.Err()
+	}
+	if code := a.run(taskCallContext(t), []string{"task", "wait", "t-abcdefgh"}); code != 0 {
+		t.Fatalf("recover = exit %d, stderr %q", code, stderr)
+	}
+	last := h.calls[len(h.calls)-1]
+	holdFlag := slices.Index(last, "-hold")
+	if holdFlag < 0 || holdFlag+1 == len(last) {
+		t.Fatalf("recovered wait has no hold: %q", last)
+	}
+	hold, err := time.ParseDuration(last[holdFlag+1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%d seconds plus SSH login time", (backoff+hold+2*time.Second)/time.Second)
+	c, hib := homeless(t, newHost(t))
+	for _, path := range []string{"logs", "wait"} {
+		if code := hib("help", "task", path); code != 0 || !strings.Contains(c.out.String(), want) {
+			t.Errorf("help task %s reconnect notice lacks %q:\n%s", path, want, c.out)
+		}
+	}
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(string(readme)), " "), want) {
+		t.Errorf("README reconnect notice lacks %q", want)
+	}
+}
+
 func TestTaskFollowOutageDoesNotResumeOnFailure(t *testing.T) {
 	for _, cmd := range []string{"logs", "wait"} {
 		for _, end := range []string{"fault", "cancel"} {

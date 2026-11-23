@@ -124,6 +124,43 @@ func TestTaskStartSendsOrderedInput(t *testing.T) {
 	}
 }
 
+func TestTaskStartSendsRepoOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flags   []string
+		repo    string
+		branch  string
+		publish task.Publish
+	}{
+		{"explicit", []string{"--repo", "Acme/api", "--branch", "release/v1", "--publish", "none"}, "Acme/api", "release/v1", task.PublishNone},
+		{"repo default", []string{"--repo", "acme/api"}, "acme/api", "", task.PublishDraftPR},
+		{"explicit draft", []string{"--repo", "acme/api", "--publish", "draft-pr"}, "acme/api", "", task.PublishDraftPR},
+		{"none alone", []string{"--publish", "none"}, "", "", task.PublishNone},
+		{"no repo", nil, "", "", task.PublishNone},
+	} {
+		for _, asJSON := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%v", tc.name, asJSON), func(t *testing.T) {
+				h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{text: startReceipt}}}
+				a, out, stderr := taskStartClient(t, h)
+				args := append([]string{"--request-id", "start-1"}, tc.flags...)
+				want := "t-abcdefgh  queued\n"
+				if asJSON {
+					args, want = append(args, "--json"), startReceipt
+				}
+				code := startTask(t, a, append(args, "--", "true")...)
+				if code != 0 || stderr.Len() != 0 || out.String() != want || len(h.inputs) != 1 {
+					t.Fatalf("repo start = exit %d, stdout %q, stderr %q, %d sends", code, out, stderr, len(h.inputs))
+				}
+				req, _ := startWire(t, h.inputs[0])
+				if req.Repo != tc.repo || req.Branch != tc.branch || req.Publish != tc.publish {
+					t.Errorf("repo request = repo %q, branch %q, publish %q; want %q, %q, %q",
+						req.Repo, req.Branch, req.Publish, tc.repo, tc.branch, tc.publish)
+				}
+			})
+		}
+	}
+}
+
 func TestTaskStartLostReply(t *testing.T) {
 	for _, twice := range []bool{false, true} {
 		t.Run(fmt.Sprint(twice), func(t *testing.T) {
@@ -224,6 +261,19 @@ func TestTaskStartLocalRefusals(t *testing.T) {
 		{"timeout", []string{"--timeout", "-1s"}, 2, "timeout"},
 		{"fractional timeout", []string{"--timeout", "1ms"}, 2, "seconds"},
 		{"recipe", []string{"--recipe", "../review"}, 2, "bad name"},
+		{"repo", []string{"--repo", "https://github.com/acme/api"}, 2, "bad repo"},
+		{"repo empty", []string{"--repo", ""}, 2, "bad repo"},
+		{"base", []string{"--repo", "acme/api", "--branch", "a..b"}, 2, "bad base branch"},
+		{"base without repo", []string{"--branch", "main"}, 2, "--branch needs --repo"},
+		{"empty base without repo", []string{"--branch", ""}, 2, "--branch needs --repo"},
+		{"publish", []string{"--repo", "acme/api", "--publish", "public"}, 2, "--publish must be none or draft-pr"},
+		{"publish empty", []string{"--repo", "acme/api", "--publish", ""}, 2, "--publish must be none or draft-pr"},
+		{"draft without repo", []string{"--publish", "draft-pr"}, 2, "--publish draft-pr needs --repo"},
+		{"repo with recipe", []string{"--recipe", "check", "--repo", "acme/api.git"}, 2, "bad repo"},
+		{"base with recipe", []string{"--recipe", "check", "--repo", "acme/api", "--branch", "-main"}, 2, "bad base branch"},
+		{"missing repo with recipe", []string{"--recipe", "check", "--branch", "main"}, 2, "--branch needs --repo"},
+		{"publish with recipe", []string{"--recipe", "check", "--publish", "other"}, 2, "--publish must be none or draft-pr"},
+		{"draft with recipe", []string{"--recipe", "check", "--publish", "draft-pr"}, 2, "--publish draft-pr needs --repo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{{text: startReceipt}}}
@@ -626,5 +676,18 @@ func TestTaskStartHelpAndUsageFit100Columns(t *testing.T) {
 	}
 	if calls := h.takeCalls(); len(calls) != 0 {
 		t.Fatalf("help or usage contacted host: %q", calls)
+	}
+}
+
+func TestTaskStartSynopsisFits80Columns(t *testing.T) {
+	c, hib := homeless(t, newHost(t))
+	if code := hib("help", "task", "start"); code != 0 {
+		t.Fatalf("help = exit %d, stderr %q", code, c.errOut)
+	}
+	synopsis, _, _ := strings.Cut(c.out.String(), "\n\n")
+	for _, line := range strings.Split(synopsis, "\n") {
+		if len(line) > 80 {
+			t.Errorf("start synopsis has %d columns: %s", len(line), line)
+		}
 	}
 }
