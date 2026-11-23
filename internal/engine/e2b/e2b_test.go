@@ -432,6 +432,60 @@ func (r *trackedUploadReader) Close() error {
 	return r.ReadCloser.Close()
 }
 
+type uploadRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f uploadRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestUploadEarlySuccessAndCancellation(t *testing.T) {
+	for _, kind := range []string{"early success", "cancelled", "early success with close failure"} {
+		t.Run(kind, func(t *testing.T) {
+			f, _ := newFakeE2B(t)
+			f.add("aaaaaaaaaaaaaaaaaaaa", "running", nil)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			client := &http.Client{Transport: uploadRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPost {
+					return http.DefaultTransport.RoundTrip(r)
+				}
+				if kind == "cancelled" {
+					cancel()
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+					Body: io.NopCloser(strings.NewReader("[]")), Request: r}, nil
+			})}
+			e, err := e2b.New(e2b.Config{APIURL: f.apiURL, SandboxURL: f.proxyURL,
+				APIKey: apiKey, HTTPClient: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			closeFailure := errors.New("source close failed")
+			var closed atomic.Int32
+			err = e.Upload(ctx, "aaaaaaaaaaaaaaaaaaaa", "root", []engine.File{{
+				Path: "/root/file", Size: 1,
+				Open: func() (io.ReadCloser, error) {
+					if kind == "early success with close failure" {
+						return &failingUploadReader{err: closeFailure, where: "close", closed: &closed}, nil
+					}
+					return &trackedUploadReader{ReadCloser: io.NopCloser(strings.NewReader("x")), closed: &closed}, nil
+				},
+			}})
+			if kind == "cancelled" {
+				if !errors.Is(err, context.Canceled) || errors.Is(err, engine.ErrConnectionLost) {
+					t.Errorf("cancelled Upload = %v; want context.Canceled without ErrConnectionLost", err)
+				}
+			} else if !errors.Is(err, engine.ErrConnectionLost) {
+				t.Errorf("HTTP 200 before body sent = %v; want ErrConnectionLost", err)
+			}
+			if kind == "early success with close failure" && !errors.Is(err, closeFailure) {
+				t.Errorf("cut stream with failed Close = %v; want the Close error too", err)
+			}
+			if closed.Load() != 1 {
+				t.Errorf("source closed %d times; want once", closed.Load())
+			}
+		})
+	}
+}
+
 func TestUploadLifecycleErrors(t *testing.T) {
 	f, e := newFakeE2B(t)
 	f.add("aaaaaaaaaaaaaaaaaaaa", "paused", nil)

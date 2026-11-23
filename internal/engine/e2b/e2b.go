@@ -408,6 +408,9 @@ func (e *Engine) uploadFile(ctx context.Context, id, user, token string, file en
 		return ctx.Err()
 	}
 	if sourceErr := errors.Join(src.readErr, closeErr); sourceErr != nil {
+		if src.readErr == nil && (requestErr != nil || streamErr != nil) {
+			return fmt.Errorf("%w: %w", engine.ErrConnectionLost, errors.Join(sourceErr, requestErr, streamErr))
+		}
 		return sourceErr
 	}
 	if requestErr != nil {
