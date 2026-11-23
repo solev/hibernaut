@@ -17,6 +17,10 @@ func CompareQueue(a, b Run) int {
 		cmp.Compare(a.ID.Task, b.ID.Task))
 }
 
+func (r Run) heldReason() string {
+	return fmt.Sprintf("%s: hib task rescue %s or hib task rm %s", ErrHeld, r.ID.Task, r.ID.Task)
+}
+
 func QueueOf(unfinished []Run, now time.Time) Queue {
 	var queued []Run
 	for _, r := range unfinished {
@@ -71,7 +75,7 @@ func WaitReason(r Run, q Queue, now time.Time) string {
 			return "machine paused " + proof + "; no live stage is recorded"
 		}
 		if !r.Frozen() {
-			return ErrHeld.Error()
+			return r.heldReason()
 		}
 		return "machine paused with recorded freeze proof; waiting for hibd to resume or stop the run"
 	}

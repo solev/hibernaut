@@ -234,7 +234,7 @@ func TestTaskWaitHeldMachine(t *testing.T) {
 	e.Add(engine.Machine{ID: "held-machine", State: engine.Paused})
 	followClock(t, a, nil)
 	code, r := taskReadReply(t, a, out, "task", "wait", string(id), "-hold", "0s")
-	if code != 0 || r.Task == nil || r.Task.Runs[0].Held != task.ErrHeld.Error() {
+	if code != 0 || r.Task == nil || r.Task.Runs[0].Held != "paused without the freeze: hib task rescue "+string(id)+" or hib task rm "+string(id) {
 		t.Fatalf("F8 waited machine = exit %d, %+v; want the rescue reason", code, r.Task)
 	}
 }

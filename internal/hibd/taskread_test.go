@@ -245,6 +245,9 @@ func TestTaskReadWaitReasonsPreserveStatus(t *testing.T) {
 			task.PhaseStopping, "stop not proved"},
 		{"requested", []task.Checkpoint{{Body: &task.MachineResult{ID: "machine"}}},
 			[]task.Request{{Kind: task.RequestCancel, At: now}}, task.PhaseStopping, ""},
+		{"requested paused no stage", []task.Checkpoint{{Body: &task.MachineIntent{}},
+			{Body: &task.MachineResult{ID: "machine"}}},
+			[]task.Request{{Kind: task.RequestCancel, At: now}}, task.PhaseStopping, ""},
 		{"recovering", []task.Checkpoint{{By: "old", Body: &task.MachineIntent{}}}, nil,
 			task.PhaseRecovering, "machine paused without recorded freeze proof; no live stage is recorded"},
 		{"ended", []task.Checkpoint{{Body: &task.KeepResult{}}}, nil, "", ""},
@@ -465,7 +468,8 @@ func TestTaskReadOfMachineStates(t *testing.T) {
 			if out.Machine != tc.want {
 				t.Fatalf("machine = %q, want %q", out.Machine, tc.want)
 			}
-			if tc.name == "paused" && (out.Runs[0].Phase != task.PhasePaused || out.Runs[0].Held != task.ErrHeld.Error()) {
+			if tc.name == "paused" && (out.Runs[0].Phase != task.PhasePaused ||
+				out.Runs[0].Held != "paused without the freeze: hib task rescue t-aaaaaaaa or hib task rm t-aaaaaaaa") {
 				t.Errorf("paused run = %+v, want phase paused and held reason", out.Runs[0])
 			}
 			if tc.run.Machine != task.MachineUnknown {
