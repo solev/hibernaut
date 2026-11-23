@@ -230,6 +230,8 @@ func (a *App) taskFail(asJSON bool, cmd, requestID string, err error) int {
 		code = hibapi.CodeNotLive
 	case errors.Is(err, tasks.ErrBusy):
 		code = hibapi.CodeBusy
+	case errors.Is(err, errTaskHoldInterrupted):
+		code = hibapi.CodeInterrupted
 	}
 	return a.reply(hibapi.Response{Error: termsafe.String(withNextStep(cmd, err).Error()), TaskReply: hibapi.TaskReply{
 		RequestID: requestID, Code: code, Retryable: code.Retryable()}})

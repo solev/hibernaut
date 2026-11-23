@@ -124,20 +124,36 @@ func TestTaskFollowValidationAndCancellation(t *testing.T) {
 		if code != 0 || *clock != 60*time.Second || polls != 60 {
 			t.Fatalf("%s cap = exit %d, elapsed %v, %d polls; want 60s and 60 one-second sleeps", cmd, code, *clock, polls)
 		}
-		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-		a.TaskHoldWait = func(context.Context, time.Duration) error {
-			cancel()
-			return context.Canceled
-		}
-		out.Reset()
-		code = a.Run(ctx, []string{"task", cmd, string(rec.Run.Task), "-hold", "60s", "-json"})
-		cancel()
-		var r hibapi.Response
-		if err := json.Unmarshal(out.Bytes(), &r); err != nil {
-			t.Fatal(err)
-		}
-		if code != 1 || r.Error == "" {
-			t.Fatalf("%s cancelled = exit %d, %+v; want explicit error", cmd, code, r)
+		for _, end := range []string{"before read", "cancelled", "deadline"} {
+			t.Run(cmd+"/"+end, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				followClock(t, a, nil)
+				wait := a.TaskHoldWait
+				a.TaskHoldWait = func(ctx context.Context, d time.Duration) error {
+					if err := wait(ctx, d); err != nil {
+						return err
+					}
+					if end == "deadline" {
+						return context.DeadlineExceeded
+					}
+					cancel()
+					return ctx.Err()
+				}
+				if end == "before read" {
+					cancel()
+				}
+				out.Reset()
+				code := a.Run(ctx, []string{"task", cmd, string(rec.Run.Task), "-hold", "60s", "-json"})
+				var r hibapi.Response
+				if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+					t.Fatal(err)
+				}
+				if code != 1 || r.Code != "INTERRUPTED" || !r.Retryable || r.Error == "" ||
+					r.TaskReply.Check() != nil || r.Task != nil || r.TaskLog != nil {
+					t.Fatalf("R1 %s %s = exit %d, %+v; want a retryable interruption", cmd, end, code, r)
+				}
+			})
 		}
 	}
 }
@@ -214,8 +230,18 @@ func TestTaskHoldContextStopsRead(t *testing.T) {
 func TestTaskWaitHeldMachine(t *testing.T) {
 	e := fake.New()
 	a, out, _ := newApp(t, e)
-	rec := submitReadTask(t, taskReadStore(t, a), "held", time.Now())
+	id := seedFollowMachine(t, a)
 	e.Add(engine.Machine{ID: "held-machine", State: engine.Paused})
+	followClock(t, a, nil)
+	code, r := taskReadReply(t, a, out, "task", "wait", string(id), "-hold", "0s")
+	if code != 0 || r.Task == nil || r.Task.Runs[0].Held != task.ErrHeld.Error() {
+		t.Fatalf("F8 waited machine = exit %d, %+v; want the rescue reason", code, r.Task)
+	}
+}
+
+func seedFollowMachine(t *testing.T, a *App) task.ID {
+	t.Helper()
+	rec := submitReadTask(t, taskReadStore(t, a), "held", time.Now())
 	db, err := sql.Open("sqlite", filepath.Join(a.Getenv("HIBD_STATE_DIR"), "tasks.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -233,8 +259,29 @@ func TestTaskWaitHeldMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, r := taskReadReply(t, a, out, "task", "wait", string(rec.Run.Task), "-hold", "0s")
-	if code != 0 || r.Task == nil || r.Task.Runs[0].Held != task.ErrHeld.Error() {
-		t.Fatalf("F8 waited machine = exit %d, %+v; want the rescue reason", code, r.Task)
+	return rec.Run.Task
+}
+
+type followLookupFailure struct {
+	engine.Engine
+	calls int
+}
+
+func (e *followLookupFailure) Get(context.Context, string) (engine.Machine, error) {
+	e.calls++
+	return engine.Machine{}, errors.New("engine connection refused")
+}
+
+func TestTaskWaitMachineLookupFailure(t *testing.T) {
+	e := &followLookupFailure{Engine: fake.New()}
+	a, out, stderr := newApp(t, e)
+	id := seedFollowMachine(t, a)
+	clock := followClock(t, a, nil)
+	code, r := taskReadReply(t, a, out, "task", "wait", string(id), "-hold", "2s")
+	if code != 0 || r.Task == nil || len(r.Task.Runs) != 1 || r.Task.Runs[0].Outcome != "" ||
+		r.Task.Machine != "" || r.Task.Runs[0].Held != "" || stderr.Len() != 0 ||
+		e.calls != 1 || *clock != 2*time.Second {
+		t.Fatalf("R2 wait = exit %d, %+v, stderr %q, %d lookups, elapsed %v; want pending without machine state",
+			code, r, stderr, e.calls, *clock)
 	}
 }

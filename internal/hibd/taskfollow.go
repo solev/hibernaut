@@ -13,9 +13,16 @@ import (
 
 const taskHoldMax = 60 * time.Second
 
-func (a *App) holdTask(ctx context.Context, d time.Duration, read func(context.Context) (bool, error)) error {
+var errTaskHoldInterrupted = errors.New("task hold interrupted")
+
+func (a *App) holdTask(ctx context.Context, d time.Duration, read func(context.Context) (bool, error)) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, d+2*time.Second)
 	defer cancel()
+	defer func() {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("%w: %w", errTaskHoldInterrupted, err)
+		}
+	}()
 	end := a.now().Add(d)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -109,11 +116,9 @@ func (a *App) taskWait(ctx context.Context, c taskCommand, args []string) int {
 		switch {
 		case errors.Is(err, engine.ErrNotFound):
 			selected.Machine = task.MachineGone
-		case err != nil:
-			return a.taskFail(*asJSON, c.Path, "", err)
-		case m.State == engine.Paused:
+		case err == nil && m.State == engine.Paused:
 			selected.Machine = task.MachinePaused
-		case m.State == engine.Running:
+		case err == nil && m.State == engine.Running:
 			selected.Machine = task.MachineRunning
 		}
 		out.Machine = selected.Machine
