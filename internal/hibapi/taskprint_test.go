@@ -57,6 +57,61 @@ removal rm at 2026-10-28T12:00:00Z done at 2026-10-28T13:00:00Z
 	}
 }
 
+func TestPrintTaskPublications(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pub  TaskPublication
+		want string
+	}{
+		{"no changes", TaskPublication{Author: "martin"},
+			"publication no changes\nauthor martin\n"},
+		{"not pushed", TaskPublication{Changes: true, Commit: "abc123"},
+			"commit abc123\npushed false\n"},
+		{"no PR", TaskPublication{Changes: true, Commit: "abc123", Pushed: true, Branch: "hib/t-aaaaaaaa"},
+			"commit abc123\npushed true\nbranch hib/t-aaaaaaaa\n"},
+		{"draft PR", TaskPublication{Changes: true, Commit: "abc123", Pushed: true, Branch: "hib/t-aaaaaaaa",
+			PR: "https://github.com/acme/api/pull/42", Author: "martin"},
+			"commit abc123\npushed true\nbranch hib/t-aaaaaaaa\npr https://github.com/acme/api/pull/42 (draft)\nauthor martin\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := Task{ID: "t-aaaaaaaa", Repo: "acme/api", Runs: []TaskRun{
+				{N: 1, Step: task.StepKeep, Publish: task.PublishDraftPR, Publication: &tc.pub},
+				{N: 2, Step: task.StepKeep, Publish: task.PublishNone},
+			}}
+			var out bytes.Buffer
+			if err := PrintTask(&out, record); err != nil {
+				t.Fatal(err)
+			}
+			if want := "held -\n" + tc.want + "step keep\n"; !strings.Contains(out.String(), want) {
+				t.Fatalf("show publication lacks %q:\n%s", want, &out)
+			}
+			if strings.Count(out.String(), tc.want) != 1 {
+				t.Fatalf("show repeated a publication on another run:\n%s", &out)
+			}
+		})
+	}
+}
+
+func TestPrintTaskPublishSteps(t *testing.T) {
+	for _, mode := range []task.Publish{"", task.PublishNone, task.PublishDraftPR} {
+		t.Run(string(mode), func(t *testing.T) {
+			record := Task{ID: "t-aaaaaaaa", Repo: "acme/api",
+				Runs: []TaskRun{{N: 1, Publish: mode}}}
+			var out bytes.Buffer
+			if err := PrintTask(&out, record); err != nil {
+				t.Fatal(err)
+			}
+			want := "  publish: find or open the draft PR"
+			if mode != task.PublishDraftPR {
+				want += " (skipped: publish none)"
+			}
+			if !strings.Contains(out.String(), want+"\n") {
+				t.Fatalf("show publish %q lacks %q:\n%s", mode, want, &out)
+			}
+		})
+	}
+}
+
 func TestPrintTaskListFits80Columns(t *testing.T) {
 	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	held := "paused without the freeze: hib task rescue t-aaaaaaaa or hib task rm t-aaaaaaaa"
@@ -170,6 +225,10 @@ func TestPrintTaskEscapesFields(t *testing.T) {
 		{"detail", func(r *Task) { r.Runs[0].Detail = unsafe }},
 		{"command", func(r *Task) { r.Runs[0].Command = []string{unsafe} }},
 		{"recipe", func(r *Task) { r.Runs[0].Recipe = unsafe }},
+		{"commit", func(r *Task) { r.Runs[0].Publication = &TaskPublication{Changes: true, Commit: unsafe} }},
+		{"branch", func(r *Task) { r.Runs[0].Publication = &TaskPublication{Changes: true, Pushed: true, Branch: unsafe} }},
+		{"PR", func(r *Task) { r.Runs[0].Publication = &TaskPublication{Changes: true, PR: unsafe} }},
+		{"author", func(r *Task) { r.Runs[0].Publication = &TaskPublication{Author: unsafe} }},
 		{"actor", func(r *Task) { r.Requests[0].Actor.Name = unsafe }},
 		{"source", func(r *Task) { r.Requests[0].Actor.Source = unsafe }},
 		{"kind", func(r *Task) { r.Requests[0].Kind = task.RequestKind(unsafe) }},

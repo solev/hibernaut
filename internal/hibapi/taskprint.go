@@ -116,13 +116,33 @@ func PrintTask(w io.Writer, record Task) error {
 		for _, arg := range r.Command {
 			fmt.Fprintf(&b, " %q", termsafe.Line(arg))
 		}
-		fmt.Fprintf(&b, "\nrecipe %s\nsubmitted %s\ndeadline %s\ndetail %s\nheld %s\nstep %s\n",
+		fmt.Fprintf(&b, "\nrecipe %s\nsubmitted %s\ndeadline %s\ndetail %s\nheld %s\n",
 			field(r.Recipe), r.Submitted.UTC().Format(time.RFC3339), taskTime(r.Deadline),
-			field(r.Detail), field(r.Held), field(string(r.Step)))
+			field(r.Detail), field(r.Held))
+		if p := r.Publication; p != nil {
+			if !p.Changes {
+				b.WriteString("publication no changes\n")
+			} else {
+				if p.Commit != "" {
+					fmt.Fprintf(&b, "commit %s\n", field(p.Commit))
+				}
+				fmt.Fprintf(&b, "pushed %t\n", p.Pushed)
+				if p.Branch != "" {
+					fmt.Fprintf(&b, "branch %s\n", field(p.Branch))
+				}
+				if p.PR != "" {
+					fmt.Fprintf(&b, "pr %s (draft)\n", field(p.PR))
+				}
+			}
+			if p.Author != "" {
+				fmt.Fprintf(&b, "author %s\n", field(p.Author))
+			}
+		}
+		fmt.Fprintf(&b, "step %s\n", field(string(r.Step)))
 		for _, unread := range r.Unread {
 			fmt.Fprintf(&b, "unread %s\n", field(unread))
 		}
-		spec := task.Spec{}
+		spec := task.Spec{Publish: r.Publish}
 		if record.Repo != "" {
 			spec.Repo = task.Repo{Owner: record.Repo}
 		}
