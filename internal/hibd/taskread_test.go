@@ -321,6 +321,72 @@ func submitReadTask(t *testing.T, st *tasks.Tasks, key string, at time.Time) tas
 	return rec
 }
 
+func TestTaskShowUnreadTails(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		collections [][]string
+		want        []string
+	}{
+		{"latest", [][]string{{"setup: old tail"}, {"command: stop unproven; tail not read",
+			"publication: guest\x1b unavailable"}}, []string{"command: stop unproven; tail not read", "publication: guest\x1b unavailable"}},
+		{"cleared", [][]string{{"command: old tail"}, nil}, nil},
+		{"absent", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			a, out, _ := newApp(t, fake.New())
+			at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+			rec := submitReadTask(t, taskReadStore(t, a), tc.name, at)
+			bodies := []task.Body{&task.MachineIntent{}, &task.MachineResult{ID: "machine"}}
+			for _, unread := range tc.collections {
+				bodies = append(bodies, &task.CollectIntent{}, &task.CollectResult{Unread: unread})
+			}
+			bodies = append(bodies, &task.KeepIntent{}, &task.KeepResult{})
+			db := taskReadDB(t, a)
+			for i, body := range bodies {
+				c := task.Checkpoint{Body: body}
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.ExecContext(ctx, `INSERT INTO checkpoints
+					(task,n,seq,step,kind,at,by,body) VALUES (?,1,?,?,?,?, '',?)`,
+					rec.Run.Task, i+1, c.Step(), c.Kind(), at.UnixMilli(), string(raw)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			code, reply := taskReadReply(t, a, out, "task", "show", string(rec.Run.Task))
+			var wire struct {
+				Task struct{ Runs []struct{ Unread []string } }
+			}
+			if err := json.Unmarshal(out.Bytes(), &wire); err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || reply.Task == nil || len(wire.Task.Runs) != 1 ||
+				!slices.Equal(wire.Task.Runs[0].Unread, tc.want) {
+				t.Fatalf("show unread tails = exit %d, %s, want %q", code, out, tc.want)
+			}
+			if len(tc.want) == 0 && strings.Contains(out.String(), `"unread"`) {
+				t.Fatalf("empty unread changed the wire: %s", out)
+			}
+			out.Reset()
+			if code := a.Run(ctx, []string{"task", "show", string(rec.Run.Task)}); code != 0 {
+				t.Fatalf("plain show = exit %d, %s", code, out)
+			}
+			for _, unread := range tc.want {
+				want := strings.ReplaceAll(unread, "\x1b", `\x1b`)
+				if !strings.Contains(out.String(), "unread "+want+"\n") {
+					t.Errorf("plain show omitted safe unread tail %q: %s", want, out)
+				}
+			}
+			if strings.ContainsRune(out.String(), '\x1b') || strings.Contains(out.String(), "old tail") {
+				t.Errorf("plain show exposes a raw control or superseded tail: %q", out)
+			}
+		})
+	}
+}
+
 func TestTaskLsEmpty(t *testing.T) {
 	a, out, _ := newApp(t, fake.New())
 	code, r := taskReadReply(t, a, out, "task", "ls")
@@ -876,12 +942,12 @@ func TestTaskReadsPlain(t *testing.T) {
 		}
 		if cmd == "ls" {
 			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-			if len(lines) != 2 || strings.Join(strings.Fields(lines[0]), " ") != "TASK RUN PHASE STAGE REPO AGE" {
+			if len(lines) != 3 || strings.Join(strings.Fields(lines[0]), " ") != "TASK RUN PHASE STAGE REPO AGE" {
 				t.Fatalf("task table = %q, want TASK RUN PHASE STAGE REPO AGE and queued row", out)
 			}
 			row := strings.Fields(lines[1])
-			if len(row) < 6 || !slices.Equal(row[:2], []string{string(rec.Run.Task), "1"}) ||
-				!strings.Contains(lines[1], "queued (waiting for room or its turn; 0 runs ahead; expires at ") ||
+			if len(row) != 6 || !slices.Equal(row[:3], []string{string(rec.Run.Task), "1", "queued"}) ||
+				!strings.HasPrefix(lines[2], "  waiting for room or its turn; 0 runs ahead; expires at ") ||
 				!slices.Equal(row[len(row)-3:len(row)-1], []string{"-", "acme/read"}) {
 				t.Fatalf("task table = %q, want a queued row with its wait reason", out)
 			}

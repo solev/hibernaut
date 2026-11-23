@@ -33,7 +33,8 @@ const (
 	// CodeBadRequest means the request didn't parse. Never retry.
 	CodeBadRequest ErrorCode = "BAD_REQUEST"
 	// CodeBusy means tasks.db stayed locked past its busy timeout. Retry with the same ID.
-	CodeBusy        ErrorCode = "BUSY"
+	CodeBusy ErrorCode = "BUSY"
+	// CodeInterrupted means a held task read was interrupted. Retry the read.
 	CodeInterrupted ErrorCode = "INTERRUPTED"
 )
 
@@ -164,6 +165,7 @@ type TaskRun struct {
 	Submitted   time.Time         `json:"submitted"`
 	Deadline    *time.Time        `json:"deadline,omitempty"`
 	Publication *task.Publication `json:"publication,omitempty"`
+	Unread      []string          `json:"unread,omitempty"`
 }
 
 // TaskLog is a range of a run's setup, command and finish logs in task.Stages order.
@@ -253,6 +255,12 @@ func RunOf(r task.Run, daemon task.Instance) TaskRun {
 		Publication: r.Publication(), Recipe: r.Spec.Recipe}
 	if c, ok := r.Last(); ok {
 		out.Step = c.Step()
+	}
+	for _, c := range slices.Backward(r.Log) {
+		if result, ok := c.Body.(*task.CollectResult); ok {
+			out.Unread = slices.Clone(result.Unread)
+			break
+		}
 	}
 	if d, ok := r.Deadline(); ok {
 		out.Deadline = &d

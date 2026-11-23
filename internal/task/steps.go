@@ -230,6 +230,9 @@ func (s Step) Skipped(r RunID, sp Spec) bool {
 	return i.skip != nil && i.skip(r, sp)
 }
 
+// SkipReason is the step table's reason for skipping s.
+func (s Step) SkipReason() string { return s.info().skipWhy }
+
 // Doc is one line on what s does, for help and the diagram.
 func (s Step) Doc() string { return s.info().doc }
 
