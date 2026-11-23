@@ -287,9 +287,11 @@ func (a *App) taskLs(ctx context.Context, c taskCommand, args []string) int {
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, "", err)
 	}
+	now := a.now()
+	queue := taskQueue(records, now)
 	out := make([]hibapi.Task, len(records))
 	for i, record := range records {
-		out[i] = taskReadOf(record, instance, ms, false)
+		out[i] = taskReadOf(record, instance, ms, false, queue, now)
 	}
 	if *asJSON {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Tasks: out}})
@@ -342,7 +344,16 @@ func (a *App) taskShow(ctx context.Context, c taskCommand, args []string) int {
 	if err != nil {
 		return a.taskFail(*asJSON, c.Path, "", err)
 	}
-	out := taskReadOf(record, instance, ms, true)
+	now := a.now()
+	var queue task.Queue
+	if r, live := record.Live(); live && r.Queued() {
+		records, err := st.List(ctx)
+		if err != nil {
+			return a.taskFail(*asJSON, c.Path, "", err)
+		}
+		queue = taskQueue(records, now)
+	}
+	out := taskReadOf(record, instance, ms, true, queue, now)
 	if *asJSON {
 		return a.reply(hibapi.Response{TaskReply: hibapi.TaskReply{Task: &out}})
 	}
