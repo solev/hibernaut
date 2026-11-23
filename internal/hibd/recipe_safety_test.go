@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,6 +84,68 @@ func TestRecipeOwnerAndIOAdvice(t *testing.T) {
 				t.Fatalf("%s failure = %v; want file-specific %q without move-aside advice", mode, err, want)
 			}
 		})
+	}
+}
+
+func TestRecipeWrongGroupThroughRun(t *testing.T) {
+	a, _, _ := newApp(t, nil)
+	keepRecipe(t, a, "check", recipeBody)
+	path := filepath.Join(a.Getenv("HIBD_STATE_DIR"), "recipes.json")
+	root, owner, err := (statefile.Dir{Path: a.Getenv("HIBD_STATE_DIR")}).Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Close()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := owner.GID
+	for _, gid := range groups {
+		if gid != owner.GID {
+			group = gid
+			break
+		}
+	}
+	if group == owner.GID {
+		t.Skip("user has no second group for a rootless wrong-group fixture")
+	}
+	if err := os.Chown(path, -1, group); err != nil {
+		t.Fatal(err)
+	}
+	code, out := callRecipe(t, a, "", "show", "check")
+	want := fmt.Sprintf("sudo chown %d:%d %s", owner.UID, owner.GID, path)
+	if code != 1 || !strings.Contains(out, want) || strings.Count(out, "recipes.json") != 1 ||
+		strings.Contains(out, "move it aside") {
+		t.Fatalf("wrong group = exit %d, %s; want %q without move-aside advice", code, out, want)
+	}
+}
+
+func TestRecipePublishFailureAfterRename(t *testing.T) {
+	a, _, _ := newApp(t, nil)
+	keepRecipe(t, a, "check", recipeBody)
+	publish := publishRecipe
+	publishRecipe = func(s recipeStore, root *os.Root, data []byte, owner statefile.Owner) (*os.File, error) {
+		f, err := publish(s, root, data, owner)
+		if err != nil {
+			return f, err
+		}
+		return nil, errors.Join(errors.New("injected post-rename sync failure"), f.Close())
+	}
+	t.Cleanup(func() { publishRecipe = publish })
+	code, out := callRecipe(t, a, `{"command":["false"]}`, "put", "check")
+	var reply hibapi.Response
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || reply.Code != "" || !strings.Contains(reply.Error, "injected post-rename sync failure") ||
+		!strings.Contains(reply.Error, "retry after checking the I/O failure") ||
+		strings.Count(reply.Error, "recipes.json") != 1 {
+		t.Errorf("published failure = exit %d, %s; want an uncoded I/O failure with file-specific advice", code, out)
+	}
+	if code, out := callRecipe(t, a, "", "show", "check"); code != 0 ||
+		!strings.Contains(out, `"command":["false"]`) {
+		t.Fatalf("read after failed publish = exit %d, %s; want the landed change", code, out)
 	}
 }
 

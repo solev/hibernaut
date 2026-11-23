@@ -204,6 +204,7 @@ func TestRecipeLostChangeReplyHint(t *testing.T) {
 				{taskHostReply{code: 2}, true},
 				{taskHostReply{code: 1, text: `{"v":`}, true},
 				{taskHostReply{code: 1, text: `{"v":1,"error":"host refused","errorCode":"BAD_REQUEST"}`}, false},
+				{taskHostReply{code: 1, text: `{"v":1,"error":"recipes.json: injected post-rename sync failure; retry after checking the I/O failure"}`}, true},
 				{taskHostReply{code: 1}, false},
 				{taskHostReply{code: 127}, false},
 				{taskHostReply{code: -1, err: &exec.Error{Name: "ssh", Err: exec.ErrNotFound}}, false},
