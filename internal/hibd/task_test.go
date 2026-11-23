@@ -96,41 +96,60 @@ func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 func TestSubmissionOf(t *testing.T) {
 	at := time.Date(2025, 10, 28, 9, 0, 0, 0, time.UTC)
 	actor := task.Actor{Owner: "martin", Name: "martin", Source: "cli"}
-	ok := hibapi.TaskStart{RequestID: "r1", Repo: "solev/hibernaut", Command: []string{"codex"},
+	ok := hibapi.TaskStart{RequestID: "r1", Command: []string{"codex"},
 		Prompt: &hibapi.TaskFile{Size: 12}, Files: []hibapi.TaskFile{{Name: "notes.md", Size: 3}}}
 	sub, err := submissionOf(ok, actor, at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := task.Spec{Repo: task.Repo{Owner: "solev", Name: "hibernaut"}, Command: []string{"codex"},
-		Image: "dev", Size: "medium", Timeout: task.DefaultTimeout, Publish: task.PublishDraftPR,
+	want := task.Spec{Command: []string{"codex"},
+		Image: "dev", Size: "medium", Timeout: task.DefaultTimeout, Publish: task.PublishNone,
 		Inputs: []task.File{{Name: task.PromptName, Size: 12}, {Name: "notes.md", Size: 3}}}
 	if sub.Spec.Repo != want.Repo || sub.Spec.Image != want.Image || sub.Spec.Size != want.Size ||
 		sub.Spec.Timeout != want.Timeout || sub.Spec.Publish != want.Publish ||
 		len(sub.Spec.Inputs) != 2 || sub.Spec.Inputs[0] != want.Inputs[0] || sub.Spec.Inputs[1] != want.Inputs[1] {
 		t.Errorf("spec = %+v, want %+v", sub.Spec, want)
 	}
-	noRepo := ok
-	noRepo.Repo = ""
-	if sub, err := submissionOf(noRepo, actor, at); err != nil || sub.Spec.Publish != task.PublishNone {
-		t.Errorf("no repo = %+v, %v; want publish none", sub.Spec, err)
+	explicit := ok
+	explicit.Image, explicit.Size, explicit.TimeoutSeconds, explicit.Publish = "custom", "small", 3600, task.PublishNone
+	if sub, err := submissionOf(explicit, actor, at); err != nil || sub.Spec.Image != "custom" ||
+		sub.Spec.Size != "small" || sub.Spec.Timeout != time.Hour || sub.Spec.Publish != task.PublishNone {
+		t.Errorf("explicit settings = %+v, %v; want custom, small, 1h, publish none", sub.Spec, err)
 	}
 	for name, edit := range map[string]func(*hibapi.TaskStart){
-		"no request ID":   func(r *hibapi.TaskStart) { r.RequestID = "" },
-		"no command":      func(r *hibapi.TaskStart) { r.Command = nil },
-		"bad repo":        func(r *hibapi.TaskStart) { r.Repo = "hibernaut" },
-		"bad size":        func(r *hibapi.TaskStart) { r.Size = "huge" },
-		"bad publish":     func(r *hibapi.TaskStart) { r.Publish = "pr" },
-		"pr without repo": func(r *hibapi.TaskStart) { r.Repo, r.Publish = "", task.PublishDraftPR },
-		"bad task":        func(r *hibapi.TaskStart) { r.Task = "app" },
-		"hidden file":     func(r *hibapi.TaskStart) { r.Files = []hibapi.TaskFile{{Name: ".env"}} },
-		"nested file":     func(r *hibapi.TaskStart) { r.Files = []hibapi.TaskFile{{Name: "a/b"}} },
-		"prompt's name":   func(r *hibapi.TaskStart) { r.Files = []hibapi.TaskFile{{Name: task.PromptName}} },
+		"no request ID":    func(r *hibapi.TaskStart) { r.RequestID = "" },
+		"no command":       func(r *hibapi.TaskStart) { r.Command = nil },
+		"bad repo":         func(r *hibapi.TaskStart) { r.Repo = "hibernaut" },
+		"repo":             func(r *hibapi.TaskStart) { r.Repo = "solev/hibernaut" },
+		"branch":           func(r *hibapi.TaskStart) { r.Branch = "main" },
+		"draft PR":         func(r *hibapi.TaskStart) { r.Repo, r.Publish = "solev/hibernaut", task.PublishDraftPR },
+		"recipe":           func(r *hibapi.TaskStart) { r.Recipe = "review" },
+		"bad size":         func(r *hibapi.TaskStart) { r.Size = "huge" },
+		"bad image":        func(r *hibapi.TaskStart) { r.Image = "../dev" },
+		"empty command":    func(r *hibapi.TaskStart) { r.Command = []string{""} },
+		"nul command":      func(r *hibapi.TaskStart) { r.Command = []string{"echo", "\x00"} },
+		"negative timeout": func(r *hibapi.TaskStart) { r.TimeoutSeconds = -1 },
+		"overflow timeout": func(r *hibapi.TaskStart) { r.TimeoutSeconds = 1<<63 - 1 },
+		"bad publish":      func(r *hibapi.TaskStart) { r.Publish = "pr" },
+		"pr without repo":  func(r *hibapi.TaskStart) { r.Repo, r.Publish = "", task.PublishDraftPR },
+		"bad task":         func(r *hibapi.TaskStart) { r.Task = "app" },
+		"hidden file":      func(r *hibapi.TaskStart) { r.Files = []hibapi.TaskFile{{Name: ".env"}} },
+		"nested file":      func(r *hibapi.TaskStart) { r.Files = []hibapi.TaskFile{{Name: "a/b"}} },
+		"prompt's name":    func(r *hibapi.TaskStart) { r.Files = []hibapi.TaskFile{{Name: task.PromptName}} },
+		"duplicate files": func(r *hibapi.TaskStart) {
+			r.Files = []hibapi.TaskFile{{Name: "note", Size: 1}, {Name: "note", Size: 1}}
+		},
+		"overflow inputs": func(r *hibapi.TaskStart) {
+			r.Prompt.Size = 1
+			r.Files = []hibapi.TaskFile{{Name: "large", Size: 1<<63 - 1}}
+		},
 		"too big": func(r *hibapi.TaskStart) {
 			r.Files = []hibapi.TaskFile{{Name: "big", Size: task.MaxInputBytes}}
 		},
 	} {
 		req := ok
+		prompt := *ok.Prompt
+		req.Prompt = &prompt
 		req.Files = append([]hibapi.TaskFile(nil), ok.Files...)
 		edit(&req)
 		if _, err := submissionOf(req, actor, at); !errors.Is(err, errBadTaskRequest) {
