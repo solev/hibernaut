@@ -42,6 +42,31 @@ func TestStopAfterReboot(t *testing.T) {
 	}
 }
 
+func TestStopAfterSlowRestart(t *testing.T) {
+	for _, down := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		t.Run(down.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := bubbleHarness(t, "hang")
+				id := h.submit(2 * time.Hour)
+				bubbleUntil(t, h, 30*time.Second, h.launched(id, task.StageCommand))
+				h.request(id, task.RequestCancel)
+				bubbleUntil(t, h, 5*time.Second, func() bool { _, ok := h.run(id).Stop(); return ok })
+				h.stop()
+				time.Sleep(down)
+				h.clock.Advance(down)
+				h.configure = func(cfg *Config) { cfg.Clock = RealClock{} }
+				h.start()
+				bubbleUntil(t, h, 75*time.Second, h.ended(id))
+				h.stop()
+				if how := stopResult(t, h.run(id)).How; how != "term" {
+					t.Fatalf("stop after %s down ended how=%q, want term", down, how)
+				}
+				checkHonestWrapUp(t, h, id)
+			})
+		})
+	}
+}
+
 func TestCollectAfterRestart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := bubbleHarness(t, "collect-hang")

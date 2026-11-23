@@ -407,8 +407,7 @@ func (x *executor) stop(ctx context.Context) error {
 	if _, ok := x.r.Stop(); !ok || x.done(task.StepStop) {
 		return nil
 	}
-	intent, _ := x.last(task.StepStop)
-	force := x.now().Sub(intent.At) >= task.StopGrace
+	force := task.StopGraceRemaining(x.r, x.cfg.StartedAt, x.now()) == 0
 	for {
 		if err := x.refresh(ctx); err != nil {
 			return err

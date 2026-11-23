@@ -5,6 +5,20 @@ import (
 	"time"
 )
 
+func TestMachineTimeoutSaturates(t *testing.T) {
+	const largest = time.Duration(1<<63 - 1)
+	for _, timeout := range []time.Duration{largest - TimeoutMargin, largest - TimeoutMargin + 1, largest} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			r := newRun(false)
+			r.Spec.Timeout = timeout
+			r = build(t, r, me, &MachineIntent{})
+			if got := MachineTimeout(r, r.Log[0].At); got != largest {
+				t.Fatalf("machine timeout=%s, want largest positive duration %s", got, largest)
+			}
+		})
+	}
+}
+
 func TestWrapUpBudgetsUseRecordedIntent(t *testing.T) {
 	r := newRun(false)
 	if StopUnproven(r, t0, t0.Add(time.Hour)) {

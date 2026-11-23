@@ -105,13 +105,14 @@ func Pick(runs []Run, now time.Time, fits func(Run) error) (RunID, bool) {
 }
 
 // MachineTimeout is the E2B timeout to set on run r's machine at now: the time to its deadline
-// plus TimeoutMargin, so hibd's stop always comes before E2B's pause.
+// plus TimeoutMargin, saturating at the largest duration rather than wrapping negative.
 func MachineTimeout(r Run, now time.Time) time.Duration {
 	d, ok := r.Deadline()
 	if !ok {
 		return TimeoutMargin
 	}
-	return max(d.Sub(now), 0) + TimeoutMargin
+	left := max(d.Sub(now), 0)
+	return min(left, time.Duration(1<<63-1)-TimeoutMargin) + TimeoutMargin
 }
 
 // RuntimeMax is a stage unit's RuntimeMaxSec when launched at now: the time to the deadline.
@@ -121,6 +122,11 @@ func RuntimeMax(r Run, now time.Time) time.Duration {
 		return time.Second
 	}
 	return max(d.Sub(now).Truncate(time.Second), time.Second)
+}
+
+// StopGraceRemaining measures the TERM grace from the later of the stop intent and daemon start.
+func StopGraceRemaining(r Run, startedAt, now time.Time) time.Duration {
+	return remaining(r, StepStop, StopGrace, startedAt, now)
 }
 
 // StopRemaining measures the proof budget from the later of the stop intent and daemon start.
