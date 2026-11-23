@@ -242,14 +242,3 @@ var (
 	// the run holds its machine, only wake touches the machine.
 	ErrRunLive = errors.New("the task has a run that hasn't ended")
 )
-
-// Recipe is a named command with its defaults, kept in recipes.json. Submission resolves it
-// into Spec.Command and the Spec defaults, so a run never depends on later recipe changes.
-type Recipe struct {
-	Name    string
-	Command []string
-	Image   string
-	Size    string
-	Timeout time.Duration
-	Publish Publish
-}

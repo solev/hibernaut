@@ -29,7 +29,7 @@ func callRecipe(t *testing.T, a *App, body string, args ...string) (int, string)
 	defer cancel()
 	code := cmd.Run(ctx, append(append([]string{"recipe"}, args...), "-json"))
 	if stderr.Len() != 0 {
-		t.Fatalf("recipe stderr %q", &stderr)
+		t.Errorf("recipe stderr %q", &stderr)
 	}
 	return code, out.String()
 }
@@ -61,7 +61,7 @@ func TestRecipeCRUDAndDefault(t *testing.T) {
 	}
 	code, r := submitTaskJSON(t, a, hibapi.TaskStart{RequestID: "no-default"}, &taskUnreadInput{})
 	requireTaskError(t, code, r, "no-default", hibapi.CodeBadRequest, false)
-	for _, want := range []string{"-- CMD", "--recipe NAME", "hib recipe default NAME"} {
+	for _, want := range []string{"no default recipe", "-- CMD", "--recipe NAME", "hib recipe default NAME"} {
 		if !strings.Contains(r.Error, want) {
 			t.Errorf("no default = %q; want %q", r.Error, want)
 		}

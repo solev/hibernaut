@@ -49,9 +49,26 @@ func TestRecipeClientCRUDAndDefault(t *testing.T) {
 	if code := c.hibContext(ctx, "task", "start"); code != 1 {
 		t.Fatalf("no default = %d; want 1", code)
 	}
-	for _, want := range []string{"-- CMD", "--recipe NAME", "hib recipe default NAME"} {
+	for _, want := range []string{"no default recipe", "-- CMD", "--recipe NAME", "hib recipe default NAME"} {
 		if !strings.Contains(c.errOut.String(), want) {
 			t.Errorf("no default error %q lacks %q", c.errOut, want)
+		}
+	}
+}
+
+func TestRecipeShowDefaults(t *testing.T) {
+	h := newHost(t)
+	c := initClient(t, h, true)
+	ctx := taskCallContext(t)
+	if code := c.hibContext(ctx, "recipe", "put", "check", "--", "true"); code != 0 {
+		t.Fatal(c.errOut)
+	}
+	if code := c.hibContext(ctx, "recipe", "show", "check"); code != 0 {
+		t.Fatalf("show = %d, %s", code, c.errOut)
+	}
+	for _, want := range []string{"image default\n", "size default\n", "timeout default\n"} {
+		if !strings.Contains(c.out.String(), want) {
+			t.Errorf("show = %q; want %q", c.out, want)
 		}
 	}
 }

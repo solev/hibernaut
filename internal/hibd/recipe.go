@@ -332,7 +332,11 @@ func resolveRecipe(req hibapi.TaskStart, stateDir string) (hibapi.TaskStart, err
 	}
 	r, ok := doc.Recipes[req.Recipe]
 	if !ok {
-		return req, fmt.Errorf("no recipe %q: give -- CMD, --recipe NAME, or set hib recipe default NAME", req.Recipe)
+		missing := fmt.Sprintf("no recipe %q", req.Recipe)
+		if req.Recipe == "" {
+			missing = "no default recipe"
+		}
+		return req, fmt.Errorf("%s: give -- CMD, --recipe NAME, or set hib recipe default NAME", missing)
 	}
 	if len(req.Command) == 0 {
 		req.Command = r.Command

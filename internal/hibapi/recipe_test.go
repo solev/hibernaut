@@ -22,5 +22,31 @@ func TestRecipeCommandAndTimeoutBounds(t *testing.T) {
 			t.Errorf("command of %d bytes, timeout %d = %v; want valid %v",
 				len(tc.command), tc.seconds, err, tc.valid)
 		}
+
+	}
+}
+
+func TestPrintRecipeDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		recipe Recipe
+		want   []string
+	}{
+		{"unset", Recipe{Name: "check", Command: []string{"true"}},
+			[]string{"  image default\n", "  size default\n", "  timeout default\n"}},
+		{"set", Recipe{Name: "check", Command: []string{"true"}, Image: "custom", Size: "large", TimeoutSeconds: 3600},
+			[]string{"  image custom\n", "  size large\n", "  timeout 1h0m0s\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			if err := PrintRecipe(&out, tc.recipe); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("recipe = %q; want %q", out.String(), want)
+				}
+			}
+		})
 	}
 }
