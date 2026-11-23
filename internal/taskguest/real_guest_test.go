@@ -180,6 +180,99 @@ func TestGuestRunner(t *testing.T) {
 	})
 }
 
+func TestGuestRepoTask(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		t.Fatal("guest test needs root in a Linux dev machine")
+	}
+	for _, base := range []string{"", "topic"} {
+		t.Run(base, func(t *testing.T) {
+			f := newRepoRunner(t, false)
+			ref := "trunk"
+			if base != "" {
+				ref = base
+				f.git(f.seed, "checkout", "-qb", base)
+				f.git(f.seed, "commit", "--allow-empty", "-qm", "Topic")
+				f.git(f.seed, "push", "-q", f.remote, "HEAD:refs/heads/"+base)
+			}
+			start := f.git(f.remote, "rev-parse", ref)
+			f.git(f.root, "config", "--file", f.system, "safe.directory", f.remote)
+			for _, dir := range []string{filepath.Dir(f.root), f.root} {
+				if err := os.Chmod(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			guestOK(t, []string{"chown", "-R", User + ":" + User, f.root}, ExecTimeout)
+			r := guestRun(t, []string{"sh", "-c", "printf 'guest work\\n' >tracked"}, nil)
+			r.Spec.Repo, r.Spec.Base, r.Spec.Publish = task.Repo{Owner: "o", Name: "r"}, base, task.PublishDraftPR
+			t.Cleanup(func() {
+				if err := os.RemoveAll(Workdir(r.ID.Task)); err != nil {
+					t.Fatal(err)
+				}
+			})
+			for _, stage := range []task.Stage{task.StageSetup, task.StageCommand, task.StageFinish} {
+				argv := Launch(r, stage, time.Minute)
+				var launch []string
+				for i, arg := range argv {
+					if arg == "--" {
+						launch = append(launch, argv[:i]...)
+						for _, env := range []string{"HOME=" + f.root, "GIT_CONFIG_SYSTEM=" + f.system,
+							"GIT_CONFIG_GLOBAL=" + filepath.Join(f.root, "global"), "GIT_ALLOW_PROTOCOL=file", "GH_TOKEN="} {
+							launch = append(launch, "--setenv="+env)
+						}
+						launch = append(launch, argv[i:]...)
+						break
+					}
+				}
+				guestOK(t, launch, ExecTimeout)
+				t.Cleanup(func() {
+					out := guestOK(t, Look(r.ID, stage), ExecTimeout)
+					seen, err := ParseLook([]byte(out))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if seen.Verdict() == Running {
+						guestOK(t, Stop(r.ID, stage), ExecTimeout)
+					}
+				})
+				var seen Seen
+				guestWait(t, ExecTimeout, func() bool {
+					out := guestOK(t, Look(r.ID, stage), ExecTimeout)
+					var err error
+					seen, err = ParseLook([]byte(out))
+					if err != nil {
+						t.Fatal(err)
+					}
+					return seen.Verdict() == Exited
+				})
+				if !seen.Exit.OK() {
+					t.Fatalf("%s exit %+v", stage, seen.Exit)
+				}
+				if stage == task.StageSetup {
+					if got := strings.TrimSpace(guestOK(t, []string{"runuser", "-u", User, "--", "git",
+						"-C", Workdir(r.ID.Task), "rev-parse", "HEAD"}, ExecTimeout)); got != start {
+						t.Fatalf("clone HEAD %s, want %s", got, start)
+					}
+				}
+			}
+			data, err := os.ReadFile(filepath.Join(RunDir(r.ID), "publish"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := ParsePublication(data)
+			remote := f.git(f.remote, "rev-parse", "refs/heads/"+r.ID.Task.Branch())
+			if err != nil || p.Start != start || !p.Changes || !p.Pushed || p.Commit != remote {
+				t.Fatalf("guest publication %+v, %v; remote %s", p, err, remote)
+			}
+			if got := f.git(f.remote, "show", remote+":tracked"); got != "guest work" {
+				t.Fatalf("pushed content %q", got)
+			}
+			if got := f.git(f.remote, "show", "-s", "--format=%an <%ae>", remote); got != p.Author {
+				t.Fatalf("pushed author %q, publication %q", got, p.Author)
+			}
+		})
+	}
+}
+
 func guestExec(t *testing.T, argv []string, limit time.Duration) (string, int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), limit)

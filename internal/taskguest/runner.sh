@@ -185,6 +185,34 @@ record_start() {
 	rm -f "$tmp"
 }
 
+publication_exit() {
+	status=$1
+	trap - 0
+	case $status in 75|76) status=2 ;; esac
+	tmp="$run/publish.$$"
+	if ! printf 'changes=%s\ncommit=%s\npushed=%s\nauthor=%s\nstart=%s\n' \
+		"$changes" "$commit" "$pushed" "$author" "$start" >"$tmp" ||
+		! mv -f "$tmp" "$run/publish"; then
+		rm -f "$tmp"
+		die "cannot write publication"
+	fi
+	exit "$status"
+}
+
+read_head() {
+	head=$(repo_git -C "$HIB_WORKDIR" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) ||
+		die "cannot read task HEAD"
+	valid_commit "$head" || die "task HEAD is not a SHA-1 commit"
+	author=$(repo_git -C "$HIB_WORKDIR" show -s --format='%an <%ae>' HEAD 2>/dev/null) ||
+		die "cannot read HEAD author"
+	author=$(printf '%s' "$author" | tr -d '\r\n' | head -c 256)
+	if [ -n "${GH_TOKEN:-}" ]; then
+		case $author in
+		*"$GH_TOKEN"*) author=; die "HEAD author contains a credential" ;;
+		esac
+	fi
+}
+
 setup() {
 	require_git
 	base=${HIB_BASE:-}
@@ -221,16 +249,55 @@ setup() {
 	printf 'clone base %s commit %s branch %s\n' "${base:-origin/HEAD}" "$sha" "$HIB_BRANCH"
 }
 
-# finish RUN: commits what the command left, and with HIB_PUBLISH=draft-pr pushes HIB_BRANCH and
-# opens a draft pull request. It writes RUN/publish whatever happens.
 finish() {
-	# TODO:
-	#   git add -A, and commit if anything is staged, as the commit author hibd set
-	#   changes is whether HIB_BRANCH differs from its base, the agent's own commits included
-	#   with draft-pr and changes: git push, then look for an open PR on the branch before
-	#   gh pr create --draft, so a lost reply never opens two
-	#   write changes, commit, pushed and pr to RUN/publish as key=value lines
-	die "finish is not implemented"
+	run=$1
+	changes=false commit='' pushed=false author='' start=''
+	trap 'publication_exit "$?"' 0
+	require_git
+	start=$(cat "$run/start" 2>/dev/null) || die "command starting commit is missing"
+	if ! valid_commit "$start"; then
+		start=
+		die "command starting commit is invalid"
+	fi
+	case ${HIB_PUBLISH:-} in
+	draft-pr|none) ;;
+	*) die "publish policy must be draft-pr or none" ;;
+	esac
+	repo_git check-ref-format "refs/heads/$HIB_BRANCH" >/dev/null 2>&1 ||
+		die "invalid task branch $HIB_BRANCH"
+	read_head
+	if [ "$head" != "$start" ]; then changes=true; commit=$head; fi
+	repo_git -C "$HIB_WORKDIR" add -A >/dev/null 2>&1 || die "cannot stage task work"
+	if repo_git -C "$HIB_WORKDIR" diff --cached --quiet --exit-code >/dev/null 2>&1; then
+		:
+	else
+		status=$?
+		[ "$status" -eq 1 ] || die "cannot inspect staged task work"
+		changes=true
+		repo_git -C "$HIB_WORKDIR" var GIT_AUTHOR_IDENT >/dev/null 2>&1 ||
+			die "configured git identity is required to commit"
+		printf 'commit task work\n'
+		repo_git -C "$HIB_WORKDIR" commit --quiet -m 'hib: Save task work' >/dev/null 2>&1 ||
+			die "cannot commit task work"
+		read_head
+	fi
+	if [ "$head" != "$start" ]; then changes=true; commit=$head; fi
+	count=$(repo_git -C "$HIB_WORKDIR" rev-list --count "$start..$head" 2>/dev/null) ||
+		die "cannot count task commits"
+	printf 'finish commits %s since %s\n' "$count" "$start"
+	if [ "$changes" = false ] || [ "$HIB_PUBLISH" = none ]; then return 0; fi
+	attempt=0
+	for delay in 0 5 15; do
+		if [ "$delay" -ne 0 ]; then sleep "$delay"; fi
+		attempt=$((attempt + 1))
+		printf 'push branch %s commit %s attempt %s\n' "$HIB_BRANCH" "$commit" "$attempt"
+		if repo_git -C "$HIB_WORKDIR" push --quiet "https://github.com/$HIB_REPO" \
+			"HEAD:refs/heads/$HIB_BRANCH" >/dev/null 2>&1; then
+			pushed=true
+			return 0
+		fi
+	done
+	die "cannot push branch $HIB_BRANCH after 3 attempts"
 }
 
 [ $# -ge 1 ] || die "usage: runner start|exit|look|log|verify|freeze|thaw|kill|launch ..."
