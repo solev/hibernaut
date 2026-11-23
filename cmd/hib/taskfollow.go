@@ -93,6 +93,11 @@ func (o taskLogsOptions) runLogs(ctx context.Context, a *app, args []string) (co
 		if l.Done || !o.follow && len(l.Data) == 0 {
 			return 0
 		}
+		if o.follow && len(l.Data) > 0 {
+			if err := a.waitTaskFollow(ctx, time.Second); err != nil {
+				return a.fail(err)
+			}
+		}
 	}
 }
 
@@ -137,6 +142,11 @@ func (o taskWaitOptions) wait(ctx context.Context, a *app, args []string) int {
 			}
 			if _, err := a.stdout.Write(data); err != nil {
 				return a.fail(err)
+			}
+			if !a.json && r.Detail != "" {
+				if _, err := fmt.Fprintf(a.stderr, "hib: %s\n", termsafe.Line(r.Detail)); err != nil {
+					return a.fail(err)
+				}
 			}
 			if r.Outcome == task.Succeeded || r.Outcome == task.NoChanges {
 				return 0

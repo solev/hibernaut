@@ -216,17 +216,24 @@ func TestTaskWaitRetriesPinnedRun(t *testing.T) {
 }
 
 func TestTaskFollowChecksFeaturesOnce(t *testing.T) {
-	pending := followWaitReply(t, "", "")
-	h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
-		pending, pending, pending, followWaitReply(t, task.Succeeded, ""),
-	}}
-	a, out, stderr := followClient(t, h)
-	if code := a.run(taskCallContext(t), []string{"task", "wait", "t-abcdefgh"}); code != 0 ||
-		out.String() != "succeeded\n" || stderr.Len() != 0 {
-		t.Fatalf("F7 wait = exit %d, stdout %q, stderr %q", code, out, stderr)
-	}
-	if h.versions != 1 || len(h.calls) != 4 {
-		t.Fatalf("F7 holds = %d task logins, %d feature logins; want 4 and 1", len(h.calls), h.versions)
+	for _, cmd := range []string{"logs", "wait"} {
+		t.Run(cmd, func(t *testing.T) {
+			pending, final := followWaitReply(t, "", ""), followWaitReply(t, task.Succeeded, "")
+			args, want := []string{"task", cmd, "t-abcdefgh"}, "succeeded\n"
+			if cmd == "logs" {
+				args, want = append(args, "-f"), "all bytes"
+				pending = followLogReply(t, 1, 0, "", nil, false)
+				final = followLogReply(t, 1, 0, task.StageCommand, []byte(want), true)
+			}
+			h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{pending, pending, pending, final}}
+			a, out, stderr := followClient(t, h)
+			if code := a.run(taskCallContext(t), args); code != 0 || out.String() != want || stderr.Len() != 0 {
+				t.Fatalf("F7 %s = exit %d, stdout %q, stderr %q", cmd, code, out, stderr)
+			}
+			if h.versions != 1 || len(h.calls) != 4 {
+				t.Fatalf("F7 holds = %d task logins, %d feature logins; want 4 and 1", len(h.calls), h.versions)
+			}
+		})
 	}
 }
 
@@ -440,6 +447,84 @@ func TestTaskFollowRejectsUnusableReplies(t *testing.T) {
 					code, out, stderr, len(h.calls))
 			}
 		}
+	}
+}
+
+func TestTaskWaitReportsDetail(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		t.Run(strconv.FormatBool(asJSON), func(t *testing.T) {
+			reply := followWaitReply(t, task.Cancelled, "")
+			var r hibapi.Response
+			if err := json.Unmarshal([]byte(reply.text), &r); err != nil {
+				t.Fatal(err)
+			}
+			r.Task.Runs[0].Detail = "cancel requested; stop unproven: the stage may still run when the machine wakes\x1b]52;c;eA==\x07"
+			raw, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reply.text = " \t" + string(raw) + "\n"
+			h := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{reply}}
+			a, out, stderr := followClient(t, h)
+			args, want := []string{"task", "wait", "t-abcdefgh"}, "cancelled\n"
+			wantError := "hib: cancel requested; stop unproven: the stage may still run when the machine wakes\\x1b]52;c;eA==\\x07\n"
+			if asJSON {
+				args, want, wantError = append(args, "--json"), reply.text, ""
+			}
+			code := a.run(taskCallContext(t), args)
+			if code != 1 || out.String() != want || stderr.String() != wantError || len(h.calls) != 1 {
+				t.Fatalf("R6 = exit %d, stdout %q, stderr %q, %d calls; want %q and %q",
+					code, out, stderr, len(h.calls), want, wantError)
+			}
+			followCall(t, h.calls[0], "wait", 0, 0, true)
+		})
+	}
+}
+
+func TestTaskLogsFollowRate(t *testing.T) {
+	want := bytes.Repeat([]byte("fast writer\n"), (9*128*1024)/12)
+	h := &taskCallHost{features: `["tasks"]`}
+	a, out, stderr := followClient(t, h)
+	var elapsed time.Duration
+	var starts []time.Duration
+	a.taskFollowSleep = func(ctx context.Context, d time.Duration) error {
+		elapsed += d
+		return ctx.Err()
+	}
+	a.ssh = func(ctx context.Context, args []string, in io.Reader, stdout, stderr io.Writer) (int, error) {
+		if strings.Contains(strings.Join(args, " "), "'task' 'logs'") {
+			starts = append(starts, elapsed)
+			from := out.Len()
+			available := min((int(elapsed/(250*time.Millisecond))+1)*128*1024, len(want))
+			if available == from && available < len(want) {
+				elapsed += 250 * time.Millisecond
+				available = min(available+128*1024, len(want))
+			}
+			h.replies = append(h.replies, followLogReply(t, 1, int64(from), task.StageCommand,
+				want[from:available], available == len(want)))
+		}
+		return h.ssh(ctx, args, in, stdout, stderr)
+	}
+	code := a.run(taskCallContext(t), []string{"task", "logs", "t-abcdefgh", "-f"})
+	if code != 0 || !bytes.Equal(out.Bytes(), want) || stderr.Len() != 0 || len(h.calls) > 3 ||
+		elapsed != 2*time.Second || h.versions != 1 {
+		t.Fatalf("R7 = exit %d, %d/%d bytes, stderr %q, %d calls at %v, elapsed %v; want <=3 calls and immediate Done",
+			code, out.Len(), len(want), stderr, len(h.calls), starts, elapsed)
+	}
+	for i := 1; i < len(starts); i++ {
+		if starts[i]-starts[i-1] < time.Second {
+			t.Fatalf("R7 login times %v; want at most one per second", starts)
+		}
+	}
+	plain := &taskCallHost{features: `["tasks"]`, replies: []taskHostReply{
+		followLogReply(t, 1, 0, task.StageCommand, want[:1<<20], false),
+		followLogReply(t, 1, 1<<20, task.StageCommand, want[1<<20:], true),
+	}}
+	b, copied, plainError := followClient(t, plain)
+	if code := b.run(taskCallContext(t), []string{"task", "logs", "t-abcdefgh"}); code != 0 ||
+		!bytes.Equal(copied.Bytes(), out.Bytes()) || plainError.Len() != 0 || len(plain.calls) != 2 {
+		t.Fatalf("R7 plain = exit %d, %d bytes, stderr %q, %d calls; want the same bytes",
+			code, copied.Len(), plainError, len(plain.calls))
 	}
 }
 

@@ -53,7 +53,7 @@ t-k3x9q2ab  1    running  command  acme/api  4m
 $ hib task logs t-k3x9q2ab -f          # 60s holds, pinned run and byte cursor
 $ hib task show t-k3x9q2ab             # runs, stage, deadline, holds, requests, PR
 $ hib task wait t-k3x9q2ab             # bounded holds until outcome, reconnects after drops
-succeeded  https://github.com/acme/api/pull/412
+succeeded
 
 $ hib task run t-k3x9q2ab --prompt "also fix the flaky test" --recipe codex
 $ ssh t-k3x9q2ab.hib                   # the kept machine, woken like any other

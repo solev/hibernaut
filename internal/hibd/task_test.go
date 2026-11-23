@@ -36,6 +36,11 @@ func TestPauseAndRmAskTheTaskRules(t *testing.T) {
 
 func TestTaskCommandsDispatchAndUsage(t *testing.T) {
 	a, out, errOut := newApp(t, fake.New())
+	for _, line := range []string{"  logs TASK [-run N] [-from BYTE] [-hold D]\n", "  wait TASK [-run N] [-hold D]\n"} {
+		if !strings.Contains(taskUsage("task"), line) {
+			t.Errorf("hibd task usage lacks %q", line)
+		}
+	}
 	seen := map[string]bool{}
 	for _, c := range hibapi.TaskCommands() {
 		if taskUsesE2B(c.Path) != c.E2B {

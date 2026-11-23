@@ -443,10 +443,15 @@ your laptop disconnecting. Reuse `--request-id ID` to retry the same request, an
 on any of these five commands to print hibd's reply unchanged.
 
 `hib task logs` reads or follows a run's output, and `hib task wait` waits for its outcome.
-Use `logs -f` to follow until the run ends. Both commands reconnect after a dropped connection
-and keep the selected run. Terminal logs escape controls; pipes and files keep the original bytes.
+Use `logs -f` to follow until the run ends. Follows and waits retry dropped connections,
+interrupted holds during host restarts, and retryable host replies such as a busy database.
+They keep the selected run and last received cursor. A live log follow makes at most about
+one login a second. Terminal logs escape controls; pipes and files keep the original bytes.
 Logs `--json` prints each range reply unchanged. Wait `--json` prints only the final reply.
 Wait exits 0 for `succeeded` or `no_changes`, 1 for another outcome or error, and 2 for a usage error.
+Text wait prints the run's detail on stderr when present, including an unproven-stop warning.
+An open follow or wait keeps the host from idle auto-off because each login counts as activity.
+A login after the nightly stop starts the VM again.
 
 `hib recipe put` saves a named command, `hib recipe ls` lists recipes, and `hib recipe show`
 inspects one. `hib recipe rm` removes a recipe, and `hib recipe default` shows or chooses the
