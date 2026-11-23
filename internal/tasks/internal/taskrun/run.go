@@ -1,6 +1,6 @@
 // Package taskrun carries out runs in the daemon. Each run is one straight-line workflow, the
 // executor's Run, which reads top to bottom as the steps in task.Steps: machine, upload, setup,
-// command, finish, then stop if one was recorded, collect and keep. Every step records its
+// command, finish, then stop if one was recorded, collect, publish and keep. Every step records its
 // intent in tasks.db before its outside action and its result after, so a run re-enters its
 // workflow from the log after any crash, restart or nudge, and a step whose intent is recorded
 // looks before it acts.
@@ -14,9 +14,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/solev/hibernaut/internal/engine"
 	"github.com/solev/hibernaut/internal/failurelog"
@@ -38,8 +42,9 @@ type Config struct {
 	Engine Engine
 	// Machines creates, resumes, pauses and removes task machines. In hibd it is Manager behind
 	// the links fence.
-	Machines Machines
-	Clock    Clock
+	Machines  Machines
+	Publisher Publisher
+	Clock     Clock
 	// Instance is this daemon's instance, written into every checkpoint it appends.
 	Instance task.Instance
 	// StartedAt is the timestamp recorded for Instance at daemon start.
@@ -48,6 +53,15 @@ type Config struct {
 	Poll time.Duration
 	Logf func(format string, args ...any)
 }
+
+// Publisher verifies the task branch and finds or opens its draft PR. Repeated calls for the
+// same task must converge on one PR, including after a lost reply.
+type Publisher interface {
+	Publish(ctx context.Context, r task.Run, p task.Publication, title string) (task.Publication, error)
+}
+
+// ErrPublishRetry marks a transient Publisher failure. Other errors are permanent.
+var ErrPublishRetry = errors.New("publication may be retried")
 
 // Engine is what the executor calls in a running machine. It can't pause or resume: those go
 // through Machines, which admits and fences.
@@ -116,6 +130,8 @@ type executor struct {
 	id  task.RunID
 	// r is the run as of the last refresh, with the machine's state from E2B.
 	r task.Run
+	// publishError is the last transient cause, retained across nudges but not daemon restarts.
+	publishError string
 }
 
 // Run is the run's whole workflow, and the order of its calls is the order of task.Steps.
@@ -136,6 +152,9 @@ func (x *executor) Run(ctx context.Context) error {
 		return err
 	}
 	if err := x.collect(ctx); err != nil {
+		return err
+	}
+	if err := x.publish(ctx); err != nil {
 		return err
 	}
 	return x.keep(ctx)
@@ -571,7 +590,9 @@ func (x *executor) collect(ctx context.Context) error {
 					}
 				}
 				if errors.Is(err, engine.ErrConnectionLost) {
-					if err = x.cfg.Clock.Sleep(reads, x.poll()); err == nil {
+					left := task.CollectRemaining(x.r, x.cfg.StartedAt, x.now())
+					if left > 0 && x.cfg.Clock.Sleep(reads, min(x.poll(), left)) == nil &&
+						task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) > 0 {
 						continue
 					}
 				}
@@ -591,7 +612,7 @@ func (x *executor) collect(ctx context.Context) error {
 		res.LogBytes += n
 		res.Dropped += max(size-n, 0)
 	}
-	if e, ok := x.exitOf(task.StageFinish); ok && e.OK() && x.r.Machine == task.MachineRunning &&
+	if _, ok := x.exitOf(task.StageFinish); ok && x.r.Machine == task.MachineRunning &&
 		!x.r.UnprovenStop() {
 		if task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) == 0 || reads.Err() != nil {
 			res.Unread = append(res.Unread, "publication: collect budget exhausted; not read")
@@ -613,21 +634,120 @@ func (x *executor) collect(ctx context.Context) error {
 // publication reads the file finish writes even when there are no changes. A missing file after
 // an OK finish is an unread publication, not proof that finish published no changes.
 func (x *executor) publication(ctx context.Context) (*task.Publication, error) {
-	res, err := x.exec(ctx, taskguest.PublicationOf(x.id), taskguest.ExecTimeout)
-	if err != nil {
-		return nil, err
-	}
-	if res.ExitCode != 0 {
-		if len(res.Stderr) != 0 {
-			return nil, fmt.Errorf("read exited %d: %s", res.ExitCode, res.Stderr)
+	for {
+		res, err := x.exec(ctx, taskguest.PublicationOf(x.id), taskguest.ExecTimeout)
+		if errors.Is(err, engine.ErrConnectionLost) {
+			left := task.CollectRemaining(x.r, x.cfg.StartedAt, x.now())
+			if left > 0 && x.cfg.Clock.Sleep(ctx, min(x.poll(), left)) == nil &&
+				task.CollectRemaining(x.r, x.cfg.StartedAt, x.now()) > 0 {
+				continue
+			}
 		}
-		return nil, fmt.Errorf("read exited %d", res.ExitCode)
+		if err != nil {
+			return nil, err
+		}
+		if res.ExitCode == taskguest.ExitNoPublication {
+			if finish, ok := x.exitOf(task.StageFinish); ok && !finish.OK() {
+				return nil, nil
+			}
+		}
+		if res.ExitCode != 0 {
+			if len(res.Stderr) != 0 {
+				return nil, fmt.Errorf("read exited %d: %s", res.ExitCode, res.Stderr)
+			}
+			return nil, fmt.Errorf("read exited %d", res.ExitCode)
+		}
+		p, err := taskguest.ParsePublication(res.Stdout)
+		if err != nil {
+			return nil, err
+		}
+		return &p, nil
 	}
-	p, err := taskguest.ParsePublication(res.Stdout)
+}
+
+func (x *executor) publish(ctx context.Context) error {
+	if task.StepPublish.Skipped(x.id, x.r.Spec) || x.done(task.StepPublish) {
+		return nil
+	}
+	if !x.open(task.StepPublish) {
+		if err := x.append(ctx, &task.PublishIntent{}); err != nil {
+			return err
+		}
+	}
+	res := &task.PublishResult{Publication: x.r.Publication()}
+	if !x.r.Publishable() || res.Publication == nil {
+		return x.append(ctx, res)
+	}
+	if task.PublishRemaining(x.r, x.cfg.StartedAt, x.now()) == 0 {
+		res.Failed = x.publishError
+		if res.Failed == "" {
+			res.Failed = "pull request publication budget exhausted"
+		}
+		return x.append(ctx, res)
+	}
+	if x.cfg.Publisher == nil {
+		res.Failed = "this hibd can't open pull requests"
+		return x.append(ctx, res)
+	}
+	title, err := x.title()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &p, nil
+	pass, cancel := context.WithTimeout(ctx, task.PublishRemaining(x.r, x.cfg.StartedAt, x.now()))
+	p, err := x.cfg.Publisher.Publish(pass, x.r, *res.Publication, title)
+	cut := pass.Err() != nil
+	cancel()
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	if errors.Is(err, taskstore.ErrStale) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	if err != nil {
+		detail := publicationFailure(err.Error())
+		if errors.Is(err, ErrPublishRetry) || cut {
+			x.publishError = detail
+			return err
+		}
+		res.Failed = detail
+	} else {
+		res.Publication = &p
+	}
+	return x.append(ctx, res)
+}
+
+func publicationFailure(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsControl(r) {
+			continue
+		}
+		if b.Len()+utf8.RuneLen(r) > 4096 {
+			break
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() == 0 {
+		return "pull request publication failed"
+	}
+	return b.String()
+}
+
+func (x *executor) title() (string, error) {
+	prompt, ok := x.r.Spec.Prompt()
+	if !ok {
+		return "", nil
+	}
+	rc, err := x.cfg.Store.Blob(prompt.Hash)
+	if err != nil {
+		return "", fmt.Errorf("read publication title: %w", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(rc, 4096))
+	if err := errors.Join(readErr, rc.Close()); err != nil {
+		return "", fmt.Errorf("read publication title: %w", err)
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	return line, nil
 }
 
 // keep pauses the machine for follow-ups and hib ssh, or removes it after an rm. The pause goes
@@ -1073,7 +1193,11 @@ func (s *Supervisor) start(r task.Run) *handle {
 					s.cfg.Logf("task %s: %s", r.ID, line)
 				}
 			}
-			_ = s.cfg.Clock.Sleep(s.life, h.x.poll())
+			pause := h.x.poll()
+			if h.x.open(task.StepPublish) && !h.x.done(task.StepPublish) {
+				pause = min(pause, task.PublishRemaining(h.x.r, s.cfg.StartedAt, s.cfg.Clock.Now()))
+			}
+			_ = s.cfg.Clock.Sleep(s.life, pause)
 		}
 	})
 	return h

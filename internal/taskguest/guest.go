@@ -328,9 +328,15 @@ func ParseLog(out []byte) (size int64, data []byte, err error) {
 	return size, data, nil
 }
 
-// PublicationOf is the argv that prints what finish published, as key=value lines.
+// ExitNoPublication means the guest has no publish file.
+const ExitNoPublication = 66
+
+// PublicationOf prints finish's key=value lines, or returns ExitNoPublication for an absent file.
 func PublicationOf(r task.RunID) []string {
-	return []string{"cat", path.Join(RunDir(r), "publish")}
+	return []string{"sh", "-c",
+		`dir=${1%/*}; if [ -r "$dir" ] && [ -x "$dir" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then exit ` +
+			strconv.Itoa(ExitNoPublication) + `; fi; exec cat -- "$1"`,
+		"hib-publication", path.Join(RunDir(r), "publish")}
 }
 
 // ParsePublication parses PublicationOf's output.
