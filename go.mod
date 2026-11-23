@@ -7,6 +7,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	connectrpc.com/connect v1.21.0
 	github.com/charmbracelet/colorprofile v0.4.3
+	github.com/clipperhouse/displaywidth v0.11.0
 	github.com/coder/websocket v1.8.15
 	github.com/oapi-codegen/runtime v1.7.0
 	golang.org/x/crypto v0.57.0
@@ -23,7 +24,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
-	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -191,21 +193,32 @@ func TestRecipeLostChangeReplyHint(t *testing.T) {
 		{[]string{"default"}, ""},
 	} {
 		for _, asJSON := range []bool{false, true} {
-			for _, failure := range []taskHostReply{
-				{err: errors.New("reply dropped")},
-				{err: context.DeadlineExceeded},
-				{code: 255},
-				{code: 1, text: `{"v":`},
-				{code: 1, text: `{"v":1,"error":"host refused","errorCode":"BAD_REQUEST"}`},
+			for _, failure := range []struct {
+				reply taskHostReply
+				hint  bool
+			}{
+				{taskHostReply{err: errors.New("reply dropped")}, true},
+				{taskHostReply{err: context.DeadlineExceeded}, true},
+				{taskHostReply{err: context.Canceled}, true},
+				{taskHostReply{code: 255}, true},
+				{taskHostReply{code: 2}, true},
+				{taskHostReply{code: 1, text: `{"v":`}, true},
+				{taskHostReply{code: 1, text: `{"v":1,"error":"host refused","errorCode":"BAD_REQUEST"}`}, false},
+				{taskHostReply{code: 1, text: `{"v":1,"error":"recipes.json: injected post-rename sync failure; retry after checking the I/O failure"}`}, true},
+				{taskHostReply{code: 1}, false},
+				{taskHostReply{code: 127}, false},
+				{taskHostReply{code: -1, err: &exec.Error{Name: "ssh", Err: exec.ErrNotFound}}, false},
+				{taskHostReply{code: -1, err: &os.PathError{Op: "fork/exec", Path: "ssh", Err: os.ErrPermission}}, false},
+				{taskHostReply{code: -1, err: &os.PathError{Op: "read", Path: "spool", Err: os.ErrClosed}}, true},
 			} {
-				h := &taskCallHost{features: `["tasks","recipes"]`, replies: []taskHostReply{failure}}
+				h := &taskCallHost{features: `["tasks","recipes"]`, replies: []taskHostReply{failure.reply}}
 				a, out, stderr := taskStartClient(t, h)
 				args := append([]string{"recipe"}, tc.args...)
 				if asJSON {
 					args = append([]string{"recipe", "--json"}, tc.args...)
 				}
 				code := a.run(taskCallContext(t), args)
-				uncertain := tc.show != "" && !strings.Contains(failure.text, "host refused")
+				uncertain := tc.show != "" && failure.hint
 				message := out.String() + stderr.String()
 				if code != 1 || strings.Contains(message, "may have landed") != uncertain ||
 					(uncertain && !strings.Contains(message, tc.show)) || len(h.calls) != 1 {

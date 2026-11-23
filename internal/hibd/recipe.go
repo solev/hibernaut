@@ -221,6 +221,12 @@ func readRecipes(root *os.Root, owner statefile.Owner) (doc recipeDoc, err error
 	return doc, nil
 }
 
+var errRecipePublish = errors.New("recipe publish failed")
+
+var publishRecipe = func(s recipeStore, root *os.Root, data []byte, owner statefile.Owner) (*os.File, error) {
+	return s.owned.PublishOwned(root, "recipes.json", data, owner, true)
+}
+
 func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Recipe) (recipeDoc, error) {
 	root, owner, err := s.owned.Root()
 	if err != nil {
@@ -297,12 +303,12 @@ func (s recipeStore) change(ctx context.Context, leaf, name string, r hibapi.Rec
 	if err := wait.Err(); err != nil {
 		return doc, lockFailure(err)
 	}
-	f, err := s.owned.PublishOwned(root, "recipes.json", append(data, '\n'), owner, true)
+	f, err := publishRecipe(s, root, append(data, '\n'), owner)
 	if err != nil {
-		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
+		return doc, fmt.Errorf("%w: %w", errRecipePublish, recipeFileError(root, "recipes.json", recipeIO, err))
 	}
 	if err := f.Close(); err != nil {
-		return doc, recipeFileError(root, "recipes.json", recipeIO, err)
+		return doc, fmt.Errorf("%w: %w", errRecipePublish, recipeFileError(root, "recipes.json", recipeIO, err))
 	}
 	return doc, nil
 }
@@ -316,7 +322,10 @@ func (a *App) recipe(ctx context.Context, c taskCommand, args []string) int {
 	}
 	leaf := strings.TrimPrefix(c.Path, "recipe ")
 	fail := func(err error) int {
-		return a.taskFail(*asJSON, c.Path, "", fmt.Errorf("%w: %w", errRecipeRequest, err))
+		if !errors.Is(err, errRecipePublish) {
+			err = fmt.Errorf("%w: %w", errRecipeRequest, err)
+		}
+		return a.taskFail(*asJSON, c.Path, "", err)
 	}
 	n := 1
 	if leaf == "ls" || (leaf == "default" && len(rest) == 0) {

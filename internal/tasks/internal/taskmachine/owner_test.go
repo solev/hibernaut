@@ -3,6 +3,7 @@ package taskmachine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -249,7 +250,8 @@ func TestPauseAllFreezes(t *testing.T) {
 }
 
 func TestWakeGuard(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	t.Run("frozen with time left wakes", func(t *testing.T) {
 		f := newFixture(t)
 		f.owner.Pause(ctx, f.tm)
@@ -275,8 +277,11 @@ func TestWakeGuard(t *testing.T) {
 	t.Run("paused unfrozen is held", func(t *testing.T) {
 		f := newFixture(t)
 		f.sim.Pause(ctx, f.tm)
-		if _, err := f.owner.Resume(ctx, f.tm, time.Minute); !errors.Is(err, task.ErrHeld) {
-			t.Fatalf("resume = %v, want ErrHeld", err)
+		_, err := f.owner.Resume(ctx, f.tm, time.Minute)
+		want := fmt.Sprintf("refused to wake task machine %s: paused without the freeze: hib task rescue %s or hib task rm %s",
+			f.run.Task, f.run.Task, f.run.Task)
+		if !errors.Is(err, task.ErrHeld) || err.Error() != want {
+			t.Fatalf("resume = %v, want %q wrapping ErrHeld", err, want)
 		}
 	})
 	t.Run("plain machines pass", func(t *testing.T) {
