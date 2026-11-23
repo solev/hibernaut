@@ -148,7 +148,7 @@ func TestTaskAndRecipeArgumentsAndFlags(t *testing.T) {
 			fl := flag.NewFlagSet(c.path(), flag.ContinueOnError)
 			c.flags(fl)
 			hasJSON := fl.Lookup("json") != nil
-			if hasJSON != (c.path() != "task logs") {
+			if !hasJSON {
 				t.Errorf("%s JSON flag = %v", c.path(), hasJSON)
 			}
 			if len(c.examples) == 0 || c.about == "" {
@@ -164,6 +164,7 @@ func TestTaskAndRecipeArgumentsAndFlags(t *testing.T) {
 		{"task", "start", "--prompt-file", "prompt.txt"},
 		{"task", "show", "--request", "id", "--json"},
 		{"task", "logs", "t-abcdefgh", "--run", "2", "-f"},
+		{"task", "logs", "t-abcdefgh", "--json"},
 		{"task", "wait", "t-abcdefgh", "--run", "2", "--json"},
 		{"task", "rm", "t-abcdefgh", "--yes", "--request-id", "id", "--json"},
 		{"recipe", "put", "check", "--image", "dev", "--size", "large", "--timeout", "30m", "--json", "--", "true"},
@@ -174,7 +175,6 @@ func TestTaskAndRecipeArgumentsAndFlags(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"task", "logs", "t-abcdefgh", "--json"},
 		{"task", "start", "--repo", "solev/hibernaut"},
 		{"task", "start", "--branch", "main"},
 		{"task", "start", "--publish", "none"},
