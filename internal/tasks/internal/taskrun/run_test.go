@@ -461,7 +461,7 @@ func script(d time.Duration, status int) func(task.RunID, task.Stage) guestsim.B
 		case task.StageCommand:
 			return guestsim.Behavior{Output: []byte("did the work\n"), Status: status, Runs: d}
 		case task.StageFinish:
-			return guestsim.Behavior{Publish: &task.Publication{Changes: true, Commit: "c0ffee",
+			return guestsim.Behavior{Publish: &task.Publication{Changes: true, Commit: "c0ffee0000000000000000000000000000000000",
 				Pushed: true}}
 		}
 		return guestsim.Behavior{}
@@ -508,7 +508,7 @@ func TestRunSucceeds(t *testing.T) {
 	if o := outcome(r); o != task.Succeeded {
 		t.Fatalf("outcome %s, want %s", o, task.Succeeded)
 	}
-	if p := r.Publication(); p == nil || p.Commit != "c0ffee" {
+	if p := r.Publication(); p == nil || p.Commit != "c0ffee0000000000000000000000000000000000" {
 		t.Fatalf("publication %+v, want finish's", p)
 	}
 	if r.Machine != task.MachinePaused || !r.Frozen() {

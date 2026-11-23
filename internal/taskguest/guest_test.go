@@ -507,9 +507,51 @@ func TestVerdict(t *testing.T) {
 		{Seen{Marker: true, Load: "not-found", Active: "inactive"}, Vanished},
 		{Seen{Marker: true, Load: "loaded", Active: "failed"}, Vanished},
 	}
+
 	for _, tt := range tests {
 		if got := tt.seen.Verdict(); got != tt.want {
 			t.Errorf("%+v: Verdict = %s, want %s", tt.seen, got, tt.want)
 		}
+	}
+}
+
+func TestParsePublication(t *testing.T) {
+	const commit = "abcdef0123456789abcdef0123456789abcdef01"
+	valid := "changes=true\ncommit=" + commit + "\npushed=true\nauthor=agent=bot\n"
+	for name, out := range map[string]string{
+		"unknown":          valid + "other=value\n",
+		"PR":               valid + "pr=https://github.com/acme/api/pull/1\n",
+		"repeated":         valid + "changes=false\n",
+		"bad changes":      strings.Replace(valid, "changes=true", "changes=yes", 1),
+		"bad pushed":       strings.Replace(valid, "pushed=true", "pushed=TRUE", 1),
+		"short commit":     strings.Replace(valid, commit, "c0ffee", 1),
+		"uppercase commit": strings.Replace(valid, commit, strings.ToUpper(commit), 1),
+		"bad hex":          strings.Replace(valid, commit, strings.Repeat("g", 40), 1),
+		"long author":      strings.Replace(valid, "agent=bot", strings.Repeat("x", 257), 1),
+		"missing equals":   valid + "broken\n",
+		"blank line":       valid + "\n",
+		"empty":            "",
+		"missing boolean":  strings.Replace(valid, "pushed=true\n", "", 1),
+		"bad start":        valid + "start=c0ffee\n",
+		"repeated start":   valid + "start=" + commit + "\nstart=" + commit + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if p, err := ParsePublication([]byte(out)); err == nil || p != (task.Publication{}) {
+				t.Fatalf("untrusted publication accepted: %+v, %v", p, err)
+			}
+		})
+	}
+	for _, p := range []task.Publication{
+		{}, {Changes: true, Commit: commit, Pushed: true, Author: strings.Repeat("a", 256)},
+		{Start: commit, Author: "agent=bot"},
+	} {
+		got, err := ParsePublication(FormatPublication(p))
+		if err != nil || got != p {
+			t.Errorf("publication round trip = %+v, %v, want %+v", got, err, p)
+		}
+	}
+	p := task.Publication{PR: "host-only"}
+	if out := FormatPublication(p); bytes.Contains(out, []byte("pr=")) {
+		t.Errorf("formatter lets the guest claim a PR: %q", out)
 	}
 }
