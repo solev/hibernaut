@@ -5,6 +5,7 @@
 #   STAGE.started/      the start marker, made by mkdir, so a stage starts at most once
 #   STAGE.exit          the exit record, written once by ExecStopPost from systemd's variables
 #   STAGE.log           the stage's output, appended by systemd
+#   start               HEAD before this run's repo command, written once
 #   publish             what finish published
 #   in/                 the uploaded inputs and their manifest
 set -eu
@@ -26,7 +27,10 @@ start() {
 	printf '%s\n' "${INVOCATION_ID:-}" >"$run/$stage.started/invocation"
 	case $stage in
 	setup) setup "$run" ;;
-	command) exec "$@" ;;
+	command)
+		if [ -n "${HIB_REPO:-}" ]; then record_start "$run"; fi
+		exec "$@"
+		;;
 	finish) finish "$run" ;;
 	*) die "unknown stage $stage" ;;
 	esac
@@ -134,12 +138,87 @@ verify() {
 	if [ "$(id -u)" = 0 ]; then chown -R user:user "$run"; fi
 }
 
-# setup RUN: clones HIB_REPO into HIB_WORKDIR and makes HIB_BRANCH from HIB_BASE.
+require_git() {
+	command -v git >/dev/null 2>&1 || die "Git 2.23 or newer is required"
+	version=$(git --version 2>/dev/null) || die "Git 2.23 or newer is required"
+	version=${version#git version }
+	major=${version%%.*}
+	minor=${version#*.}
+	minor=${minor%%.*}
+	case "$major:$minor" in
+	*[!0-9:]*|:*|*:) die "Git 2.23 or newer is required" ;;
+	esac
+	if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 23 ]; }; then
+		die "Git 2.23 or newer is required"
+	fi
+	credential_key=credential.https://github.com.helper
+	IFS= read -r credential_helper <<'HELPER'
+!f() { if [ "$1" = get ] && [ -n "${GH_TOKEN:-}" ]; then printf "%s\n" username=x-access-token "password=$GH_TOKEN"; fi; }; f
+HELPER
+	export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+	export GIT_TRACE=0 GIT_TRACE_CURL=0 GIT_CURL_VERBOSE=0
+}
+
+repo_git() {
+	git -c credential.helper= -c "$credential_key=$credential_helper" \
+		-c core.askPass=/bin/false -c core.hooksPath=/dev/null \
+		-c commit.gpgsign=false -c user.useConfigOnly=true \
+		-c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 "$@"
+}
+
+valid_commit() {
+	[ "${#1}" -eq 40 ] || return 1
+	case $1 in *[!0-9a-f]*) return 1 ;; esac
+}
+
+record_start() {
+	require_git
+	sha=$(repo_git -C "$HIB_WORKDIR" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) ||
+		die "cannot record the command starting commit"
+	valid_commit "$sha" || die "command starting commit is not a SHA-1 commit"
+	tmp="$1/start.$$"
+	printf '%s\n' "$sha" >"$tmp"
+	if ! ln "$tmp" "$1/start" 2>/dev/null; then
+		rm -f "$tmp"
+		die "cannot write the command starting commit once"
+	fi
+	rm -f "$tmp"
+}
+
 setup() {
-	# TODO:
-	#   git clone "https://github.com/$HIB_REPO" "$HIB_WORKDIR" with the token /etc/environment
-	#   gives, then git switch -c "$HIB_BRANCH" "origin/${HIB_BASE:-HEAD}"
-	die "setup is not implemented"
+	require_git
+	base=${HIB_BASE:-}
+	case $base in -*) die "invalid base $base" ;; esac
+	if [ -n "$base" ]; then
+		if ! repo_git check-ref-format --branch "$base" >/dev/null 2>&1 ||
+			! repo_git check-ref-format "refs/heads/$base" >/dev/null 2>&1; then
+			die "invalid base $base"
+		fi
+	fi
+	repo_git check-ref-format "refs/heads/$HIB_BRANCH" >/dev/null 2>&1 ||
+		die "invalid task branch $HIB_BRANCH"
+	url="https://github.com/$HIB_REPO"
+	if repo_git ls-remote --exit-code --heads "$url" "refs/heads/$HIB_BRANCH" >/dev/null 2>&1; then
+		die "remote branch $HIB_BRANCH already exists"
+	else
+		status=$?
+		[ "$status" -eq 2 ] || die "cannot check remote branch $HIB_BRANCH"
+	fi
+	printf 'clone %s\n' "$HIB_REPO"
+	repo_git clone --quiet --no-progress --filter=blob:none --no-checkout \
+		-c credential.helper= -c "$credential_key=$credential_helper" \
+		-c core.askPass=/bin/false "$url" "$HIB_WORKDIR" >/dev/null 2>&1 ||
+		die "cannot clone $HIB_REPO"
+	first=$(repo_git -C "$HIB_WORKDIR" rev-list --all --max-count=1 2>/dev/null) ||
+		die "cannot read cloned repository"
+	[ -n "$first" ] || die "repository $HIB_REPO is empty"
+	ref=refs/remotes/origin/HEAD
+	if [ -n "$base" ]; then ref="refs/remotes/origin/$base"; fi
+	sha=$(repo_git -C "$HIB_WORKDIR" rev-parse --verify "$ref^{commit}" 2>/dev/null) ||
+		die "base ${base:-origin/HEAD} does not exist"
+	repo_git -C "$HIB_WORKDIR" switch --quiet -c "$HIB_BRANCH" "$sha" >/dev/null 2>&1 ||
+		die "cannot create task branch $HIB_BRANCH"
+	printf 'clone base %s commit %s branch %s\n' "${base:-origin/HEAD}" "$sha" "$HIB_BRANCH"
 }
 
 # finish RUN: commits what the command left, and with HIB_PUBLISH=draft-pr pushes HIB_BRANCH and
